@@ -35,6 +35,7 @@ import Foundation
     let live = try extra["live"].map(LiveConfiguration.consume)
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
+    app.mainMenu = ExplorerMenu.make()
     let host = ExplorerHost(target, workspace: workspace, store: URL(fileURLWithPath: store), resources: resources, terminal: terminal, showIgnored: showIgnored)
     withExtendedLifetime(host) {
         host.start(live: live)

@@ -642,7 +642,7 @@
 			function update() {
 				const connected = ctx.live().connected;
 				for (const [action, node] of controls) paintControl(action, node, connected);
-				hint.textContent = lead === "send" && !connected ? reason() : `⌘↩ ${labels[lead]}`;
+				hint.textContent = lead === "send" && !connected ? reason() : `cmd+return ${labels[lead]}`;
 				reposition();
 			}
 			field.oninput = () => {

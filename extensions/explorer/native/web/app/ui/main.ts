@@ -1275,7 +1275,7 @@
 		if (!path || file?.kind === "directory")
 			return empty(
 				path ? basename(path) : root.name,
-				"Pick a file from the sidebar or use Quick open (⌘P).",
+				"Pick a file from the sidebar or use Quick open (cmd+P).",
 				"folder",
 				button("Quick open", () => command("quick"), "secondary"),
 			);
@@ -1635,8 +1635,8 @@
 	findResult.setAttribute("aria-live", "polite");
 	let matches: ExplorerMatch[] = [],
 		hit = -1;
-	const findBack = iconButton("up", "Previous match (⇧↩)", () => stepFind(-1));
-	const findNext = iconButton("down", "Next match (↩)", () => stepFind(1));
+	const findBack = iconButton("up", "Previous match (shift+return)", () => stepFind(-1));
+	const findNext = iconButton("down", "Next match (return)", () => stepFind(1));
 	findSlot.append(
 		findQuery,
 		findResult,
@@ -1843,20 +1843,20 @@
 	function appendCodeActions(result: Action[]) {
 		if (!headLines.length && !baseLines.length) return;
 		result.push(
-			{ label: "Find in file", key: "⌘F", glyph: "search", divide: true, run: findInFile },
-			{ label: "Go to line", key: "⌃G", glyph: "list", run: () => command("line") },
+			{ label: "Find in file", key: "cmd+F", glyph: "search", divide: true, run: findInFile },
+			{ label: "Go to line", key: "control+G", glyph: "list", run: () => command("line") },
 		);
 		if (review?.files.some((item) => item.path === path))
 			result.push({
 				label: view === "file" ? "Show changes" : "Show file",
-				key: "⌘⌥D",
+				key: "cmd+option+D",
 				glyph: "branch",
 				run: toggleView,
 			});
 		if (code !== preview)
 			result.push({
 				label: settings.wrap ? "Turn wrap off" : "Wrap lines",
-				key: "⌥Z",
+				key: "option+Z",
 				glyph: "file",
 				run: toggleWrap,
 			});
@@ -1878,15 +1878,15 @@
 		if (fileHere)
 			result.push({
 				label: "Ask about this",
-				key: "⌘D",
+				key: "cmd+D",
 				glyph: "ask",
 				divide: result.length > 0,
 				run: () => askAt(range, "ask"),
 			});
 		if (source)
 			result.push(
-				{ label: "Add review comment", key: "⌘⇧L", glyph: "note", run: () => askAt(range, "comment") },
-				{ label: "Add note", key: "⌘⌥N", glyph: "bookmark", run: () => askAt(range, "note") },
+				{ label: "Add review comment", key: "cmd+shift+L", glyph: "note", run: () => askAt(range, "comment") },
+				{ label: "Add note", key: "cmd+option+N", glyph: "bookmark", run: () => askAt(range, "note") },
 			);
 	}
 	// Text fields keep the usual editing actions; review actions apply to code, not to typed text.
@@ -1900,7 +1900,7 @@
 		return [
 			{
 				label: "Cut",
-				key: "⌘X",
+				key: "cmd+X",
 				glyph: "copy",
 				disabled: !text || input.readOnly,
 				run: () => {
@@ -1923,7 +1923,7 @@
 			},
 			{
 				label: "Copy",
-				key: "⌘C",
+				key: "cmd+C",
 				glyph: "copy",
 				disabled: !text,
 				run: () => {
@@ -1932,7 +1932,7 @@
 			},
 			{
 				label: "Paste",
-				key: "⌘V",
+				key: "cmd+V",
 				glyph: "copy",
 				disabled: input.readOnly,
 				run: () => {
@@ -1948,7 +1948,7 @@
 			},
 			{
 				label: "Select All",
-				key: "⌘A",
+				key: "cmd+A",
 				glyph: "list",
 				disabled: !input.value,
 				divide: true,
@@ -1967,7 +1967,7 @@
 		result.push(
 			{
 				label: "Copy",
-				key: "⌘C",
+				key: "cmd+C",
 				glyph: "copy",
 				disabled: !text,
 				divide: result.length > 0,
@@ -1977,7 +1977,7 @@
 			},
 			{
 				label: "Copy with source",
-				key: "⌘⇧C",
+				key: "cmd+shift+C",
 				glyph: "copy",
 				disabled: !source,
 				run: () => {
@@ -1985,18 +1985,19 @@
 				},
 			},
 		);
-		if (path) result.push({ label: "Copy path", key: "⌘⌥C", glyph: "file", run: () => copy(path, "Path copied") });
+		if (path)
+			result.push({ label: "Copy path", key: "cmd+option+C", glyph: "file", run: () => copy(path, "Path copied") });
 		if (range)
 			result.push({
 				label: "Copy line reference",
-				key: "⌘⌥L",
+				key: "cmd+option+L",
 				glyph: "list",
 				run: () => copy(lineReference(range), "Line reference copied"),
 			});
 		if (path)
 			result.push({
 				label: "Reveal in Finder",
-				key: "⌘⌥R",
+				key: "cmd+option+R",
 				glyph: "folder",
 				run: () => report(request("finder.reveal", { path })),
 			});
@@ -2218,7 +2219,7 @@
 		let qualifier = "";
 		if (indexPending) qualifier = " · Updating index…";
 		else if (index?.truncated) qualifier = " · Partial index";
-		return `${indexedPaths.length.toLocaleString()} indexed paths${qualifier} · ↑ ↓ to move · ↩ to open`;
+		return `${indexedPaths.length.toLocaleString()} indexed paths${qualifier} · ↑ ↓ to move · return to open`;
 	}
 	function queueQuickQuery(query: () => void) {
 		clearTimeout(quickTimer);
@@ -2338,7 +2339,7 @@
 					line: item.line,
 				})),
 				data.results.length
-					? `${data.results.length.toLocaleString()} results${data.truncated ? " · list truncated" : ""} · ↩ to open`
+					? `${data.results.length.toLocaleString()} results${data.truncated ? " · list truncated" : ""} · return to open`
 					: "No matches.",
 			);
 		}
@@ -2877,13 +2878,20 @@
 			: (code.selection()?.text ?? source?.quote);
 		if (text) return () => copy(text);
 	}
+	// The Edit menu's Undo, Redo and Select All belong to text fields. Elsewhere the page has nothing to
+	// undo, and selecting the whole page would take in the sidebar and controls, so these keys do nothing.
+	function fieldShortcut(event: KeyboardEvent, key: string, editing: boolean) {
+		if (editing || event.altKey || (key !== "a" && key !== "z")) return;
+		return () => {};
+	}
 	function metaShortcut(event: KeyboardEvent, key: string, editing: boolean, range: ExplorerRange | null) {
 		if (!event.metaKey || event.ctrlKey) return;
 		return (
 			navigationShortcut(event, key, editing) ??
 			noteShortcut(event, key, range, editing) ??
 			fileShortcut(event) ??
-			copyShortcut(event, key, editing, range)
+			copyShortcut(event, key, editing, range) ??
+			fieldShortcut(event, key, editing)
 		);
 	}
 	function secondaryShortcut(event: KeyboardEvent, key: string, editing: boolean) {

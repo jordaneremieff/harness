@@ -9,19 +9,21 @@ Explorer opens a repository, folder or file in a native window over a Rex pane. 
 - `/explorer notes` opens the Notes list. `/explorer help [topic]` describes the command forms. `/explorer update` installs the app in the background on macOS. Interactive starts and reloads check the installed build against the loaded checkout. If the checkout cannot order the two builds, it leaves the installed app in place. Already open panes keep their build.
 - **Explore a Folder…** in the Rex command palette lists recent roots and opens the selected root beside the invoking pane. This route has no live conversation. You can keep notes or copy a review, but cannot send a review to an agent from that pane.
 
-In the file view, use ⌘P for files, ⌘⇧F for repository search, ⌘F for the current file and ⌃G for a line.
+In the file view, use cmd+P for files, cmd+shift+F for repository search, cmd+F for the current file and control+G for a line. Explorer names keys in words, such as cmd+shift+F, in its labels and tooltips.
 
-⌘= (or ⌘+) zooms in, ⌘− zooms out and ⌘0 returns to actual size; a trackpad pinch also zooms. Zoom scales the whole pane in steps from 50% to 300%. Explorer stores the level, so panes opened later use it; other open panes keep their level. Any level other than 100% shows beside Quick open; select it to return to actual size. A pane narrower than 760 points shows the sidebar as a sheet; zooming in keeps the sidebar until the page itself is too narrow for it. In the terminal placeholder, `q` closes Explorer. On compatible builds, `:open --root …` navigates the current pane without changing its placement.
+Text fields keep the standard editing keys: cmd+Z and cmd+shift+Z undo and redo, cmd+X, cmd+C and cmd+V cut, copy and paste, and cmd+A selects the field's text. Control keys such as control+A and control+E move the caret as in other Mac text fields, and Tab accepts a macOS inline text suggestion. Outside text fields, cmd+A and cmd+Z do nothing, so they never select the whole page or undo an edit that is out of view. The file editor keeps Tab for indentation.
+
+cmd+= (or cmd++) zooms in, cmd+- zooms out and cmd+0 returns to actual size; a trackpad pinch also zooms. Zoom scales the whole pane in steps from 50% to 300%. Explorer stores the level, so panes opened later use it; other open panes keep their level. Any level other than 100% shows beside Quick open; select it to return to actual size. A pane narrower than 760 points shows the sidebar as a sheet; zooming in keeps the sidebar until the page itself is too narrow for it. In the terminal placeholder, `q` closes Explorer. On compatible builds, `:open --root …` navigates the current pane without changing its placement.
 
 ## Notes, review comments and questions
 
-Select code, or click line numbers, to show the strip with **Ask**, **Comment**, **Note** and **Copy**. A right-click (or Control-click) offers the same actions with copy and navigation items. ⌘D asks about the selection, or about the file when nothing is selected.
+Select code, or click line numbers, to show the strip with **Ask**, **Comment**, **Note** and **Copy**. A right-click (or Control-click) offers the same actions with copy and navigation items. cmd+D asks about the selection, or about the file when nothing is selected.
 
 - **Ask** sends a question about the lines to the conversation. Its answer appears in the card and stays in the note's thread.
 - **Comment** adds a review comment. Review comments wait in the tray at the bottom until you send them together, or send one with **Send now**.
 - **Note** keeps a private note on the lines. It reaches the agent only when you reply to it while a conversation is connected.
 
-Each card has one filled button on the right; ⌘↩ performs it. Text you type and do not save stays with its lines: selecting the same lines again brings it back, and other lines open an empty card. Unsent text also survives closing the pane.
+Each card has one filled button on the right; cmd+return performs it. Text you type and do not save stays with its lines: selecting the same lines again brings it back, and other lines open an empty card. Unsent text also survives closing the pane.
 
 Marked lines are tinted: yellow for review comments, blue for your notes and questions, mauve for the agent's notes. Click a marked line, its dot or **Open note** in its menu to open the card; a further click on the same lines while the card is open shows the next note there. A review comment opens in its editor with **Remove**, **Send now** and **Save**. A note opens its thread: **Reply** sends the reply to the conversation when one is connected and otherwise saves it in the note; your own open notes can be edited, and your notes can be deleted. Viewed ticks and unsent comments persist. A review finishes when you send it or mark all its files Viewed.
 
@@ -41,7 +43,7 @@ Git-ignored files and folders show muted text and icons. Each folder follows the
 
 A folder that is a Git repository (an embedded repository, a submodule or a work tree) shows its branch, or its commit when detached. **Open as Root**, in a folder's context menu or beside a repository, makes that folder the pane's root, with its own Changes and notes. The names after **Explorer** in the top bar trace the path from the folder the pane opened with; select one to open that folder as the root again. In a folder that is not a repository, the Changes tab lists the repositories inside it.
 
-Quick Open (⌘P) and the Files filter search a path index that Explorer builds in the background: Git lists the files of each repository, ignored files left out, and a scan covers folders outside repositories. The index holds up to 200,000 paths and 2,000 repositories, and Explorer labels a partial index. Quick Open shows results from the current index while a newer one builds. The filter also matches every entry the Files list has read, including ignored ones. Content search (⌘⇧F) searches the root repository first, then the repositories inside it, then other files, for up to about four seconds, and labels incomplete results.
+Quick Open (cmd+P) and the Files filter search a path index that Explorer builds in the background: Git lists the files of each repository, ignored files left out, and a scan covers folders outside repositories. The index holds up to 200,000 paths and 2,000 repositories, and Explorer labels a partial index. Quick Open shows results from the current index while a newer one builds. The filter also matches every entry the Files list has read, including ignored ones. Content search (cmd+shift+F) searches the root repository first, then the repositories inside it, then other files, for up to about four seconds, and labels incomplete results.
 
 ## Settings
 
@@ -64,7 +66,7 @@ Relative paths for settings resolve against the agent directory. See the [extens
 
 ## Edit and create files
 
-Only **Save** (or ⌘S) and **New file** write to the opened workspace. Select the pencil in the File view to edit a working-tree text file. The editor supports UTF-8 text up to 2 MiB and 20,000 lines. Images, binary files, links, partial previews, and commit views are read-only. Use **New file** in the Files header or a folder's context menu to create an empty text file. Explorer creates missing parent directories and refuses to replace an existing path. Neither action writes through links or inside `.git`.
+Only **Save** (or cmd+S) and **New file** write to the opened workspace. Select the pencil in the File view to edit a working-tree text file. The editor supports UTF-8 text up to 2 MiB and 20,000 lines. Images, binary files, links, partial previews, and commit views are read-only. Use **New file** in the Files header or a folder's context menu to create an empty text file. Explorer creates missing parent directories and refuses to replace an existing path. Neither action writes through links or inside `.git`.
 
 Save compares the file's current SHA-256 digest with the editor's base. It replaces the file atomically, retains the read, write, and execute permission bits, and applies the original line-ending style (the dominant style if the file mixes endings). If the disk version changes, Explorer keeps your text. Reload the disk version, copy the edit, or acknowledge the new base and save again. Unsaved text stays in the private `explorer.dir` store, not the workspace. Explorer marks up to 32 edited files per root and restores the draft when you reopen the file.
 

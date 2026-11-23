@@ -26,8 +26,8 @@
 <body>
 <div id="app">
  <header id="topbar">
-  <div class="identity"><button id="sidebar-toggle" class="icon-button" aria-label="Toggle sidebar" title="Toggle sidebar (⌘B)"></button><strong>Explorer</strong><span class="slash">/</span><nav id="repo-name" class="repo-name" aria-label="Root trail"></nav><code id="head-sha"></code></div>
-  <div class="tools"><button id="zoom-level" class="tool-button" title="Actual size (⌘0)" aria-label="Zoom level. Select to return to actual size." hidden></button><div class="history-actions"><button id="back" class="icon-button" aria-label="Back" title="Back (⌘[)" disabled></button><button id="forward" class="icon-button" aria-label="Forward" title="Forward (⌘])" disabled></button></div><button id="quick-open" class="tool-button"><span>Quick open</span><kbd>⌘ P</kbd></button><button id="search" class="icon-button" title="Search repository (⌘⇧F)" aria-label="Search repository"></button></div>
+  <div class="identity"><button id="sidebar-toggle" class="icon-button" aria-label="Toggle sidebar" title="Toggle sidebar (cmd+B)"></button><strong>Explorer</strong><span class="slash">/</span><nav id="repo-name" class="repo-name" aria-label="Root trail"></nav><code id="head-sha"></code></div>
+  <div class="tools"><button id="zoom-level" class="tool-button" title="Actual size (cmd+0)" aria-label="Zoom level. Select to return to actual size." hidden></button><div class="history-actions"><button id="back" class="icon-button" aria-label="Back" title="Back (cmd+[)" disabled></button><button id="forward" class="icon-button" aria-label="Forward" title="Forward (cmd+])" disabled></button></div><button id="quick-open" class="tool-button"><span>Quick open</span><kbd>cmd+P</kbd></button><button id="search" class="icon-button" title="Search repository (cmd+shift+F)" aria-label="Search repository"></button></div>
  </header>
  <div id="workspace">
   <button id="sheet-shade" aria-label="Close sidebar" hidden></button>
@@ -42,7 +42,7 @@
    <header id="file-header">
     <div id="main-scope" hidden></div>
     <nav id="crumbs" aria-label="File path"></nav>
-    <div class="file-title-row"><h1 id="file-title">Explorer</h1><div class="file-actions"><div class="seg" id="view-tabs"><button id="file-view" aria-pressed="true">File</button><button id="diff-view" disabled>Changes</button></div><button id="preview-mode" class="tool-button" aria-pressed="true" hidden>Preview</button><button id="wrap-lines" class="tool-button" title="Wrap lines (⌥Z)" aria-pressed="false">Wrap</button><button id="edit-file" class="icon-button" title="Edit file" aria-label="Edit file" aria-pressed="false" hidden></button><button id="copy-path" class="icon-button" title="Copy path (⌘⌥C)" aria-label="Copy path" disabled></button><button id="ask-file" class="icon-button" title="Ask about file (⌘⌥M)" aria-label="Ask about file" disabled></button></div></div>
+    <div class="file-title-row"><h1 id="file-title">Explorer</h1><div class="file-actions"><div class="seg" id="view-tabs"><button id="file-view" aria-pressed="true">File</button><button id="diff-view" disabled>Changes</button></div><button id="preview-mode" class="tool-button" aria-pressed="true" hidden>Preview</button><button id="wrap-lines" class="tool-button" title="Wrap lines (option+Z)" aria-pressed="false">Wrap</button><button id="edit-file" class="icon-button" title="Edit file" aria-label="Edit file" aria-pressed="false" hidden></button><button id="copy-path" class="icon-button" title="Copy path (cmd+option+C)" aria-label="Copy path" disabled></button><button id="ask-file" class="icon-button" title="Ask about file (cmd+D)" aria-label="Ask about file" disabled></button></div></div>
     <div id="file-facts"></div>
     <div id="editor-toolbar" hidden></div>
    </header>
