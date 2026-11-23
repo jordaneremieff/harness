@@ -1,0 +1,287 @@
+import { stripVTControlCharacters } from "node:util";
+import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+
+const DISPLAY_LIMIT = 32_000;
+const PREVIEW_ROWS = 5;
+
+type Disclosure = { extra: boolean; lines: number; limit?: string };
+
+export interface ToolCardGrammarContext
+	extends Pick<KeybindingHints, "keyText">,
+		Partial<Pick<KeybindingHints, "keyHint">> {
+	readonly expanded: boolean;
+	readonly argsComplete?: boolean;
+	readonly executionStarted?: boolean;
+	readonly isError?: boolean;
+	readonly hideExpansionHint?: boolean;
+	readonly state?: {
+		grammarCall?: (width: number) => Disclosure;
+		grammarHasResult?: boolean;
+	};
+}
+
+export interface ToolCallPresentation {
+	name: string;
+	subject?: string;
+	facts?: readonly string[];
+	/** Actual supplied arguments. Substitute a size description for anything the card must withhold. */
+	args: Readonly<Record<string, unknown>>;
+	/** A prose/code argument shown on the call in addition to its labelled form in expansion. */
+	body?: { key: string; text: string };
+	/** Additional observed facts, distinct from supplied arguments. */
+	expanded?: string;
+}
+
+export interface ToolResultPresentation {
+	outcome?: string;
+	/** Readable preview and expanded body. Omit for Dispatch and Show results. */
+	body?: string;
+	/** Additional readable facts or exact continuation, placed ahead of source in expansion. */
+	expanded?: string;
+	/** Retained or coverage bound, without brackets. */
+	limit?: string;
+	partial?: string;
+	keep?: "start" | "end";
+	/** Complete safe result text. Defaults to model text; omit redundant source with an empty string. */
+	source?: string;
+}
+
+function safe(value: string): string {
+	return stripVTControlCharacters(value).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
+		char === "\n" ? char : char === "\t" ? "   " : "",
+	);
+}
+
+function oneLine(value: string): string {
+	return safe(value).replace(/\s+/gu, " ").trim();
+}
+
+function bounded(value: string): { text: string; limit?: string } {
+	const clean = safe(value).trimEnd();
+	if (clean.length <= DISPLAY_LIMIT) return { text: clean };
+	const points = [...clean];
+	if (points.length <= DISPLAY_LIMIT) return { text: clean };
+	return {
+		text: points.slice(0, DISPLAY_LIMIT).join(""),
+		limit: `Truncated: showing ${DISPLAY_LIMIT} of ${points.length} characters`,
+	};
+}
+
+function clip(value: string, width: number): string {
+	// The input has no styles. Remove clipping resets before applying the row colour inside Pi's background.
+	return stripVTControlCharacters(truncateToWidth(value, width, "…"));
+}
+
+function rows(value: string, width: number): string[] {
+	return value ? wrapTextWithAnsi(value, Math.max(1, width)).map((row) => clip(row, width)) : [];
+}
+
+type Role = Parameters<Theme["fg"]>[0];
+
+function paint(theme: Theme, role: Role, value: string, width: number, expanded = false): string[] {
+	const rendered = expanded ? rows(value, width) : value ? [clip(value, width)] : [];
+	return rendered.map((row) => theme.fg(role, row));
+}
+
+function preview(lines: string[], keep: "start" | "end" = "start") {
+	const hidden = Math.max(0, lines.length - PREVIEW_ROWS);
+	const shown = keep === "start" ? lines.slice(0, PREVIEW_ROWS) : lines.slice(-PREVIEW_ROWS);
+	return { shown, hidden };
+}
+
+function hint(
+	theme: Theme,
+	context: ToolCardGrammarContext,
+	disclosure: Disclosure,
+	width: number,
+	clickable: boolean,
+): string[] {
+	if (context.hideExpansionHint || (!disclosure.extra && !disclosure.lines)) return [];
+	const key = context.keyText("app.tools.expand");
+	if (!key && !clickable) return [];
+	const n = disclosure.lines;
+	const prefix = `... (${n ? `${n} more line${n === 1 ? "" : "s"}, ` : ""}`;
+	const action = key ? `${key} to expand` : "click to expand";
+	if (visibleWidth(`${prefix}${action})`) > width) return paint(theme, "muted", `${prefix}${action})`, width);
+	return [
+		theme.fg("muted", prefix) +
+			(key
+				? (context.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
+				: theme.fg("muted", action)) +
+			theme.fg("muted", ")"),
+	];
+}
+
+function argumentText(value: unknown): string {
+	return typeof value === "string"
+		? safe(value)
+		: (JSON.stringify(
+				value,
+				(_key, item: unknown) =>
+					typeof item === "string" ? safe(item) : typeof item === "bigint" ? String(item) : item,
+				2,
+			) ?? String(value));
+}
+
+function argumentsText(args: Readonly<Record<string, unknown>>): string {
+	return Object.entries(args)
+		.flatMap(([key, value]) =>
+			value === undefined ? [] : [`  ${oneLine(key)}: ${argumentText(value).replace(/\n/gu, "\n    ")}`],
+		)
+		.join("\n");
+}
+
+function component(draw: (width: number) => string[]): Component {
+	let cached: { width: number; lines: string[] } | undefined;
+	return {
+		render(width) {
+			if (cached?.width !== width) cached = { width, lines: width > 0 ? draw(width) : draw(1).map(() => "") };
+			return cached.lines;
+		},
+		invalidate() {
+			cached = undefined;
+		},
+	};
+}
+
+function heading(name: string, subject: string, width: number, theme: Theme, expanded: boolean): string[] {
+	const left = width - visibleWidth(name) - 1;
+	const label = !expanded && subject && left <= 0 ? `${name} ${subject}` : name;
+	const title = theme.fg("toolTitle", theme.bold(clip(label, width)));
+	if (!subject) return [title];
+	if (expanded && visibleWidth(subject) > left) return [title, ...paint(theme, "accent", subject, width, true)];
+	if (left <= 0) return [title];
+	return [`${title} ${paint(theme, "accent", subject, left)[0]}`];
+}
+
+function limitRows(theme: Theme, width: number, expanded: boolean, bounds: (string | undefined)[]): string[] {
+	const value = [...new Set(bounds.filter(Boolean))].join("; ");
+	return value ? paint(theme, "warning", `[${value}]`, width, expanded) : [];
+}
+
+export function toolCallCard(call: ToolCallPresentation, theme: Theme, context: ToolCardGrammarContext): Component {
+	const name = oneLine(call.name);
+	const subject = oneLine(call.subject ?? "");
+	const facts = call.facts?.map(oneLine).filter(Boolean).join(" · ") ?? "";
+	const body = bounded(call.body ? argumentText(call.args[call.body.key] ?? call.body.text) : "");
+	const args = bounded(argumentsText(call.args));
+	const extra = bounded(call.expanded ?? "");
+	const disclosure = (width: number): Disclosure => ({
+		extra:
+			args.text !== "" ||
+			extra.text !== "" ||
+			visibleWidth(name + (subject ? ` ${subject}` : "")) > width ||
+			visibleWidth(facts) > width,
+		lines: body.limit ? 0 : preview(rows(body.text, width)).hidden,
+		limit:
+			[context.expanded ? args.limit : body.limit, context.expanded ? extra.limit : undefined]
+				.filter(Boolean)
+				.join("; ") || undefined,
+	});
+	if (context.state) context.state.grammarCall = disclosure;
+	return {
+		render(width): string[] {
+			if (width <= 0) return this.render(1).map(() => "");
+			const expanded = context.expanded;
+			const lines = heading(name, subject, width, theme, expanded);
+			lines.push(...paint(theme, "muted", facts, width, expanded));
+			// Pi constructs the call first, then the result (if present), and only then measures the card.
+			const owned = !context.state?.grammarHasResult;
+			if (expanded)
+				lines.push(...paint(theme, "muted", args.text, width, true), ...paint(theme, "muted", extra.text, width, true));
+			else {
+				const view = preview(rows(body.text, width));
+				lines.push(...view.shown.map((row) => theme.fg("toolOutput", row)));
+			}
+			if (!owned) return lines;
+			const hidden = disclosure(width);
+			lines.push(...limitRows(theme, width, expanded, [hidden.limit]));
+			if (!expanded && context.argsComplete !== false && !context.executionStarted)
+				lines.push(...hint(theme, context, hidden, width, false));
+			return lines;
+		},
+		invalidate() {},
+	};
+}
+
+function resultDisclosure(
+	call: Disclosure | undefined,
+	resultLines: number,
+	displayBound: boolean,
+	extra: boolean,
+): Disclosure {
+	const callLines = call?.lines ?? 0;
+	return {
+		extra: Boolean(call?.extra || extra || resultLines || callLines),
+		lines: displayBound || (resultLines > 0 && callLines > 0) ? 0 : resultLines || callLines,
+	};
+}
+
+export function toolResultCard(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: ToolCardGrammarContext,
+	presentation: ToolResultPresentation,
+): Component {
+	if (context.state) context.state.grammarHasResult = true;
+	const content = result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+	const fallback = safe(content).split("\n").map(oneLine).find(Boolean);
+	const error = context.isError === true;
+	const partial = options.isPartial && !error;
+	const outcome = bounded(
+		oneLine(
+			error
+				? (presentation.outcome ?? fallback ?? "Tool error")
+				: partial
+					? (presentation.partial ?? fallback ?? "Partial result")
+					: (presentation.outcome ?? fallback ?? "No result text"),
+		),
+	);
+	const body = bounded(partial || error ? "" : (presentation.body ?? ""));
+	const extra = bounded(partial ? "" : (presentation.expanded ?? ""));
+	const source = bounded(presentation.source ?? content);
+	const extraSource = [outcome.text, extra.text].filter(Boolean).join("\n");
+	const projected = new Set(["", outcome.text, body.text.trim(), extraSource]);
+	const showSource = !projected.has(source.text.trim());
+	const sourceRole = error ? "error" : "toolOutput";
+	return component((width) => {
+		const expanded = options.expanded;
+		const lines = [
+			"",
+			...paint(theme, error ? "error" : partial ? "muted" : "toolOutput", outcome.text, width, expanded),
+		];
+		const bodyRows = rows(body.text, width);
+		const view = preview(bodyRows, presentation.keep);
+		const call = context.state?.grammarCall?.(width);
+		const bounds = limitRows(theme, width, expanded, [
+			call?.limit,
+			presentation.limit,
+			outcome.limit,
+			body.limit,
+			extra.limit,
+			source.limit,
+		]);
+		if (expanded)
+			return [
+				...lines,
+				...bodyRows.map((line) => theme.fg("toolOutput", line)),
+				...paint(theme, sourceRole, extra.text, width, true),
+				...paint(theme, sourceRole, showSource ? source.text : "", width, true),
+				...bounds,
+			];
+		const disclosure = resultDisclosure(
+			call,
+			view.hidden,
+			Boolean(body.limit),
+			showSource || extra.text !== "" || visibleWidth(outcome.text) > width,
+		);
+		return [
+			...lines,
+			...view.shown.map((line) => theme.fg("toolOutput", line)),
+			...bounds,
+			...hint(theme, context, disclosure, width, true),
+		];
+	});
+}

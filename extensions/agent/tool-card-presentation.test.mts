@@ -131,10 +131,112 @@ function nativeRow(
 		".",
 	);
 	component.setArgsComplete();
-	component.markExecutionStarted();
-	component.updateResult({ ...fixtureResult(details), isError: false });
+	if (details !== undefined) {
+		component.markExecutionStarted();
+		component.updateResult({ ...fixtureResult(details), isError: false });
+	}
 	return component;
 }
+
+it("send hands off its measured call hint without a collapsed Dispatch result body", (t) => {
+	const previousKeys = nativeTui.getKeybindings();
+	nativeTui.setKeybindings(
+		new nativeTui.KeybindingsManager(
+			{
+				...nativeTui.TUI_KEYBINDINGS,
+				"app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" },
+			},
+			{ "app.tools.expand": "ctrl+x" },
+		),
+	);
+	t.after(() => nativeTui.setKeybindings(previousKeys));
+	const args = {
+		sessionId: targetId,
+		message: `${"alpha ".repeat(12).trim()}\nrow 3\nrow 4\nrow 5\n\x1b]52;c;private\x07row 6\nrow 7`,
+	};
+	const card = nativeRow("agent_send", args, undefined);
+	const width = 52;
+	const pending = screen(card, width);
+	assert.match(pending, /^agent_send Parser review\nprovider\/model · high/u);
+	assert.match(pending, /row 3\nrow 4\nrow 5\n\.\.\. \(2 more lines, ctrl\+x to expand\)$/u);
+	assert.doesNotMatch(pending, /row [67]|private/u);
+	card.markExecutionStarted();
+	card.updateResult({ content: [], details: undefined, isError: false }, true);
+	assert.match(screen(card, width), /Admission pending\n\.\.\. \(2 more lines, ctrl\+x to expand\)$/u);
+	card.updateResult({
+		content: [{ type: "text", text: "Message admitted" }],
+		details: { admitted: true, sessionId: targetId },
+		isError: false,
+	});
+	const rendered = card.render(width).map((line) => stripVTControlCharacters(line).trim());
+	assert.match(rendered.join("\n"), /row 5\n\nMessage admitted\n\.\.\. \(2 more lines, ctrl\+x to expand\)/u);
+	assert.equal(hints(screen(card, width)).length, 1);
+	assert.match(screen(card, 240), /\(1 more line, ctrl\+x to expand\)$/u);
+	card.setExpanded(true);
+	assert.match(screen(card, 100), new RegExp(`sessionId: ${targetId}\\nmessage: alpha`, "u"));
+	assert.match(screen(card, 100), /row 6\nrow 7/u);
+	assert.doesNotMatch(screen(card, 100), /private|to expand/u);
+});
+
+it("status keeps one keyless disclosure after a result, and preserves the exact storage cursor", (t) => {
+	const previousKeys = nativeTui.getKeybindings();
+	nativeTui.setKeybindings(
+		new nativeTui.KeybindingsManager(
+			{
+				...nativeTui.TUI_KEYBINDINGS,
+				"app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" },
+			},
+			{ "app.tools.expand": [] },
+		),
+	);
+	t.after(() => nativeTui.setKeybindings(previousKeys));
+	const args = { view: "storage-page", storageId: targetId, limit: 7 };
+	const next = { ...args, cursor: { after: "backend/cursor", position: 19 } };
+	const card = nativeRow("agent_status", args, undefined);
+	assert.doesNotMatch(screen(card), /expand/u);
+	card.markExecutionStarted();
+	const details = {
+		live: false,
+		storageId: targetId,
+		conversations: Array.from({ length: 7 }, (_, i) => ({ name: `Reader ${i}`, availability: "retained" })),
+		coverage: { complete: false, scanned: 7, returned: 7, next: { tool: "agent_status", ...next } },
+	};
+	card.updateResult({ ...fixtureResult(details), isError: false });
+	const collapsed = screen(card);
+	assert.match(collapsed, /Retained storage page: 7 conversations; next call in expanded details/u);
+	assert.match(collapsed, /Reader 4 · live activity not observed\n\.\.\. \(2 more lines, click to expand\)$/u);
+	assert.doesNotMatch(collapsed, /Reader [56]|backend\/cursor|\[Truncated/u);
+	const rows = card.render(240);
+	const y = rows.findIndex((line) => line.includes("click to expand"));
+	assert.ok(
+		card.handleMouse({
+			type: "click",
+			button: "left",
+			x: 2,
+			y,
+			screenX: 2,
+			screenY: y,
+			width: 240,
+			height: rows.length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+		})?.handled,
+	);
+	assert.match(screen(card), /Reader 6 · live activity not observed/u);
+	assert.ok(screen(card).includes(`Continue with agent_status(${JSON.stringify(next)})`));
+	assert.doesNotMatch(screen(card), /click to expand/u);
+});
+
+it("status presents the actual flagged diagnostic and adds no hint to an empty call with a complete answer", () => {
+	const card = nativeRow("agent_status", {}, undefined);
+	card.updateResult({
+		content: [{ type: "text", text: "Local storage is unavailable" }],
+		details: undefined,
+		isError: true,
+	});
+	assert.equal(screen(card), "agent_status\noverview\nLocal storage is unavailable");
+});
 
 it("place receipts omit labels and models already shown in the card", () => {
 	const place = nativeRow(
@@ -177,7 +279,7 @@ it("scheduled messages and timer cancellation name their actual outcomes without
 		{ sessionId: targetId, message: "Later", deliverAt: "2026-10-05T00:00:00.000Z" },
 		{ identity: targetId, conversationId: 1, timerId: 7, deadline: Date.parse("2026-10-05T00:00:00.000Z") },
 	);
-	assert.match(screen(scheduled), /Scheduled · timer 7 · 2026-10-05T00:00:00.000Z/u);
+	assert.match(screen(scheduled), /Scheduled · timer 7 · 5 Oct \d{2}:\d{2}/u);
 	assert.doesNotMatch(screen(scheduled), /Admitted/u);
 	const canceled = nativeRow(
 		"agent_abort",
@@ -256,7 +358,7 @@ it("a primary continuity receipt and expanded messages use plain labels", () => 
 	assert.doesNotMatch(screen(compact), /at this tool batch|does not establish/u);
 	const send = nativeRow("agent_send", fixtures.agent_send.args, fixtures.agent_send.details);
 	send.setExpanded(true);
-	assert.match(screen(send), /Message:/u);
+	assert.match(screen(send), /message: Review the parser\./u);
 	assert.doesNotMatch(screen(send), /Submitted message|controls escaped/u);
 });
 
@@ -273,13 +375,7 @@ it("same-target message receipts omit repeated facts but newly resolved and diff
 			)
 			.render(240)
 			.join("\n");
-	assert.match(render({ sessionId: targetId }, targetId), /^Admitted · submission 405/u);
-	assert.match(
-		render({ sessionId: "@unobserved" }, targetId),
-		/provider\/model · high\nAdmitted · Parser review · submission 405/u,
-	);
-	assert.match(
-		render({ sessionId: targetId }, forkId),
-		/provider\/model · high\nAdmitted · Fork review · submission 405/u,
-	);
+	assert.match(render({ sessionId: targetId }, targetId), /^\nMessage admitted · submission 405/u);
+	assert.match(render({ sessionId: "@unobserved" }, targetId), /Message admitted for Parser review · submission 405/u);
+	assert.match(render({ sessionId: targetId }, forkId), /Message admitted for Fork review · submission 405/u);
 });

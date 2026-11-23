@@ -128,13 +128,13 @@ it("renders a brief creation or admission like its dispatch path and a preview l
 		screen(cards[name].renderResult(value, options, theme, context({ args, lookup: () => rows })));
 	const created = result(details);
 	assert.equal(render("agent_brief", created, args), render("agent_spawn", created, args));
-	for (const [mode, tool] of [
-		["followUp", "agent_send"],
-		["steer", "agent_steer"],
+	for (const [mode, outcome] of [
+		["followUp", "Admitted"],
+		["steer", "Steer admitted"],
 	] as const) {
 		const reach = { ...args, sessionId: targetId, mode };
 		const admission = result({ ...(fixtures.agent_send.details as object), brief: renderBrief(reach).brief });
-		assert.equal(render("agent_brief", admission, reach), render(tool, admission, reach));
+		assert.match(render("agent_brief", admission, reach), new RegExp(`${outcome} · submission 405`, "u"));
 	}
 	const problem = "Source path does not exist: missing.md (resolved /work/missing.md)";
 	const preview = briefPreview(renderBrief(args), [problem]);
@@ -208,10 +208,12 @@ describe("status cards", () => {
 		assert.match(screen(card.renderCall(nextArgs, theme, context())), /storage page · continuation/u);
 		const text = render(value, args);
 		assert.match(text, /Retained storage page/u);
-		assert.match(text, /Storage scan incomplete.*50 scanned.*0 returned on this page/u);
-		assert.match(text, /coverage\.next using agent_status/u);
+		assert.match(
+			text,
+			/Retained storage page: 0 conversations; next call in expanded details; storage scan incomplete; 50 scanned/u,
+		);
 		assert.doesNotMatch(text, /agent_list|opaque-token|0 working/u);
-		assert.ok(render(value, args, true).includes(JSON.stringify(next)));
+		assert.ok(render(value, args, true).includes(`Continue with agent_status(${JSON.stringify(nextArgs)})`));
 		assert.ok(render(value).includes(storageId), "implicit native storage is named by the result");
 	});
 
@@ -282,10 +284,10 @@ describe("status cards", () => {
 		};
 		const args = { view: "fleet", model, provider: "sample" };
 		const call = screen(card.renderCall(args, theme, context()));
-		assert.match(call, /agent_status · sample\/runner\nfleet · provider filter sample/u);
+		assert.match(call, /agent_status sample\/runner\nfleet · provider filter sample/u);
 		assert.doesNotMatch(call, /overview/u);
 		const providerOnly = screen(card.renderCall({ view: "fleet", provider: "sample" }, theme, context()));
-		assert.match(providerOnly, /agent_status · sample\nfleet/u);
+		assert.match(providerOnly, /agent_status sample\nfleet/u);
 		const match = render(await readFleetStatus(catalog, { now, model, provider: "sample" }), args);
 		assert.match(match, /Local published evidence, not provider health/u);
 		assert.match(match, /Filter matched/u);
@@ -382,7 +384,7 @@ describe("status cards", () => {
 			{ sessionId: "storage-a", detail: true },
 		);
 		assert.match(durable, /Durable agent · live host observation/u);
-		assert.match(durable, /Earliest timer 12 · 2026-10-01T00:00:00\.000Z · unsettled · overdue/u);
+		assert.match(durable, /Earliest timer 12 · 1 Oct \d{2}:\d{2} · unsettled · overdue/u);
 	});
 });
 
@@ -432,7 +434,7 @@ describe("agent call cards", () => {
 	it("shows an argument hint only when a collapsed call hides or clips content", () => {
 		assert.equal(
 			screen(renderAgentCall("agent_status", { sessionId: "s" }, theme, context())),
-			"agent_status · s\nselected status",
+			"agent_status s\nselected status\n... (ctrl+o to expand)",
 		);
 		assert.match(
 			screen(renderAgentCall("agent_status", { sessionId: "s", detail: true }, theme, context())),
@@ -483,32 +485,40 @@ describe("agent call cards", () => {
 			};
 			const before = structuredClone(args);
 			const collapsed = renderer(args, theme, context());
-			assert.match(screen(collapsed), new RegExp(`${name} · target-session`));
+			const send = name === "agent_send";
+			assert.match(screen(collapsed), new RegExp(`${name}${send ? " " : " · "}target-session`));
 			assert.match(screen(collapsed), /reply to message-reference/);
-			assert.match(screen(collapsed), /First line \*\*literal Markdown\*\*/);
+			assert.match(
+				screen(collapsed),
+				send ? /First line\n\n\*\*literal Markdown\*\*/ : /First line \*\*literal Markdown\*\*/,
+			);
 			assert.match(screen(collapsed), /\(ctrl\+o to expand\)/);
 			const expanded = renderer(args, theme, context({ ...cardKeys, expanded: true, lastComponent: collapsed }));
-			assert.equal(expanded, collapsed);
-			assert.ok(screen(expanded).includes(args.message));
+			if (send) assert.match(screen(expanded), /message: First line[\s\S]*\*\*literal Markdown\*\*[\s\S]*Last line/u);
+			else {
+				assert.equal(expanded, collapsed);
+				assert.ok(screen(expanded).includes(args.message));
+			}
 			assert.deepEqual(args, before);
 		}
 	});
 
-	it("distinguishes pending, whitespace-only, and bounded messages", () => {
-		assert.match(
+	it("omits pending and empty message placeholders and names display bounds", () => {
+		assert.doesNotMatch(
 			screen(renderSendCall({ sessionId: "t", message: " \n " }, theme, context())),
 			/empty or whitespace-only message/,
 		);
-		assert.match(
+		assert.equal(
 			screen(renderSendCall({ sessionId: "t", message: " " }, theme, context({ argsComplete: false }))),
-			/message pending/,
+			"agent_send t",
 		);
 		assert.doesNotMatch(screen(renderSendCall({}, theme, context())), /target pending|unknown|unavailable/);
 		const message = `${"long line\n".repeat(5000)}EXACT_END`;
 		const expanded = screen(
 			renderSendCall({ sessionId: "t", message }, theme, context({ ...cardKeys, expanded: true })),
 		);
-		assert.match(expanded, /Display limit: \d+ more UTF-16 code units/);
+		assert.match(expanded, /\[Truncated: showing 32000 of \d+ characters\]/u);
+		assert.doesNotMatch(expanded, /EXACT_END/u);
 		assert.equal(displayPreview("a😀b", 2), "a…");
 	});
 
@@ -754,7 +764,7 @@ describe("agent result cards", () => {
 		);
 		assert.match(bare, /Activity: idle/);
 		const wrapped = screen(
-			renderAgentResult(
+			createAgentToolCards().agent_status.renderResult(
 				result({
 					conversations: [conversationStatus(), conversationStatus({ identity: "storage-a:2", busy: false, live: {} })],
 				}),
@@ -764,7 +774,7 @@ describe("agent result cards", () => {
 			),
 			180,
 		);
-		assert.match(wrapped, /2 conversations returned/);
+		assert.match(wrapped, /Storage page: 2 conversations/);
 		assert.match(wrapped, /live activity not observed/);
 		assert.doesNotMatch(wrapped, /\$0\.00/);
 	});
@@ -792,15 +802,23 @@ describe("agent result cards", () => {
 			},
 		};
 		const text = screen(
-			renderAgentResult(result(details), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
+			createAgentToolCards().agent_status.renderResult(
+				result(details),
+				{ ...cardKeys, expanded: false, isPartial: false },
+				theme,
+				context(),
+			),
 			180,
 		);
-		assert.match(text, /5 conversations on supplied page\n1 working · 1 attention\n0 unavailable · 3 quiet/);
+		assert.match(
+			text,
+			/5 conversations observed; 5 rows returned\n1 working · 1 need attention\n0 unavailable · 3 quiet/,
+		);
 		assert.match(text, /Parser review · working/);
-		assert.match(text, /1 more conversation records/);
+		assert.match(text, /4 more lines/);
 		assert.doesNotMatch(text, /≥|\+\?/);
 		assert.doesNotMatch(text, /\$/, "sampled costs are not fleet totals");
-		assert.match(text, /1 storage unavailable \(unknown, not absent\)/);
+		assert.match(text, /1 storage unavailable; absence not established/);
 		assert.doesNotMatch(text, /· new/);
 	});
 
@@ -824,19 +842,17 @@ describe("agent result cards", () => {
 		];
 		const value = buildStatusOverview({ rows, coverage: rosterCoverage(rows), observedAt: "now" }, [], []);
 		for (const width of [48, 80, 180]) {
-			const card = renderAgentResult(
+			const card = createAgentToolCards().agent_status.renderResult(
 				result(value),
 				{ ...cardKeys, expanded: false, isPartial: false },
 				theme,
 				context(),
 			);
 			const text = screen(card, width);
-			assert.match(text, /122 conversations on supplied page/);
-			assert.match(text, /1 working · 1 attention/);
+			assert.match(text, /122 conversations observed; 12 rows returned/);
+			assert.match(text, /1 working · 1 need attention/);
 			assert.match(text, /100 unavailable · 20 quiet/);
-			assert.match(text, /12 rows shown/);
-			assert.match(text, /95 unavailable · 15 quiet summarised/);
-			assert.match(text, /Unavailable does not mean healthy/);
+			assert.match(text, /95 unavailable summarised · 15 quiet summarised/);
 			assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 		}
 	});
@@ -1059,7 +1075,19 @@ describe("agent result cards", () => {
 			180,
 		);
 		assert.match(unplaced, /submission 9 · unplaced/u);
-		assert.match(unplaced, line);
+		assert.doesNotMatch(unplaced, line);
+		assert.match(
+			screen(
+				renderSendResult(
+					result({ ...receipt, placement: "unplaced" }),
+					{ ...options, expanded: true },
+					theme,
+					context({ expanded: true }),
+				),
+				180,
+			),
+			line,
+		);
 		const placed = screen(
 			renderSteerResult(result({ ...receipt, placement: "placed" }), options, theme, context()),
 			180,
@@ -1091,8 +1119,8 @@ describe("agent result cards", () => {
 			),
 			180,
 		);
-		assert.match(retained, /Acknowledgement pending · unplaced/u);
-		assert.match(retained, line);
+		assert.match(retained, /acknowledgement pending · unplaced/u);
+		assert.doesNotMatch(retained, line);
 		const parked = screen(
 			renderSendResult(
 				result({
@@ -1108,7 +1136,7 @@ describe("agent result cards", () => {
 			),
 			180,
 		);
-		assert.match(parked, /Delivery parked; the report is not placed/u);
+		assert.match(parked, /delivery parked; the report is not placed/u);
 		assert.doesNotMatch(parked, line);
 	});
 
@@ -1126,7 +1154,11 @@ describe("agent result cards", () => {
 			for (const render of [renderSendResult, renderSteerResult]) {
 				const output = screen(render(result(receipt), options, theme, context()), 180);
 				assert.match(output, /withdrawn/u);
-				assert.match(output, /not in the recipient's inbox or transcript/u);
+				const disclosed =
+					render === renderSendResult
+						? screen(render(result(receipt), { ...options, expanded: true }, theme, context({ expanded: true })), 180)
+						: output;
+				assert.match(disclosed, /not in the recipient's inbox or transcript/u);
 				assert.doesNotMatch(output, / · placed\b|next tool boundary|delivered to|queued for/u);
 			}
 		}
@@ -1266,8 +1298,7 @@ describe("agent result cards", () => {
 		const send = screen(
 			renderSendResult(result(receipt), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 		);
-		assert.match(send, /Admitted/);
-		assert.match(send, /Admitted · storage-a/);
+		assert.match(send, /Message admitted for storage-a/);
 		assert.match(send, /submission 9/);
 		assert.match(
 			screen(renderSteerResult(result(receipt), { ...cardKeys, expanded: false, isPartial: false }, theme, context())),

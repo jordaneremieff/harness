@@ -31,6 +31,12 @@ import { receiptContinuationLine, resultContinuationLines } from "./control-resu
 import { planningBudgetSelfFacts } from "./continuity-budget.ts";
 import { threadEventTitle } from "./thread-notice-display.ts";
 import { BRIEF_SECTIONS, renderBrief } from "./brief.ts";
+import {
+	toolCallCard,
+	toolResultCard,
+	type ToolCardGrammarContext,
+	type ToolResultPresentation,
+} from "./tool-card-grammar.ts";
 
 /**
  * Observed display facts for cards: the roster rows, and in the dashboard also known thread titles and
@@ -53,10 +59,10 @@ const PREVIEW_UNITS = 600;
  * Card context: the subset of `ToolRenderContext` these renderers read. Pi
  * injects `keyText` with the operator's configured keybindings.
  */
-export interface AgentCardContext extends Pick<KeybindingHints, "keyText"> {
+export interface AgentCardContext extends ToolCardGrammarContext {
 	readonly args?: unknown;
 	readonly lookup?: AgentCardLookup;
-	readonly state?: {
+	readonly state?: NonNullable<ToolCardGrammarContext["state"]> & {
 		callHint?: boolean;
 		compaction?: Record<string, unknown>;
 		compactFactsShown?: boolean;
@@ -590,8 +596,7 @@ function argumentCard(
 	);
 }
 
-function statusCallMode(name: string, args: Record<string, unknown>, identity: string): string {
-	if (name !== "agent_status") return "";
+function statusCallMode(args: Record<string, unknown>, identity: string): string {
 	if (args.view === "fleet") {
 		const provider = text(args.provider);
 		return `fleet${text(args.model) && provider ? ` · provider filter ${displayText(provider)}` : ""}`;
@@ -601,8 +606,7 @@ function statusCallMode(name: string, args: Record<string, unknown>, identity: s
 	return identity ? "selected status" : "overview";
 }
 
-function statusSubject(name: string, args: Record<string, unknown>): string | undefined {
-	if (name !== "agent_status") return undefined;
+function statusSubject(args: Record<string, unknown>): string | undefined {
 	if (args.view === "storage-page" && text(args.storageId)) return "storageId";
 	if (args.view === "fleet") {
 		if (text(args.model)) return "model";
@@ -611,12 +615,39 @@ function statusSubject(name: string, args: Record<string, unknown>): string | un
 	return undefined;
 }
 
+function renderStatusCall(
+	name: string,
+	args: Record<string, unknown>,
+	theme: Theme,
+	context: AgentCardContext,
+): Component {
+	const sessionId = text(args.sessionId);
+	const key = statusSubject(args);
+	const subject = sessionId ? targetLabel(sessionId, context) : key ? text(args[key]) : "";
+	const limit = count(args.limit);
+	return toolCallCard(
+		{
+			name,
+			subject,
+			args,
+			facts: [
+				targetConfiguration(sessionId, context),
+				statusCallMode(args, sessionId),
+				limit === undefined ? "" : `limit ${limit}`,
+			],
+			expanded: resolvedTargetFact(sessionId, context),
+		},
+		theme,
+		context,
+	);
+}
+
 /** Generic call card for snapshot and control tools. */
 export function renderAgentCall(name: string, value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
-	const subjectKey = text(args.sessionId)
-		? "sessionId"
-		: (statusSubject(name, args) ?? SUBJECT_KEYS.find((key) => text(args[key]) !== "") ?? "");
+	const sessionId = text(args.sessionId);
+	if (name === "agent_status") return renderStatusCall(name, args, theme, context);
+	const subjectKey = sessionId ? "sessionId" : (SUBJECT_KEYS.find((key) => text(args[key]) !== "") ?? "");
 	const subjectValue = subjectKey ? text(args[subjectKey]) : "";
 	const identity =
 		subjectKey === "handle" ? `@${subjectValue.replace(/^@/u, "")}` : subjectKey === "sessionId" ? subjectValue : "";
@@ -628,11 +659,7 @@ export function renderAgentCall(name: string, value: unknown, theme: Theme, cont
 		{
 			title: name,
 			label,
-			metadata: [
-				targetConfiguration(identity, context),
-				requestedConfiguration(name, args, context) ?? "",
-				statusCallMode(name, args, identity),
-			],
+			metadata: [targetConfiguration(identity, context), requestedConfiguration(name, args, context) ?? ""],
 			body: lines,
 			hint: argsHidden(args, subjectKey, subjectValue) ? cardHint(context, "call", "arguments") : "",
 		},
@@ -681,8 +708,40 @@ function renderMessageCall(name: string, value: unknown, theme: Theme, context: 
 	);
 }
 
+function localToolTime(value: number): string {
+	const time = new Date(value);
+	if (!Number.isFinite(time.getTime())) return "";
+	const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(time);
+	if (time.toDateString() === new Date().toDateString()) return clock;
+	return `${new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" }).format(time)} ${clock}`;
+}
+
+function resolvedTargetFact(selector: string, context: AgentCardContext): string | undefined {
+	const identity = findTarget(selector, context.lookup?.() ?? [])?.id;
+	return identity && identity !== selector ? `  resolved target: ${identity}` : undefined;
+}
+
 export function renderSendCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
-	return renderMessageCall("agent_send", value, theme, context);
+	const args = record(value);
+	const deadline = localToolTime(Date.parse(text(args.deliverAt)));
+	const checkIn = count(args.checkInMinutes);
+	return toolCallCard(
+		{
+			name: "agent_send",
+			subject: targetLabel(text(args.sessionId), context),
+			facts: [
+				...messageMetadata(args, context),
+				args.passive === true ? "passive" : "",
+				deadline ? `deliver at ${deadline}` : "",
+				checkIn === undefined ? "" : checkIn === 0 ? "check-ins off" : `check-in ${checkIn} min`,
+			],
+			args,
+			body: { key: "message", text: text(args.message) },
+			expanded: resolvedTargetFact(text(args.sessionId), context),
+		},
+		theme,
+		context,
+	);
 }
 
 export function renderSteerCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
@@ -1145,66 +1204,13 @@ function commandLines(details: Record<string, unknown>, theme: Theme, context: A
 	return lines;
 }
 
-function sessionSummaryLines(
-	sessions: Record<string, unknown>[],
-	summary: Record<string, unknown>,
-	theme: Theme,
-): string[] {
-	const total = (key: string) => count(summary[key]) ?? "?";
-	const lines = [
-		theme.fg("toolOutput", `${total("observed")} conversations on supplied page`),
-		theme.fg("toolOutput", `${total("working")} working · ${total("attention")} attention`),
-		theme.fg("toolOutput", `${total("unavailable")} unavailable · ${total("quiet")} quiet`),
-		muted(theme, `${sessions.length} rows shown`),
-		muted(theme, `${total("summarizedUnavailable")} unavailable · ${total("summarizedQuiet")} quiet summarised`),
-	];
-	if ((count(summary.unavailable) ?? 0) > 0) lines.push(muted(theme, "Unavailable does not mean healthy"));
-	for (const row of sessions.slice(0, 4))
-		lines.push(
-			muted(
-				theme,
-				`${text(row.name) ? displayPreview(text(row.name), 120) : displayIdentity(text(row.id)) || "conversation"} · ${text(row.state) || "unknown state"}`,
-			),
-		);
-	if (sessions.length > 4) lines.push(muted(theme, `${sessions.length - 4} more conversation records`));
-	return lines;
+function cardinal(value: number, singular: string, plural = `${singular}s`): string {
+	return `${value} ${value === 1 ? singular : plural}`;
 }
 
 function liveActivity(status: Record<string, unknown>): string {
 	if (status.availability !== "live" || typeof status.busy !== "boolean") return "";
 	return status.busy ? "working" : "idle";
-}
-
-function storageStatusRow(row: Record<string, unknown>, theme: Theme): string {
-	const label = text(row.name) ? displayPreview(text(row.name), 120) : displayIdentity(text(row.identity));
-	return muted(theme, `${label} · ${liveActivity(row) || "live activity not observed"}`);
-}
-
-function storageStatusLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
-	const conversations = array(details.conversations).map(record);
-	const storageId = text(details.storageId);
-	const implicitId =
-		storageId && storageId !== record(context.args).storageId ? ` · ${displayIdentity(storageId)}` : "";
-	const source = details.live === false ? "Retained storage page" : "Storage page";
-	const lines = [theme.fg("toolOutput", `${source}${implicitId}`)];
-	const coverage = record(details.coverage);
-	const scanned = count(coverage.scanned);
-	const scannedText = scanned === undefined ? "" : ` · ${scanned} scanned`;
-	if (coverage.complete === false)
-		lines.push(
-			theme.fg("warning", `Storage scan incomplete${scannedText} · ${conversations.length} returned on this page`),
-		);
-	else if (coverage.complete === true)
-		lines.push(
-			muted(theme, `Storage scan reached its end${scannedText} · ${conversations.length} returned on this page`),
-		);
-	else lines.push(muted(theme, `${conversations.length} conversations returned`));
-	const next = record(coverage.next);
-	if (next.tool === "agent_status" && next.view === "storage-page")
-		lines.push(muted(theme, "Continue with coverage.next using agent_status"));
-	for (const row of conversations.slice(0, 4)) lines.push(storageStatusRow(row, theme));
-	if (conversations.length > 4) lines.push(muted(theme, `${conversations.length - 4} more conversation records`));
-	return lines;
 }
 
 function fleetStatusLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
@@ -1306,28 +1312,84 @@ function ordinaryStatusLines(details: Record<string, unknown>, theme: Theme, con
 	return lines;
 }
 
-function statusResultLines(
-	details: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-): string[] | undefined {
-	if (details.view === "fleet") return fleetStatusLines(details, theme, context);
-	if (details.view === "status" && details.kind === "ordinary-primary")
-		return ordinaryStatusLines(details, theme, context);
-	if (Array.isArray(details.sessions)) {
-		const lines = sessionSummaryLines(details.sessions.map(record), record(record(details.summary).sessions), theme);
-		if (record(details.coverage).complete === false)
-			lines.push(theme.fg("warning", "Coverage incomplete; use agent_list"));
-		const failures = array(details.failures).length;
-		if (failures)
-			lines.push(
-				theme.fg("warning", `${failures} storage${failures === 1 ? "" : "s"} unavailable (unknown, not absent)`),
-			);
-		lines.push(muted(theme, "agent_list discovers stored conversations"));
-		return lines;
-	}
-	if (Array.isArray(details.conversations)) return storageStatusLines(details, theme, context);
-	return undefined;
+function statusPage(details: Record<string, unknown>, context: AgentCardContext): ToolResultPresentation {
+	const coverage = record(details.coverage);
+	const rows = array(details.conversations).map(record);
+	const storageId = text(details.storageId);
+	const source = details.live === false ? "Retained storage page" : "Storage page";
+	const where = storageId && storageId !== record(context.args).storageId ? `storage ${storageId}` : "";
+	const scanned = count(coverage.scanned);
+	const scan =
+		coverage.complete === false
+			? "storage scan incomplete"
+			: coverage.complete === true
+				? "storage scan reached its end"
+				: "";
+	const next = record(coverage.next);
+	const continuation = next.tool === "agent_status" && next.view === "storage-page";
+	const { tool: _tool, ...nextArgs } = next;
+	return {
+		outcome: [
+			`${source}: ${cardinal(rows.length, "conversation")}`,
+			continuation ? "next call in expanded details" : "",
+			scan,
+			scanned === undefined ? "" : `${scanned} scanned`,
+			where,
+		]
+			.filter(Boolean)
+			.join("; "),
+		body: rows
+			.map((row) => {
+				const label = text(row.name) || text(row.identity);
+				if (!label) return "";
+				return `${label} · ${(details.live === false ? "" : liveActivity(row)) || "live activity not observed"}`;
+			})
+			.filter(Boolean)
+			.join("\n"),
+		expanded: continuation ? `Continue with agent_status(${JSON.stringify(nextArgs)})` : undefined,
+	};
+}
+
+function statusOverview(details: Record<string, unknown>): ToolResultPresentation {
+	const rows = array(details.sessions).map(record);
+	const sessions = record(record(details.summary).sessions);
+	const facts = (keys: [string, string][]) =>
+		keys
+			.flatMap(([key, label]) => {
+				const n = count(sessions[key]);
+				return n === undefined ? [] : [`${n} ${label}`];
+			})
+			.join(" · ");
+	const observed = count(sessions.observed);
+	const failures = array(details.failures).length;
+	return {
+		outcome:
+			observed === undefined
+				? `${cardinal(rows.length, "conversation row")} returned`
+				: `${cardinal(observed, "conversation")} observed; ${cardinal(rows.length, "row")} returned`,
+		body: [
+			facts([
+				["working", "working"],
+				["attention", "need attention"],
+			]),
+			facts([
+				["unavailable", "unavailable"],
+				["quiet", "quiet"],
+			]),
+			facts([
+				["summarizedUnavailable", "unavailable summarised"],
+				["summarizedQuiet", "quiet summarised"],
+			]),
+			failures ? `${cardinal(failures, "storage", "storages")} unavailable; absence not established` : "",
+			...rows.map((row) => [text(row.name) || text(row.id), text(row.state)].filter(Boolean).join(" · ")),
+		]
+			.filter(Boolean)
+			.join("\n"),
+		limit:
+			record(details.coverage).complete === false
+				? "Incomplete coverage; use agent_list to discover stored conversations"
+				: undefined,
+	};
 }
 
 function summarizeGeneric(
@@ -1337,7 +1399,6 @@ function summarizeGeneric(
 ): string[] | undefined {
 	return (
 		resolveProfileLines(details, theme, context) ??
-		statusResultLines(details, theme, context) ??
 		rewindLines(details, theme, context) ??
 		forkLines(details, theme, context) ??
 		receiptLines(details, theme, context) ??
@@ -1368,10 +1429,10 @@ function runningSlots(live: Record<string, unknown>): Record<string, unknown>[] 
 
 function runningSlotLine(slot: Record<string, unknown>): string {
 	const label = slot.status === "sleeping" ? "Sleeping" : slot.status === "waiting" ? "Waiting" : "Running";
-	const parts = [
-		`${label}: ${displayPreview(text(slot.name) || "tool", 100)}`,
-		`call ${displayIdentity(text(slot.callId) || "unknown")}`,
-	];
+	const name = text(slot.name);
+	const id = text(slot.callId);
+	const parts = [name ? `${label}: ${displayText(name)}` : label];
+	if (id) parts.push(`call ${displayIdentity(id)}`);
 	if (slot.status === "pending") parts.push("pending");
 	return parts.join(" · ");
 }
@@ -1422,23 +1483,28 @@ function providerBlockLines(block: unknown, theme: Theme, compact = false): stri
 	const lines = compact ? providerBlockSummary(block) : [providerBlockText(block)];
 	return lines.map((line) => theme.fg("warning", displayText(line)));
 }
+function activityFacts(status: Record<string, unknown>, activity: string, current: string): string {
+	const inbox = record(status.inbox);
+	return [
+		activity ? `Activity: ${activity}` : "",
+		current ? `tool ${displayText(current)}` : "",
+		Array.isArray(inbox.items) ? `${inbox.items.length} pending` : "",
+		unplacedText(status),
+	]
+		.filter(Boolean)
+		.join(" · ");
+}
+
 function activityLines(status: Record<string, unknown>, readOnly: boolean, theme: Theme): string[] {
 	const lines = readOnly ? [muted(theme, "Read-only snapshot; live owner state unavailable")] : [];
 	if (status.providerBlock !== undefined) return [...lines, ...providerBlockLines(status.providerBlock, theme)];
 	const live = record(status.live);
 	const working = !readOnly && (status.busy === true || Object.keys(record(live.run)).length > 0);
-	const activity = working ? "working" : "idle";
+	const activity = working ? "working" : !readOnly && status.busy === false ? "idle" : "";
 	const running = readOnly ? [] : runningSlots(live);
-	const current = running.find((slot) => slot.status === "running");
-	const inbox = record(status.inbox);
-	const pending = Array.isArray(inbox.items) ? inbox.items.length : undefined;
-	const parts = [
-		readOnly ? "" : `Activity: ${activity}`,
-		current ? `tool ${displayPreview(text(current.name), 100)}` : undefined,
-		pending === undefined ? "pending unknown" : `${pending} pending`,
-		unplacedText(status),
-	];
-	lines.push(muted(theme, parts.filter(Boolean).join(" · ")));
+	const current = text(running.find((slot) => slot.status === "running")?.name);
+	const facts = activityFacts(status, activity, current);
+	if (facts) lines.push(muted(theme, facts));
 	for (const slot of running.slice(0, 4)) lines.push(muted(theme, runningSlotLine(slot)));
 	if (running.length > 4) lines.push(muted(theme, `${running.length - 4} more active tools`));
 	const lastText = text(status.lastText);
@@ -1591,11 +1657,12 @@ function compactRecoveryLines(
 }
 
 function compactActivityFacts(status: Record<string, unknown>): string[] {
-	const queue = record(status.queue);
+	const queue = count(record(status.queue).inbox);
+	const timers = count(status.timers);
 	return [
 		liveActivity(status),
-		count(status.unplaced) === undefined && count(queue.inbox) !== undefined ? `${queue.inbox} queued inputs` : "",
-		count(status.timers) === undefined ? "" : `${status.timers} timers`,
+		count(status.unplaced) === undefined && queue !== undefined ? cardinal(queue, "queued input") : "",
+		timers === undefined ? "" : cardinal(timers, "timer"),
 		unplacedText(status),
 		openWorkText(status),
 	].filter(Boolean);
@@ -1682,6 +1749,140 @@ function collapsedAgentLines(
 	else if (!snapshot) lines.push(theme.fg(context.isError === true ? "error" : "toolOutput", resultPreview(output)));
 	return lines;
 }
+function statusTimerFact(status: Record<string, unknown>): string {
+	const timer = record(array(status.timers)[0]);
+	if (count(timer.id) === undefined) return "";
+	const deadline = count(timer.deadline);
+	const when = deadline === undefined ? "" : localToolTime(deadline);
+	return [`Earliest timer ${timer.id}`, when, text(timer.status), timer.overdue === true ? "overdue" : ""]
+		.filter(Boolean)
+		.join(" · ");
+}
+
+function fullStatusFacts(
+	status: Record<string, unknown>,
+	details: Record<string, unknown>,
+	retained: boolean,
+	theme: Theme,
+): string[] {
+	const inventory = record(details.inventory ?? record(details.status).inventory ?? status.limits);
+	const ordinaryOnly = array(inventory.ordinaryOnly).length;
+	const activity =
+		status.live === undefined && typeof status.state === "string"
+			? [`State: ${status.state}`]
+			: activityLines(status, retained, theme);
+	return [
+		statusTimerFact(status),
+		...activity,
+		ordinaryOnly ? `Capability limits: ${cardinal(ordinaryOnly, "configured extension")} without a native form` : "",
+	];
+}
+
+function compactStatusFacts(
+	status: Record<string, unknown>,
+	details: Record<string, unknown>,
+	live: boolean,
+	theme: Theme,
+): string[] {
+	const activity = compactActivityFacts(status);
+	const block = record(status.providerBlock);
+	return [
+		activity.length ? `${live ? "Activity" : "Snapshot facts"}: ${activity.join(" · ")}` : "",
+		...compactRecoveryLines(status, details, theme),
+		text(block.blockId)
+			? [`Provider block ${text(block.blockId)}`, text(block.recovery)].filter(Boolean).join(" · ")
+			: "",
+	];
+}
+
+function statusDetailCall(detail: Record<string, unknown>): string {
+	if (detail.tool !== "agent_status" || typeof detail.sessionId !== "string") return "";
+	const { tool: _tool, ...args } = detail;
+	return `Full detail: agent_status(${JSON.stringify(args)})`;
+}
+
+function statusSnapshot(
+	status: Record<string, unknown>,
+	details: Record<string, unknown>,
+	theme: Theme,
+	context: AgentCardContext,
+): ToolResultPresentation {
+	const retained = readOnlySnapshot(details) || status.availability === "retained";
+	const compact = details.format === "compact";
+	const source = compact && count(status.conversationId) === undefined ? "Ordinary primary" : "Durable agent";
+	const live = compact ? status.availability === "live" : !retained && fullStatusObserved(status, details);
+	const reach = live ? "live host observation" : "live session activity not observed";
+	const body = compact
+		? compactStatusFacts(status, details, live, theme)
+		: fullStatusFacts(status, details, retained, theme);
+	const observed = compact
+		? { ...status, agent: { model: status.model, thinkingLevel: status.thinkingLevel } }
+		: status;
+	const identityFacts = snapshotIdentityLines(observed, theme, context, false);
+	const omissions = [...array(status.omitted), ...array(details.omitted)].map(text).filter(Boolean);
+	return {
+		outcome: `${source} · ${retained ? "retained snapshot; " : ""}${reach}`,
+		body: [...identityFacts, ...body]
+			.map((line) => displayText(line).replace(/\s+/gu, " ").trim())
+			.filter(Boolean)
+			.join("\n"),
+		expanded: [statusDetailCall(record(status.detail)), ...omissions.map((fact) => `Omitted: ${fact}`)]
+			.filter(Boolean)
+			.join("\n"),
+		limit: omissions.length ? "Compact status omits facts; see full detail" : undefined,
+	};
+}
+
+function fullStatusObserved(status: Record<string, unknown>, details: Record<string, unknown>): boolean {
+	return details.pid !== undefined || details.inventory !== undefined || status.live !== undefined;
+}
+
+function statusPresentation(
+	details: Record<string, unknown>,
+	theme: Theme,
+	context: AgentCardContext,
+): ToolResultPresentation {
+	if (details.cancelled === true) return { outcome: "Cancelled" };
+	const diagnostic = diagnosticPresentation(details);
+	if (context.isError || details.format === "refused" || diagnostic.outcome) return diagnostic;
+	if (details.view === "fleet") {
+		const [lead, selection, ...facts] = fleetStatusLines(details, theme, context).map(displayText);
+		const incomplete = record(record(details.coverage).catalog).complete === false;
+		return {
+			outcome: [lead, selection, incomplete ? "incomplete catalogue coverage" : ""].filter(Boolean).join("; "),
+			body: facts.join("\n"),
+		};
+	}
+	if (details.view === "status" && details.kind === "ordinary-primary") {
+		const [outcome, ...facts] = ordinaryStatusLines(details, theme, context).map(displayText);
+		return { outcome, body: facts.join("\n") };
+	}
+	if (Array.isArray(details.sessions)) return statusOverview(details);
+	if (Array.isArray(details.conversations)) return statusPage(details, context);
+	const snapshot = snapshotStatus(details);
+	return snapshot ? statusSnapshot(snapshot, details, theme, context) : {};
+}
+
+function renderStatusResult(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: AgentCardContext,
+): Component {
+	const details = resultDetails(result);
+	const presentation = statusPresentation(details, theme, { ...context, expanded: false });
+	const snapshotError = text(details.snapshotError);
+	const deliveryError = text(details.deliveryError) || text(record(details.status).deliveryError);
+	const body = [
+		snapshotError ? `Snapshot unavailable: ${snapshotError}` : "",
+		deliveryError && details.format !== "compact" ? `Delivery paused: ${deliveryError}` : "",
+		presentation.body,
+	]
+		.filter(Boolean)
+		.join("\n");
+	return toolResultCard(result, options, theme, context, { ...presentation, body, partial: "Status read in progress" });
+}
+
 export function renderAgentResult(
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
@@ -1796,16 +1997,101 @@ function messageResult(
 	);
 }
 
+function sendRecipient(identity: string, context: AgentCardContext): string {
+	if (!identity) return "";
+	const label = targetLabel(identity, context);
+	const requested = callIdentity(context);
+	return sameTarget(identity, context) && label === targetLabel(requested, context) ? "" : ` for ${label}`;
+}
+
+function reportSendOutcome(details: Record<string, unknown>, recipient: string): string | undefined {
+	if (!text(details.sourceId) || typeof details.acknowledged !== "boolean") return undefined;
+	const ack = details.acknowledged ? "acknowledged" : "acknowledgement pending";
+	const flags = details.passive === true ? " · passive" : "";
+	const outcome = `Report retained${recipient}; ${ack}${flags}`;
+	const placement = receiptPlacement(details);
+	if (placement === "withdrawn") return `${outcome} · withdrawn`;
+	if (parkedReport(details)) return `${outcome} · delivery ${details.delivery}; the report is not placed`;
+	return placement ? `${outcome} · ${placement}` : outcome;
+}
+
+function parkedReport(details: Record<string, unknown>): boolean {
+	return details.delivery === "parked" || details.delivery === "terminal";
+}
+
+function scheduleSendOutcome(details: Record<string, unknown>, recipient: string): string | undefined {
+	const timer = count(details.timerId);
+	if (timer === undefined) return undefined;
+	const deadline = count(details.deadline);
+	const when = deadline === undefined ? "" : localToolTime(deadline);
+	return [`Scheduled${recipient}`, `timer ${timer}`, when].filter(Boolean).join(" · ");
+}
+
+function admissionSendOutcome(
+	details: Record<string, unknown>,
+	identity: string,
+	recipient: string,
+	context: AgentCardContext,
+): string | undefined {
+	if (details.admitted === false) return "Admission refused";
+	const submission = count(details.submissionId);
+	if (details.admitted !== true && submission === undefined) return undefined;
+	const conversation = count(details.conversationId);
+	const placement = receiptPlacement(details);
+	const kind = record(context.args).mode === "report" ? "Report" : "Message";
+	const state = placement === "withdrawn" ? "withdrawn" : details.deduped === true ? "already admitted" : "admitted";
+	return [
+		`${kind} ${state}${recipient}`,
+		!identity && conversation !== undefined ? `conversation ${conversation}` : "",
+		submission === undefined ? "" : `submission ${submission}`,
+		placement === "withdrawn" ? "" : placement,
+	]
+		.filter(Boolean)
+		.join(" · ");
+}
+
+function sendOutcome(details: Record<string, unknown>, context: AgentCardContext): string | undefined {
+	const identity = text(details.ownerId) || text(details.identity) || text(details.sessionId);
+	const recipient = sendRecipient(identity, context);
+	return (
+		reportSendOutcome(details, recipient) ??
+		scheduleSendOutcome(details, recipient) ??
+		admissionSendOutcome(details, identity, recipient, context)
+	);
+}
+
+function diagnosticPresentation(details: Record<string, unknown>): ToolResultPresentation {
+	const error = record(details.error);
+	const diagnostic = text(error.message) || text(details.error) || text(details.reason);
+	const [outcome, ...rest] = displayText(diagnostic).trim().split("\n");
+	return { outcome: outcome || undefined, expanded: rest.join("\n") };
+}
+
+function sendPresentation(details: Record<string, unknown>, context: AgentCardContext): ToolResultPresentation {
+	if (details.cancelled === true) return { outcome: "Cancelled" };
+	const diagnostic = diagnosticPresentation(details);
+	if (context.isError || details.format === "refused" || diagnostic.outcome) return diagnostic;
+	const placement = receiptPlacement(details);
+	return {
+		outcome: sendOutcome(details, context),
+		expanded:
+			placement === "withdrawn"
+				? WITHDRAWN_INPUT_LINE
+				: placement === "unplaced" && !parkedReport(details)
+					? UNPLACED_INPUT_LINE
+					: undefined,
+	};
+}
+
 export function renderSendResult(
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	context: AgentCardContext,
 ): Component {
-	return messageResult(result, options, theme, context, {
-		error: "Send error",
+	return toolResultCard(result, options, theme, context, {
+		...sendPresentation(resultDetails(result), context),
 		partial: "Admission pending",
-		receipt: "Admitted",
 	});
 }
 
@@ -1843,7 +2129,11 @@ function renderBriefResult(
 	if (!text(args.sessionId)) return renderAgentResult(result, options, theme, context);
 	return args.mode === "steer"
 		? renderSteerResult(result, options, theme, context)
-		: renderSendResult(result, options, theme, context);
+		: messageResult(result, options, theme, context, {
+				error: "Send error",
+				partial: "Admission pending",
+				receipt: "Admitted",
+			});
 }
 
 function compactTarget(facts: Record<string, unknown>): string {
@@ -3204,7 +3494,6 @@ const STATE_NOTE_LINES = 3;
 type NoteCardContext = AgentCardContext & {
 	readonly outputPad?: number;
 	readonly state?: Record<string, unknown>;
-	readonly keyHint?: (keybinding: string, description: string) => string;
 };
 
 type NoteCardFacts = {
@@ -3427,7 +3716,7 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 					collaborationLines,
 				),
 		},
-		agent_status: { renderCall: bindCall("agent_status"), renderResult: renderAgentResult },
+		agent_status: { renderCall: bindCall("agent_status"), renderResult: renderStatusResult },
 		agent_fork: { renderCall: bindCall("agent_fork"), renderResult: renderAgentResult },
 		agent_rewind: { renderCall: bindCall("agent_rewind"), renderResult: renderAgentResult },
 		agent_configure: { renderCall: bindCall("agent_configure"), renderResult: renderAgentResult },

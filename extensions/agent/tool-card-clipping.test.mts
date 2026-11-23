@@ -158,7 +158,7 @@ for (const themeName of ["dark", "light"] as const) {
 			}
 		});
 
-	it(`${themeName} all native tool hints use muted without changing their text or count`, (t) => {
+	it(`${themeName} native tool hints preserve their words and use the owning key colour`, (t) => {
 		initTheme(themeName, false);
 		const previousKeys = nativeTui.getKeybindings();
 		nativeTui.setKeybindings(
@@ -170,7 +170,9 @@ for (const themeName of ["dark", "light"] as const) {
 		t.after(() => nativeTui.setKeybindings(previousKeys));
 		const mutedAnsi = themeModule.theme.getFgAnsi("muted");
 		const muted = foregroundAt(mutedAnsi, mutedAnsi.length);
-		assert.ok(muted);
+		const dimAnsi = themeModule.theme.getFgAnsi("dim");
+		const dim = foregroundAt(dimAnsi, dimAnsi.length);
+		assert.ok(muted && dim);
 		for (const [name, fixture] of Object.entries(fixtures)) {
 			const component = nativeRow(name, fixture.args);
 			component.updateResult({ ...fixtureResult(fixture.details), isError: false });
@@ -178,8 +180,10 @@ for (const themeName of ["dark", "light"] as const) {
 				const hints = component.render(width).filter((line) => plain(line) === "... (ctrl+o to expand)");
 				assert.equal(hints.length, 1, `${name} has one native hint`);
 				const line = hints[0];
-				for (const text of ["...", "ctrl+o", "expand"])
+				for (const text of ["...", "expand"])
 					assert.equal(foregroundAt(line, line.indexOf(text)), muted, `${name} hint uses muted at ${text}`);
+				const keyColour: string = name === "agent_send" || name === "agent_status" ? dim : muted;
+				assert.equal(foregroundAt(line, line.indexOf("ctrl+o")), keyColour, `${name} hint key colour`);
 			}
 			component.setExpanded(true);
 			assert.doesNotMatch(component.render(240).map(plain).join("\n"), /to expand/u);

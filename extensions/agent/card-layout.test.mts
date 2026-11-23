@@ -426,11 +426,11 @@ it("primary report receipts show a full-width qualified queue outcome and raw JS
 		result,
 		[],
 	);
-	assert.ok(text(component).includes(`Report queued for ${identity}`));
+	assert.match(text(component), /\n\n\s*Report admitted\n/u);
 	assert.doesNotMatch(text(component), /"sessionId"|"admitted"|01a106df…|^\s*…\s*$/mu);
 	assert.equal((text(component).match(/to expand|expand for full/gu) ?? []).length, 1);
 	component.setExpanded(true);
-	assert.ok(text(component).includes(`"sessionId": "${identity}"`));
+	assert.ok(text(component).includes(`sessionId: ${identity}`));
 	assert.match(text(component), /"admitted": true/u);
 	assert.deepEqual(result, {
 		sessionId: identity,
@@ -867,10 +867,10 @@ it("structured error previews remain plain and bounded without losing expanded s
 		error: { message: `First diagnostic\nSecond diagnostic\nThird diagnostic\n${"extra\n".repeat(100)}` },
 	};
 	const component = nativeTool("agent_status", { sessionId: identity }, error);
-	assert.match(text(component), /First diagnostic\n\s*Second diagnostic\n\s*Third diagnostic/u);
-	assert.doesNotMatch(text(component), /extra|"error"|^\s*…\s*$/mu);
+	assert.match(text(component), /\n\n\s*First diagnostic\n/u);
+	assert.doesNotMatch(text(component), /Second diagnostic|extra|"error"|^\s*…\s*$/mu);
 	component.setExpanded(true);
-	assert.match(text(component), /"error"/u);
+	assert.match(text(component), /Second diagnostic\n\s*Third diagnostic/u);
 	assert.match(text(component), /extra/u);
 });
 

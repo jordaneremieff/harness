@@ -129,7 +129,7 @@ describe("compact observation cards", () => {
 			cards.agent_status.renderResult(result, { expanded: false, isPartial: false }, theme, context()),
 		);
 		assert.match(output, /Durable agent · retained snapshot; live session activity not observed/u);
-		assert.match(output, /Snapshot facts: 1 queued inputs · 0 timers/u);
+		assert.match(output, /Snapshot facts: 1 queued input · 0 timers/u);
 		assert.doesNotMatch(output, /Activity: working|Activity: idle/u);
 		const expanded = screen(
 			cards.agent_status.renderResult(result, { expanded: true, isPartial: false }, theme, context({ expanded: true })),
@@ -350,7 +350,7 @@ describe("compact observation cards", () => {
 		const card = createAgentToolCards().agent_send;
 		for (const expanded of [false, true]) {
 			const output = screen(card.renderResult(result, { expanded, isPartial: false }, theme, context({ expanded })));
-			assert.match(output, /Acknowledged/u);
+			assert.match(output, /acknowledged/u);
 			assert.doesNotMatch(output, /Secret report body/u);
 			if (expanded) assert.match(output, /does not establish model\s+consumption/u);
 			else assert.doesNotMatch(output, /consumed|accepted|model consumption/u);
@@ -376,7 +376,7 @@ describe("compact observation cards", () => {
 		);
 		assert.match(output, /Retained storage page/u);
 		assert.match(output, /Reader · live activity not observed/u);
-		assert.match(output, /Storage scan reached its end · 1 scanned · 1 returned on this page/u);
+		assert.match(output, /Retained storage page: 1 conversation; storage scan reached its end; 1 scanned/u);
 	});
 });
 
@@ -455,7 +455,7 @@ describe("human-readable agent targets", () => {
 			screen(
 				cards.agent_send.renderResult(receipt, { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 			),
-			/provider\/model · high\nAdmitted · @parser/u,
+			/Message admitted for @parser · submission 405/u,
 		);
 	});
 
@@ -463,13 +463,13 @@ describe("human-readable agent targets", () => {
 		const cards = createAgentToolCards();
 		assert.ok(
 			screen(cards.agent_send.renderCall({ sessionId: id, message: "Task" }, theme, context())).includes(
-				`agent_send · ${id}`,
+				`agent_send ${id}`,
 			),
 		);
 		assert.ok(screen(cards.agent_abort.renderCall({ sessionId: `${id}:7` }, theme, context())).includes(`${id}:7`));
 		assert.match(
 			screen(cards.agent_send.renderCall({ sessionId: "@unknown", message: "Task" }, theme, context())),
-			/agent_send · @unknown/u,
+			/agent_send @unknown/u,
 		);
 		assert.ok(
 			screen(
@@ -535,7 +535,9 @@ describe("human-readable agent targets", () => {
 			];
 			for (const { expanded, isPartial } of phases) {
 				const ctx = context({ args, state, expanded, executionStarted: true, isPartial });
-				const combined = `${screen(card.renderCall(args, theme, ctx))}\n${screen(card.renderResult(receipt, { expanded, isPartial }, theme, ctx))}`;
+				const call = card.renderCall(args, theme, ctx);
+				const result = card.renderResult(receipt, { expanded, isPartial }, theme, ctx);
+				const combined = `${screen(call)}\n${screen(result)}`;
 				assert.ok(hintCount(combined) <= (expanded ? 0 : 1), name);
 			}
 		}
@@ -546,10 +548,15 @@ describe("human-readable agent targets", () => {
 		const args = { sessionId: id, message: "Task\n".repeat(80) };
 		const state = {};
 		const ctx = context({ args, state });
-		const call = screen(cards.agent_send.renderCall(args, theme, ctx));
-		const output = screen(
-			cards.agent_send.renderResult(receipt, { ...cardKeys, expanded: false, isPartial: false }, theme, ctx),
+		const callComponent = cards.agent_send.renderCall(args, theme, ctx);
+		const resultComponent = cards.agent_send.renderResult(
+			receipt,
+			{ ...cardKeys, expanded: false, isPartial: false },
+			theme,
+			ctx,
 		);
+		const call = screen(callComponent);
+		const output = screen(resultComponent);
 		assert.match(call, /Parser review/u);
 		assert.doesNotMatch(call, /unknown|unavailable/u);
 		assert.equal(hintCount(call) + hintCount(output), 1);
@@ -568,7 +575,7 @@ describe("human-readable agent targets", () => {
 				context({ args: { sessionId: id }, executionStarted: true }),
 			),
 		);
-		assert.equal(collapsed.split("\n")[0], "Admitted · submission 405");
+		assert.deepEqual(collapsed.split("\n").slice(0, 2), ["", "Message admitted · submission 405"]);
 		assert.doesNotMatch(collapsed, /not proof|submitted|12345678/u);
 		assert.ok(
 			screen(
