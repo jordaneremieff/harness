@@ -201,12 +201,7 @@ export function validateCollaborationAction(input: Record<string, unknown>, stag
 					? `Omit sessionId for action ${input.action}; threadId selects its storage`
 					: `${key} is not valid for action ${input.action}; ${input.action} accepts ${fields.join(", ")}`,
 			);
-	if (input.action === "read") {
-		if (input.after !== undefined && input.before !== undefined)
-			throw new CollaborationReadError("invalid_request", "after and before are exclusive");
-		if (input.knownFrameRevision !== undefined && input.after === undefined)
-			throw new CollaborationReadError("invalid_request", "knownFrameRevision requires after");
-	}
+	if (input.action === "read") validateReadCursors(input);
 	validateActionText(input);
 	const publicInput = Object.fromEntries(
 		Object.entries(input).filter(([key]) => key === "action" || fields.includes(key)),
@@ -216,6 +211,24 @@ export function validateCollaborationAction(input: Record<string, unknown>, stag
 			"invalid_request",
 			`Invalid fields or selector combinations for action ${input.action}`,
 		);
+}
+function validateReadCursors(input: Record<string, unknown>): void {
+	if (input.after !== undefined && input.before !== undefined)
+		throw new CollaborationReadError("invalid_request", "after and before are exclusive");
+	if (input.knownFrameRevision !== undefined && input.after === undefined)
+		throw new CollaborationReadError("invalid_request", "knownFrameRevision requires after");
+	for (const [field, minimum] of [
+		["after", 0],
+		["before", 1],
+		["knownFrameRevision", 1],
+	] as const) {
+		const value = input[field];
+		if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum))
+			throw new CollaborationReadError(
+				"invalid_request",
+				`${field} must be a retained ${field === "knownFrameRevision" ? "frame revision" : "event cursor"}`,
+			);
+	}
 }
 function validateActionText(input: Record<string, unknown>): void {
 	if (input.action === "create" || input.action === "revise") {

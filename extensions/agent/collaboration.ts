@@ -555,19 +555,6 @@ async function readPending(session: Session, id: string, context: Context): Prom
 		throw new CollaborationReadError("source_unreadable", "Thread delivery pending count is malformed");
 	return pending;
 }
-function validateReadCursors(input: Record<string, unknown>): void {
-	for (const [field, minimum] of [
-		["after", 0],
-		["before", 1],
-		["knownFrameRevision", 1],
-	] as const) {
-		if (input[field] !== undefined && !validInteger(input[field], minimum))
-			throw new CollaborationReadError(
-				"invalid_request",
-				`${field} must be a retained ${field === "knownFrameRevision" ? "frame revision" : "event cursor"}`,
-			);
-	}
-}
 export function readCollaboration(
 	session: Session,
 	input: Record<string, unknown> & { after: number },
@@ -593,7 +580,6 @@ export async function readCollaboration(
 	if (!validThreadId(id))
 		throw new CollaborationReadError("invalid_request", "threadId must be an identity returned by agent_collaborate");
 	const limit = readLimit(input);
-	validateReadCursors(input);
 	if (input.action !== undefined && input.action !== "read")
 		throw new CollaborationReadError("invalid_request", "Thread read requires action read");
 	validateCollaborationAction({ ...input, action: "read" }, "host");
