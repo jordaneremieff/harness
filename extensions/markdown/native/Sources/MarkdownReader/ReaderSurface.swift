@@ -212,8 +212,8 @@ final class ReaderSurface: NSView {
             guard let workspace, let client = workspace.collaboration else {
                 return ["accepted": false, "detail": "The conversation connection is not available."]
             }
-            let stale: [String: Any] = ["accepted": false, "fresh": true,
-                "detail": "The displayed document changed. Review your comment and send it again."]
+            let stale: [String: Any] = ["accepted": false, "fresh": client.isFreshPrompt(requestId: request),
+                "detail": "The displayed document changed. Review your comment before another send."]
             guard workspace.logicalDocumentKey?.uuidString == key, model.page.documentKey == key,
                   pageMatchesWorkspace else { return stale }
             let known = client.knowsPrompt(requestId: request, threadId: thread)
@@ -246,7 +246,7 @@ final class ReaderSurface: NSView {
             switch result {
             case .submitted: return ["accepted": true]
             case .unknown(let retryable): return ["accepted": false, "uncertain": true, "retryable": retryable]
-            case .refused(let detail): return ["accepted": false, "detail": detail]
+            case .refused(let detail): return ["accepted": false, "fresh": client.isFreshPrompt(requestId: request), "detail": detail]
             }
         case "query":
             if message["kind"] as? String == "library", message["collection"] as? String == "drafts" { return try await draftLibrary(message) }

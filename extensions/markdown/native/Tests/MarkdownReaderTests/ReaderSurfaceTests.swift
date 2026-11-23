@@ -349,7 +349,7 @@ import Testing
             let draft = try #require(workspace.active)
             let wrongDocument = try await request("prompt", fields: first, to: model)
             #expect(wrongDocument["accepted"] as? Bool == false)
-            #expect(wrongDocument["fresh"] as? Bool == true)
+            #expect(wrongDocument["fresh"] as? Bool == false)
             await workspace.openReading(reference)
             try await waitForBinding()
             let current = try #require(model.page.presentation)
