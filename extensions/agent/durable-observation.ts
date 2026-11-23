@@ -2921,8 +2921,9 @@ async function resultAnswer(
 	context: Context,
 ): Promise<{ readonly answer?: string; readonly reason?: string }> {
 	const answer = await harness.commit((tx) => tx.entry(AssistantEntry, answerEntryId), context);
-	const text = assistantTextOf(answer?.model);
-	return text === "" ? { reason: `durable answer entry ${answerEntryId} is not retained` } : { answer: text };
+	return answer === undefined
+		? { reason: `durable answer entry ${answerEntryId} is not retained` }
+		: { answer: assistantTextOf(answer.model) };
 }
 
 function observedInputRecovery(harness: Harness, id: SubmissionId, context: Context) {

@@ -737,6 +737,32 @@ it("continues history, search, and exact reads from a cold snapshot", async (t) 
 	}
 });
 
+it("distinguishes retained empty answer text from a missing answer entry", async (t) => {
+	const host = await DurableHost.open(
+		hostOptions(
+			join(fixtureRoot(t), "empty-answer.sqlite"),
+			await scriptedRuntime([answerMessage("")]),
+			fixtureRegistry(),
+		),
+		BACKGROUND_CONTEXT,
+	);
+	t.after(() => host.close());
+	const { submissionId } = await host.submit({
+		message: "task",
+		requestId: "empty",
+		ownerId: "reader",
+		origin: "model",
+	});
+	const outcome = await host.wait(submissionId, BACKGROUND_CONTEXT);
+	assert.equal(outcome.status, "done");
+	const page = (await host.request("inspect", { view: "result", submissionId })) as Record<string, unknown>;
+	assert.deepEqual(
+		[page.answer, page.reason, page.offset, page.nextOffset, page.truncated],
+		["", undefined, 0, null, false],
+	);
+	await assert.rejects(host.request("inspect", { view: "result", submissionId, offset: 1 }), /offset exceeds/u);
+});
+
 it("does not settle an unfinished delivery receipt while observing a completed native input", async (t) => {
 	const storagePath = join(fixtureRoot(t), "unsettled-delivery.sqlite");
 	const host = await DurableHost.open(
