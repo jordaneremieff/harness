@@ -324,8 +324,9 @@ describe("status cards", () => {
 		assert.doesNotMatch(unfiltered, /\$0|healthy|Result received/u);
 	});
 
-	it("identifies ordinary primary presence and Durable timer facts in full selected results", () => {
-		const timestamp = "2026-10-01T00:00:00.000Z";
+	it("identifies ordinary primary presence and Durable timer facts in full selected results", (t) => {
+		t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 10, 24, 12) });
+		const timestamp = new Date(2026, 9, 1, 14, 32).toISOString();
 		const primary: OrdinaryPrimaryObservation = {
 			kind: "ordinary-primary",
 			view: "status",
@@ -394,7 +395,7 @@ describe("status cards", () => {
 			{ sessionId: "storage-a", detail: true },
 		);
 		assert.match(durable, /Durable agent · live host observation/u);
-		assert.match(durable, /Earliest timer 12 · 1 Oct \d{2}:\d{2} · unsettled · overdue/u);
+		assert.match(durable, /Earliest timer 12 · 1 Oct 2:32 PM · unsettled · overdue/u);
 	});
 });
 

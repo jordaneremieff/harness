@@ -528,14 +528,6 @@ function messageMetadata(args: Record<string, unknown>, context: AgentCardContex
 	];
 }
 
-function localToolTime(value: number): string {
-	const time = new Date(value);
-	if (!Number.isFinite(time.getTime())) return "";
-	const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(time);
-	if (time.toDateString() === new Date().toDateString()) return clock;
-	return `${new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" }).format(time)} ${clock}`;
-}
-
 function resolvedTargetFact(selector: string, context: AgentCardContext): string | undefined {
 	const identity = findTarget(selector, context.lookup?.() ?? [])?.id;
 	return identity && identity !== selector ? `  resolved target: ${identity}` : undefined;
@@ -543,7 +535,7 @@ function resolvedTargetFact(selector: string, context: AgentCardContext): string
 
 export function renderSendCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
-	const deadline = localToolTime(Date.parse(text(args.deliverAt)));
+	const deadline = dashboardClock(Date.parse(text(args.deliverAt)));
 	const checkIn = count(args.checkInMinutes);
 	const subject = targetLabel(text(args.sessionId), context);
 	return toolCallCard(
@@ -890,8 +882,7 @@ function timerLines(details: Record<string, unknown>, theme: Theme, context: Age
 	if (timer === undefined) return undefined;
 	const deadline = count(details.deadline);
 	if (deadline !== undefined) {
-		const date = new Date(deadline);
-		const when = Number.isFinite(date.getTime()) ? date.toISOString() : "deadline unavailable";
+		const when = dashboardClock(deadline) || "deadline unavailable";
 		return [
 			muted(
 				theme,
@@ -1262,7 +1253,7 @@ function statusTimerFact(status: Record<string, unknown>): string {
 	const timer = record(array(status.timers)[0]);
 	if (count(timer.id) === undefined) return "";
 	const deadline = count(timer.deadline);
-	const when = deadline === undefined ? "" : localToolTime(deadline);
+	const when = deadline === undefined ? "" : dashboardClock(deadline);
 	return [`Earliest timer ${timer.id}`, when, text(timer.status), timer.overdue === true ? "overdue" : ""]
 		.filter(Boolean)
 		.join(" · ");
@@ -1732,7 +1723,7 @@ function scheduleSendOutcome(details: Record<string, unknown>, recipient: string
 	const timer = count(details.timerId);
 	if (timer === undefined) return undefined;
 	const deadline = count(details.deadline);
-	const when = deadline === undefined ? "" : localToolTime(deadline);
+	const when = deadline === undefined ? "" : dashboardClock(deadline);
 	return [`Scheduled${recipient}`, `timer ${timer}`, when].filter(Boolean).join(" · ");
 }
 
@@ -3044,7 +3035,7 @@ class StateNoteCard implements Component {
 						groups.scheduled.length ? cardinal(groups.scheduled.length, "scheduled input") : "",
 						groups.unconfirmed.length ? cardinal(groups.unconfirmed.length, "unconfirmed request") : "",
 					];
-		return [...counts, at === undefined ? "" : localToolTime(at)].filter(Boolean).join(" · ");
+		return [...counts, at === undefined ? "" : dashboardClock(at)].filter(Boolean).join(" · ");
 	}
 	/** One open request: the agent's name and configuration from the roster, then its state now. */
 	private waitingRow(item: Record<string, unknown>, rows: readonly AgentConversationSummary[]): string {

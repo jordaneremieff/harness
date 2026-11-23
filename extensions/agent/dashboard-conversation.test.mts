@@ -24,7 +24,6 @@ import { agentState, createDashboardState } from "./dashboard-state.ts";
 import { AgentConversation, cleanDashboardText, renderableEntries } from "./dashboard-conversation.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
 import type { Communication } from "./communication.ts";
-import { dashboardClock } from "./dashboard-time.ts";
 import { DurableHost } from "./durable-host.ts";
 import {
 	answerMessage,
@@ -866,13 +865,22 @@ const observedLookup = (facts: {
 	threadTitle?: (id: string) => string | undefined;
 }) => Object.assign(() => [] as readonly AgentConversationSummary[], facts);
 
-it("a retained report shows a title, sender facts, three visual lines and one hint", () => {
-	const shown = screen(new AgentConversation([communicationEntry(reportValue())], "/work", tui, false, false));
+it("a retained report shows a title, sender facts, three visual lines and one hint", (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 10, 24, 12) });
+	const recordedAt = new Date(2025, 10, 23, 14, 32, 47, 123).getTime();
+	const conversation = new AgentConversation(
+		[communicationEntry({ ...reportValue(), recordedAt })],
+		"/work",
+		tui,
+		false,
+		false,
+	);
+	const shown = screen(conversation);
 	const lines = shown.split("\n").map((line) => line.trim());
 	const key = keyText("app.tools.expand") || "click";
 	assert.deepEqual(lines.slice(0, 6), [
 		"[agent] Report",
-		`from Peer name · ${dashboardClock(1_700_000_000_000)}`,
+		"from Peer name · 23 Nov 2:32 PM",
 		"",
 		"line one",
 		"line two",
@@ -880,6 +888,8 @@ it("a retained report shows a title, sender facts, three visual lines and one hi
 	]);
 	assert.equal(lines.at(-1), `... (2 more lines, ${key} to expand)`);
 	assert.doesNotMatch(shown, /line four|line five|Source details/u);
+	conversation.setExpanded(true);
+	assert.ok(screen(conversation).includes(`Recorded: ${new Date(recordedAt).toISOString()}`));
 });
 
 it("a retained preview counts hidden visual rows, including interior blank rows", () => {

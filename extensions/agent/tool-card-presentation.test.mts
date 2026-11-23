@@ -428,14 +428,27 @@ it("new fork facts survive an incomplete roster and applied settings preserve ho
 	assert.match(screen(configured), /Configuration applied\nReasoning adjusted to low/u);
 });
 
-it("scheduled messages and timer cancellation name their actual outcomes without duplicate targets", () => {
-	const scheduled = nativeRow(
-		"agent_send",
-		{ sessionId: targetId, message: "Later", deliverAt: "2026-10-05T00:00:00.000Z" },
-		{ identity: targetId, conversationId: 1, timerId: 7, deadline: Date.parse("2026-10-05T00:00:00.000Z") },
-	);
-	assert.match(screen(scheduled), /Scheduled · timer 7 · 5 Oct \d{2}:\d{2}/u);
-	assert.doesNotMatch(screen(scheduled), /Admitted/u);
+it("scheduled messages and timer cancellation name their actual outcomes without duplicate targets", (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 10, 23, 12) });
+	for (const [day, shownTime] of [
+		[23, "2:32 PM"],
+		[24, "24 Nov 2:32 PM"],
+	] as const) {
+		const deadline = new Date(2026, 10, day, 14, 32, 45, 123);
+		const deliverAt = deadline.toISOString();
+		const args = { sessionId: targetId, message: "Later", deliverAt };
+		assert.ok(screen(nativeRow("agent_send", args, undefined)).includes(`deliver at ${shownTime}`));
+		const scheduled = nativeRow("agent_send", args, {
+			identity: targetId,
+			conversationId: 1,
+			timerId: 7,
+			deadline: deadline.getTime(),
+		});
+		assert.ok(screen(scheduled).split("\n").includes(`Scheduled · timer 7 · ${shownTime}`));
+		assert.doesNotMatch(screen(scheduled), /Admitted/u);
+		scheduled.setExpanded(true);
+		assert.ok(screen(scheduled).includes(`deliverAt: ${deliverAt}`), "the expanded call keeps the exact time");
+	}
 	const canceled = nativeRow(
 		"agent_abort",
 		{ sessionId: targetId, timerId: 7 },

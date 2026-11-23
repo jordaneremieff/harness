@@ -425,7 +425,7 @@ describe("the state note card", () => {
 		assert.equal(lines[1], " agent_yield Turn ended");
 		assert.match(
 			lines[2] ?? "",
-			/^ 2 agent results due · 1 scheduled input · (?:\d{1,2} [A-Z][a-z]{2} )?\d{2}:\d{2}$/u,
+			/^ 2 agent results due · 1 scheduled input · (?:\d{1,2} [A-Z][a-z]{2} )?\d{1,2}:\d{2} [AP]M$/u,
 		);
 		assert.equal(lines.length, 1 + 1 + 1 + 3 + 1 + 1, "padding, title, facts, three note lines, hint, padding");
 		assert.match(lines[6] ?? "", /^ \.\.\. \(\d+ more lines?, ctrl\+o to expand\)$/u);
@@ -549,7 +549,13 @@ describe("the state note card", () => {
 			{ requestRender() {} } as unknown as TUI,
 			".",
 		);
-		component.updateResult({ content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }], details, isError: false });
+		const turnEnded = new Date(2026, 10, 23, 12, 38, 19);
+		t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 10, 23, 13) });
+		component.updateResult({
+			content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }],
+			details: { ...details, at: turnEnded.getTime() },
+			isError: false,
+		});
 		const width = 100;
 		const lines = () => component.render(width).map((line) => stripVTControlCharacters(line));
 		const click = (y: number) =>
@@ -569,7 +575,8 @@ describe("the state note card", () => {
 			} as never);
 		const collapsed = lines();
 		assert.match(collapsed.join("\n"), /\.\.\. \(\d+ more lines?, ctrl\+o to expand\)/u);
-		assert.doesNotMatch(collapsed.join("\n"), /Results due from:|click/u);
+		assert.match(collapsed.join("\n"), /scheduled input · 12:38 PM/u);
+		assert.doesNotMatch(collapsed.join("\n"), /23 Nov|Results due from:|click/u);
 		const noteRow = collapsed.findIndex((line) => line.includes("Two workers run the parser review"));
 		assert.ok(noteRow > 0);
 		assert.equal(click(noteRow)?.handled, true, "a click on the note text expands the card");

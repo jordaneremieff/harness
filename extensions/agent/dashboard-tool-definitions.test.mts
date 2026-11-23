@@ -264,12 +264,13 @@ it("uses the ordinary Agent shell and one configured hint before and after the r
 	}
 });
 
-it("replays the self-shelled state note once, including when only its result was retained", () => {
+it("replays the self-shelled state note once, including when only its result was retained", (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 10, 23, 13) });
 	const define = createDashboardToolDefinitions(cwd);
 	const note = "Review and verification continue.";
 	const result = {
 		content: [{ type: "text", text: "model-only continuation" }],
-		details: { note, at: 1 },
+		details: { note, at: new Date(2025, 10, 23, 12, 38).getTime() },
 		isError: false,
 	};
 	for (const known of [true, false]) {
@@ -278,6 +279,7 @@ it("replays the self-shelled state note once, including when only its result was
 		const shown = text(rendered(definition, known ? { note } : undefined, result, false));
 		assert.equal(shown.match(/agent_yield/gu)?.length, 1);
 		assert.equal(shown.match(/Review and verification continue\./gu)?.length, 1);
+		assert.match(shown, /23 Nov 12:38 PM/u, "a past local date gets the date even on the same day and month");
 		assert.doesNotMatch(shown, /model-only continuation/u);
 	}
 });
