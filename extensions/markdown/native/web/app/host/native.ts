@@ -608,6 +608,21 @@
 			);
 		}
 	}
+	function reviewLocation(r: Fields) {
+		if (r.sourceAnchor !== undefined)
+			ensure(
+				string(r.sourceAnchor, SOURCE) &&
+					integer(r.start, SOURCE) &&
+					integer(r.end, SOURCE) &&
+					r.end - r.start === r.sourceAnchor.length,
+			);
+		if (r.anchorDigest !== undefined)
+			ensure(typeof r.anchorDigest === "string" && /^sha256:[0-9a-f]{64}$/u.test(r.anchorDigest));
+		if (r.passageAnchor !== undefined) {
+			ensure(r.sourceAnchor !== undefined && object(r.passageAnchor).text === r.sourceAnchor);
+			passageAnchor(r.passageAnchor, r.quote, { start: r.start, end: r.end });
+		}
+	}
 	function reviewCommentsReply(m: Fields) {
 		ensure(
 			typeof m.available === "boolean" &&
@@ -631,19 +646,7 @@
 					string(r.text, 128 * 1024),
 			);
 			ensure(optional(r.quote, (v) => string(v, 8192)) && optional(r.madeOnRevision, (v) => integer(v) && v > 0));
-			if (r.sourceAnchor !== undefined)
-				ensure(
-					string(r.sourceAnchor, SOURCE) &&
-						integer(r.start, SOURCE) &&
-						integer(r.end, SOURCE) &&
-						r.end - r.start === r.sourceAnchor.length,
-				);
-			if (r.anchorDigest !== undefined)
-				ensure(typeof r.anchorDigest === "string" && /^sha256:[0-9a-f]{64}$/u.test(r.anchorDigest));
-			if (r.passageAnchor !== undefined) {
-				ensure(r.sourceAnchor !== undefined && object(r.passageAnchor).text === r.sourceAnchor);
-				passageAnchor(r.passageAnchor, r.quote, { start: r.start, end: r.end });
-			}
+			reviewLocation(r);
 		}
 	}
 	function reviewDraftReply(m: Fields) {
