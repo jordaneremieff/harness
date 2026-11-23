@@ -130,12 +130,16 @@ inventory, and source evidence while paging within one window. A changed query, 
 same-window source refuses instead of silently skipping or duplicating results.
 Changing `limit` or `detail` is permitted. Earlier windows are not reread, so a completed
 cursor chain establishes traversal coverage, not a frozen whole-corpus snapshot.
+Restart a query if its cursor came from a version that returned ungrouped matches.
 
 Unquoted words match exact lowercase Unicode tokens. Common function words are
 ignored. Hyphen, underscore, dot and slash compounds match adjacent tokens.
-Double-quoted phrases require case-insensitive literal matches with flexible
-whitespace. No stemming, camelCase splitting, fuzzy matching, automatic synonyms,
-regex, or Unicode normalization applies. A formulation supports 200 characters and
+Unquoted terms match the body, subject slug, parsed title, tags and supersession
+link values. Frontmatter keys, status, dates, verification flags, review settings
+and review records do not supply these matches. Double-quoted phrases search
+the literal source, including the header, or the slug. They ignore case and
+permit flexible whitespace. No stemming, camelCase splitting, fuzzy matching,
+automatic synonyms, regex or Unicode normalization applies. A formulation supports 200 characters and
 16 distinct terms. After a miss, try alternate inflections (`setting` versus
 `settings`), exact identifier forms (`accessToken`), or quoted fragments (`"Token"`).
 A zero-match query returns this guidance alongside its coverage boundaries.
@@ -144,11 +148,31 @@ Each formulation uses lexical rarity, frequency saturation, field weights and
 length normalization. Unfenced Markdown headings receive title weight; fenced
 comments and examples remain body evidence. Alternative formulations order notes by
 their best per-formulation rank first. Ties use reciprocal rank fusion,
-`sum(1 / (60 + rank))`, then slug order. Within each source window, this keeps each alternative's first match
-among the first three results even when another formulation matches many weakly
-related notes. The score stays internal. Ordinal rank describes retrieval order,
-never truth, confidence, freshness, or a comparable value across calls.
-Compact query results show the ranked leads and their source passages. Set
+`sum(1 / (60 + rank))`, then slug order. Before grouping, this puts each
+alternative's first lexical match among the first three matches in its source
+window. The score stays internal. Rank describes retrieval order, not truth,
+confidence, freshness or a value to compare across calls.
+
+A query can find a current decision through a term found only in a superseded
+note. Search follows a link only if both notes confirm it: `superseded_by`
+names the successor and the successor's parsed `supersedes` lists the
+predecessor. The chain must reach an active note within 16 hops, all in the
+same source window. Broken, cyclic, overlong or out-of-window chains leave
+the original match visible. Browse does not group results.
+
+The current note appears once at its earliest contributing match position.
+`replacedMatches` lists the matched predecessors by slug and title, in lexical
+rank order. It holds up to eight entries within 2 KiB. `omittedReplacedMatches`
+counts the remaining matched predecessors. The expanded card shows this list.
+A passage on the group row always belongs to the current note. An active
+successor that did not match has its own digest and lifecycle, but no passage
+or match diagnostics. Read it before applying the decision. `totalMatches`,
+`returned`, `pageOffset`, row `rank` and continuation count displayed rows in
+this window. `search.lexicalMatches` counts distinct hits before grouping;
+`totalNotes` counts eligible sources. Other windows may cover other parts of
+the same replacement chain.
+
+Compact query results show ranked leads and any source passages. Set
 `detail: true` for the per-formulation ranks, matched fields, missing terms, and
 term frequencies. The caller supplies reformulations; the extension makes no model calls.
 
@@ -157,8 +181,11 @@ outside backtick or tilde fences, then the filename if no heading exists.
 Cues preserve raw metadata values. Missing or malformed fields remain unknown;
 `cueProblem` marks clipped, multiline, duplicate, empty, unclosed, invalid, or
 ambiguous frontmatter. The complete bounded header must parse at its physical
-closing delimiter. Otherwise raw cues remain visible with a qualification, metadata
-receives no title weight, and the prompt index counts status as unknown. Unicode
+closing delimiter. A malformed header supplies no unquoted subject terms or
+result title. For such a note, unquoted search uses the slug and any body
+after a known closing delimiter. With no closing delimiter, it treats no text
+as confirmed body. Literal phrases can still match the raw source. Browse
+can show qualified raw cues; the prompt index counts status as unknown. Unicode
 line and paragraph separators do not create Markdown delimiter lines.
 Each note includes parsed `lifecycle` evidence from the same source, including
 status, a replacement pointer, and any lifecycle problem. Compact query hits keep
@@ -182,8 +209,10 @@ a frontmatter-only match for both string and array queries. For fused results, t
 best-ranked matching formulation selects the passage within that category.
 Detailed per-formulation records retain rank and matched/missing terms without
 repeating passages. Selected excerpts retain half-open Unicode code-point offsets in original source.
-They are discovery evidence, not complete support. Slug-only hits have no source
-passage. A later qualification can lie outside the selected excerpt.
+They are discovery evidence, not complete support. `sourceMatch` is null for a
+slug-only hit or a parsed field value with no confirmed span in the original
+text. It is absent on a promoted note that did not match. A later qualification
+can lie outside the selected excerpt.
 
 Each call inventories all root names before source work, sorts them, and refuses
 above 16,384 entries plus one overflow lookahead. Hidden entries count toward that
