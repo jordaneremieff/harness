@@ -219,7 +219,7 @@ async function appStatus(
 		const build: unknown = JSON.parse(await readFile(manifest, "utf8"));
 		if (typeof build !== "object" || build === null || !("contract" in build) || build.contract !== 1)
 			return "app-incompatible";
-		if (live && (!("live" in build) || (build.live !== 1 && build.live !== 2))) return "app-incompatible";
+		if (live && (!("paneProtocol" in build) || build.paneProtocol !== 3)) return "app-incompatible";
 		if (
 			presentation === "pane" &&
 			(!("pane" in build) || build.pane !== 1 || !("paneOpenRequest" in build) || build.paneOpenRequest !== 1)

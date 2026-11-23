@@ -76,6 +76,46 @@ test("the broker binds prompts and unsaved reads to one authenticated conversati
 		bridge.close();
 	}
 });
+test("a new loader keeps the listener but fences unknown receipts until its reader reports its view", {
+	timeout: 10000,
+}, async () => {
+	let submissions = 0;
+	const submit = async () => {
+		submissions++;
+		return { status: "requested" as const };
+	};
+	const old = new LiveBridge({ submit }),
+		current = new LiveBridge({ submit });
+	const config = await old.start(),
+		pane = binding();
+	try {
+		await connect(config, pane);
+		const prompt = { ...pane, operationId: randomUUID(), text: "Where was the first request admitted?" };
+		assert.equal((await post(config, "/prompt", prompt)).data.status, "requested");
+		const record = old.release();
+		assert.ok(record);
+		Object.assign(record.state, { version: 2 });
+		assert.equal((await post(config, "/prompt", { ...prompt, operationId: randomUUID() })).status, 503);
+		const adopted = await current.start(record);
+		assert.equal(adopted.endpoint, config.endpoint);
+		assert.equal(adopted.token, config.token);
+		assert.deepEqual(current.list(), []);
+		assert.equal((await connect(config, pane)).status, 200);
+		assert.equal((await post(config, "/prompt", prompt)).data.status, "uncertain");
+		assert.equal(submissions, 1);
+		assert.equal((await post(config, "/prompt", { ...prompt, operationId: randomUUID() })).data.status, "requested");
+		assert.equal(submissions, 2);
+		const unknown = current.release();
+		assert.ok(unknown);
+		Object.assign(unknown, { version: 2 });
+		await assert.rejects(new LiveBridge({ submit }).start(unknown), /Reopen/u);
+		assert.equal(unknown.server.listening, false);
+	} finally {
+		old.close();
+		current.close();
+	}
+});
+
 test("the broker forwards a large batch as one prompt and enforces the UTF-8 limit", { timeout: 10000 }, async () => {
 	const calls: string[] = [];
 	const bridge = new LiveBridge({
@@ -788,7 +828,15 @@ const target = {
 	digest: responseDigest("Published revision"),
 };
 const navigate = { op: "navigate" as const, ...target };
-const shown = { kind: "published", title: "Target", mode: "reading", dirty: false, conflict: false, ...target };
+const shown = {
+	kind: "published",
+	title: "Target",
+	mode: "reading",
+	dirty: false,
+	conflict: false,
+	follows: false,
+	...target,
+};
 
 test("only the original agent pane and exact target receipt confirm navigation", { timeout: 10000 }, async () => {
 	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) }, 2000, 50);
@@ -832,6 +880,8 @@ test("only the original agent pane and exact target receipt confirm navigation",
 		assert.ok(bridge.list().some((pane) => pane.handle === original));
 		assert.equal((await post(config, "/result", { ...source, ...receipt })).status, 200);
 		assert.deepEqual(await pending, result);
+		assert.equal((await post(config, "/result", { ...source, ...receipt })).status, 200);
+		assert.equal((await post(config, "/state", { ...source, view: draft, serial: 6 })).status, 409);
 		await post(config, "/connect", reconnect);
 		const installed = bridge.list().find((pane) => pane.workspace === source.workspace);
 		assert.equal(installed?.handle, handle);
@@ -860,6 +910,7 @@ test("a pane departure distinguishes undelivered navigation from a lost receipt"
 			assert.equal((await post(config, "/poll", { ...other, after: 0 })).data.command, null);
 			await connect(config, source);
 			assert.equal((await post(config, "/poll", { ...source, after: 0 })).data.command, null);
+			await post(config, "/close", { ...source, pane: true });
 		}
 	} finally {
 		bridge.close();

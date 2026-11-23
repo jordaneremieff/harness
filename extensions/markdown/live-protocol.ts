@@ -24,6 +24,7 @@ export interface LivePaneView {
 	mode: "reading" | "writing";
 	dirty: boolean;
 	conflict: boolean;
+	follows?: boolean;
 	storeId?: string;
 	documentId?: string;
 	revision?: number;
@@ -93,6 +94,24 @@ const oneLine = (value: unknown, max: number): value is string =>
 	value.length <= max &&
 	validUnicode(value) &&
 	!/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value);
+function readStoredView(
+	value: Record<string, unknown>,
+): Pick<LivePaneView, "storeId" | "documentId" | "revision" | "digest"> {
+	if (
+		(value.storeId !== undefined && !storeId(value.storeId)) ||
+		(value.documentId !== undefined && (!documentId(value.documentId) || !storeId(value.storeId))) ||
+		(value.revision !== undefined &&
+			(!generation(value.revision) || value.revision < 1 || !documentId(value.documentId))) ||
+		(value.digest !== undefined && (!liveDigest(value.digest) || value.revision === undefined))
+	)
+		throw new Error("Invalid stored revision in the native pane view.");
+	return {
+		...(value.storeId !== undefined && { storeId: value.storeId as string }),
+		...(value.documentId !== undefined && { documentId: value.documentId as string }),
+		...(value.revision !== undefined && { revision: value.revision as number }),
+		...(value.digest !== undefined && { digest: value.digest as string }),
+	};
+}
 export function readLiveView(value: unknown): LivePaneView {
 	if (
 		!isRecord(value) ||
@@ -101,11 +120,7 @@ export function readLiveView(value: unknown): LivePaneView {
 		(value.mode !== "reading" && value.mode !== "writing") ||
 		typeof value.dirty !== "boolean" ||
 		typeof value.conflict !== "boolean" ||
-		(value.storeId !== undefined && !storeId(value.storeId)) ||
-		(value.documentId !== undefined && (!documentId(value.documentId) || !storeId(value.storeId))) ||
-		(value.revision !== undefined &&
-			(!generation(value.revision) || value.revision < 1 || !documentId(value.documentId))) ||
-		(value.digest !== undefined && (!liveDigest(value.digest) || value.revision === undefined))
+		(value.follows !== undefined && typeof value.follows !== "boolean")
 	)
 		throw new Error("Invalid native pane view.");
 	return {
@@ -114,10 +129,8 @@ export function readLiveView(value: unknown): LivePaneView {
 		mode: value.mode,
 		dirty: value.dirty,
 		conflict: value.conflict,
-		...(value.storeId !== undefined && { storeId: value.storeId as string }),
-		...(value.documentId !== undefined && { documentId: value.documentId as string }),
-		...(value.revision !== undefined && { revision: value.revision as number }),
-		...(value.digest !== undefined && { digest: value.digest as string }),
+		...(typeof value.follows === "boolean" && { follows: value.follows }),
+		...readStoredView(value),
 	};
 }
 export function readLiveConfig(value: unknown): LiveConfig {
@@ -181,24 +194,25 @@ function readLiveClaim(value: Record<string, unknown>): Extract<LiveAction, { op
 		...(value.label === undefined ? {} : { label: value.label as string }),
 	};
 }
+function readNavigation(value: Record<string, unknown>): Extract<LiveAction, { op: "navigate" }> {
+	if (
+		!storeId(value.storeId) ||
+		!documentId(value.documentId) ||
+		((value.revision !== undefined || value.digest !== undefined) &&
+			(!generation(value.revision) || value.revision < 1 || !liveDigest(value.digest)))
+	)
+		throw new Error("Navigation requires an exact store and document. A pinned revision also needs its digest.");
+	return {
+		op: "navigate",
+		storeId: value.storeId,
+		documentId: value.documentId,
+		...(value.revision !== undefined && { revision: value.revision as number, digest: value.digest as string }),
+	};
+}
 export function readLiveAction(value: unknown): LiveAction {
 	if (!isRecord(value)) throw new Error("Invalid live Markdown action.");
 	if (value.op === "read") return { op: "read" };
-	if (value.op === "navigate") {
-		if (
-			!storeId(value.storeId) ||
-			!documentId(value.documentId) ||
-			((value.revision !== undefined || value.digest !== undefined) &&
-				(!generation(value.revision) || value.revision < 1 || !liveDigest(value.digest)))
-		)
-			throw new Error("Navigation requires an exact store and document. A pinned revision also needs its digest.");
-		return {
-			op: "navigate",
-			storeId: value.storeId,
-			documentId: value.documentId,
-			...(value.revision !== undefined && { revision: value.revision as number, digest: value.digest as string }),
-		};
-	}
+	if (value.op === "navigate") return readNavigation(value);
 	if (value.op === "release") {
 		if (!liveId(value.claimId)) throw new Error("Invalid live Markdown claim identity.");
 		return { op: "release", claimId: value.claimId };
@@ -243,6 +257,27 @@ export function readLiveAction(value: unknown): LiveAction {
 		edits,
 	};
 }
+function readNavigationResult(
+	value: Record<string, unknown>,
+	action: Extract<LiveAction, { op: "navigate" }>,
+): LiveResult {
+	const binding = readLiveBinding(value);
+	const view = readLiveView(value.view);
+	if (
+		value.handle !== liveHandle(binding) ||
+		!["published", "response", "file"].includes(view.kind) ||
+		view.mode !== "reading" ||
+		view.dirty ||
+		view.conflict ||
+		view.storeId !== action.storeId ||
+		view.documentId !== action.documentId ||
+		!view.revision ||
+		!view.digest ||
+		(action.revision !== undefined && (action.revision !== view.revision || action.digest !== view.digest))
+	)
+		throw new Error("The reader did not confirm the requested document and revision.");
+	return { status: "navigated", ...binding, handle: value.handle, view };
+}
 export function readLiveResult(value: unknown, action: LiveAction): LiveResult {
 	if (!isRecord(value)) throw new Error("Invalid native live result.");
 	if (
@@ -251,24 +286,7 @@ export function readLiveResult(value: unknown, action: LiveAction): LiveResult {
 		value.message.length <= 1000
 	)
 		return { status: value.status as "error", message: value.message };
-	if (action.op === "navigate" && value.status === "navigated") {
-		const binding = readLiveBinding(value);
-		const view = readLiveView(value.view);
-		if (
-			value.handle !== liveHandle(binding) ||
-			!["published", "response", "file"].includes(view.kind) ||
-			view.mode !== "reading" ||
-			view.dirty ||
-			view.conflict ||
-			view.storeId !== action.storeId ||
-			view.documentId !== action.documentId ||
-			!view.revision ||
-			!view.digest ||
-			(action.revision !== undefined && (action.revision !== view.revision || action.digest !== view.digest))
-		)
-			throw new Error("The reader did not confirm the requested document and revision.");
-		return { status: "navigated", ...binding, handle: value.handle, view };
-	}
+	if (action.op === "navigate" && value.status === "navigated") return readNavigationResult(value, action);
 	if (
 		action.op === "claim" &&
 		value.status === "claimed" &&
