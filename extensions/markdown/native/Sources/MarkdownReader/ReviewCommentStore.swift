@@ -15,6 +15,8 @@ struct ReviewComment: Codable, Sendable {
     let text: String
     var quote: String? = nil
     var sourceAnchor: String? = nil
+    var anchorDigest: String? = nil
+    var passageAnchor: ReviewPassageAnchor? = nil
     var start: Int? = nil
     var end: Int? = nil
     var madeOnRevision: Int? = nil
@@ -48,23 +50,8 @@ struct ReviewCommentStore: Sendable {
     private static let byteLimit = 4 * 1024 * 1024
     private static let countLimit = 16_384
 
-    private func file(for scope: ReviewScope) throws -> URL {
-        let parts = [scope.conversation, scope.document]
-        guard parts.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf8.count <= 16_384 }) else {
-            throw ReviewStoreError.invalid
-        }
-        // Length framing preserves the exact UTF-8 bytes, including separators in identifiers.
-        var key = Data()
-        for part in parts {
-            key.append(contentsOf: "\(part.utf8.count):".utf8)
-            key.append(contentsOf: part.utf8)
-        }
-        return directory.appendingPathComponent(String(Digest.sha256(key).dropFirst("sha256:".count)) + ".json")
-    }
-
     func load(scope: ReviewScope) throws -> ReviewSheet {
-        let file = try file(for: scope)
-        guard try privateDirectoryExists() else { return ReviewSheet(revision: 0, comments: []) }
+        let file = try ReviewRecordFile(directory: directory, scope: scope, suffix: ".json")
         return try read(file)
     }
 
@@ -73,8 +60,8 @@ struct ReviewCommentStore: Sendable {
             throw ReviewStoreError.invalid
         }
         try Self.validateGroup(comments)
-        let file = try file(for: scope)
-        try withWriter(file) {
+        let file = try ReviewRecordFile(directory: directory, scope: scope, suffix: ".json")
+        try file.withWriter {
             var sheet = try read(file)
             let members = comments.sorted { $0.ordinal < $1.ordinal }
             let prior = sheet.comments.filter { $0.threadId == members[0].threadId }.sorted { $0.ordinal < $1.ordinal }
@@ -96,8 +83,8 @@ struct ReviewCommentStore: Sendable {
 
     func set(scope: ReviewScope, id: String, state: String, expectedVersion: Int) throws -> ReviewComment {
         guard ["open", "closed"].contains(state), expectedVersion > 0, Self.validId(id) else { throw ReviewStoreError.invalid }
-        let file = try file(for: scope)
-        return try withWriter(file) {
+        let file = try ReviewRecordFile(directory: directory, scope: scope, suffix: ".json")
+        return try file.withWriter {
             var sheet = try read(file)
             guard let index = sheet.comments.firstIndex(where: { $0.commentId == id }) else { throw ReviewStoreError.missing }
             guard sheet.comments[index].version == expectedVersion else { throw ReviewStoreError.stale }
@@ -133,7 +120,10 @@ struct ReviewCommentStore: Sendable {
                   !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   item.text.utf8.count <= 131_072 else { throw ReviewStoreError.invalid }
             if let quote = item.quote, quote.isEmpty || quote.utf8.count > 8192 { throw ReviewStoreError.invalid }
-            if item.kind == "overall", item.quote != nil || item.sourceAnchor != nil { throw ReviewStoreError.invalid }
+            if let digest = item.anchorDigest, item.sourceAnchor == nil || digest.utf8.count != 71 || !digest.hasPrefix("sha256:") ||
+                !digest.utf8.dropFirst(7).allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) { throw ReviewStoreError.invalid }
+            if let passageAnchor = item.passageAnchor, !passageAnchor.valid(raw: item.sourceAnchor, quote: item.quote) { throw ReviewStoreError.invalid }
+            if item.kind == "overall", item.quote != nil || item.sourceAnchor != nil || item.passageAnchor != nil { throw ReviewStoreError.invalid }
             switch (item.sourceAnchor, item.start, item.end) {
             case (nil, nil, nil): break
             case let (anchor?, start?, end?):
@@ -144,28 +134,10 @@ struct ReviewCommentStore: Sendable {
         }
     }
 
-    private func privateDirectoryExists() throws -> Bool {
-        var info = stat()
-        guard lstat(directory.path, &info) == 0 else {
-            if errno == ENOENT { return false }
-            throw Self.ioError()
-        }
-        guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else {
-            throw ReviewStoreError.invalid
-        }
-        return true
-    }
-
-    private func read(_ file: URL) throws -> ReviewSheet {
-        var info = stat()
-        guard lstat(file.path, &info) == 0 else {
-            if errno == ENOENT { return ReviewSheet(revision: 0, comments: []) }
-            throw Self.ioError()
-        }
-        guard info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else { throw ReviewStoreError.invalid }
-        let data = try FileAccess.readRegularFile(file, limit: Self.byteLimit, missing: .notFound("review sheet"))
+    private func read(_ file: ReviewRecordFile) throws -> ReviewSheet {
+        guard let data = try file.read(limit: Self.byteLimit) else { return ReviewSheet(revision: 0, comments: []) }
         // Codable ignores extra fields. Refuse to rewrite a sheet with a shape this reader does not know.
-        let allowed: Set<String> = ["commentId", "threadId", "kind", "ordinal", "text", "quote", "sourceAnchor", "start", "end", "madeOnRevision", "commentState", "version"]
+        let allowed: Set<String> = ["commentId", "threadId", "kind", "ordinal", "text", "quote", "sourceAnchor", "anchorDigest", "passageAnchor", "start", "end", "madeOnRevision", "commentState", "version"]
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(obj.keys) == ["revision", "comments"],
               let entries = obj["comments"] as? [[String: Any]], entries.count <= Self.countLimit,
               entries.allSatisfy({ allowed.isSuperset(of: $0.keys) && !$0.values.contains(where: { $0 is NSNull }) }) else { throw ReviewStoreError.invalid }
@@ -184,12 +156,68 @@ struct ReviewCommentStore: Sendable {
         return sheet
     }
 
-    private func withWriter<T>(_ file: URL, _ body: () throws -> T) throws -> T {
+    private func publish(_ sheet: inout ReviewSheet, to file: ReviewRecordFile) throws {
+        guard sheet.revision < Int.max else { throw ReviewStoreError.limit }
+        sheet.revision += 1
+        let bytes = try JSONEncoder().encode(sheet)
+        // Reserve space on admission so a full sheet still permits closing and reopening its comments.
+        let digits = String(Int.max).count
+        let growth = sheet.comments.reduce(digits - String(sheet.revision).count) { sum, item in
+            sum + digits - String(item.version).count + (item.commentState == "open" ? 2 : 0)
+        }
+        guard bytes.count <= Self.byteLimit - growth else { throw ReviewStoreError.limit }
+        try file.replace(bytes)
+    }
+}
+
+/// Both review stores use private files and atomic replacement. Their suffixes select independent records and locks.
+struct ReviewRecordFile: Sendable {
+    private let url: URL
+    private var directory: URL { url.deletingLastPathComponent() }
+
+    init(directory: URL, scope: ReviewScope, suffix: String) throws {
+        let parts = [scope.conversation, scope.document]
+        guard parts.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf8.count <= 16_384 }) else {
+            throw ReviewStoreError.invalid
+        }
+        // Length framing preserves the exact UTF-8 bytes, including separators in identifiers.
+        var key = Data()
+        for part in parts {
+            key.append(contentsOf: "\(part.utf8.count):".utf8)
+            key.append(contentsOf: part.utf8)
+        }
+        self.url = directory.appendingPathComponent(String(Digest.sha256(key).dropFirst("sha256:".count)) + suffix)
+    }
+
+    private func privateDirectoryExists() throws -> Bool {
+        var info = stat()
+        guard lstat(directory.path, &info) == 0 else {
+            if errno == ENOENT { return false }
+            throw Self.ioError()
+        }
+        guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else {
+            throw ReviewStoreError.invalid
+        }
+        return true
+    }
+
+    func read(limit: Int) throws -> Data? {
+        guard try privateDirectoryExists() else { return nil }
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else {
+            if errno == ENOENT { return nil }
+            throw Self.ioError()
+        }
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else { throw ReviewStoreError.invalid }
+        return try FileAccess.readRegularFile(url, limit: limit, missing: .notFound("review data"))
+    }
+
+    func withWriter<T>(_ body: () throws -> T) throws -> T {
         if try !privateDirectoryExists() {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             guard try privateDirectoryExists() else { throw ReviewStoreError.invalid }
         }
-        let fd = open(file.deletingPathExtension().appendingPathExtension("lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
+        let fd = open(url.deletingPathExtension().appendingPathExtension("lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
         guard fd >= 0 else { throw Self.ioError() }
         defer { close(fd) }
         var info = stat()
@@ -205,24 +233,17 @@ struct ReviewCommentStore: Sendable {
         return try body()
     }
 
-    private func publish(_ sheet: inout ReviewSheet, to file: URL) throws {
-        guard sheet.revision < Int.max else { throw ReviewStoreError.limit }
-        sheet.revision += 1
-        let bytes = try JSONEncoder().encode(sheet)
-        // Reserve space on admission so a full sheet still permits closing and reopening its comments.
-        let digits = String(Int.max).count
-        let growth = sheet.comments.reduce(digits - String(sheet.revision).count) { sum, item in
-            sum + digits - String(item.version).count + (item.commentState == "open" ? 2 : 0)
-        }
-        guard bytes.count <= Self.byteLimit - growth else { throw ReviewStoreError.limit }
-        let tmp = directory.appendingPathComponent(".review-" + UUID().uuidString)
+    func replace(_ bytes: Data) throws {
+        // A crash can leave one unfinished write. The next writer holds the same lock.
+        let tmp = url.appendingPathExtension("pending")
+        guard unlink(tmp.path) == 0 || errno == ENOENT else { throw Self.ioError() }
         let fd = open(tmp.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw Self.ioError() }
         defer { unlink(tmp.path) }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         try handle.write(contentsOf: bytes)
         try handle.close()
-        guard rename(tmp.path, file.path) == 0 else { throw Self.ioError() }
+        guard rename(tmp.path, url.path) == 0 else { throw Self.ioError() }
     }
 
     private static func ioError() -> NSError { NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
