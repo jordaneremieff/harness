@@ -1527,6 +1527,10 @@ describe("agent result cards", () => {
 	});
 });
 
+function assertNoticeFits(card: { render(width: number): readonly string[] }): void {
+	for (const width of [20, 60, 120]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
+}
+
 describe("agent result notice card", () => {
 	it("shows sourced sender names and plain kinds without optional-fact placeholders", () => {
 		const id = "12345678-1234-4234-8234-123456789abc";
@@ -1610,7 +1614,7 @@ describe("agent result notice card", () => {
 			const expanded = renderPeerNoticeCard({ content: "Stored model body", details }, theme, true, cardKeys);
 			assert.ok(expanded);
 			if (Object.keys(details).length) assert.ok(screen(expanded, 240).includes(id));
-			for (const width of [20, 60, 120]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
+			assertNoticeFits(card);
 		}
 	});
 

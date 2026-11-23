@@ -260,7 +260,6 @@ class PeerCardBody implements Component {
 		return PeerCardBody.lines(this.details, width);
 	}
 	private hint(hidden: number): string {
-		if (this.sections.hint) return this.theme.fg("muted", this.sections.hint);
 		return !this.expanded &&
 			(hidden > 0 || this.sections.details !== undefined || this.sections.expandedBody !== undefined)
 			? peerHint(this.theme, this.options.keys, hidden)
@@ -279,7 +278,6 @@ class PeerCardBody implements Component {
 			...shown,
 			...this.detailLines(width),
 			...(this.sections.limit ? new Text(this.theme.fg("warning", this.sections.limit), 0, 0).render(width) : []),
-			...(this.sections.outcome ?? []),
 		];
 		return hint ? [...rows, clipCardLine(hint, width)] : rows;
 	}

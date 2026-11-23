@@ -422,14 +422,17 @@ it("appends a full wake-false notice and its source details without a primary mo
 		"Retained result line.",
 	]);
 	assert.equal(collapsed.filter((line) => /^\.\.\. \(\d+ more lines?, click to expand\)$/u.test(line)).length, 1);
-	assert.equal(collapsed.filter(Boolean).length, 6);
+	const displayBound = `[Truncated: showing 32000 of ${body.length} UTF-16 code units]`;
+	assert.ok(collapsed.includes(displayBound));
+	assert.equal(collapsed.filter(Boolean).length, 7);
 	assert.equal(collapsed.includes("FINAL_RESULT"), false);
 	component.setExpanded(true);
 	const expanded = component
 		.render(160)
 		.map((line) => stripVTControlCharacters(line))
 		.join("\n");
-	assert.match(expanded, /FINAL_RESULT/u);
+	assert.doesNotMatch(expanded, /FINAL_RESULT/u);
+	assert.ok(expanded.includes(displayBound));
 	assert.doesNotMatch(expanded, /to expand|expand for full/u);
 	assert.equal(fixture.customEntries()[0]?.content, body);
 	assert.equal(fixture.requests.length, 0);

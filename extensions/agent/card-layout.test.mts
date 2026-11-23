@@ -1048,7 +1048,11 @@ it("structured error previews remain plain and bounded without losing expanded s
 	};
 	const component = nativeTool("agent_status", { sessionId: identity }, error);
 	assert.match(text(component), /\n\n\s*First diagnostic\n/u);
-	assert.doesNotMatch(text(component), /Second diagnostic|extra|"error"|^\s*…\s*$/mu);
+	const preview = text(component);
+	assert.match(preview, /Second diagnostic\n\s*Third diagnostic/u);
+	assert.equal(preview.match(/^\s*extra\s*$/gmu)?.length, 3);
+	assert.match(preview, /97 more lines/u);
+	assert.doesNotMatch(preview, /"error"|^\s*…\s*$/mu);
 	component.setExpanded(true);
 	assert.match(text(component), /Second diagnostic\n\s*Third diagnostic/u);
 	assert.match(text(component), /extra/u);

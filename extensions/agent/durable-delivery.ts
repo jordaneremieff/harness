@@ -676,6 +676,14 @@ async function checkInCurrent(tx: Tx, conversationId: ConversationId, requestId:
 	return requestHasOpenWork(tx, conversationId, requestId);
 }
 
+function receiptDisplayBody(row: ReceiptRow): string {
+	const { receipt } = row;
+	if (receipt.status === "done") return inlineAnswer(receipt) ?? "";
+	return [row.displayReason ?? receipt.reason, receipt.providerBlock && providerBlockText(receipt.providerBlock)]
+		.filter(Boolean)
+		.join("\n\n");
+}
+
 function receiptFailureText(receipt: DeliveryReceipt, displayReason = receipt.reason): string {
 	return `No answer: ${displayReason ?? "the submission settled unanswered"}${receipt.providerBlock === undefined ? "" : `\n${providerBlockText(receipt.providerBlock)}`}`;
 }
@@ -793,6 +801,27 @@ function reportBody(
 	return {
 		text: `${body.text.slice(0, kept)}\n\n[text truncated] Final report continues: ${inspectCallText({ ...facts.read, offset: kept })}`,
 		truncated: true,
+	};
+}
+
+function reportDisplayBody(report: DeliveryReport, finalReport: FinalReportDeliveryFacts | undefined) {
+	const authored = report.operatorMessage ?? (report.threadId === undefined ? report.message : "");
+	const operatorMessage =
+		report.threadId === undefined ? peerTextPrefix(authored) : threadExcerpt(authored, PEER_TEXT_LIMIT).text;
+	return {
+		operatorMessage,
+		operatorTextTruncated: operatorMessage !== authored,
+		...(finalReport === undefined
+			? {}
+			: {
+					finalReport: {
+						requestId: finalReport.requestId,
+						...(finalReport.status === undefined ? {} : { status: finalReport.status }),
+					},
+					...(operatorMessage === authored
+						? {}
+						: { finalReportContinuation: { ...finalReport.read, offset: operatorMessage.length } }),
+				}),
 	};
 }
 
@@ -1578,11 +1607,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const arrivals = fallback ? {} : arrivedReferences(marks);
 		if (row.kind === "receipt") {
 			const { receipt } = row;
-			const reason = row.displayReason ?? receipt.reason;
-			const authored =
-				receipt.status === "done"
-					? (inlineAnswer(receipt) ?? "")
-					: [reason, receipt.providerBlock && providerBlockText(receipt.providerBlock)].filter(Boolean).join("\n\n");
+			const authored = receiptDisplayBody(row);
 			const operatorMessage = peerTextPrefix(authored);
 			return {
 				...shared,
@@ -1600,9 +1625,6 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			} as unknown as JsonValue;
 		}
 		const report = row.report;
-		const authored = report.operatorMessage ?? (report.threadId === undefined ? report.message : "");
-		const operatorMessage =
-			report.threadId === undefined ? peerTextPrefix(authored) : threadExcerpt(authored, PEER_TEXT_LIMIT).text;
 		return {
 			...shared,
 			...passiveThreadDetails(row, host, metadata, fallback),
@@ -1611,19 +1633,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			requestId: report.requestId,
 			senderIdentity: report.senderIdentity,
 			message: body.text,
-			operatorMessage,
-			operatorTextTruncated: operatorMessage !== authored,
-			...(finalReport === undefined
-				? {}
-				: {
-						finalReport: {
-							requestId: finalReport.requestId,
-							...(finalReport.status === undefined ? {} : { status: finalReport.status }),
-						},
-						...(operatorMessage === authored
-							? {}
-							: { finalReportContinuation: { ...finalReport.read, offset: operatorMessage.length } }),
-					}),
+			...reportDisplayBody(report, finalReport),
 			...reportOptionalDetails(report),
 			replyTo: report.replyTo,
 			acknowledged: report.acknowledged,

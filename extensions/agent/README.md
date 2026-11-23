@@ -761,8 +761,8 @@ The view has a top rule, the list, and the selected agent's pane:
   rail, the state glyph and the label:
   bold when selected, in the text colour while the agent works or has an error,
   muted otherwise. The label is the display name, else the `@handle`, else the
-  quoted first input, else the folder; duplicate labels add the shortest
-  identity suffix that tells them apart. Row 1 ends with the age of an agent
+  quoted first input, else the folder. Duplicate labels add the full identity;
+  the available width determines where the row ends. Row 1 ends with the age of an agent
   that is not at work, the time since its last recorded change, when the list
   is at least 24 columns wide; list ages stay relative while other times show
   the date. Row 2 is the model as the main session's status line writes it,
