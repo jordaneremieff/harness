@@ -712,7 +712,7 @@ describe("unified tools and command gates", () => {
 				assert.match(frameText(frame), /"preview": true/);
 			},
 		);
-		assert.deepEqual(notifications, []);
+		assert.equal(notifications.length, 0);
 		assert.deepEqual(pi.entries, []);
 		const before = await storedEvents(dir);
 		for (const invalid of [
