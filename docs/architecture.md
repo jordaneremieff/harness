@@ -273,9 +273,9 @@ documented surface:
   capability bundles supplied by extension factories to agent hosts.
 - [Tool display](conventions/tool-display.md): owner tool-card renderers for
   ordinary chat, the dashboard and the attached terminal.
-- [Application messages](conventions/application-messages.md): messages that
-  applications such as the Markdown reader and Explorer send into the
-  conversation through the agent extension's receiver, and their replies.
+- [Application messages](conventions/application-messages.md): the message
+  format that applications such as the Markdown reader and Explorer place in
+  the conversation themselves, and how each follows its own replies.
 - [Operator views](conventions/operator-panels.md): the view shape and
   interaction rules that each extension implements for its own views, and the
   owner views served in the attached terminal.
