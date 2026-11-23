@@ -150,12 +150,8 @@ retry with the same inputs sends the message of its first submission, even when 
 changed since. The live bridge accepts up to the
 batch limit. A bridge with a smaller limit refuses a larger request without submitting it.
 
-The page holds pending comments, and each batch's overall comment, by document in memory
-until the pane closes. It maintains
-ranges through edits. On refresh it matches the saved Markdown source slice at its previous
-range or at its only occurrence. Without a match, the quote stays in the batch without a
-highlight, and the message carries the rendered quote. Pending comments and the passages
-of questions that the conversation did not refuse keep marks while their cards are closed.
+The page holds each batch and its overall comment by document. It maintains ranges through edits. On a new revision, a passage needs matching context and heading evidence, not just matching words elsewhere. Without a match, the quote stays in the batch without a
+highlight, and the message carries the rendered quote. Open pending comments and delivered questions keep their marks when the person dismisses their cards.
 A plain click on a mark in Reading, or the mark's item in the page menu, opens its card
 again; where marks overlap, each further click opens the next card.
 A definite refusal restores the batch with its overall comment. For an unconfirmed request, native returns
@@ -168,6 +164,16 @@ Each thread keeps its first request identity, while follow-ups receive new reque
 Native emits `promptState` with the question and thread identities and the route-reported answer text. A late send receipt cannot hide an answer already in the card. If a running host cannot identify the question, the card does not quote unscoped chat activity as an answer. An agent edit
 names a thread only when one document thread is admitted or active. The page draws the comment
 interface and timeline. The quote is context, not an edit range or instruction.
+
+### Review comment state
+
+Card visibility, delivery and review status are independent. Closing an unsent annotation or overall comment parks it in its document's private Ask state. Send uses only the active batch. Closing a delivered item removes its mark but never cancels, retries, deletes or interrupts the original thread. Each numbered annotation and the overall comment has its own state.
+
+For a stored document opened from a stable conversation, a separate private recovery file holds the definitely unsent batch, overall text and parked items. It contains no request token, submitted review or reply. Reopening that document from the same conversation restores its pending items without dispatch. Every write checks the previous recovery version. Before first dispatch the reader removes the active batch from that file, retaining only parked items. A definite refusal can return items to the batch; an uncertain delivery cannot restore them as new. Clearing a batch keeps a version marker, not a second copy of its text. Other documents and older hosts without a stable conversation keep pane-only pending state.
+
+After confirmed delivery, the reader retains the submitted comment, quote, authored revision and private passage anchor under `Reviews/` in the reader state directory. It stores no reply transcript, follow-up draft or unconfirmed request there. The stable conversation scope and document identity select one sheet, including across stored revisions and separately launched panes. Local files use their canonical reference. A scratchpad or private copy uses its private draft branch, not the source document's identity. A running host without a stable conversation scope has only the pane's private state. Files and locks have private permissions; sheet writes are atomic. A sheet has a 4 MiB limit and allows up to 16,384 items. A full or unreadable sheet does not evict comments or turn a delivered message into a failed send.
+
+`markdown_live` lists sent items with `comments` and changes an individual item with `setComment` on its exact live handle. Each list continuation checks the same sheet version; each change checks the item's version. A stale write leaves the current state intact. Agents see only the delivered comment and rendered quote, never a private draft or the source anchor used to locate its mark. Status changes notify other reader panes to reload their own matching sheet. The original conversation owns the full reply after a pane closes.
 
 ## Recovery, saving and reading state
 
