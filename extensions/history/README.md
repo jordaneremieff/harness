@@ -178,26 +178,22 @@ directly to that position; it does not walk the values before it.
 
 Both history tools render their own cards in the interactive transcript. The
 [emission convention](../../docs/conventions/emissions.md) defines card
-structure and disclosure. `history_search` expands to readable matches with
-entry identity, error flags, excerpts, pointers and offsets, followed by the
-walked scope and the retained payload.
+structure and disclosure. Both cards show ordinary string IDs and native
+numeric IDs as supplied.
 
-- `history_search` names the literal query, or the bounded listing when the
-  query is omitted, with argument mode, filter, start entry, and continuation
-  qualifiers. Argument matches add the called tool's name to their identity
-  row, and the scope row counts skipped argument values. The
-  outcome states matches returned, entries visited, and the walk status, plus
-  the returned entry types; a bounded type list marks each omitted type. Each
-  count agrees with its noun. An exhausted empty page reads as absence only
-  within the walked scope; a limit status keeps the continuation visible, so a
-  bounded page never reads as the end of the ancestry.
-- `history_read` names the ordinary entry ID or native `#` entry ID, the
-  pointer and the requested offset. The outcome distinguishes a complete
-  field, a page, an absent field and withheld evidence. For a page, the card
-  states the next offset and expansion exposes the complete `next` selector.
-  Expansion shows the returned text or descriptors and any remaining result
-  details. A display limit does not change the retained result or imply that
-  the source has another page.
+- `history_search` shows the query or listing, start entry, filter and cursor.
+  The outcome states the scope visited and why the walk stopped. Expansion
+  shows the retained excerpts with their offsets, the matched entry and tool
+  identity, and the continuation call with the original query and limits.
+  Skipped argument values and known gaps in ancestry are not continuations.
+- `history_read` shows the requested entry, pointer and offset. The outcome
+  distinguishes a complete field, a page, an absent field, withheld evidence,
+  and a structured value whose keys are not enumerated. Expansion shows the
+  returned text or descriptors and any guidance for a further read. If the
+  read returned a page, expansion supplies the continuation call.
+
+Stored source truncation, a producer page, and a terminal display limit are
+separate facts. Expansion does not recover evidence absent from the result.
 
 ## Scope and evidence
 

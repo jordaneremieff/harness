@@ -8,410 +8,30 @@ import {
 import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const DISPLAY_LIMIT = 32_000;
-const EVIDENCE_MATCHES = 3;
+const PREVIEW_LINES = 5;
 
-/** Controls render as text, never as terminal commands; newlines keep structure. */
-function escapeControls(value: string): string {
-	return value.replace(/[\p{Cc}\p{Cf}]/gu, (char) => {
-		if (char === "\n") return char;
-		if (char === "\t") return "\\t";
-		if (char === "\r") return "\\r";
-		return `\\u{${(char.codePointAt(0) ?? 0).toString(16)}}`;
-	});
-}
-
-/** Final card-row text: escape every value and keep the row on one line. */
-function rowSafe(value: string): string {
-	return escapeControls(value).replace(/\s+/gu, " ").trim();
-}
-
-/** Longest prefix that never splits a surrogate pair. */
-function clip(value: string, limit: number): string {
-	const end = Math.min(value.length, limit);
-	return value.slice(0, /[\uD800-\uDBFF]/u.test(value[end - 1] ?? "") ? end - 1 : end);
-}
-
-/** Single-line preview plus whether content was dropped. */
-function previewMark(value: string, limit: number): { text: string; clipped: boolean } {
-	const prefix = clip(value, limit);
-	const flat = escapeControls(prefix).replace(/\s+/gu, " ").trim();
-	const clipped = value.length > prefix.length;
-	return { text: clipped ? `${flat}…` : flat, clipped };
-}
-
-/** Escaped body with a display bound; the full text stays in native tool history. */
-function boundedBody(value: string): string {
-	const prefix = clip(value, DISPLAY_LIMIT);
-	return `${escapeControls(prefix)}${value.length > prefix.length ? "\n[Display limit; full text remains in native tool history.]" : ""}`;
-}
-
-function textContent(result: AgentToolResult<unknown>): string {
-	return result.content
-		.filter((block) => block.type === "text")
-		.map((block) => block.text)
-		.join("\n");
-}
-
-/** The tool text is one JSON object; a malformed payload falls back to a preview. */
-function payload(result: AgentToolResult<unknown>): Record<string, unknown> | undefined {
-	try {
-		const parsed: unknown = JSON.parse(textContent(result));
-		if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-			return parsed as Record<string, unknown>;
-		}
-	} catch {
-		// Malformed or truncated text uses the bounded preview instead.
-	}
-	return undefined;
-}
-
+type RecordValue = Record<string, unknown>;
 type Hints = Partial<Pick<KeybindingHints, "keyText" | "keyHint">>;
 
-/** The host injects keyText with the operator's configured bindings; without it the hint names no key. */
-function expandHint(subject: string, hints: Hints): string {
-	const key = hints.keyText?.("app.tools.expand");
-	return key ? `${key} to expand ${subject}` : `Expand for ${subject}`;
-}
-
-/** "1 match" / "2 matches": the count agrees with its noun. */
-function countNoun(n: number, singular: string, plural: string): string {
-	return `${n} ${n === 1 ? singular : plural}`;
-}
-
-function pluralType(type: string): string {
-	if (type.endsWith("y")) return `${type.slice(0, -1)}ies`;
-	if (type.endsWith("s")) return type;
-	return `${type}s`;
-}
-
-function textComponent(text: string, previous?: Component): Text {
-	const component = previous instanceof Text ? previous : new Text("", 0, 0);
-	component.setText(text);
-	return component;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: undefined;
-}
-
-function field(value: Record<string, unknown>, key: string): unknown {
-	return value[key];
-}
-
-function stringField(value: Record<string, unknown>, key: string): string {
-	const item = field(value, key);
-	return typeof item === "string" ? item : "";
-}
-
-function numberField(value: Record<string, unknown>, key: string): number | undefined {
-	const item = field(value, key);
-	return typeof item === "number" && Number.isFinite(item) ? item : undefined;
-}
-
-interface ReadCardState {
-	readResultArrived?: boolean;
+interface CardState {
+	resultArrived?: boolean;
 }
 
 export interface CallContext extends Hints {
 	expanded?: boolean;
 	argsComplete?: boolean;
 	lastComponent?: Component;
-	state?: ReadCardState;
+	state?: CardState;
 }
 
 export interface ResultContext extends Hints {
 	isError: boolean;
 	args?: unknown;
 	lastComponent?: Component;
-	state?: ReadCardState;
+	state?: CardState;
 }
 
-type OutcomeColor = "success" | "muted" | "warning" | "error";
-
-/** Heading row plus one qualifier row; the hint rides the qualifier row. */
-function callCard(
-	name: string,
-	subject: string,
-	qualifiers: string[],
-	hint: boolean,
-	args: unknown,
-	theme: Theme,
-	context: CallContext,
-): Text {
-	const heading =
-		theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${rowSafe(subject)}`) : "");
-	if (context.expanded) {
-		return textComponent(
-			[heading, theme.fg("toolOutput", boundedBody(JSON.stringify(args ?? {}, null, 2)))].join("\n"),
-			context.lastComponent,
-		);
-	}
-	const detail = qualifiers.join(" · ");
-	const line = detail
-		? theme.fg("muted", rowSafe(detail)) + (hint ? theme.fg("dim", ` · ${expandHint("arguments", context)}`) : "")
-		: hint
-			? theme.fg("dim", expandHint("arguments", context))
-			: "";
-	return textComponent(line ? `${heading}\n${line}` : heading, context.lastComponent);
-}
-
-/** Outcome row, an optional summary row, and the expanded body; the hint rides the last collapsed row. */
-function resultCard(
-	outcome: { color: OutcomeColor; line: string },
-	second: string,
-	hint: boolean,
-	body: string,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Text {
-	const lines = [`\n${theme.fg(context.isError ? "error" : outcome.color, rowSafe(outcome.line))}`];
-	if (options.expanded) {
-		if (body) lines.push(theme.fg("toolOutput", boundedBody(body)));
-	} else {
-		const hintSuffix = hint ? theme.fg("dim", `${second ? " · " : ""}${expandHint("result", context)}`) : "";
-		const row = second ? theme.fg("muted", rowSafe(second)) + hintSuffix : hintSuffix;
-		if (row) lines.push(row);
-	}
-	return textComponent(lines.join("\n"), context.lastComponent);
-}
-
-/** Collapsed errors show one clipped line; the expanded card retains the full diagnostic. */
-function errorCard(
-	name: string,
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Text {
-	const text = textContent(result);
-	const first = previewMark(text.split(/\r?\n/, 1)[0] ?? "", 300).text || `${name} did not complete`;
-	return resultCard({ color: "error", line: first }, "", false, text, options, theme, context);
-}
-
-function partialCard(line: string, theme: Theme, context: ResultContext): Text {
-	return textComponent(`\n${theme.fg("warning", line)}`, context.lastComponent);
-}
-
-function filterLabel(filter: unknown): string {
-	const value = asRecord(filter);
-	if (!value) return "";
-	const source = stringField(value, "source");
-	if (!source) return "";
-	const toolName =
-		typeof value.toolName === "string" && value.toolName ? `(${previewMark(value.toolName, 60).text})` : "";
-	const errorsOnly = value.errorsOnly === true ? " errors only" : "";
-	return `filter ${source}${toolName}${errorsOnly}`;
-}
-
-/** Entry kind, role or tool, time, and error flag: the identity a reader needs first. */
-function entryIdentity(entry: Record<string, unknown>): string {
-	const kind = stringField(entry, "type") || stringField(entry, "kind");
-	const role = stringField(entry, "role");
-	const tool = stringField(entry, "toolName");
-	const actor = tool ? `tool ${tool}` : role;
-	const error = field(entry, "isError") === true ? "error" : "";
-	const timestamp = stringField(entry, "timestamp");
-	const time = timestamp ? previewMark(timestamp, 40).text : "";
-	return [kind, actor, error, time]
-		.filter(Boolean)
-		.map((part) => rowSafe(part))
-		.join(" · ");
-}
-
-/** Stored entry ID: native IDs are numbers and read as ranks; ordinary IDs stay verbatim. */
-function entryLabel(id: unknown): string {
-	if (typeof id === "number" && Number.isFinite(id)) return `#${id}`;
-	return previewMark(String(id ?? ""), 48).text;
-}
-
-function continuationWord(value: Record<string, unknown>): string {
-	const next = field(value, "next");
-	return next !== null && next !== undefined ? "continuation available" : "";
-}
-
-/** The subject is the literal query, or the bounded listing when the query is omitted. */
-export function renderSearchCall(input: unknown, theme: Theme, context: CallContext): Component {
-	const args = asRecord(input);
-	const query = typeof args?.query === "string" ? previewMark(args.query, 64) : { text: "", clipped: false };
-	const subject = query.text ? `"${query.text}"` : "listing";
-	const qualifiers: string[] = [];
-	let hint = query.clipped;
-	if (args?.mode === "arguments") qualifiers.push("in tool arguments");
-	const filter = filterLabel(args?.filter);
-	if (filter) qualifiers.push(filter);
-	if (typeof args?.fromId === "string" && args.fromId) {
-		const from = previewMark(args.fromId, 48);
-		qualifiers.push(`from ${from.text}`);
-		hint = hint || from.clipped;
-	}
-	const position = asRecord(args?.position);
-	if (position) {
-		qualifiers.push(`continuation ${positionLabel(position)} offset ${args?.offset ?? 0}`);
-	} else if (typeof args?.slot === "number" || typeof args?.offset === "number") {
-		qualifiers.push(`continuation slot ${args?.slot ?? 0} offset ${args?.offset ?? 0}`);
-	}
-	if (
-		args?.maxVisits !== undefined ||
-		args?.maxScanBytes !== undefined ||
-		args?.maxMatches !== undefined ||
-		args?.maxOutputBytes !== undefined
-	) {
-		hint = true;
-	}
-	return callCard("history_search", subject, qualifiers, hint, input, theme, context);
-}
-
-/** A continuation position: native message index, content block, and argument index path. */
-function positionLabel(position: Record<string, unknown>): string {
-	const message = numberField(position, "message");
-	const block = numberField(position, "block");
-	const path = Array.isArray(position.path) ? position.path.filter((item) => typeof item === "number") : [];
-	return (
-		[
-			message !== undefined ? `message ${message}` : "",
-			block !== undefined ? `block ${block}` : "",
-			path.length > 0 ? previewMark(`path ${path.join("/")}`, 48).text : "",
-		]
-			.filter(Boolean)
-			.join(" ") || "position"
-	);
-}
-
-const SEARCH_STATUS: Record<string, string> = {
-	ancestry_exhausted: "ancestry exhausted",
-	visit_limit: "visit limit",
-	node_limit: "node limit",
-	scan_limit: "scan limit",
-	slot_limit: "slot limit",
-	match_limit: "match limit",
-	output_limit: "output limit",
-	unknown_entry: "unknown entry",
-	missing_parent: "missing parent",
-	cycle: "cycle",
-};
-
-function searchColor(status: string, matches: number): OutcomeColor {
-	if (status === "ancestry_exhausted") return matches > 0 ? "success" : "muted";
-	return "warning";
-}
-
-/** Count the entry types the search page already reports, and mark a bounded list. */
-function typeTally(matches: unknown[]): string {
-	const counts = new Map<string, number>();
-	for (const match of matches) {
-		const entry = asRecord(asRecord(match)?.entry);
-		const type = entry ? stringField(entry, "type") || stringField(entry, "kind") : "";
-		if (type) counts.set(type, (counts.get(type) ?? 0) + 1);
-	}
-	const entries = [...counts.entries()];
-	const shown = entries
-		.slice(0, 4)
-		.map(([type, count]) => countNoun(count, type, pluralType(type)))
-		.join(", ");
-	const omitted = entries.length - 4;
-	if (omitted > 0) return `${shown}, +${omitted} more`;
-	return shown;
-}
-
-/** One match as readable evidence: identity, excerpt, then pointer and offsets. */
-function matchEvidence(matchValue: unknown, index: number): string[] {
-	const match = asRecord(matchValue) ?? {};
-	const entry = asRecord(field(match, "entry")) ?? {};
-	const callName = stringField(asRecord(field(match, "call")) ?? {}, "name");
-	const call = callName ? `call ${rowSafe(previewMark(callName, 60).text)}` : "";
-	const identity = [entryIdentity(entry), call, entryLabel(field(entry, "id"))].filter(Boolean).join(" · ");
-	const lines = [`${index + 1} · ${identity || "entry"}`];
-	const excerpt = stringField(match, "excerpt");
-	if (excerpt) lines.push(`  "${previewMark(excerpt, 160).text}"`);
-	const pointer = stringField(match, "pointer");
-	const start = numberField(match, "offset");
-	const end = numberField(match, "endOffset");
-	const span = start !== undefined && end !== undefined ? `offsets ${start}..${end}` : "";
-	if (pointer) lines.push(rowSafe(`${previewMark(pointer, 96).text}${span ? ` · ${span}` : ""}`));
-	return lines;
-}
-
-/** Readable evidence rows for the shown matches; the scope and retained payload follow separately. */
-function searchEvidence(matches: unknown[]): string {
-	if (matches.length === 0) return "No matches in this page.";
-	const lines = [`Matches (first ${Math.min(EVIDENCE_MATCHES, matches.length)} of ${matches.length}):`];
-	for (const [index, match] of matches.slice(0, EVIDENCE_MATCHES).entries()) lines.push(...matchEvidence(match, index));
-	if (matches.length > EVIDENCE_MATCHES)
-		lines.push(`(+${matches.length - EVIDENCE_MATCHES} more matches in the raw payload)`);
-	return lines.join("\n");
-}
-
-/** Identity, walked scope, and continuation for the page the response actually covers. */
-function searchScope(value: Record<string, unknown>, statusWord: string): string {
-	const parts = [
-		`session ${previewMark(stringField(value, "sessionId") || "(unknown)", 48).text}`,
-		`start ${entryLabel(field(value, "startId")) || "(current leaf)"}`,
-		`${numberField(value, "visited") ?? 0} entries visited`,
-		statusWord,
-	];
-	if (numberField(value, "excluded") !== undefined) parts.push(`${numberField(value, "excluded")} excluded by filter`);
-	const skipped = asRecord(field(value, "skipped"));
-	const unexamined =
-		(skipped ? (numberField(skipped, "depth") ?? 0) : 0) + (skipped ? (numberField(skipped, "pointerLength") ?? 0) : 0);
-	if (unexamined > 0) parts.push(countNoun(unexamined, "argument value skipped", "argument values skipped"));
-	const next = continuationWord(value);
-	if (next) parts.push(next);
-	return parts.join(" · ");
-}
-
-/** The search card reports the walked scope and page status, never a global absence. */
-export function renderSearchResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Component {
-	if (options.isPartial) return partialCard("Searching history...", theme, context);
-	if (context.isError) return errorCard("history_search", result, options, theme, context);
-	const value = payload(result);
-	if (value === undefined) {
-		return resultCard(
-			{ color: "muted", line: previewMark(textContent(result), 160).text || "history_search" },
-			"",
-			false,
-			textContent(result),
-			options,
-			theme,
-			context,
-		);
-	}
-	const status = typeof value.status === "string" ? value.status : "unknown";
-	const matches = Array.isArray(value.matches) ? value.matches : [];
-	const visited = typeof value.visited === "number" ? value.visited : 0;
-	const statusWord = SEARCH_STATUS[status] ?? status;
-	const continuation = continuationWord(value);
-	const expandedBody = [
-		searchEvidence(matches),
-		`Scope: ${searchScope(value, statusWord)}`,
-		"Raw payload (retained):",
-		JSON.stringify(value, null, 2),
-	].join("\n\n");
-	return resultCard(
-		{
-			color: searchColor(status, matches.length),
-			line: `${countNoun(matches.length, "match", "matches")} · ${countNoun(visited, "entry visited", "entries visited")} · ${statusWord}`,
-		},
-		[typeTally(matches), continuation].filter(Boolean).join(" · "),
-		matches.length > 0,
-		expandedBody,
-		options,
-		theme,
-		context,
-	);
-}
-
-const READ_NAME = "history_read";
-const PREVIEW_LINES = 5;
-
-class ReadCard implements Component {
+class HistoryCard implements Component {
 	#layout: (width: number) => string[] = () => [];
 	#width?: number;
 	#lines: string[] = [];
@@ -435,96 +55,313 @@ class ReadCard implements Component {
 	}
 }
 
-function readCard(previous: Component | undefined, layout: (width: number) => string[]): Component {
-	return (previous instanceof ReadCard ? previous : new ReadCard()).update(layout);
+function card(previous: Component | undefined, layout: (width: number) => string[]): Component {
+	return (previous instanceof HistoryCard ? previous : new HistoryCard()).update(layout);
 }
 
-function safeReadText(value: string): string {
+function safeText(value: string): string {
 	return stripTerminalSequences(value).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
 		char === "\n" || char === "\t" ? char : "",
 	);
 }
 
-function readLine(value: string): string {
-	return safeReadText(value).replace(/\s+/gu, " ").trim();
+function oneLine(value: string): string {
+	return safeText(value).replace(/\s+/gu, " ").trim();
 }
 
-function readRequest(input: unknown) {
-	const { entryId, pointer, offset, ...extra } = asRecord(input) ?? {};
-	const subject =
-		typeof entryId === "number" && Number.isSafeInteger(entryId) && entryId > 0
-			? `#${entryId}`
-			: typeof entryId === "string"
-				? readLine(entryId)
-				: "";
-	const facts = [
-		typeof pointer === "string" ? readLine(pointer) : "",
-		typeof offset === "number" && offset > 0 ? `offset ${offset}` : "",
-	]
-		.filter(Boolean)
-		.join(" · ");
-	return { subject, facts, extra };
+/** A copyable selector must preserve characters that cannot be drawn literally. */
+function json(value: unknown, indent?: number): string {
+	return (JSON.stringify(value, null, indent) ?? "").replace(/[\u007f-\u009f\p{Cf}\u2028\u2029]/gu, (char) => {
+		return char
+			.split("")
+			.map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`)
+			.join("");
+	});
 }
 
-function requestHasMore({ subject, facts, extra }: ReturnType<typeof readRequest>, width: number): boolean {
-	return (
-		Object.keys(extra).length > 0 ||
-		(subject !== "" && READ_NAME.length + 1 + visibleWidth(subject) > width) ||
-		visibleWidth(facts) > width
-	);
+function exactLine(value: string): string {
+	return value === oneLine(value) ? value : json(value);
+}
+
+function clip(value: string, limit: number): string {
+	const end = Math.min(value.length, limit);
+	return value.slice(0, /[\uD800-\uDBFF]/u.test(value[end - 1] ?? "") ? end - 1 : end);
 }
 
 function characterCount(value: string): number {
 	return value.length - (value.match(/[\u{10000}-\u{10FFFF}]/gu)?.length ?? 0);
 }
 
-function readLimit(shown: string, total: string): string {
-	return `[Truncated: showing ${characterCount(shown)} of ${characterCount(total)} characters]`;
+function displayLimit(shown: string, total: string): string {
+	return shown.length < total.length
+		? `[Truncated: showing ${characterCount(shown)} of ${characterCount(total)} characters]`
+		: "";
 }
 
-export function renderReadCall(input: unknown, theme: Theme, context: CallContext): Component {
-	const request = readRequest(input);
-	const { subject, facts, extra } = request;
-	const title = theme.fg("toolTitle", theme.bold(READ_NAME));
+function asRecord(value: unknown): RecordValue | undefined {
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as RecordValue) : undefined;
+}
+
+function stringField(value: RecordValue, key: string): string {
+	return typeof value[key] === "string" ? value[key] : "";
+}
+
+function numberField(value: RecordValue, key: string): number | undefined {
+	const item = value[key];
+	return typeof item === "number" && Number.isFinite(item) ? item : undefined;
+}
+
+function countNoun(n: number, singular: string, plural: string): string {
+	return `${n} ${n === 1 ? singular : plural}`;
+}
+
+function entryId(id: unknown): string {
+	if (typeof id === "number" && Number.isSafeInteger(id) && id > 0) return String(id);
+	return typeof id === "string" ? exactLine(id) : "";
+}
+
+function parts(values: string[]): string {
+	return values.filter(Boolean).join(" · ");
+}
+
+function hintLine(theme: Theme, context: Hints, width: number, skipped = 0): string {
+	const key = context.keyText?.("app.tools.expand");
+	const action = key
+		? (context.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
+		: theme.fg("muted", "click to expand");
+	const lead = skipped ? `... (${countNoun(skipped, "more line", "more lines")}, ` : "... (";
+	return truncateToWidth(theme.fg("muted", lead) + action + theme.fg("muted", ")"), width, "…");
+}
+
+function limitRows(theme: Theme, width: number, limit: string): string[] {
+	return limit ? [theme.fg("warning", truncateToWidth(limit, width, "…"))] : [];
+}
+
+interface Request {
+	name: "history_read" | "history_search";
+	subject: string;
+	facts: string;
+	extra: RecordValue;
+}
+
+function requestHasMore({ name, subject, facts, extra }: Request, width: number): boolean {
+	return (
+		Object.keys(extra).length > 0 ||
+		(subject !== "" && name.length + 1 + visibleWidth(subject) > width) ||
+		visibleWidth(facts) > width
+	);
+}
+
+function renderCall(request: Request, theme: Theme, context: CallContext): Component {
+	const { name, subject, facts, extra } = request;
+	const title = theme.fg("toolTitle", theme.bold(name));
 	if (context.expanded) {
 		const heading = title + (subject ? ` ${theme.fg("accent", subject)}` : "");
-		const full = safeReadText(
-			Object.entries(extra)
-				.map(([key, value]) => `  ${readLine(key)}: ${JSON.stringify(value, null, 2)}`)
-				.join("\n"),
-		);
-		const shown = clip(full, DISPLAY_LIMIT);
-		const limit = shown.length < full.length ? readLimit(shown, full) : "";
-		const text = new Text(
-			[heading, facts ? theme.fg("muted", facts) : "", shown ? theme.fg("muted", shown) : ""]
-				.filter(Boolean)
-				.join("\n"),
-			0,
-			0,
-		);
-		return readCard(context.lastComponent, (width) => [
-			...text.render(width),
-			...(limit ? [theme.fg("warning", truncateToWidth(limit, width, "…"))] : []),
-		]);
+		const args = Object.entries(extra)
+			.map(([key, value]) => `  ${exactLine(key)}: ${json(value, 2)}`)
+			.join("\n");
+		const shown = clip(args, DISPLAY_LIMIT);
+		const limit = displayLimit(shown, args);
+		const rows = [heading, facts ? theme.fg("muted", facts) : "", shown ? theme.fg("muted", shown) : ""];
+		const text = new Text(rows.filter(Boolean).join("\n"), 0, 0);
+		return card(context.lastComponent, (width) => [...text.render(width), ...limitRows(theme, width, limit)]);
 	}
-	return readCard(context.lastComponent, (width) => {
-		const room = width - READ_NAME.length - 1;
+	return card(context.lastComponent, (width) => {
+		const room = width - name.length - 1;
 		// Pi runs both renderer factories before draw, including on replay.
 		const hint =
 			context.state &&
-			!context.state.readResultArrived &&
+			!context.state.resultArrived &&
 			requestHasMore(request, width) &&
-			context.keyText?.("app.tools.expand")
-				? [truncateToWidth(readHint(theme, context, 0), width, "…")]
-				: [];
+			context.keyText?.("app.tools.expand");
 		return [
-			width < READ_NAME.length
-				? theme.fg("toolTitle", theme.bold(truncateToWidth(READ_NAME, width, "…")))
+			width < name.length
+				? theme.fg("toolTitle", theme.bold(truncateToWidth(name, width, "…")))
 				: title + (subject && room > 0 ? ` ${theme.fg("accent", truncateToWidth(subject, room, "…"))}` : ""),
 			...(facts ? [theme.fg("muted", truncateToWidth(facts, width, "…"))] : []),
-			...hint,
+			...(hint ? [hintLine(theme, context, width)] : []),
 		];
 	});
+}
+
+function readRequest(input: unknown): Request {
+	const { entryId: id, pointer, offset, ...extra } = asRecord(input) ?? {};
+	return {
+		name: "history_read",
+		subject: entryId(id),
+		facts: parts([
+			typeof pointer === "string" ? exactLine(pointer) : "",
+			typeof offset === "number" && offset > 0 ? `offset ${offset}` : "",
+		]),
+		extra,
+	};
+}
+
+export function renderReadCall(input: unknown, theme: Theme, context: CallContext): Component {
+	return renderCall(readRequest(input), theme, context);
+}
+
+function filterLabel(value: unknown): string {
+	const filter = asRecord(value);
+	if (!filter) return "";
+	const { source, toolName, errorsOnly } = filter;
+	if (typeof source !== "string" || !source) return "";
+	const tool = typeof toolName === "string" && toolName ? `(${exactLine(toolName)})` : "";
+	return `filter ${oneLine(source)}${tool}${errorsOnly === true ? " errors only" : ""}`;
+}
+
+function searchPosition(position: unknown, slot: unknown, offset: unknown): string {
+	const cursor = asRecord(position);
+	const path = Array.isArray(cursor?.path) ? cursor.path.filter((item) => typeof item === "number") : [];
+	return [
+		typeof cursor?.message === "number" ? `message ${cursor.message}` : "",
+		typeof cursor?.block === "number" ? `block ${cursor.block}` : "",
+		path.length ? `path ${path.join("/")}` : "",
+		typeof slot === "number" ? `slot ${slot}` : "",
+		typeof offset === "number" ? `offset ${offset}` : "",
+	]
+		.filter(Boolean)
+		.join(" ");
+}
+
+function searchRequest(input: unknown, argsComplete?: boolean): Request {
+	const { query, fromId, mode, filter, position, slot, offset, ...extra } = asRecord(input) ?? {};
+	const id = entryId(fromId);
+	const cursor = searchPosition(position, slot, offset);
+	return {
+		name: "history_search",
+		subject: typeof query === "string" && query ? json(query) : argsComplete === false ? "" : "listing",
+		facts: parts([
+			mode === "arguments" ? "in tool arguments" : "",
+			filterLabel(filter),
+			id ? `from ${id}` : "",
+			cursor ? `continuation ${cursor}` : "",
+		]),
+		extra,
+	};
+}
+
+export function renderSearchCall(input: unknown, theme: Theme, context: CallContext): Component {
+	return renderCall(searchRequest(input, context.argsComplete), theme, context);
+}
+
+interface ResultView {
+	outcome: string;
+	body: string;
+	details: string;
+	literalOutcome?: string;
+	continuation?: string;
+	limit?: string;
+	countLines?: boolean;
+}
+
+function textContent(result: AgentToolResult<unknown>): string {
+	return result.content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("\n");
+}
+
+/** Both history hosts currently publish their bounded result envelope as JSON text with empty details. */
+function resultPayload(
+	result: AgentToolResult<unknown>,
+	accepts: (value: RecordValue) => boolean,
+): RecordValue | undefined {
+	const evidence = (value: unknown) => {
+		const record = asRecord(value);
+		return record && accepts(record) ? record : undefined;
+	};
+	const typed = evidence(result.details);
+	if (typed) return typed;
+	try {
+		return evidence(JSON.parse(textContent(result)));
+	} catch {
+		return undefined;
+	}
+}
+
+function fallbackResult(result: AgentToolResult<unknown>, error: boolean, name: string): ResultView {
+	const text = safeText(textContent(result));
+	const visible = text.trimStart();
+	const end = visible.indexOf("\n");
+	const first = end === -1 ? visible : visible.slice(0, end);
+	return {
+		outcome: first || (error ? `${name} failed.` : "No history output."),
+		body: "",
+		literalOutcome: first ? text.slice(0, text.length - visible.length + first.length) : undefined,
+		details: end === -1 ? "" : visible.slice(end + 1),
+	};
+}
+
+function renderResult(
+	request: Request,
+	view: ResultView,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: ResultContext,
+): Component {
+	const color = context.isError ? "error" : options.isPartial ? "muted" : "toolOutput";
+	const outcome = view.literalOutcome ?? oneLine(view.outcome);
+	const body = safeText(view.body);
+	const details = safeText(view.details);
+	const continuation = safeText(view.continuation ?? "");
+	// Reserve space for the copyable cursor ahead of optional evidence and metadata.
+	const shownContinuation = clip(continuation, DISPLAY_LIMIT);
+	const shownOutcome = clip(outcome, DISPLAY_LIMIT - shownContinuation.length);
+	const shownBody = clip(body, DISPLAY_LIMIT - shownContinuation.length - shownOutcome.length);
+	const shownDetails = clip(details, DISPLAY_LIMIT - shownContinuation.length - shownOutcome.length - shownBody.length);
+	const limit =
+		displayLimit(
+			shownOutcome + shownBody + shownContinuation + shownDetails,
+			outcome + body + continuation + details,
+		) ||
+		view.limit ||
+		"";
+	if (options.expanded) {
+		const expanded = [shownOutcome, shownBody, shownContinuation, shownDetails].filter(Boolean).join("\n");
+		const text = new Text(theme.fg(color, expanded), 0, 0);
+		return card(context.lastComponent, (width) => ["", ...text.render(width), ...limitRows(theme, width, limit)]);
+	}
+	const collapsedOutcome = oneLine(shownOutcome);
+	return card(context.lastComponent, (width) => {
+		const preview = shownBody
+			? truncateToVisualLines(theme.fg(color, shownBody), PREVIEW_LINES, width, 0, "start")
+			: { visualLines: [], skippedCount: 0 };
+		const hidden =
+			preview.skippedCount > 0 ||
+			shownContinuation !== "" ||
+			shownDetails.trim() !== "" ||
+			visibleWidth(collapsedOutcome) > width ||
+			requestHasMore(request, width);
+		return [
+			"",
+			theme.fg(color, truncateToWidth(collapsedOutcome, width, "…")),
+			...preview.visualLines,
+			...limitRows(theme, width, limit),
+			...(hidden ? [hintLine(theme, context, width, view.countLines ? preview.skippedCount : 0)] : []),
+		];
+	});
+}
+
+function partsOf<T extends string>(args: RecordValue, keys: readonly T[]): RecordValue {
+	return Object.fromEntries(keys.filter((key) => Object.hasOwn(args, key)).map((key) => [key, args[key]]));
+}
+
+function continuationCall(
+	name: string,
+	next: RecordValue | undefined,
+	args: unknown,
+	repeat: readonly string[],
+): string {
+	if (!next) return "";
+	const input = asRecord(args);
+	if (!input && name === "history_search") return `Continuation cursor:\n${json(next, 2)}`;
+	const same = input ? partsOf(input, repeat) : {};
+	return `Continue with ${name}:\n${json({ ...same, ...next }, 2)}`;
+}
+
+function resultDetails(value: RecordValue): string {
+	return Object.keys(value).length ? `Result details:\n${json(value, 2)}` : "";
 }
 
 const READ_STATUS: Record<string, string> = {
@@ -536,19 +373,15 @@ const READ_STATUS: Record<string, string> = {
 	structured_omitted: "Structured value omitted",
 };
 
-function readPayload(result: AgentToolResult<unknown>): Record<string, unknown> | undefined {
-	const evidence = (value: unknown) => {
-		const record = asRecord(value);
-		if (!record || !Object.hasOwn(READ_STATUS, stringField(record, "status"))) return undefined;
-		if ([record.text, record.action, record.reason].some((field) => field !== undefined && typeof field !== "string"))
-			return undefined;
-		return record.items === undefined || Array.isArray(record.items) ? record : undefined;
-	};
-	// Both history hosts currently publish the bounded read envelope as JSON text with empty details.
-	return evidence(result.details) ?? evidence(payload(result));
+function acceptsRead(value: RecordValue): boolean {
+	return (
+		Object.hasOwn(READ_STATUS, stringField(value, "status")) &&
+		[value.text, value.action, value.reason].every((field) => field === undefined || typeof field === "string") &&
+		(value.items === undefined || Array.isArray(value.items))
+	);
 }
 
-function readCount(value: Record<string, unknown>): string {
+function readCount(value: RecordValue): string {
 	if (Array.isArray(value.items)) return countNoun(value.items.length, "item", "items");
 	if (typeof value.text === "string") {
 		const total = numberField(value, "totalCodeUnits");
@@ -562,55 +395,51 @@ function readCount(value: Record<string, unknown>): string {
 	return "";
 }
 
-function readItem(item: unknown): string {
-	const record = asRecord(item);
-	if (!record) return JSON.stringify(item) ?? "";
-	const { pointer, kind, ...extra } = record;
-	const selector = typeof pointer === "string" ? safeReadText(pointer) : "";
-	return [
-		selector === readLine(selector) ? selector : JSON.stringify(selector),
-		typeof kind === "string" ? readLine(kind) : "",
-		Object.keys(extra).length ? JSON.stringify(extra) : "",
-	]
-		.filter(Boolean)
-		.join(" · ");
-}
-
-function readStructured(value: Record<string, unknown>) {
-	const { status, text, items, action, reason, value: scalar, ...metadata } = value;
-	const count = readCount(value);
-	const next = asRecord(value.next);
-	const offset = next ? numberField(next, "offset") : undefined;
-	const continued = offset === undefined ? "" : ` Continue at offset ${offset}.`;
-	const outcome = `${READ_STATUS[String(status)]}${count ? `: ${count}` : ""}.${continued}`;
-	const body = [
-		typeof text === "string" ? text : "",
-		Array.isArray(items) ? items.map(readItem).join("\n") : "",
-		scalar === undefined ? "" : JSON.stringify(scalar),
-		typeof reason === "string" ? reason : "",
-		typeof action === "string" ? action : "",
-	]
-		.filter(Boolean)
-		.join("\n");
-	if (metadata.next === null) delete metadata.next;
+function readItem(item: unknown) {
+	const { pointer, kind, text, value, reason, ...details } = asRecord(item) ?? {};
+	const content = typeof text === "string" ? json(text) : value === undefined ? "" : json(value);
 	return {
-		outcome,
-		body,
-		details: Object.keys(metadata).length ? `Result details:\n${JSON.stringify(metadata, null, 2)}` : "",
-		countLines: !Array.isArray(items),
+		body: parts([
+			typeof pointer === "string" ? exactLine(pointer) : "",
+			typeof kind === "string" ? oneLine(kind) : "",
+			content,
+			typeof reason === "string" ? (reason === "pointerLength" ? "pointer too long" : oneLine(reason)) : "",
+		]),
+		details,
 	};
 }
 
-function readHint(theme: Theme, context: Hints, skipped: number): string {
-	const key = context.keyText?.("app.tools.expand");
-	const action = key
-		? (context.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
-		: theme.fg("muted", "click to expand");
-	return (
-		theme.fg("muted", skipped ? `... (${countNoun(skipped, "more line", "more lines")}, ` : "... (") +
-		action +
-		theme.fg("muted", ")")
+function readView(value: RecordValue, args: unknown): ResultView {
+	const { status, text, items, action, reason, value: scalar, next, ...metadata } = value;
+	const cursor = asRecord(next);
+	const offset = cursor ? numberField(cursor, "offset") : undefined;
+	const count = readCount(value);
+	const continued = offset === undefined ? "" : `; continuation at offset ${offset}`;
+	const entries = Array.isArray(items) ? items.map(readItem) : [];
+	const itemDetails = entries.flatMap(({ details }, index) =>
+		Object.keys(details).length ? [{ item: index + 1, ...details }] : [],
 	);
+	const guide = typeof action === "string" ? action : "";
+	return {
+		outcome: `${READ_STATUS[String(status)]}${count ? `: ${count}` : ""}${continued}.`,
+		body: [
+			typeof text === "string" ? text : "",
+			...entries.map(({ body }) => body),
+			scalar === undefined ? "" : json(scalar),
+			typeof reason === "string" ? reason : "",
+			status === "unknown_entry" || status === "field_absent" ? guide : "",
+		]
+			.filter(Boolean)
+			.join("\n"),
+		continuation: continuationCall("history_read", cursor, args, ["maxBytes", "maxItems", "maxOutputBytes"]),
+		details: resultDetails({
+			...metadata,
+			...(itemDetails.length ? { items: itemDetails } : {}),
+			...(guide && status !== "unknown_entry" && status !== "field_absent" ? { action: guide } : {}),
+		}),
+		limit: asRecord(value.entry)?.truncated === true ? "[Stored source was truncated]" : undefined,
+		countLines: !Array.isArray(items),
+	};
 }
 
 export function renderReadResult(
@@ -619,58 +448,145 @@ export function renderReadResult(
 	theme: Theme,
 	context: ResultContext,
 ): Component {
-	if (context.state) context.state.readResultArrived = true;
+	if (context.state) context.state.resultArrived = true;
 	const request = readRequest(context.args);
-	if (options.isPartial && !context.isError) {
-		return readCard(context.lastComponent, (width) => [
-			"",
-			theme.fg("muted", truncateToWidth("Reading entry…", width, "…")),
-			...(!options.expanded && requestHasMore(request, width)
-				? [truncateToWidth(readHint(theme, context, 0), width, "…")]
-				: []),
-		]);
-	}
-	const value = context.isError ? undefined : readPayload(result);
-	const fallback = value ? "" : safeReadText(textContent(result)).trimStart();
-	const firstBreak = fallback.indexOf("\n");
-	const first = firstBreak === -1 ? fallback : fallback.slice(0, firstBreak);
-	const { outcome, body, details, countLines } = value
-		? readStructured(value)
-		: {
-				outcome: first || (context.isError ? "History read failed." : "No read output."),
-				body: "",
-				details: firstBreak === -1 ? "" : fallback.slice(firstBreak + 1),
-				countLines: false,
-			};
-	const color = context.isError ? "error" : "toolOutput";
-	const safeOutcome = readLine(outcome);
-	const safeBody = safeReadText(body);
-	const safeDetails = safeReadText(details);
-	const total = safeOutcome.length + safeBody.length + safeDetails.length;
-	const shownOutcome = clip(safeOutcome, DISPLAY_LIMIT);
-	const shownBody = clip(safeBody, DISPLAY_LIMIT - shownOutcome.length);
-	const shownDetails = clip(safeDetails, DISPLAY_LIMIT - shownOutcome.length - shownBody.length);
-	const shown = shownOutcome.length + shownBody.length + shownDetails.length;
-	const limit =
-		shown < total ? readLimit(shownOutcome + shownBody + shownDetails, safeOutcome + safeBody + safeDetails) : "";
-	return readCard(context.lastComponent, (width) => {
-		const limited = limit ? [theme.fg("warning", truncateToWidth(limit, width, "…"))] : [];
-		if (options.expanded) {
-			const expanded = [shownOutcome, shownBody, shownDetails].filter(Boolean).join("\n");
-			return ["", ...new Text(theme.fg(color, expanded), 0, 0).render(width), ...limited];
-		}
-		const preview = truncateToVisualLines(theme.fg(color, shownBody), PREVIEW_LINES, width, 0, "start");
-		const hidden =
-			preview.skippedCount > 0 ||
-			shownDetails.trim() !== "" ||
-			visibleWidth(shownOutcome) > width ||
-			requestHasMore(request, width);
-		return [
-			"",
-			theme.fg(color, truncateToWidth(shownOutcome, width, "…")),
-			...preview.visualLines,
-			...limited,
-			...(hidden ? [truncateToWidth(readHint(theme, context, countLines ? preview.skippedCount : 0), width, "…")] : []),
-		];
-	});
+	const value = !context.isError && !options.isPartial ? resultPayload(result, acceptsRead) : undefined;
+	const view =
+		options.isPartial && !context.isError
+			? { outcome: "Reading entry…", body: "", details: "" }
+			: value
+				? readView(value, context.args)
+				: fallbackResult(result, context.isError, request.name);
+	return renderResult(request, view, options, theme, context);
+}
+
+const SEARCH_STATUS: Record<string, string> = {
+	ancestry_exhausted: "reached the end of the selected ancestry",
+	visit_limit: "entry visit limit",
+	node_limit: "argument node limit",
+	scan_limit: "scan byte limit",
+	slot_limit: "text slot limit",
+	candidate_limit: "physical candidate limit",
+	match_limit: "match limit",
+	output_limit: "output limit",
+	unknown_entry: "start entry not found",
+	missing_parent: "parent entry missing",
+	cycle: "parent cycle",
+};
+
+function acceptsSearch(value: RecordValue): boolean {
+	return (
+		Object.hasOwn(SEARCH_STATUS, stringField(value, "status")) &&
+		(value.matches === undefined || Array.isArray(value.matches))
+	);
+}
+
+function searchOutcome(value: RecordValue, args: unknown): string {
+	const status = stringField(value, "status");
+	const count = Array.isArray(value.matches) ? value.matches.length : undefined;
+	const visited = numberField(value, "visited");
+	const call = asRecord(args);
+	const listing = call !== undefined && call.query === undefined;
+	const returned =
+		count === undefined
+			? ""
+			: listing
+				? countNoun(count, "entry returned", "entries returned")
+				: countNoun(count, "match", "matches");
+	const scope = visited === undefined ? "" : countNoun(visited, "entry visited", "entries visited");
+	const stop = SEARCH_STATUS[status];
+	const fields = [returned, scope, stop, asRecord(value.next) ? "continuation available" : ""]
+		.filter(Boolean)
+		.join("; ");
+	return `${fields.charAt(0).toUpperCase()}${fields.slice(1)}.`;
+}
+
+function matchIdentity(entry: unknown, call: unknown) {
+	const { id, kind, type, role, toolName, isError, truncated, ...entryDetails } = asRecord(entry) ?? {};
+	const { name, ...callDetails } = asRecord(call) ?? {};
+	const line = parts([
+		entryId(id),
+		oneLine(typeof kind === "string" ? kind : typeof type === "string" ? type : ""),
+		typeof toolName === "string" ? `tool ${oneLine(toolName)}` : typeof role === "string" ? oneLine(role) : "",
+		isError === true ? "stored error" : "",
+		truncated === true ? "stored source truncated" : "",
+		typeof name === "string" ? `call ${oneLine(name)}` : "",
+	]);
+	return {
+		line,
+		details: {
+			...(Object.keys(entryDetails).length ? { entry: entryDetails } : {}),
+			...(Object.keys(callDetails).length ? { call: callDetails } : {}),
+		},
+	};
+}
+
+function matchView(value: unknown) {
+	const { entry, call, pointer, offset, endOffset, excerpt, excerptEndOffset, ...more } = asRecord(value) ?? {};
+	const identity = matchIdentity(entry, call);
+	const span =
+		typeof offset === "number" && typeof endOffset === "number" ? `match offsets ${offset}..${endOffset}` : "";
+	const excerptSpan =
+		typeof offset === "number" && typeof excerptEndOffset === "number" ? ` offsets ${offset}..${excerptEndOffset}` : "";
+	return {
+		body: [
+			identity.line,
+			parts([typeof pointer === "string" ? exactLine(pointer) : "", span]),
+			typeof excerpt === "string" ? `Retained excerpt${excerptSpan}:\n${excerpt}` : "",
+		]
+			.filter(Boolean)
+			.join("\n"),
+		details: { ...identity.details, ...more },
+	};
+}
+
+function skippedValues(skipped: unknown): string {
+	const counts = asRecord(skipped);
+	if (!counts) return "";
+	const count = (numberField(counts, "depth") ?? 0) + (numberField(counts, "pointerLength") ?? 0);
+	return count > 0 ? `[${countNoun(count, "argument value skipped", "argument values skipped")}]` : "";
+}
+
+function searchView(value: RecordValue, args: unknown): ResultView {
+	const { status: _status, matches, next, gap, visited: _visited, ...metadata } = value;
+	const records = Array.isArray(matches) ? matches.map(matchView) : [];
+	const notes = records.flatMap(({ details }, index) =>
+		Object.keys(details).length ? [{ record: index + 1, ...details }] : [],
+	);
+	const gapRecord = asRecord(gap);
+	const gapId = gapRecord ? entryId(gapRecord.entryId) : "";
+	const gapAction = gapRecord ? stringField(gapRecord, "action") : "";
+	return {
+		outcome: searchOutcome(value, args),
+		body: [parts([gapId, gapAction]), ...records.map(({ body }) => body)].filter(Boolean).join("\n"),
+		continuation: continuationCall("history_search", asRecord(next), args, [
+			"query",
+			"mode",
+			"filter",
+			"maxVisits",
+			"maxScanBytes",
+			"maxMatches",
+			"maxOutputBytes",
+		]),
+		limit: skippedValues(value.skipped),
+		details: resultDetails({ ...metadata, ...(notes.length ? { records: notes } : {}) }),
+	};
+}
+
+export function renderSearchResult(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: ResultContext,
+): Component {
+	if (context.state) context.state.resultArrived = true;
+	const request = searchRequest(context.args);
+	const value = !context.isError && !options.isPartial ? resultPayload(result, acceptsSearch) : undefined;
+	const view =
+		options.isPartial && !context.isError
+			? { outcome: "Searching history…", body: "", details: "" }
+			: value
+				? searchView(value, context.args)
+				: fallbackResult(result, context.isError, request.name);
+	return renderResult(request, view, options, theme, context);
 }
