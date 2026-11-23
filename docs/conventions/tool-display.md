@@ -53,10 +53,12 @@ extension state, or a tool registration API. Do not wait for `session_start`.
 A request response only emits display data; it executes no tool. Publishers own
 their renderer logic and its handling of arguments and result details.
 
-The owning slices are brave, clipboard, history, jobs, markdown, memory, pillars,
-policy, registry, rex, and stash. Agent publishes its internal cards from the same renderer
-records used by its ordinary registration. The agent dashboard also retains
-local precedence for those cards.
+Every slice that registers a tool with a custom renderer publishes it; the
+[emission grammar](emissions.md) requires a renderer for every harness tool.
+Find the current publishers with `rg -l toolDisplay extensions/*/display.ts`.
+Agent publishes its internal cards from the same renderer records used by its
+ordinary registration. The agent dashboard also retains local precedence for
+those cards.
 
 ## Consumer lifecycle and safety
 

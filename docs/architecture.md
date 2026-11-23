@@ -273,6 +273,8 @@ documented surface:
   capability bundles supplied by extension factories to agent hosts.
 - [Tool display](conventions/tool-display.md): owner tool-card renderers for
   ordinary chat, the dashboard and the attached terminal.
+- [Emission grammar](conventions/emissions.md): the shared form of tool
+  cards, message cards and notifications that every extension draws.
 - [Application messages](conventions/application-messages.md): the message
   format that applications such as the Markdown reader and Explorer place in
   the conversation themselves, and how each follows its own replies.
