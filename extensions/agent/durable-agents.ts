@@ -52,7 +52,7 @@ import {
 	publishConversationIntent,
 	recordAdmissionMeta,
 	recordDeliveryIntent,
-	seededCompactionInstructions,
+	admitManualCompaction,
 } from "./durable-controls.ts";
 import {
 	recordAdmitted,
@@ -2349,26 +2349,22 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			replay: "unsafe",
 			execute: async (args: CompactInput, api, context) => {
 				if (isSelfCompact(args.sessionId, api.conversationId)) {
-					const input: Durable.CompactionInput = {
-						reason: "manual",
-						instructions: seededCompactionInstructions(args.instructions),
-					};
 					// The tool task holds the next model request until its child compaction settles.
-					const taskId = await api.commit(async (tx) => {
-						const live = await tx.doc(durable.LiveDoc, api.conversationId);
-						if (live.compactions?.length) return undefined;
-						const id = await tx.createTask(durable.CompactionTask, input, {
-							ownership: { kind: "task", taskId: api.taskId },
-							conversationId: api.conversationId,
-						});
-						// Native retry and failure handling need the slot even if the tool result never commits.
-						live.compactions = [{ taskId: id, trigger: "manual", blocking: true, attempt: 1 }];
-						return id;
-					}, context);
-					if (taskId === undefined) return errorResult("This conversation already has a compaction in progress.");
+					const admitted = await api.commit(
+						(tx) =>
+							admitManualCompaction(
+								tx,
+								api.conversationId,
+								{ kind: "task", taskId: api.taskId },
+								args.instructions,
+								durable,
+							),
+						context,
+					);
+					if ("refusal" in admitted) return errorResult(admitted.refusal);
 					return textResult(
 						"Self-compaction requested for the end of this tool batch. The summary applies after the whole batch, and this run continues. This receipt does not establish that compaction occurred.",
-						{ taskId },
+						admitted,
 					);
 				}
 				const params: Record<string, unknown> = { sessionId: args.sessionId };

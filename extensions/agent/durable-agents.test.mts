@@ -67,6 +67,7 @@ import {
 import { handleStorageId } from "./identity.ts";
 import {
 	AgentMetaDoc,
+	compactConversation,
 	readOutcome,
 	richSubmitConversation,
 	submitConversation,
@@ -2397,7 +2398,9 @@ it("applies a self-compaction after the whole tool batch and continues the run",
 	);
 });
 
-it("records a self-compaction failure and refuses a second request while it runs", async (t) => {
+it("refuses self and external requests during self-compaction and retains its failure", {
+	timeout: 15000,
+}, async (t) => {
 	const route = createRoute();
 	route.batch.push([
 		{ tool: "agent_compact", args: {} },
@@ -2405,6 +2408,7 @@ it("records a self-compaction failure and refuses a second request while it runs
 	]);
 	const { registry } = buildRegistry();
 	const toolsFinished = deferred();
+	const releaseSummary = deferred();
 	let results = 0;
 	registry.install(
 		Durable.defineExtension({
@@ -2412,7 +2416,7 @@ it("records a self-compaction failure and refuses a second request while it runs
 			hooks: [
 				Durable.hook(Durable.CompactionTask, {
 					beforeCompact: async (_compaction, _api, ctx) => {
-						await awaitWithContext(toolsFinished.promise, ctx);
+						await awaitWithContext(releaseSummary.promise, ctx);
 						return undefined;
 					},
 				}),
@@ -2436,7 +2440,17 @@ it("records a self-compaction failure and refuses a second request while it runs
 	const storage = new Durable.MemoryStorage();
 	const { harness, root } = await openHarness(storage, registry, models, { compaction: { keepRecentTokens: 1 } });
 	t.after(() => harness.close(context));
-	await say(root, "SELFTEST");
+	const submission = await root.submit({ type: "input", content: "SELFTEST" }, context);
+	try {
+		await toolsFinished.promise;
+		await assert.rejects(
+			compactConversation(harness, root, "External request with different instructions.", false, context),
+			/already|in progress/iu,
+		);
+	} finally {
+		releaseSummary.resolve();
+	}
+	assert.equal((await submission.wait(context)).status, "done");
 
 	const tasks = (await storage.scanTasks({ kind: Durable.CompactionTask.definition.name }, 10, undefined, context))
 		.items;
@@ -2451,6 +2465,59 @@ it("records a self-compaction failure and refuses a second request while it runs
 	});
 	const rejected = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.isError);
 	assert.match(rejected?.text ?? "", /already has a compaction in progress/u);
+});
+
+it("refuses external and self requests while a completed external summary awaits placement", {
+	timeout: 15000,
+}, async (t) => {
+	const route = createRoute();
+	const { registry } = buildRegistry();
+	const atSelfTool = deferred();
+	const releaseSelfTool = deferred();
+	registry.install(
+		Durable.defineExtension({
+			name: "test.hold-before-self-compact",
+			hooks: [
+				Durable.hook(Durable.ToolTask, {
+					beforeTool: async (call, _api, ctx) => {
+						if (call.name === "agent_compact") {
+							atSelfTool.resolve();
+							await awaitWithContext(releaseSelfTool.promise, ctx);
+						}
+						return undefined;
+					},
+				}),
+			],
+		}),
+	);
+	const storage = new Durable.MemoryStorage();
+	const { harness, root } = await openHarness(storage, registry, createTestModels(route.route), {
+		compaction: { keepRecentTokens: 1 },
+	});
+	t.after(() => harness.close(context));
+	await say(root, "Earlier work.");
+	route.script.push({ tool: "agent_compact", args: { instructions: "Self request." } });
+	const submission = await root.submit({ type: "input", content: "Next task." }, context);
+	try {
+		await atSelfTool.promise;
+		const first = await compactConversation(harness, root, "First external request.", true, context);
+		assert.equal(first.status, "completed");
+		assert.equal(first.summaryPlacement, "queued");
+		assert.equal((await harness.snapshot(Durable.LiveDoc, root.id, context))?.compactions, undefined);
+		await assert.rejects(
+			compactConversation(harness, root, "Different external request.", false, context),
+			/already|pending|queued|awaiting placement/iu,
+		);
+	} finally {
+		releaseSelfTool.resolve();
+	}
+	assert.equal((await submission.wait(context)).status, "done");
+	const self = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_compact");
+	assert.equal(self?.isError, true);
+	assert.match(self.text, /already|pending|queued|awaiting placement/iu);
+	const tasks = await storage.scanTasks({ kind: Durable.CompactionTask.definition.name }, 10, undefined, context);
+	assert.equal(tasks.items.length, 1);
+	assert.equal((await entriesOf(harness, root.id)).filter(Durable.CompactionEntry.is).length, 1);
 });
 
 it("reopens a self-compaction admitted before its tool result and clears its slot without duplicate work", async (t) => {

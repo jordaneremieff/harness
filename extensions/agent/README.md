@@ -3726,10 +3726,11 @@ The Durable host uses Pi's effective `compaction` settings. Valid
 `reserveTokens` and `keepRecentTokens` overrides reach Durable under their exact
 `provider/modelId` keys. They do not turn automatic compaction on or off.
 
-A native self-compaction refuses if the conversation already has a live
-compaction. Its task and status are committed together, so a summarisation
-failure reaches the same status and child continuity readers as other native
-compaction failures. The tool's receipt confirms admission, not a summary.
+A native manual compaction, whether requested by the agent or through the
+host, refuses if a compaction is active or a summary already awaits placement.
+The refusal starts no task and does not alter the first request's instructions.
+The native task and live status share one commit. A receipt with a task ID
+confirms admission, not placement of a summary.
 
 An overflow that native compaction cannot resolve ends the input without an
 answer. Inspect the retained error before another send. If a summariser also
@@ -3766,7 +3767,8 @@ child and carries no answer text.
 - When a planning budget exists for the child's exact model and is below the
   model window, the recipient gets one active report when usage crosses the
   budget inside one run. A run that starts above the budget sends none. The
-  budget is a planning preference, not a limit.
+  recipient's report mentions the child's separate notice, not an acknowledgement.
+  The budget is a planning preference, not a limit.
 
 Each result delivered to a Durable recipient states the child's newest context
 use and model window when known, and the last compaction failure when one is

@@ -18,12 +18,13 @@ import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { obj } from "@earendil-works/pi-schema";
 import register from "./index.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Harness, Conversation } from "@earendil-works/pi-durable";
-import { compactConversation } from "./durable-controls.ts";
+import type { Harness } from "@earendil-works/pi-durable";
+import { observeCompaction } from "./durable-controls.ts";
 import { createAgentToolCards, type AgentCardContext } from "./tool-cards.ts";
 
 initTheme("dark", false);
 const identity = "12345678-1234-4234-8234-123456789abc";
+const compactionTask = 9 as Parameters<typeof observeCompaction>[1];
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): readonly string[] }, width = 240) =>
 	component
@@ -154,10 +155,9 @@ it("shows only observed other-agent configuration, context facts and retained su
 
 it("returns the live compaction task when the summariser outlasts its observer", async () => {
 	const harness = { waitForTask: () => new Promise(() => {}) } as unknown as Harness;
-	const conversation = { compact: async () => 9 } as unknown as Conversation;
 	const keeper = setInterval(() => {}, 1000);
 	try {
-		assert.deepEqual(await compactConversation(harness, conversation, undefined, true, BACKGROUND_CONTEXT, 10), {
+		assert.deepEqual(await observeCompaction(harness, compactionTask, BACKGROUND_CONTEXT, 10), {
 			taskId: 9,
 			status: "task",
 		});
@@ -173,8 +173,7 @@ it("retains a completed compaction outcome when its optional summary-size read f
 			throw new Error("retained entry read failed");
 		},
 	} as unknown as Harness;
-	const conversation = { compact: async () => 9 } as unknown as Conversation;
-	const outcome = await compactConversation(harness, conversation, undefined, true, BACKGROUND_CONTEXT);
+	const outcome = await observeCompaction(harness, compactionTask, BACKGROUND_CONTEXT);
 	assert.equal(outcome.status, "completed");
 	assert.equal(outcome.entryId, 7);
 	assert.equal(Object.hasOwn(outcome, "summaryChars"), false);

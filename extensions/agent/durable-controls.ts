@@ -80,9 +80,12 @@ import {
 	AssistantEntry,
 	InboxDoc,
 	CompactionEntry,
+	CompactionTask,
+	LiveDoc,
 	defineDoc,
 	defineDocFamily,
 	type AgentChange,
+	type CompactionResult,
 	type Conversation,
 	type ConversationId,
 	type EntryId,
@@ -92,6 +95,7 @@ import {
 	type SubmissionId,
 	type SubmissionRecord,
 	type TaskId,
+	type TaskOwnership,
 	type Tx,
 	type UsageState,
 	type UserInput,
@@ -1316,20 +1320,36 @@ async function compactionSummaryFacts(
 }
 
 /** The summarizer receives the continuity seed first; the caller's instructions follow byte for byte. */
-export function seededCompactionInstructions(instructions: string | undefined): string {
+function seededCompactionInstructions(instructions: string | undefined): string {
 	return instructions === undefined ? NATIVE_COMPACTION_SEED : `${NATIVE_COMPACTION_SEED}\n\n${instructions}`;
 }
 
-/** Run a manual compaction and optionally wait for its placement. */
-export async function compactConversation(
-	harness: Harness,
-	conversation: Conversation,
+const compactionTokens = { CompactionTask, CompactionEntry, LiveDoc, InboxDoc };
+
+/** A completed conversation-owned summary can still await placement at a tool or answer boundary. */
+export async function admitManualCompaction(
+	tx: Tx,
+	conversationId: ConversationId,
+	ownership: TaskOwnership,
 	instructions: string | undefined,
-	wait: boolean,
-	context: Context,
-	waitMs = 45_000,
-): Promise<{
-	readonly taskId: TaskId<{ entryId?: EntryId; submissionId?: SubmissionId }>;
+	tokens = compactionTokens,
+): Promise<{ taskId: TaskId<CompactionResult> } | { refusal: string }> {
+	const live = await tx.doc(tokens.LiveDoc, conversationId);
+	if (live.compactions?.length) return { refusal: "This conversation already has a compaction in progress." };
+	const inbox = await tx.doc(tokens.InboxDoc, conversationId);
+	if (inbox.items.some((item) => item.mode === "write" && item.entry.kind === tokens.CompactionEntry.kind))
+		return { refusal: "A compaction summary already awaits placement in this conversation." };
+	const taskId = await tx.createTask(
+		tokens.CompactionTask,
+		{ reason: "manual", instructions: seededCompactionInstructions(instructions) },
+		{ ownership, conversationId },
+	);
+	live.compactions = [{ taskId, trigger: "manual", blocking: ownership.kind === "task", attempt: 1 }];
+	return { taskId };
+}
+
+type CompactionObservation = {
+	readonly taskId: TaskId<CompactionResult>;
 	readonly status: "task" | "completed" | "aborted" | "failed" | "orphaned" | "faulted";
 	readonly summaryPlacement?: SummaryFacts["summaryPlacement"];
 	readonly summaryReason?: string;
@@ -1338,9 +1358,32 @@ export async function compactConversation(
 	readonly entryId?: EntryId;
 	readonly submissionId?: SubmissionId;
 	readonly error?: string;
-}> {
-	const taskId = await conversation.compact(seededCompactionInstructions(instructions), context);
-	if (!wait) return { taskId, status: "task" };
+};
+
+/** Admit one manual request without stopping the conversation's active work. */
+export async function compactConversation(
+	harness: Harness,
+	conversation: Conversation,
+	instructions: string | undefined,
+	wait: boolean,
+	context: Context,
+): Promise<CompactionObservation> {
+	harness.resume();
+	const admitted = await harness.commit(
+		(tx) => admitManualCompaction(tx, conversation.id, { kind: "conversation" }, instructions),
+		context,
+	);
+	if ("refusal" in admitted) throw new Error(admitted.refusal);
+	return wait ? observeCompaction(harness, admitted.taskId, context) : { taskId: admitted.taskId, status: "task" };
+}
+
+/** End this wait at the deadline; the summariser still owns its native task. */
+export async function observeCompaction(
+	harness: Harness,
+	taskId: TaskId<CompactionResult>,
+	context: Context,
+	waitMs = 45_000,
+): Promise<CompactionObservation> {
 	const budget = AbortSignal.timeout(waitMs);
 	const waitContext = withAbortSignal(
 		context.abortSignal ? AbortSignal.any([context.abortSignal, budget]) : budget,

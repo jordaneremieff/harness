@@ -530,7 +530,7 @@ Overrides and remaining members:
 | list | list/1.0.0 | H-list | absent |
 | fork | fork/1.0.0 | fork/1.0.0 | D |
 | rewind | rewind/2.0.0 | rewind/2.0.0 | D |
-| compact | compact/2.0.0 | compact/2.0.0 | D |
+| compact | compact/2.1.0 | compact/2.0.0 | D |
 | run-scope | run-scope/1.0.0 | run-scope/1.0.0 | absent |
 | interrupt-continue | interrupt-continue/1.0.0 | interrupt-continue/1.0.0 | absent |
 | run-stop | run-stop/1.0.0 | run-stop/1.0.0 | absent |
@@ -1219,7 +1219,7 @@ Source: `extensions/agent/durable-host.ts` (`rewindRequest`).
 
 ### compact
 
-Params: `{sessionId,instructions?}`. `compact/2.0.0` requests native compaction without first aborting foreground work, background work or queued input. Native work continues while compaction prepares its result. A synchronous compact returns its task ID with `status: "task"` after 45 seconds if the summariser has not settled. After completion, `summaryPlacement` identifies the summary as placed, queued, unanswered, absent (`none`) or unknown. An unanswered write includes its native reason. The summary enters context only after placement at a native boundary. The response retains the native compaction observation and therefore compares the exact Durable identity `D`. Explicit Stop remains a separate operation. Self-compaction retains its native completed-tool boundary.
+Params: `{sessionId,instructions?}`. `compact/2.1.0` requests native compaction without first aborting foreground work, background work or queued input. Admission checks the conversation's active compactions and queued summary writes in the same commit that creates the task and its live status. If either exists, the host refuses the request; it does not pass the new instructions to an earlier task. The same rule applies to native self-compaction. Native work continues while compaction prepares its result. A synchronous compact returns its task ID with `status: "task"` after 45 seconds if the summariser has not settled. After completion, `summaryPlacement` identifies the summary as placed, queued, unanswered, absent (`none`) or unknown. An unanswered write includes its native reason. The summary enters context only after placement at a native boundary. The response retains the native compaction observation and therefore compares the exact Durable identity `D`. Explicit Stop remains a separate operation. Self-compaction retains its native completed-tool boundary.
 
 ### run-scope and run-stop
 

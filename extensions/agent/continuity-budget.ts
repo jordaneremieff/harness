@@ -27,7 +27,7 @@ export function planningBudgetSourceId(ownerId: string, producerIdentity: string
 		.digest("hex")}`;
 }
 export function planningBudgetBody(identity: string, tokens: number, budget: number, model: string): string {
-	return `Child ${identity} reported ${tokens} context tokens, at or above its planning budget of ${budget} for ${model}. The budget is a planning preference, not a limit.`;
+	return `Child ${identity} reported ${tokens} context tokens, at or above its planning budget of ${budget} for ${model}. The budget is a planning preference, not a limit. The host also issues a notice to the child when eligible. Inspect its recent activity before requesting compaction.`;
 }
 export function planningBudgetSelfId(headId: number, runId: number): string {
 	return `agent.budget:${headId}:${runId}`;

@@ -26,7 +26,7 @@ it("uses the exact explicit recipient/producer/run tuple for report deduplicatio
 	assert.notEqual(planningBudgetSourceId("owner", "worker:2", 5), expected);
 	assert.equal(
 		planningBudgetBody("worker:2", 250_000, 250_000, "provider/model"),
-		"Child worker:2 reported 250000 context tokens, at or above its planning budget of 250000 for provider/model. The budget is a planning preference, not a limit.",
+		"Child worker:2 reported 250000 context tokens, at or above its planning budget of 250000 for provider/model. The budget is a planning preference, not a limit. The host also issues a notice to the child when eligible. Inspect its recent activity before requesting compaction.",
 	);
 	assert.equal(planningBudgetSelfId(10, 3), "agent.budget:10:3");
 	assert.equal(
