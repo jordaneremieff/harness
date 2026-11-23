@@ -2408,6 +2408,7 @@ it("names the work state of each request of a shared answer and continues a cut 
 		const exact = completed.report.message;
 		const head = report.slice(report.indexOf("\n\n") + 2, report.indexOf("\n\n[text truncated]"));
 		assert.equal(exact.startsWith(head), true, "the delivered part is the start of the retained report");
+		assert.equal((received[1].details as { message: string }).message, `${head}\n\n[text truncated] ${call[0]}`);
 		let next: Record<string, unknown> | undefined = JSON.parse(call[1]) as Record<string, unknown>;
 		assert.equal(next.offset, head.length);
 		let rest = "";

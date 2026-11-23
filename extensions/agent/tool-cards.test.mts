@@ -1502,7 +1502,7 @@ describe("agent result notice card", () => {
 				},
 				heading: "result · Catalog reader",
 			},
-			{ details: { identity: id, handle: "@reader", kind: "report" }, heading: "report · @reader" },
+			{ details: { identity: id, handle: "@reader", kind: "report" }, heading: "Report received" },
 			{
 				details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "message" },
 				heading: "message from another session · Parser session",
@@ -1602,8 +1602,8 @@ describe("agent result notice card", () => {
 		);
 		assert.ok(card);
 		const text = screen(card, 600);
-		assert.ok(text.includes(`sourceId: ${sourceId}`));
-		assert.ok(text.includes(`senderIdentity: ${senderIdentity}`));
+		assert.ok(text.includes(`Report source: ${sourceId}`));
+		assert.ok(text.includes(`Sender ID: ${senderIdentity}`));
 	});
 
 	it("keeps a check-in headline when elapsed time, cost and configuration are absent", () => {
@@ -1769,7 +1769,7 @@ describe("agent result notice card", () => {
 		);
 		assert.ok(reportCard);
 		const report = screen(reportCard);
-		assert.match(report, /\[agent\] report · storage-b/);
+		assert.match(report, /\[agent\] Report received\n\s*from storage-b/u);
 		assert.match(report, /Progress report/);
 		const unansweredCard = renderAgentPeerMessage(
 			{

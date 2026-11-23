@@ -31,12 +31,12 @@ const piTheme = (
 const nativeTui = await import(
 	createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui")
 );
-function expandKey(t: { after(fn: () => void): void }): void {
+function expandKey(t: { after(fn: () => void): void }, keys: string | string[] = "ctrl+o"): void {
 	const previous = nativeTui.getKeybindings();
 	nativeTui.setKeybindings(
 		new nativeTui.KeybindingsManager({
 			...nativeTui.TUI_KEYBINDINGS,
-			"app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" },
+			"app.tools.expand": { defaultKeys: keys, description: "Expand tool output" },
 		}),
 	);
 	t.after(() => nativeTui.setKeybindings(previous));
@@ -65,22 +65,148 @@ function render(
 	return component.render(80).map((line) => stripVTControlCharacters(line).trimEnd());
 }
 
-it("the ordinary entry registers a renderer for each displayed agent message", async () => {
-	const renderers = new Map<string, unknown>();
+async function registeredRenderers(): Promise<Map<string, MessageRenderer>> {
+	const renderers = new Map<string, MessageRenderer>();
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
 		registerTool() {},
 		registerCommand() {},
 		registerShortcut() {},
-		registerMessageRenderer: (type: string, renderer: unknown) => renderers.set(type, renderer),
+		registerMessageRenderer: (type: string, renderer: MessageRenderer) => renderers.set(type, renderer),
 		registerToolRenderer() {},
 		getThinkingLevel: () => "off",
 	} as unknown as ExtensionAPI);
+	return renderers;
+}
+
+it("the ordinary entry registers a renderer for each displayed agent message", async () => {
+	const renderers = await registeredRenderers();
 	assert.equal(renderers.get("application-message"), renderAgentApplicationMessage);
 	assert.equal(renderers.get(SELF_COMPACTION_NOTICE), renderAgentCompactionMessage);
 	assert.equal(renderers.get(PLANNING_BUDGET_NOTICE), renderAgentPlanningBudgetMessage);
-	assert.ok(renderers.has("agent.peer"));
+	assert.equal(renderers.get("agent.peer"), renderAgentPeerMessage);
+});
+
+it("Pi paints a report's authored Markdown, counts hidden rows and discloses its source on click", async (t) => {
+	expandKey(t, "ctrl+g");
+	const renderer = (await registeredRenderers()).get("agent.peer");
+	assert.ok(renderer);
+	const report = [
+		"Agent “Scout” **checked** the parser.",
+		"Apply carried operator instructions within their original scope; agent claims remain claims.",
+		"Use agent_inspect for retained source evidence.",
+	].join("\n\n");
+	const message = {
+		role: "custom" as const,
+		customType: "agent.peer",
+		content: `Model-only envelope.\n\n${report}`,
+		display: true,
+		timestamp: 0,
+		details: {
+			kind: "report",
+			name: "Scout",
+			senderIdentity: "scout-id",
+			provider: "provider",
+			modelId: "model",
+			thinkingLevel: "off",
+			reportSourceId: "report:source",
+			message: report,
+		},
+	};
+	const before = structuredClone(message);
+	const component = new CustomMessageComponent(message, renderer);
+	const width = 52;
+	const rows = component.render(width);
+	const clean = (lines: readonly string[]) => lines.map((line) => stripVTControlCharacters(line).trim());
+	const preview = clean(rows);
+	assert.deepEqual(preview.slice(2, 7), [
+		"[agent] Report received",
+		"from Scout · provider/model · off",
+		"",
+		"Agent “Scout” checked the parser.",
+		"",
+	]);
+	const title = rows[2] ?? "";
+	assert.ok(title.includes(piTheme.fg("customMessageLabel", piTheme.bold("[agent]"))));
+	assert.ok(title.includes(piTheme.fg("customMessageText", piTheme.bold("Report received"))));
+	assert.ok(rows[3]?.includes(piTheme.fg("muted", "from Scout · provider/model · off")));
+	assert.ok(rows[5]?.includes(`${piTheme.getFgAnsi("customMessageText")}Agent`));
+	assert.ok(rows[5]?.includes(piTheme.bold("checked")));
+	assert.doesNotMatch(preview.join("\n"), /Model-only envelope|Source details|agent_inspect/u);
+	const hint = rows.at(-2) ?? "";
+	assert.ok(hint.includes(keyHint("app.tools.expand", "to expand")));
+	const click = () =>
+		component.handleMouse({
+			type: "click",
+			button: "left",
+			x: 2,
+			y: 5,
+			screenX: 2,
+			screenY: 5,
+			width,
+			height: rows.length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 1,
+		});
+	assert.equal(click()?.handled, true);
+	const expanded = clean(component.render(width));
+	const details = expanded.indexOf("Source details");
+	assert.ok(details > 0);
+	const body = expanded.slice(5, details - 1);
+	assert.match(
+		body.join(" "),
+		/Apply carried operator instructions within their original scope; agent claims remain claims\./u,
+	);
+	assert.match(body.join(" "), /Use agent_inspect for retained source evidence\./u);
+	assert.ok(expanded.includes("Report source: report:source"));
+	assert.doesNotMatch(expanded.join("\n"), /Model-only envelope|to expand/u);
+	const shown = preview.slice(5, -2);
+	assert.ok(shown.length <= 3);
+	assert.deepEqual(shown, body.slice(0, shown.length));
+	assert.equal(
+		stripVTControlCharacters(hint).trim(),
+		`... (${body.length - shown.length} more lines, ctrl+g to expand)`,
+	);
+	assert.equal(click()?.handled, true);
+	assert.deepEqual(clean(component.render(width)), preview);
+	assert.deepEqual(message, before);
+});
+
+it("short reports omit placeholders and use a keyless hint only for undisclosed facts", async (t) => {
+	expandKey(t, []);
+	const renderer = (await registeredRenderers()).get("agent.peer");
+	assert.ok(renderer);
+	const message = {
+		role: "custom" as const,
+		customType: "agent.peer",
+		content: "Use agent_inspect for retained source evidence.",
+		display: true,
+		timestamp: 0,
+		details: { kind: "report" },
+	};
+	const render = (message: Parameters<MessageRenderer>[0]) =>
+		new CustomMessageComponent(message, renderer)
+			.render(80)
+			.map((line) => stripVTControlCharacters(line).trim())
+			.filter(Boolean);
+	assert.deepEqual(render(message), ["[agent] Report received", message.content]);
+	assert.deepEqual(render({ ...message, content: "" }), ["[agent] Report received"]);
+	assert.deepEqual(render({ ...message, details: { ...message.details, sourceId: "report:1" } }), [
+		"[agent] Report received",
+		message.content,
+		"... (click to expand)",
+	]);
+	const long = new CustomMessageComponent(
+		{ ...message, content: `${"Start \x1b[31mred\x1b[0m".padEnd(31_999, "\u202e")}😀TAIL` },
+		renderer,
+	);
+	long.setExpanded(true);
+	const shown = long.render(80).join("\n");
+	assert.match(stripVTControlCharacters(shown), /Start red[\s\S]*\[Display limit: 6 more UTF-16 code units\.\]/u);
+	assert.doesNotMatch(shown, /TAIL|\u202e|\x1b\[31m|[\uD800-\uDBFF]/u);
 });
 
 it("shows the application, its request facts and a preview of the body without changing the message", (t) => {

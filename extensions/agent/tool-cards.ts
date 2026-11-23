@@ -162,6 +162,7 @@ interface CardLayoutOptions {
 	readonly expanded: boolean;
 	readonly previous?: Component;
 	readonly peerPadding?: number;
+	readonly peerTitleColor?: "customMessageText";
 	/** Peer cards draw their own expansion hint below hidden lines. */
 	readonly keys?: Pick<KeybindingHints, "keyText"> & Partial<Pick<KeybindingHints, "keyHint">>;
 	/** The stable message object a peer card's pointer disclosure is bound to; absent, the choice lives in the renderer only. */
@@ -211,13 +212,17 @@ function disclosureFor(message: object | undefined): CardDisclosure {
 
 /** Tool parts inherit Pi's Box(1,1); custom-message renderers must supply that inner vertical padding. */
 /** The title line and the muted facts line; message cards draw their bracket label in Pi's label colour. */
-function cardHeader(sections: CardSections, theme: Theme, peer: boolean): string[] {
+function cardHeader(sections: CardSections, theme: Theme, options: CardLayoutOptions): string[] {
+	const peer = options.peerPadding !== undefined;
 	const header: string[] = [];
 	const tag = sections.tag ? `${theme.fg("customMessageLabel", theme.bold(sections.tag))} ` : "";
 	const label = sections.label
 		? theme.fg(peer ? "text" : "accent", ` · ${displayText(sections.label).replace(/\s+/gu, " ").trim()}`)
 		: "";
-	if (sections.title) header.push(tag + theme.fg(peer ? "text" : "toolTitle", theme.bold(sections.title)) + label);
+	if (sections.title) {
+		const titleColor = peer ? (options.peerTitleColor ?? "text") : "toolTitle";
+		header.push(tag + theme.fg(titleColor, theme.bold(sections.title)) + label);
+	}
 	const metadata = sections.metadata
 		?.filter(Boolean)
 		.map((value) => displayText(value).replace(/\s+/gu, " ").trim())
@@ -228,7 +233,7 @@ function cardHeader(sections: CardSections, theme: Theme, peer: boolean): string
 
 function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOptions): Component {
 	const peer = options.peerPadding !== undefined;
-	const header = cardHeader(sections, theme, peer);
+	const header = cardHeader(sections, theme, options);
 	const content = sections.body ?? [];
 	if (!peer) {
 		const component = options.previous instanceof CardText ? options.previous : new CardText("", 0, 0);
@@ -2844,8 +2849,12 @@ function peerMetadata(details: Record<string, unknown>): string[] {
 
 /** Native Markdown determines body wrapping; the shared layout owns its preview and hint. */
 function noticeBody(content: string, theme: Theme): Component {
-	const markdown = new Markdown(displayText(content).trim() || "(no text)", 0, 0, getMarkdownTheme(), {
-		color: (value) => theme.fg("text", value),
+	return messageMarkdown(displayText(content).trim() || "(no text)", theme, "text");
+}
+
+function messageMarkdown(content: string, theme: Theme, color: "text" | "customMessageText"): Component {
+	const markdown = new Markdown(content, 0, 0, getMarkdownTheme(), {
+		color: (value) => theme.fg(color, value),
 	});
 	let cache: { width: number; lines: string[] } | undefined;
 	return {
@@ -2866,6 +2875,66 @@ function noticeBody(content: string, theme: Theme): Component {
 	};
 }
 
+function renderPeerReport(
+	message: Parameters<MessageRenderer>[0],
+	options: Parameters<MessageRenderer>[1],
+	theme: Theme,
+	details: Record<string, unknown>,
+	content: string,
+): Component {
+	const sender = displayText(peerLabel(details)).trim();
+	// Retained reports put the authored body in details. Direct reports carry it as content.
+	const source =
+		typeof details.operatorMessage === "string"
+			? details.operatorMessage
+			: typeof details.message === "string"
+				? details.message
+				: content;
+	const prefix = displayPrefix(source, MESSAGE_DISPLAY_LIMIT);
+	const omitted = source.length - prefix.length;
+	const shown = displayText(prefix) + (omitted ? `\n\n[Display limit: ${omitted} more UTF-16 code units.]` : "");
+	const body = shown.trim() ? [messageMarkdown(shown, theme, "customMessageText")] : [];
+	const facts = [
+		["Sender ID", text(details.senderIdentity) || text(details.identity)],
+		["Report source", text(details.reportSourceId) || text(details.sourceId) || text(details.source)],
+		["Request", text(details.requestId)],
+		["Original recipient", details.fallback === true ? text(details.originalOwnerId) : ""],
+	].flatMap(([label, value]) => {
+		const fact = displayPreview(value ?? "", 512);
+		return fact ? [`${label}: ${fact}`] : [];
+	});
+	if (details.liveOwner === false) facts.push("No live recipient; this is a retained copy");
+	return cardLayout(
+		{
+			tag: "[agent]",
+			title: "Report received",
+			metadata: [
+				sender ? `from ${sender}` : "",
+				resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel)),
+			],
+			body,
+			...(facts.length > 0
+				? {
+						details: () => [
+							...(body.length > 0 ? [new Spacer(1)] : []),
+							theme.fg("muted", theme.bold("Source details")),
+							...facts.map((line) => theme.fg("muted", line)),
+						],
+					}
+				: {}),
+			previewLines: NOTICE_PREVIEW_LINES,
+		},
+		theme,
+		{
+			expanded: options.expanded,
+			peerPadding: options.outputPad,
+			peerTitleColor: "customMessageText",
+			keys: options,
+			message,
+		},
+	);
+}
+
 /** Native notices keep full retained content; only the collapsed presentation is short. */
 export const renderAgentPeerMessage: MessageRenderer = (message, options, theme) => {
 	const details = record(message.details);
@@ -2874,6 +2943,7 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 			? message.content
 			: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 	const { label, failed } = peerOutcome(details);
+	if (label === "report") return renderPeerReport(message, options, theme, details, content);
 	const body: (string | Component)[] = peerWarnings(details, failed).map((warning) => theme.fg("warning", warning));
 	const reason = text(details.reason);
 	if (reason) body.push(theme.fg("text", displayPreview(reason, 240)));

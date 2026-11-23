@@ -1542,10 +1542,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		liveOwner: boolean,
 		fallback: boolean,
 		status: SourceStatus | undefined,
-		{ states, marks }: NoticeFacts,
+		{ states, marks, finalReport }: NoticeFacts,
 	): JsonValue => {
 		const body =
-			row.kind === "receipt" ? boundedPeerText(inlineAnswer(row.receipt) ?? "") : boundedReportText(row.report);
+			row.kind === "receipt" ? boundedPeerText(inlineAnswer(row.receipt) ?? "") : reportBody(row.report, finalReport);
 		const shared = sharedRowDetails(
 			row,
 			identity,

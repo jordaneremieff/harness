@@ -329,9 +329,8 @@ it("peer cards supply the same native inner top and bottom padding as tool rows"
 	assert.equal(lines[1]?.trim(), "");
 	assert.equal(lines.at(-1)?.trim(), "");
 	const first = lines.findIndex((line) => line.trim());
-	assert.ok(lines[first]?.includes(`[agent] report · ${identity}`));
-	assert.doesNotMatch(lines[first] ?? "", /provider\/model|xhigh/u);
-	assert.match(lines[first + 1] ?? "", /provider\/model.*xhigh/u);
+	assert.equal(lines[first]?.trim(), "[agent] Report received");
+	assert.equal(lines[first + 1]?.trim(), `from ${identity} · provider/model · xhigh`);
 	assert.doesNotMatch(lines.join("\n"), /Result not saved|unknown|unavailable/u);
 	const tool = nativeTool("agent_status", { sessionId: identity }, { arbitrary: true });
 	assert.deepEqual(
@@ -370,7 +369,7 @@ it("peer reports and steer cards use identical known configuration subheadings",
 			clean(peer)
 				.filter((line) => line.trim())[1]
 				?.trim(),
-			expected,
+			`from ${identity} · ${expected}`,
 		);
 		assert.doesNotMatch(text(peer), /Model:|Provider:|unknown|unavailable/u);
 	}
@@ -690,10 +689,11 @@ it("peer Markdown and wrapped reasons share the total visual preview bound", (t)
 		for (const width of "reason" in source.details ? [24, 60] : [24, 160]) {
 			const lines = clean(component, width);
 			const first = lines.findIndex((line) => line.trim());
-			assert.equal(lines[first + 1]?.trim(), "");
-			const preview = lines.slice(first + 2, -1);
+			const bodyStart = first + (source.details.kind === "report" ? 3 : 2);
+			assert.equal(lines[bodyStart - 1]?.trim(), "");
+			const preview = lines.slice(bodyStart, -1);
 			assert.equal(preview.length, 4);
-			assert.deepEqual(preview.slice(0, 3), clean(expanded, width).slice(first + 2, first + 5));
+			assert.deepEqual(preview.slice(0, 3), clean(expanded, width).slice(bodyStart, bodyStart + 3));
 			assert.match(preview.at(-1) ?? "", /\.\.\. \(/u);
 			assert.doesNotMatch(preview.slice(0, 3).join("\n"), /FINAL_BODY/u);
 		}
@@ -728,7 +728,7 @@ it("thread notice headers show the subject before known sender and secondary fac
 		},
 		{
 			details: { ...model, kind: "report", name: "Parser review" },
-			header: ["[agent] report · Parser review", "provider/model · xhigh"],
+			header: ["[agent] Report received", "from Parser review · provider/model · xhigh"],
 		},
 		{
 			details: { ...model, name: "Parser review", checkIn: { elapsedMs: 90_000, cost: 0 } },
