@@ -221,7 +221,7 @@ export function runUpdate(options: UpdateOptions): UpdateRun {
 
 /** The surface that reports one update: notices, a footer status, and whether the session still shows them. */
 export interface UpdateReporter {
-	notify(text: string, error?: boolean): void;
+	notify(text: string, error?: boolean | "warning"): void;
 	status(text: string | undefined): void;
 	active(): boolean;
 }
@@ -229,34 +229,44 @@ export interface UpdateReporter {
 const STARTED = "Updating the Markdown reader app for this harness in the background";
 
 function installedText(running: number): string {
-	if (running === 0) return "The Markdown reader app is up to date with this harness.";
+	if (running === 0) return "The Markdown reader app is up to date";
 	const open =
 		running === 1
-			? "One open reader still runs the previous build; close it"
-			: `${running} open readers still run the previous build; close them`;
-	return `The Markdown reader app is up to date with this harness. ${open} to load the update.`;
+			? "close the reader that still uses the previous build"
+			: `close the ${running} readers that still use the previous build`;
+	return `The Markdown reader app is up to date; ${open} to load the update`;
+}
+
+function reportInstalled(
+	outcome: Extract<UpdateOutcome, { status: "installed" }>,
+	record: string,
+	reporter: UpdateReporter,
+) {
+	reporter.notify(
+		`${installedText(outcome.running)}${record}.`,
+		outcome.recordIssue || outcome.running ? "warning" : undefined,
+	);
 }
 
 /** Reports a started update and its outcome. A busy outcome is reported only to an explicit request. */
 export function reportUpdate(run: UpdateRun, reporter: UpdateReporter, explicit: boolean): void {
-	reporter.status("Markdown reader: updating");
-	reporter.notify(`${STARTED}${run.pid ? ` (process ${run.pid})` : ""}. Log: ${run.log}`);
+	reporter.status("Markdown reader update");
+	reporter.notify(`${STARTED}${run.pid ? ` (process ${run.pid})` : ""}; log: ${run.log}.`);
 	void run.done.then((outcome) => {
 		if (!reporter.active()) return;
 		reporter.status(undefined);
 		if (outcome.status === "busy") {
 			if (explicit)
 				reporter.notify(
-					"Another Markdown reader update is already running. The installed app stays as it is until that update ends.",
+					"Another Markdown reader update is in progress; the installed app stays in place until it ends.",
 				);
 			return;
 		}
-		const record = outcome.recordIssue ? ` ${outcome.recordIssue}` : "";
-		if (outcome.status === "installed")
-			reporter.notify(`${installedText(outcome.running)}${record}`, !!outcome.recordIssue || undefined);
+		const record = outcome.recordIssue ? `; ${outcome.recordIssue.replace(/\.$/u, "")}` : "";
+		if (outcome.status === "installed") reportInstalled(outcome, record, reporter);
 		else
 			reporter.notify(
-				`The Markdown reader update failed: ${outcome.detail}.${record} The previous app stays installed. Log: ${outcome.log}. Run /markdown update to try again.`,
+				`The Markdown reader update failed: ${outcome.detail.replace(/\.$/u, "")}${record}; the previous app stays installed, so see ${outcome.log} and run /markdown update to try again.`,
 				true,
 			);
 	});
@@ -265,10 +275,10 @@ export function reportUpdate(run: UpdateRun, reporter: UpdateReporter, explicit:
 /** The notice for an installed app that this harness does not replace on its own. */
 export function noticeText(state: Extract<ReaderState, { state: "notice" }>): string {
 	if (state.reason === "loaded-modified")
-		return "This harness has uncommitted changes to the Markdown reader, so the installed reader app was not replaced. Run /markdown update to install a reader built from them.";
+		return "The installed Markdown reader app stays in place because this checkout has uncommitted reader changes; run /markdown update to build from them.";
 	if (state.reason === "loaded-untracked")
-		return "The installed Markdown reader app differs from this harness, and this harness is not a Git checkout, so the app was not replaced. Run /markdown update to install the reader of this harness.";
-	return `The installed Markdown reader app was built from ${state.commit ? `commit ${state.commit.slice(0, 12)}` : "other source"}, which is not an earlier version of this harness, so it was not replaced. Run /markdown update to install the reader of this harness.`;
+		return "The Markdown reader app differs from this harness and this harness is not a Git checkout; run /markdown update to replace the installed app.";
+	return `The installed Markdown reader app was built from ${state.commit ? `commit ${state.commit}` : "other source"}, which is not an earlier version of this harness; run /markdown update to replace it.`;
 }
 
 export interface StartupOptions {
@@ -295,12 +305,12 @@ export async function checkReader(
 	if (state.state === "current" || state.state === "keep") return state;
 	if (build.lockHolder(dirname(options.app))) return { state: "busy" };
 	if (state.state === "notice") {
-		options.reporter.notify(noticeText(state));
+		options.reporter.notify(noticeText(state), "warning");
 		return state;
 	}
 	if (failedDigest(options.app) === loaded.digest) {
 		options.reporter.notify(
-			`The last Markdown reader update for this harness failed, so it was not retried. Log: ${updateFiles(options.app).log}. Run /markdown update to try again.`,
+			`The last Markdown reader update failed and was not retried; see ${updateFiles(options.app).log} and run /markdown update to try again.`,
 			true,
 		);
 		return { state: "failed" };
@@ -323,7 +333,7 @@ export async function checkReader(
 /** /markdown update: installs the reader of this harness now, whatever the installed app is. */
 export async function updateNow(options: StartupOptions): Promise<void> {
 	if (process.platform !== "darwin") {
-		options.reporter.notify("The Markdown reader app builds only on macOS.", true);
+		options.reporter.notify("The Markdown reader app builds only on macOS.", "warning");
 		return;
 	}
 	const nativeDir = options.nativeDir ?? NATIVE_DIR;
@@ -331,7 +341,7 @@ export async function updateNow(options: StartupOptions): Promise<void> {
 	const holder = build.lockHolder(dirname(options.app));
 	if (holder) {
 		options.reporter.notify(
-			`A Markdown reader update is already running (process ${holder.pid}). Its outcome replaces the installed app when it ends.`,
+			`A Markdown reader update is already running (process ${holder.pid}); the installed app stays in place until it succeeds.`,
 		);
 		return;
 	}

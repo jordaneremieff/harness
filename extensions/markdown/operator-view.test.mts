@@ -118,7 +118,7 @@ test("selection change and view close abort acquisition and drop late outcomes",
 	await tick();
 	assert.ok(!f.notices.includes("late reveal notice"));
 });
-test("a published row shows the short stable ID, the revision and the age of its last change", async () => {
+test("a published row shows the full stable ID, the revision and the age of its last change", async () => {
 	const document: MarkdownRow = {
 		kind: "document",
 		root: "/store",
@@ -139,8 +139,8 @@ test("a published row shows the short stable ID, the revision and the age of its
 		latest: async () => "latest",
 	});
 	await tick();
-	const screen = f.view.render(120, 24).join("\n");
-	assert.match(screen, /md-01234567 · r3 · 2h {2}Release notes/u);
+	const screen = f.view.render(150, 24).join("\n");
+	assert.match(screen, /md-0123456789abcdef0123 · r3 · 2h {2}Release notes/u);
 	f.controller.abort();
 });
 test("Read latest pressed before the first list arrives completes", async () => {

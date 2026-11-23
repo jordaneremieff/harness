@@ -147,17 +147,23 @@ test("the native tool retains a full escaped page beyond the host's default outp
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
 	try {
 		const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+		const request = (id: string, input: Record<string, unknown> = {}) =>
+			fauxToolCall("markdown_live", { op: "read", handle: "exact-test-handle", ...input }, { id });
 		faux.setResponses([
-			fauxAssistantMessage(fauxToolCall("markdown_live", { op: "read", handle: "exact-test-handle" }), {
-				stopReason: "toolUse",
-			}),
+			fauxAssistantMessage(
+				[
+					request("read-complete"),
+					request("read-error", { offset: 65537, baseGeneration: result.generation, baseDigest: result.digest }),
+					request("read-stale", { offset: 1, baseGeneration: 0, baseDigest: result.digest }),
+				],
+				{ stopReason: "toolUse" },
+			),
 			fauxAssistantMessage("Read complete."),
 		]);
 		await (await conversation.submit({ type: "input", content: "Read the exact buffer." }, context)).wait(context);
-		const entry = (await conversation.entries({}, 20, undefined, context)).items.find((item) =>
-			Durable.ToolResultEntry.is(item),
-		);
-		const message = entry?.model?.[0];
+		const entries = (await conversation.entries({}, 50, undefined, context)).items;
+		const receipts = entries.filter((item) => Durable.ToolResultEntry.is(item)).flatMap((item) => item.model ?? []);
+		const message = receipts.find((model) => model.role === "toolResult" && model.toolCallId === "read-complete");
 		assert.ok(message?.role === "toolResult" && !message.isError);
 		const text = message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 		assert.ok(Buffer.byteLength(text) > 65536);
@@ -166,6 +172,18 @@ test("the native tool retains a full escaped page beyond the host's default outp
 		assert.ok(page.source === source, "the host receives every byte of the escaped source page");
 		assert.equal(page.nextOffset, null);
 		assert.equal(page.totalBytes, 65536);
+
+		for (const expected of ["error", "stale"]) {
+			const receipt = receipts.find(
+				(message) => message.role === "toolResult" && message.toolCallId === `read-${expected}`,
+			);
+			assert.ok(receipt?.role === "toolResult");
+			assert.equal(receipt.isError, expected === "error");
+			assert.equal(
+				JSON.parse(receipt.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("")).status,
+				expected,
+			);
+		}
 	} finally {
 		await harness.close(context);
 	}
@@ -233,6 +251,7 @@ test("both tool registrations declare disjoint structured read outcomes", async 
 		);
 		const value = JSON.parse((result.content[0] as { text: string }).text);
 		assert.ok(check(result.structuredContent));
+		assert.equal(Object.hasOwn(result, "isError") && result.isError, value.status === "error");
 		assert.deepEqual(result.structuredContent, value);
 		return value;
 	};

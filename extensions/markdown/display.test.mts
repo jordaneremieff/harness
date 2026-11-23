@@ -1,162 +1,292 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { Text } from "@earendil-works/pi-tui";
+import { createRequire } from "node:module";
+import { test, type TestContext } from "node:test";
+import { stripVTControlCharacters } from "node:util";
+import { defineTool, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { obj } from "@earendil-works/pi-schema";
+import { type KeyId, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { createBriefTool } from "./brief-tool.ts";
 import { toolDisplay } from "./display.ts";
+import { markdownContribution } from "./durable.ts";
 import { createLiveTool } from "./live-tool.ts";
 import { createPublishTool } from "./publish.ts";
+import { createReadTool } from "./read.ts";
 import { MarkdownStore } from "./store.ts";
 
-const theme = { fg: (_colour: string, value: string) => value, bold: (value: string) => value } as never;
-const context = { expanded: false, isError: false, keyText: () => "ctrl+o" } as never;
-function card(name: string) {
-	const value = toolDisplay().tools.find((tool) => tool.name === name);
-	assert.ok(value);
-	const renderCall = value.renderCall,
-		renderResult = value.renderResult;
-	assert.ok(renderCall);
-	assert.ok(renderResult);
-	return { ...value, renderCall, renderResult };
+const requirePi = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+const nativeTui: typeof import("@earendil-works/pi-tui") = await import(requirePi.resolve("@earendil-works/pi-tui"));
+const ui = { requestRender() {} } as unknown as TUI;
+const id = "md-0123456789abcdef0123";
+function keys(t: TestContext, defaultKeys: KeyId | KeyId[] = "ctrl+g") {
+	initTheme("dark", false);
+	const prior = nativeTui.getKeybindings();
+	nativeTui.setKeybindings(
+		new nativeTui.KeybindingsManager({
+			...nativeTui.TUI_KEYBINDINGS,
+			"app.tools.expand": { defaultKeys, description: "Expand tool output" },
+		}),
+	);
+	t.after(() => nativeTui.setKeybindings(prior));
 }
-function call(name: string, args: unknown, expanded = false): string {
-	return card(name)
-		.renderCall(args, theme, { ...(context as object), expanded } as never)
-		.render(120)
+function card(name: string, args: Record<string, unknown>) {
+	const display = toolDisplay().tools.find((tool) => tool.name === name);
+	assert.ok(display);
+	const definition = defineTool({
+		...display,
+		label: name,
+		description: name,
+		parameters: obj({}, { open: true }),
+		async execute() {
+			throw new Error("Display only");
+		},
+	});
+	const component = new ToolExecutionComponent(name, "fixture", args, { outputPad: 1 }, definition, ui, "/");
+	component.setArgsComplete();
+	return component;
+}
+function screen(component: ToolExecutionComponent, width = 120) {
+	return component
+		.render(width)
+		.map((line) => {
+			assert.ok(visibleWidth(line) <= width);
+			return stripVTControlCharacters(line).trimEnd();
+		})
 		.join("\n");
 }
-function result(name: string, details: unknown, expanded = false, isError = false): string {
-	return card(name)
-		.renderResult({ content: [], details }, { expanded } as never, theme, { ...(context as object), isError } as never)
-		.render(120)
-		.join("\n");
+function result(text: string | string[], details?: unknown, isError = false) {
+	return {
+		content: (Array.isArray(text) ? text : [text]).map((text) => ({ type: "text" as const, text })),
+		details,
+		isError,
+	};
 }
-test("Markdown display records share stable renderers across ordinary and attached tools", () => {
+
+test("the ordinary tool registrations and attached descriptor use the same inert display records", () => {
+	const store = new MarkdownStore("/unused");
+	const tools = [
+		createBriefTool({ mode: "off" }),
+		createPublishTool({ store }),
+		createReadTool({ store }),
+		createLiveTool(async () => undefined),
+	];
 	const publication = toolDisplay();
 	assert.equal(publication.version, 1);
 	assert.deepEqual(
-		publication.tools.map(({ name }) => name),
-		["markdown_publish", "markdown_read", "markdown_live"],
+		publication.tools.map((v) => v.name),
+		tools.map((v) => v.name),
 	);
-	for (const value of publication.tools)
-		assert.deepEqual(Object.keys(value).sort(), ["name", "renderCall", "renderResult"]);
-	const publish = createPublishTool({ store: new MarkdownStore("/unused") });
-	const live = createLiveTool(async () => undefined);
-	assert.equal(publish.renderCall, card("markdown_publish").renderCall);
-	assert.equal(publish.renderResult, card("markdown_publish").renderResult);
-	assert.equal(live.renderCall, card("markdown_live").renderCall);
-	assert.equal(live.renderResult, card("markdown_live").renderResult);
-});
-test("collapsed calls use tool names and concise subjects without document bodies", () => {
-	const text = call("markdown_publish", { title: "A document", text: "private document body" });
-	assert.match(text, /^markdown_publish · A document/u);
-	assert.match(text, /ctrl\+o to expand arguments/u);
-	assert.doesNotMatch(text, /private document body/u);
-	assert.match(call("markdown_read", { kind: "published", query: "guide" }), /markdown_read · find published · guide/u);
-	assert.match(
-		call("markdown_live", { op: "apply", handle: "exact-handle", edits: [{ replacement: "not in the heading" }] }),
-		/markdown_live · apply exact-handle/u,
-	);
-	assert.doesNotMatch(
-		call("markdown_live", { op: "apply", edits: [{ replacement: "not in the heading" }] }),
-		/not in the heading/u,
-	);
-	assert.match(
-		call("markdown_publish", { title: "A document", text: "private document body" }, true),
-		/private document body/u,
-	);
-});
-test("outcome cards preserve useful state and keep navigation ceremony out of collapsed results", () => {
-	const saved = result("markdown_publish", {
-		ok: true,
-		documentId: "md-12345678901234567890",
-		revision: 2,
-		bytes: 100,
-	});
-	assert.match(saved, /Saved md-12345678901234567890 · revision 2 · 100 bytes/u);
-	assert.doesNotMatch(saved, /Owner views|\/markdown|No window opened/u);
-	assert.match(
-		result("markdown_read", { op: "find", matched: 2, scanned: 8, bounded: true, unreadable: 1 }),
-		/2 matched · 8 scanned · scan bounded · 1 unreadable/u,
-	);
-	assert.match(result("markdown_live", { status: "ok", panes: [{ handle: "one" }] }), /1 connected pane/u);
-	assert.match(
-		result("markdown_live", {
-			status: "page",
-			fragment: "hidden body",
-			generation: 3,
-			offset: 0,
-			nextOffset: 20,
-			pane: { view: { conflict: true } },
-		}),
-		/Read live fragment · generation 3 · offset 0 · next 20 · autosave conflict/u,
-	);
-	assert.doesNotMatch(
-		result("markdown_live", { status: "complete", source: "hidden body", generation: 3 }),
-		/hidden body/u,
-	);
-	assert.match(
-		result("markdown_live", { status: "pending", pending: [{}] }),
-		/launch outstanding · display unconfirmed/u,
-	);
-	assert.match(
-		result("markdown_live", { status: "launch", documentId: "md-id", argv: ["private/path"] }),
-		/Launch offered for md-id · display unconfirmed/u,
-	);
-	assert.match(
-		result("markdown_live", { status: "navigated", view: { documentId: "md-id", revision: 5 } }),
-		/Reader confirmed md-id · revision 5/u,
-	);
-	assert.match(
-		result("markdown_live", { status: "comments", commentState: "open", total: 2, offset: 0 }),
-		/2 open comments/u,
-	);
-	assert.match(
-		result("markdown_live", { status: "commentSet", commentState: "closed", version: 4 }),
-		/Comment closed · version 4/u,
-	);
-	assert.match(
-		result("markdown_live", { status: "applied", generation: 4, retained: true }),
-		/Applied · generation 4 · recovery retained/u,
-	);
-	assert.match(
-		result("markdown_live", { status: "stale", message: "Read the current buffer." }),
-		/stale: Read the current buffer/u,
-	);
-	assert.match(result("markdown_publish", { ok: false, error: { message: "Revision changed." } }), /Revision changed/u);
-});
-test("expanded cards show bounded escaped evidence and reuse the native component", () => {
-	const unsafe = "title\u001b[31m\u202e";
-	for (const expanded of [false, true]) {
-		assert.doesNotMatch(call("markdown_publish", { title: unsafe, text: unsafe }, expanded), /[\u001b\u202e]/u);
-		assert.doesNotMatch(result("markdown_live", { status: "error", message: unsafe }, expanded), /[\u001b\u202e]/u);
+	for (const [index, entry] of publication.tools.entries()) {
+		assert.deepEqual(Object.keys(entry).sort(), ["name", "renderCall", "renderResult"]);
+		assert.equal(entry.renderCall, tools[index]?.renderCall);
+		assert.equal(entry.renderResult, tools[index]?.renderResult);
 	}
-	const shown = result("markdown_live", { status: "complete", source: "x".repeat(50_000), generation: 0 }, true);
-	assert.match(shown, /Display limit/u);
-	assert.ok(shown.length < 34_000);
-	const previous = new Text("old", 0, 0);
-	const reused = card("markdown_live").renderCall({ op: "list" }, theme, {
-		...(context as object),
-		lastComponent: previous,
-	} as never);
-	assert.equal(reused, previous);
-	const withoutKey = card("markdown_read")
-		.renderCall({}, theme, {} as never)
-		.render(120)
-		.join("\n");
-	assert.match(withoutKey, /Expand for arguments/u);
-	assert.doesNotMatch(withoutKey, /ctrl\+o/u);
+	assert.deepEqual(markdownContribution("fixture", {} as never, () => {}).display, {
+		version: 1,
+		entry: "./display.ts",
+		export: "toolDisplay",
+	});
 });
-test("retained JSON results remain readable when structured details are absent", () => {
-	const rendered = card("markdown_live")
-		.renderResult(
-			{
-				content: [{ type: "text", text: JSON.stringify({ status: "applied", generation: 5, retained: true }) }],
-				details: undefined,
-			},
-			{ expanded: false } as never,
-			theme,
-			context,
-		)
-		.render(120)
-		.join("\n");
-	assert.match(rendered, /Applied · generation 5 · recovery retained/u);
+
+test("the result takes over the only expansion hint during progress and after settlement", (t) => {
+	keys(t);
+	const component = card("markdown_publish", {
+		title: "A document",
+		document: id,
+		expectedRevision: 3,
+		reuseKey: "full-reuse-key",
+	});
+	assert.match(
+		screen(component),
+		new RegExp(`markdown_publish A document\\n +${id} · expected revision 3\\n +\\.\\.\\. \\(ctrl\\+g to expand\\)`),
+	);
+	component.markExecutionStarted();
+	component.updateResult(result(""), true);
+	assert.match(screen(component), /Working…\n +\.\.\. \(ctrl\+g to expand\)/u);
+	assert.equal(screen(component).match(/to expand/gu)?.length, 1);
+	component.updateResult(
+		result("Saved text. Model instructions here.", {
+			ok: true,
+			documentId: id,
+			revision: 4,
+			bytes: 90,
+			paneState: { status: "unknown" },
+		}),
+	);
+	assert.match(screen(component), /Saved md-0123456789abcdef0123 · revision 4; reader state not observed\./u);
+	assert.doesNotMatch(screen(component), /Model instructions/u);
+	component.updateResult(
+		result("Observed saved revision.", {
+			ok: true,
+			documentId: id,
+			revision: 4,
+			paneState: { status: "observed", showing: ["reader"] },
+		}),
+	);
+	assert.match(screen(component), /a reader reported this revision/u);
+	component.setExpanded(true);
+	assert.match(screen(component), /reuseKey: full-reuse-key/u);
+	assert.doesNotMatch(screen(component), /to expand/u);
+});
+
+test("a narrow width caps a single long read line and discloses the exact next page", (t) => {
+	keys(t);
+	const component = card("markdown_read", { document: id, revision: 4, offset: 100 });
+	const fragment = "abcdefghij".repeat(31);
+	component.updateResult(
+		result([`Read header for ${id}`, fragment], {
+			op: "read",
+			documentId: id,
+			revision: 4,
+			status: "page",
+			offset: 100,
+			nextOffset: 410,
+		}),
+	);
+	const narrow = screen(component, 45);
+	assert.equal(narrow.split("\n").filter((row) => /^ +[a-j]+$/u.test(row)).length, 5, narrow);
+	assert.match(narrow, /\.\.\. \(\d+ more lines, ctrl\+g to expand\)/u);
+	assert.match(
+		screen(component),
+		/Read a fragment of md-0123456789abcdef0123 · revision 4 at offset 100; more follows/u,
+	);
+	component.setExpanded(true);
+	assert.match(
+		screen(component, 130),
+		/Continue with markdown_read \{"document":"md-0123456789abcdef0123","revision":4,"offset":410\}/u,
+	);
+	assert.doesNotMatch(screen(component), /Truncated:|to expand/u);
+});
+
+test("live source and edit bodies stay out of collapsed cards, with a click hint only after a result", (t) => {
+	keys(t, []);
+	const component = card("markdown_live", {
+		op: "apply",
+		handle: "full-handle",
+		edits: [{ find: "private anchor", replace: "private replacement" }],
+	});
+	assert.doesNotMatch(screen(component), /to expand|private/u);
+	component.updateResult(result(JSON.stringify({ status: "applied", generation: 9, retained: true })));
+	assert.match(screen(component), /Applied to the live buffer at generation 9; private recovery retained\./u);
+	assert.match(screen(component), /\.\.\. \(click to expand\)/u);
+	assert.doesNotMatch(screen(component), /private (anchor|replacement)/u);
+	component.setExpanded(true);
+	assert.match(screen(component), /private replacement/u);
+
+	const read = card("markdown_live", { op: "read", handle: "full-handle" });
+	read.updateResult(
+		result("", {
+			status: "page",
+			fragment: "private source",
+			generation: 3,
+			digest: "sha256:fixture",
+			offset: 0,
+			nextOffset: 25,
+			pane: { view: { dirty: true } },
+		}),
+	);
+	assert.match(screen(read), /Read live fragment at generation 3 · offset 0; unsaved; more follows/u);
+	assert.doesNotMatch(screen(read), /private source/u);
+	read.setExpanded(true);
+	assert.match(
+		screen(read, 160),
+		/Continue with markdown_live \{"op":"read","handle":"full-handle","offset":25,"baseGeneration":3,"baseDigest":"sha256:fixture"\}/u,
+	);
+	assert.match(screen(read), /private source/u);
+});
+
+test("shows a launch offer, confirmed view, refusal and thrown diagnostic as distinct outcomes", (t) => {
+	keys(t);
+	const component = card("markdown_live", { op: "show", document: id, handle: "full-handle", revision: 5 });
+	assert.match(screen(component), /markdown_live show md-0123456789abcdef0123\n +full-handle · revision 5/u);
+	component.updateResult(result("", { status: "launch", documentId: id, revision: 5, argv: ["private-launch"] }));
+	assert.match(screen(component), /Launch offered for .*; display unconfirmed\./u);
+	assert.doesNotMatch(screen(component), /private-launch|Reader confirmed/u);
+	component.updateResult(result("", { status: "navigated", view: { documentId: id, revision: 5 } }));
+	assert.match(screen(component), /Reader confirmed md-0123456789abcdef0123 · revision 5\./u);
+	component.updateResult(result("", { status: "busy", message: "The passage is in use." }));
+	assert.match(screen(component), /The passage is in use\./u);
+	assert.doesNotMatch(screen(component), /to expand/u);
+	component.updateResult(result("Cancelled by the requester.\nAdditional diagnosis.", undefined, true));
+	assert.match(screen(component), /Cancelled by the requester\./u);
+	assert.doesNotMatch(screen(component), /Additional diagnosis\./u);
+	component.setExpanded(true);
+	assert.match(screen(component), /Additional diagnosis\./u);
+});
+
+test("the brief uses a human preview and a long retained fallback names its separate display cap", (t) => {
+	keys(t);
+	const component = card("markdown_brief", { title: "Guide\x1b[31m\u202e\nnotes" });
+	assert.match(screen(component), /markdown_brief Guide notes/u);
+	assert.doesNotMatch(screen(component), /to expand|\u202e|\[31m/u);
+	component.updateResult(result("Writing brief\nSome guidance", { reader: "Person", checks: [] }));
+	assert.match(screen(component), /Prepared the writing brief\./u);
+	assert.doesNotMatch(screen(component), /Some guidance/u);
+	assert.match(screen(component), /ctrl\+g to expand/u);
+	component.setExpanded(true);
+	assert.match(screen(component), /Some guidance/u);
+	component.updateResult(result(`Reason\n${"x".repeat(50_000)}`, undefined, true));
+	component.setExpanded(true);
+	assert.match(screen(component), /\[Truncated: showing 32000 of 50007 characters\]/u);
+});
+
+test("bare validation errors do not preview echoed arguments", (t) => {
+	keys(t);
+	for (const [name, args, error] of [
+		[
+			"markdown_publish",
+			{ title: "Draft", text: "private body" },
+			'Validation failed for tool "markdown_publish":\n  - title: invalid\n\nReceived arguments:\n{"text":"private body"}',
+		],
+		[
+			"markdown_live",
+			{ op: "apply", edits: [{ find: "private body", replace: "amended" }] },
+			'Invalid arguments for tool "markdown_live": malformed private body',
+		],
+	] as const) {
+		const component = card(name, args);
+		component.updateResult(result(error, undefined, true));
+		const collapsed = screen(component);
+		assert.match(collapsed, /The tool arguments did not pass validation\./u);
+		assert.doesNotMatch(collapsed, /private body|Received arguments/u);
+		assert.equal(collapsed.match(/to expand/gu)?.length, 1);
+		component.setExpanded(true);
+		assert.match(screen(component), /private body/u);
+	}
+});
+
+test("a publication draft previews only five visual rows and expands on the configured key", (t) => {
+	keys(t);
+	const component = card("markdown_publish", { title: "Draft", text: "abcdefghij".repeat(32) });
+	const collapsed = screen(component, 45);
+	assert.equal(collapsed.split("\n").filter((row) => /^ +[a-j]+$/u.test(row)).length, 5, collapsed);
+	assert.match(collapsed, /\.\.\. \(3 more lines, ctrl\+g to expand\)/u);
+	component.setExpanded(true);
+	const expanded = screen(component, 45);
+	assert.equal(expanded.split("\n").filter((row) => /^ +[a-j]+$/u.test(row)).length, 8, expanded);
+	assert.doesNotMatch(expanded, /to expand/u);
+});
+
+test("an empty find page preserves the same filters and full cursor", (t) => {
+	keys(t);
+	const component = card("markdown_read", { kind: "file", query: "notes", contains: "line\nneedle" });
+	const cursor = "next-012345678901234567890123456789";
+	component.updateResult(
+		result("", {
+			ok: true,
+			op: "find",
+			kind: "file",
+			query: "notes",
+			search: { contains: "line\nneedle" },
+			rows: [],
+			scanned: 25,
+			nextCursor: cursor,
+		}),
+	);
+	assert.match(screen(component), /No matches in this page; scanned 25 documents; more results follow\./u);
+	component.setExpanded(true);
+	assert.ok(
+		screen(component, 160).includes(
+			`Continue with markdown_read ${JSON.stringify({ kind: "file", query: "notes", contains: "line\nneedle", cursor })}`,
+		),
+	);
 });

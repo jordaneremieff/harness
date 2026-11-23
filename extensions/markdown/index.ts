@@ -16,7 +16,8 @@ import { coverageText, createPublishTool, fileSnapshotInput, referenceSummary } 
 import { createReadTool } from "./read.ts";
 import { checkReader, type UpdateReporter, updateNow } from "./reader-update.ts";
 import { type ResponseSnapshot, readOrdinary, recentOrdinary } from "./responses.ts";
-import type { Presentation } from "./reveal.ts";
+import type { Presentation, RevealLevel } from "./reveal.ts";
+import { matchesKey, stripTerminalSequences, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { publishSettings, readSettings } from "./settings.ts";
 import { MarkdownStore } from "./store.ts";
 import { writingOptions } from "./writing-config.ts";
@@ -53,6 +54,7 @@ export function ordinaryOperations(
 	lifecycle: () => AbortSignal,
 	presentation: Presentation = "pane",
 	connection?: Connection,
+	level?: (level: RevealLevel) => void,
 ): MarkdownOperations {
 	const source = ctx.sessionManager;
 	const sessionId = source.getSessionId();
@@ -112,7 +114,7 @@ export function ordinaryOperations(
 			check(signal);
 			const live = await connection?.();
 			check(signal);
-			const result = await reveal.openResponse(response, signal, ctx.mode === "tui", presentation, live);
+			const result = await reveal.openResponse(response, signal, ctx.mode === "tui", presentation, live, level);
 			check(signal);
 			return result;
 		},
@@ -124,7 +126,7 @@ export function ordinaryOperations(
 			check(signal);
 			const live = await connection?.();
 			check(signal);
-			return reveal.openScratchpad(signal, { presentation, live });
+			return reveal.openScratchpad(signal, { presentation, live, level });
 		},
 		edit: async (row, viewSignal, copy = false) => {
 			const signal = AbortSignal.any([viewSignal, lifecycle()]);
@@ -145,8 +147,63 @@ export function ordinaryOperations(
 		},
 	};
 }
-function notice(ctx: ExtensionContext, text: string, error = false): void {
-	ctx.ui.notify(text, error ? "error" : "info");
+function notice(ctx: ExtensionContext, text: string, level: RevealLevel = "info"): void {
+	ctx.ui.notify(ctx.mode === "tui" ? reportText(text).replace(/\s+/gu, " ").trim() : text, level);
+}
+async function noticeError(ctx: ExtensionContext, error: unknown, track: (frame: Frame | undefined) => void) {
+	if (ctx.mode !== "tui") return notice(ctx, clean(error), "error");
+	const cause = error instanceof Error ? error.message : String(error);
+	if (cause.includes("\n")) await showReport(ctx, "Markdown command", cause, track);
+	else notice(ctx, `Markdown: ${cause}`, "error");
+}
+function reportText(text: string): string {
+	return stripTerminalSequences(text)
+		.replace(/\r\n/g, "\n")
+		.replace(/[\p{Cc}\p{Cf}]/gu, (char) => (char === "\n" ? char : char === "\t" ? "   " : ""));
+}
+async function showReport(
+	ctx: ExtensionContext,
+	title: string,
+	text: string,
+	track: (frame: Frame | undefined) => void,
+) {
+	if (ctx.mode !== "tui") return notice(ctx, text);
+	const { openFrame } = await import("./frame.ts");
+	const report = reportText(text);
+	await openFrame(
+		ctx,
+		(host) => {
+			let offset = 0;
+			let height = 1;
+			return {
+				title,
+				render(width, rows) {
+					height = Math.max(1, rows);
+					const lines = report.split("\n").flatMap((row) => wrapTextWithAnsi(row, Math.max(1, width)));
+					offset = Math.min(offset, Math.max(0, lines.length - height));
+					return lines.slice(offset, offset + height);
+				},
+				handleInput(input) {
+					const keys = [
+						["up", -1],
+						["down", 1],
+						["pageUp", -height],
+						["pageDown", height],
+					] as const;
+					const step = keys.find(([key]) => matchesKey(input, key))?.[1];
+					if (!step) return false;
+					offset = Math.max(0, offset + step);
+					host.requestRender();
+					return true;
+				},
+				keys: () => [
+					{ keys: ["up", "down"], label: "scroll" },
+					{ keys: ["pageUp", "pageDown"], label: "page" },
+				],
+			};
+		},
+		track,
+	);
 }
 /**
  * Keeps the reader app in step with the loaded harness. Each interactive start or reload on macOS
@@ -162,7 +219,7 @@ export function readerUpdates(
 	pi.on("session_shutdown", () => session.abort());
 	const reporter = (ctx: ExtensionContext): UpdateReporter => ({
 		notify: (text, error) => {
-			if (!session.signal.aborted) notice(ctx, text, error);
+			if (!session.signal.aborted) notice(ctx, text, error === "warning" ? "warning" : error ? "error" : "info");
 		},
 		status: (text) => {
 			if (!session.signal.aborted) ctx.ui.setStatus("markdown-update", text);
@@ -195,6 +252,7 @@ async function openFile(
 	signal: AbortSignal,
 	presentation: Presentation,
 	connection?: Connection,
+	level?: (level: RevealLevel) => void,
 ): Promise<string> {
 	if (!path) throw new Error(markdownHelp("file"));
 	const settings = localSettings();
@@ -226,6 +284,7 @@ async function openFile(
 			signal,
 			{ gui: ctx.mode === "tui", presentation, live },
 		),
+		level,
 	);
 	return coverage ? `${notice} ${coverage}` : notice;
 }
@@ -236,11 +295,12 @@ async function readSelection(
 	operations: MarkdownOperations,
 	presentation: Presentation,
 	connection?: Connection,
+	level?: (level: RevealLevel) => void,
 ): Promise<string> {
 	if (!value) return operations.latest(signal);
 	if (value === "new") return operations.newScratchpad(signal);
 	if (value === "edit" || value === "copy" || value.startsWith("edit ") || value.startsWith("copy "))
-		return editSelection(value, ctx, signal, presentation, connection);
+		return editSelection(value, ctx, signal, presentation, connection, level);
 	if (value === "file" || value.startsWith("file "))
 		return openFile(
 			ctx,
@@ -251,13 +311,14 @@ async function readSelection(
 			signal,
 			presentation,
 			connection,
+			level,
 		);
 	if (!/^md-[0-9a-f]{1,20}$/u.test(value)) throw new Error(MARKDOWN_USAGE);
 	const reveal = await import("./reveal.ts");
 	signal.throwIfAborted();
 	const live = await connection?.();
 	signal.throwIfAborted();
-	return reveal.openStored(localSettings().dir, value, signal, { gui: ctx.mode === "tui", presentation, live });
+	return reveal.openStored(localSettings().dir, value, signal, { gui: ctx.mode === "tui", presentation, live, level });
 }
 async function editSelection(
 	value: string,
@@ -265,6 +326,7 @@ async function editSelection(
 	signal: AbortSignal,
 	presentation: Presentation,
 	connection?: Connection,
+	level?: (level: RevealLevel) => void,
 ): Promise<string> {
 	if (ctx.mode !== "tui")
 		throw new Error("Use the Markdown operator view or native app to edit. No editor was opened.");
@@ -279,10 +341,14 @@ async function editSelection(
 			.trim()
 			.replace(/^"(.*)"$/u, "$1");
 		if (!path) throw new Error(markdownHelp("edit"));
-		return reveal.openEditorFile(resolve(ctx.cwd, expandHome(path)), signal, { presentation, live });
+		return reveal.openEditorFile(resolve(ctx.cwd, expandHome(path)), signal, { presentation, live, level });
 	}
 	if (!/^md-[0-9a-f]{3,20}$/u.test(selected)) throw new Error(markdownHelp(copy ? "copy" : "edit"));
-	return reveal.openEditorStored(localSettings().dir, selected, copy ? "copy" : "edit", signal, { presentation, live });
+	return reveal.openEditorStored(localSettings().dir, selected, copy ? "copy" : "edit", signal, {
+		presentation,
+		live,
+		level,
+	});
 }
 function readPresentation(value: string): { value: string; presentation: Presentation } {
 	if (value === "window" || value.startsWith("window "))
@@ -353,29 +419,41 @@ export default function markdown(pi: ExtensionAPI): void {
 			opening = false;
 		}
 	};
+	const runSelection = async (input: string, ctx: ExtensionContext, signal: AbortSignal) => {
+		const { value, presentation } = readPresentation(input);
+		const connection = connectionFor(ctx, presentation);
+		let level: RevealLevel = "info";
+		const observe = (value: RevealLevel) => {
+			level = value;
+		};
+		const operations = ordinaryOperations(ctx, lifecycle, presentation, connection, observe);
+		if (presentation === "pane" && ["recent", "published"].includes(value)) {
+			await browse(value as MarkdownScope, ctx, operations, signal);
+			return;
+		}
+		const result = await readSelection(value, ctx, signal, operations, presentation, connection, observe);
+		if (!signal.aborted) notice(ctx, result, level);
+	};
 	const action = async (args: string, ctx: ExtensionContext) => {
 		const signal = lifecycle();
 		try {
 			const input = args.trim();
 			if (input === "help" || input.startsWith("help ")) {
-				notice(ctx, markdownHelp(input.slice(4).trim()));
+				await showReport(ctx, "Markdown help", markdownHelp(input.slice(4).trim()), (current) => {
+					frame = current;
+				});
 				return;
 			}
 			if (input === "update") {
 				await updateReader(ctx);
 				return;
 			}
-			const { value, presentation } = readPresentation(input);
-			const connection = connectionFor(ctx, presentation);
-			const operations = ordinaryOperations(ctx, lifecycle, presentation, connection);
-			if (presentation === "pane" && ["recent", "published"].includes(value)) {
-				await browse(value as MarkdownScope, ctx, operations, signal);
-				return;
-			}
-			const result = await readSelection(value, ctx, signal, operations, presentation, connection);
-			if (!signal.aborted) notice(ctx, result);
+			await runSelection(input, ctx, signal);
 		} catch (error) {
-			if (!signal.aborted) notice(ctx, clean(error), true);
+			if (signal.aborted) return;
+			await noticeError(ctx, error, (current) => {
+				frame = current;
+			});
 		}
 	};
 	pi.registerCommand("markdown", {

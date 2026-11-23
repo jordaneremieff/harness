@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createEventBus, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Frame } from "./frame.ts";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import markdown, { ordinaryLifecycle, ordinaryOperations, readerUpdates } from "./index.ts";
 import type { checkReader } from "./reader-update.ts";
@@ -120,9 +121,9 @@ test("headless commands notify without session messages or stdout and resolve bo
 			assert.match(
 				notify.mock.calls.at(-1)?.arguments[0] ?? "",
 				{
-					print: /^Saved md-[a-f0-9]{8} revision 1\. No window was opened\.$/u,
-					json: /^Selected md-[a-f0-9]{8} revision 1\. No window was opened\.$/u,
-					rpc: /^Selected md-[a-f0-9]{8} revision 1\. No window was opened\.$/u,
+					print: /^Saved md-[a-f0-9]{20} revision 1\. No window was opened\.$/u,
+					json: /^Selected md-[a-f0-9]{20} revision 1\. No window was opened\.$/u,
+					rpc: /^Selected md-[a-f0-9]{20} revision 1\. No window was opened\.$/u,
 				}[mode] as RegExp,
 			);
 		}
@@ -140,10 +141,7 @@ test("headless commands notify without session messages or stdout and resolve bo
 		]);
 		for (const [id, lookup] of lookups) {
 			await handler(lookup, context("json"));
-			assert.equal(
-				notify.mock.calls.at(-1)?.arguments[0],
-				`Selected ${id.slice(0, 11)} revision 1. No window was opened.`,
-			);
+			assert.equal(notify.mock.calls.at(-1)?.arguments[0], `Selected ${id} revision 1. No window was opened.`);
 		}
 		await handler("help file", context("json"));
 		assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", /\/markdown file <path>\nCapture and read/u);
@@ -162,10 +160,7 @@ test("headless commands notify without session messages or stdout and resolve bo
 		}
 		assert.ok(shortcut);
 		await shortcut(context("json"));
-		assert.equal(
-			notify.mock.calls.at(-1)?.arguments[0],
-			`Selected ${snapshot.id.slice(0, 11)} revision 1. No window was opened.`,
-		);
+		assert.equal(notify.mock.calls.at(-1)?.arguments[0], `Selected ${snapshot.id} revision 1. No window was opened.`);
 		assert.equal(notify.mock.callCount(), 13);
 		for (const argument of [
 			"new",
@@ -181,6 +176,25 @@ test("headless commands notify without session messages or stdout and resolve bo
 		}
 		assert.equal((await store.list()).documents.length, 1);
 		assert.equal((await store.get(snapshot.id)).source, "Exact retained response");
+		const notificationCount = notify.mock.callCount();
+		const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text };
+		const custom = (factory: (tui: unknown, theme: unknown, keys: unknown, done: () => void) => Frame) => {
+			const frame = factory(
+				{ terminal: { rows: 21 }, requestRender() {} },
+				theme,
+				{ getKeys: () => ["ctrl+o"] },
+				() => {},
+			);
+			assert.match(frame.render(100).join("\n"), /Markdown help/u);
+			assert.match(frame.render(100).join("\n"), /reads the latest retained assistant response/u);
+			for (let index = 0; index < 8; index++) {
+				frame.handleInput("\x1b[6~");
+				frame.render(100);
+			}
+			assert.match(frame.render(100).join("\n"), /shows one command's usage/u);
+		};
+		await handler("help", { ...context("tui"), ui: { notify, custom } } as unknown as ExtensionContext);
+		assert.equal(notify.mock.callCount(), notificationCount);
 		assert.equal(messages.mock.callCount(), 0);
 		assert.equal(stdout.mock.callCount(), 0);
 	} finally {
@@ -224,7 +238,7 @@ test("the file command reads a path under the home directory written with a lead
 		} as unknown as ExtensionContext);
 		assert.match(
 			notify.mock.calls.at(-1)?.arguments[0] ?? "",
-			/^Saved md-[a-f0-9]{8} revision 1\. No window was opened\. References not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\. Local images are not retained\.$/u,
+			/^Saved md-[a-f0-9]{20} revision 1\. No window was opened\. References not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\. Local images are not retained\.$/u,
 		);
 		const store = new MarkdownStore(process.env.PI_MARKDOWN_DIR);
 		const snapshot = (await store.list({ kind: "file" })).documents[0];

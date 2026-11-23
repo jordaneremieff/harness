@@ -556,7 +556,12 @@ export function createLiveTool(
 			const lifetime = local?.lifecycle?.();
 			const active = lifetime && signal ? AbortSignal.any([lifetime, signal]) : (lifetime ?? signal);
 			const result = await execute(() => find(ctx), input, active, undefined, undefined, local);
-			return { content: output(result), details: result, structuredContent: result };
+			return {
+				content: output(result),
+				details: result,
+				structuredContent: result,
+				isError: result.status === "error",
+			};
 		},
 	};
 }
@@ -611,7 +616,7 @@ export function createNativeLiveTool(
 				);
 			const result =
 				input.op === "show" || input.op === "setComment" ? await oncePerTask(input.op, run, api, context) : await run();
-			return { output: output(result), details: result, structuredOutput: result };
+			return { output: output(result), details: result, structuredOutput: result, isError: result.status === "error" };
 		},
 	});
 }

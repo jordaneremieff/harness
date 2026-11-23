@@ -1,6 +1,7 @@
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
+import { toolDisplay } from "./display.ts";
 import { arr, bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import {
 	BRIEF_SCAN_BYTES,
@@ -139,7 +140,9 @@ export function makeBrief(
 export type BriefBuilder = ReturnType<typeof makeBrief>;
 
 export function createBriefTool(options: WritingOptions): ToolDefinition<typeof Parameters, WritingBrief> {
+	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_brief");
 	return {
+		...presentation,
 		name: "markdown_brief",
 		label: "Markdown Brief",
 		description,

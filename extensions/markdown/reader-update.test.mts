@@ -252,7 +252,7 @@ test("a build failure and a failure-record error both reach Pi without crashing 
 });
 
 function reporterFixture(active = true) {
-	const notices: [string, boolean | undefined][] = [];
+	const notices: [string, boolean | "warning" | undefined][] = [];
 	const statuses: (string | undefined)[] = [];
 	const reporter: UpdateReporter = {
 		notify: (text, error) => notices.push([text, error]),
@@ -272,25 +272,25 @@ test("the report names the process and log, then the outcome and the readers tha
 	const r = reporterFixture();
 	reportUpdate(settled({ status: "installed", running: 2 }), r.reporter, false);
 	await flush();
-	assert.deepEqual(r.statuses, ["Markdown reader: updating", undefined]);
+	assert.deepEqual(r.statuses, ["Markdown reader update", undefined]);
 	assert.deepEqual(r.notices, [
 		[
-			"Updating the Markdown reader app for this harness in the background (process 7). Log: /apps/update.log",
+			"Updating the Markdown reader app for this harness in the background (process 7); log: /apps/update.log.",
 			undefined,
 		],
 		[
-			"The Markdown reader app is up to date with this harness. 2 open readers still run the previous build; close them to load the update.",
-			undefined,
+			"The Markdown reader app is up to date; close the 2 readers that still use the previous build to load the update.",
+			"warning",
 		],
 	]);
 	const one = reporterFixture();
 	reportUpdate(settled({ status: "installed", running: 1 }), one.reporter, false);
 	await flush();
-	assert.match(one.notices[1][0], /One open reader still runs the previous build; close it to load the update\.$/u);
+	assert.match(one.notices[1][0], /close the reader that still uses the previous build to load the update\.$/u);
 	const none = reporterFixture();
 	reportUpdate(settled({ status: "installed", running: 0 }), none.reporter, false);
 	await flush();
-	assert.equal(none.notices[1][0], "The Markdown reader app is up to date with this harness.");
+	assert.equal(none.notices[1][0], "The Markdown reader app is up to date.");
 });
 
 test("failures are errors, a busy outcome reaches only an explicit request, and an ended session hears nothing", async () => {
@@ -302,7 +302,7 @@ test("failures are errors, a busy outcome reaches only an explicit request, and 
 	);
 	await flush();
 	assert.deepEqual(failed.notices[1], [
-		"The Markdown reader update failed: the build exited with status 1. The previous app stays installed. Log: /apps/update.log. Run /markdown update to try again.",
+		"The Markdown reader update failed: the build exited with status 1; the previous app stays installed, so see /apps/update.log and run /markdown update to try again.",
 		true,
 	]);
 	const automatic = reporterFixture();
@@ -312,11 +312,11 @@ test("failures are errors, a busy outcome reaches only an explicit request, and 
 	const explicit = reporterFixture();
 	reportUpdate(settled({ status: "busy" }), explicit.reporter, true);
 	await flush();
-	assert.match(explicit.notices[1][0], /already running/u);
+	assert.match(explicit.notices[1][0], /in progress/u);
 	const ended = reporterFixture(false);
 	reportUpdate(settled({ status: "installed", running: 0 }), ended.reporter, false);
 	await flush();
-	assert.deepEqual(ended.statuses, ["Markdown reader: updating"]);
+	assert.deepEqual(ended.statuses, ["Markdown reader update"]);
 	assert.equal(ended.notices.length, 1);
 });
 
@@ -400,15 +400,13 @@ test("at startup uncommitted reader changes and an unknown commit produce a noti
 	const unknown = startup(t, f.native, { sourceDigest: "sha256:other", source: { commit: C, modified: false } });
 	assert.deepEqual(await unknown.check(), { state: "notice", reason: "unordered", commit: C });
 	assert.equal(unknown.runs.length, 0);
-	assert.match(
-		unknown.notices[0][0],
-		/built from commit cccccccccccc, which is not an earlier version of this harness/u,
-	);
+	assert.equal(unknown.notices[0][1], "warning");
+	assert.match(unknown.notices[0][0], /built from commit c{40}, which is not an earlier version of this harness/u);
 	writeFileSync(join(f.native, "web", "page.css"), "/* new */");
 	const modified = startup(t, f.native, { sourceDigest: "sha256:first", source: { commit: f.first, modified: false } });
 	assert.deepEqual(await modified.check(), { state: "notice", reason: "loaded-modified" });
 	assert.equal(modified.runs.length, 0);
-	assert.match(modified.notices[0][0], /uncommitted changes to the Markdown reader/u);
+	assert.match(modified.notices[0][0], /uncommitted reader changes/u);
 });
 
 test("at startup a running install and a failure for the same inputs start nothing", async (t) => {
@@ -428,10 +426,7 @@ test("at startup a running install and a failure for the same inputs start nothi
 	writeFileSync(updateFiles(repeated.app).failure, JSON.stringify({ digest: repeated.runs[0].digest }));
 	assert.deepEqual(await repeated.check(), { state: "failed" });
 	assert.equal(repeated.runs.length, 1);
-	assert.match(
-		repeated.notices.at(-1)?.[0] ?? "",
-		/^The last Markdown reader update for this harness failed, so it was not retried\./u,
-	);
+	assert.match(repeated.notices.at(-1)?.[0] ?? "", /^The last Markdown reader update failed and was not retried;/u);
 	assert.equal(repeated.notices.at(-1)?.[1], true);
 });
 

@@ -385,23 +385,39 @@ export async function openResponse(
 	gui = true,
 	presentation: Presentation = "pane",
 	live?: LiveConfig,
+	level?: (level: RevealLevel) => void,
 ): Promise<string> {
 	const root = readSettings({ agentDir: getAgentDir() }).values.dir;
 	return revealNotice(
 		await materializeAndReveal(() => saveResponse(response, root), signal, { gui, presentation, live }),
+		level,
 	);
 }
 export async function openStored(
 	root: string,
 	id: string,
 	signal: AbortSignal,
-	options: { gui: boolean; storeId?: string; pin?: PinnedRevision; presentation?: Presentation; live?: LiveConfig },
+	options: {
+		gui: boolean;
+		storeId?: string;
+		pin?: PinnedRevision;
+		presentation?: Presentation;
+		live?: LiveConfig;
+		level?: (level: RevealLevel) => void;
+	},
 ): Promise<string> {
 	return revealNotice(
 		await materializeAndReveal(() => selectStored(root, id, options.storeId, options.pin), signal, options),
+		options.level,
 	);
 }
-type EditorRevealOptions = { presentation?: Presentation; runtime?: RevealRuntime; live?: LiveConfig };
+export type RevealLevel = "info" | "warning" | "error";
+type EditorRevealOptions = {
+	presentation?: Presentation;
+	runtime?: RevealRuntime;
+	live?: LiveConfig;
+	level?: (level: RevealLevel) => void;
+};
 async function launchEditorPane(
 	argv: string[],
 	origin: LaunchOrigin | null,
@@ -442,7 +458,10 @@ async function revealEditor(
 	if ("showUnavailable" in command) throw new Error(command.showUnavailable);
 	if (presentation === "pane") {
 		const notice = await launchEditorPane(command.show, origin, signal, processRuntime, options.live, target);
-		if (notice) return notice;
+		if (notice) {
+			options.level?.("warning");
+			return notice;
+		}
 	} else {
 		const launch = await liveArguments(command.show, options.live, { origin: "operator", ...target });
 		await processRuntime.run("/usr/bin/open", ["-n", "-a", app, "--args", ...launch.argv.slice(1)], {
@@ -451,7 +470,7 @@ async function revealEditor(
 			signal,
 		});
 	}
-	return editorLaunchNotice(intent, input, signal, processRuntime, presentation);
+	return editorLaunchNotice(intent, input, signal, processRuntime, presentation, options.level);
 }
 async function editorLaunchNotice(
 	intent: EditorOpenIntent,
@@ -459,9 +478,11 @@ async function editorLaunchNotice(
 	signal: AbortSignal,
 	processRuntime: RevealRuntime,
 	presentation: Presentation,
+	level?: (level: RevealLevel) => void,
 ): Promise<string> {
 	if ((intent === "edit" || intent === "copy") && input) {
 		const accepted = await waitForAcceptance(input, signal, processRuntime.acceptanceMs ?? 5000).catch(() => false);
+		if (!accepted) level?.("warning");
 		return accepted
 			? "The Markdown editor accepted the selected revision. Native edits retain private recovery; captured records stay unchanged."
 			: "The editor launch was requested; document acceptance is unconfirmed. Do not retry automatically.";
@@ -526,8 +547,15 @@ export async function openEditorResponse(
 	const root = readSettings({ agentDir: getAgentDir() }).values.dir;
 	return openEditorSelection(() => saveResponse(response, root), "copy", signal, options);
 }
-export function revealNotice(outcome: RevealOutcome): string {
-	const identity = `${outcome.documentId.slice(0, 11)} revision ${outcome.revision}`;
+export function revealNotice(outcome: RevealOutcome, level?: (level: RevealLevel) => void): string {
+	level?.(
+		outcome.state === "saved" || outcome.state === "accepted"
+			? "info"
+			: outcome.state === "reveal-failed" && outcome.reason === "launch-failed"
+				? "error"
+				: "warning",
+	);
+	const identity = `${outcome.documentId} revision ${outcome.revision}`;
 	const saved = outcome.newlySaved ? `Saved ${identity}.` : `Selected ${identity}.`;
 	if (outcome.state === "saved") return `${saved} No window was opened.`;
 	if (outcome.state === "reveal-failed") {

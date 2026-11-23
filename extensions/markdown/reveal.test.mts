@@ -329,8 +329,8 @@ test("missing, incompatible, non-Mac and failed launch retain saved source", asy
 			if (result.state === "reveal-failed") {
 				assert.equal(result.reason, expected);
 				if (expected !== "unsupported-platform") assert.match(result.remedy, /native\/build\.mts/u);
-				assert.match(revealNotice(result), /^Selected md-[a-f0-9]{8} revision 1\. The reader/u);
-				assert.match(revealNotice({ ...result, newlySaved: true }), /^Saved md-[a-f0-9]{8} revision 1\. The reader/u);
+				assert.match(revealNotice(result), /^Selected md-[a-f0-9]{20} revision 1\. The reader/u);
+				assert.match(revealNotice({ ...result, newlySaved: true }), /^Saved md-[a-f0-9]{20} revision 1\. The reader/u);
 			}
 			assert.equal((await f.store.get(f.saved.documentId)).source, "Exact saved Markdown");
 		} finally {
@@ -402,14 +402,14 @@ test("origin capture starts alongside saving and both finish before the request"
 		finishOrigin({ stdout: "null" });
 		const accepted = await pending;
 		assert.equal(accepted.state, "accepted");
-		assert.equal(revealNotice(accepted), `Markdown Reader accepted ${f.saved.documentId.slice(0, 11)} revision 1.`);
+		assert.equal(revealNotice(accepted), `Markdown Reader accepted ${f.saved.documentId} revision 1.`);
 		assert.equal(
 			revealNotice({ ...f.saved, state: "saved" }),
-			`Selected ${f.saved.documentId.slice(0, 11)} revision 1. No window was opened.`,
+			`Selected ${f.saved.documentId} revision 1. No window was opened.`,
 		);
 		assert.equal(
 			revealNotice({ ...f.saved, newlySaved: true, state: "saved" }),
-			`Saved ${f.saved.documentId.slice(0, 11)} revision 1. No window was opened.`,
+			`Saved ${f.saved.documentId} revision 1. No window was opened.`,
 		);
 		assert.match(
 			revealNotice({ ...f.saved, state: "not-confirmed", request: "unused" }),
@@ -438,7 +438,7 @@ test("a published row opens its own revision, refuses a changed digest and an un
 				storeId: f.saved.storeId,
 				pin: listed,
 			}),
-			`Selected ${f.saved.documentId.slice(0, 11)} revision 1. No window was opened.`,
+			`Selected ${f.saved.documentId} revision 1. No window was opened.`,
 		);
 		await assert.rejects(
 			selectStored(f.store.root, f.saved.documentId, f.saved.storeId, {

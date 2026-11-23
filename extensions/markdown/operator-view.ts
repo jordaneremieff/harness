@@ -170,10 +170,9 @@ export function markdownView(host: ViewHost, operations: MarkdownOperations, sta
 		key: identity,
 		line: (row, _width, theme) => {
 			if (row.kind === "document") {
-				// The short stable ID is the argument of /markdown <id>; the detail pane has the size.
 				const updated = Date.parse(row.document.updatedAt);
 				const changed = Number.isFinite(updated) ? ` · ${age(updated)}` : "";
-				return `${theme.fg("dim", `${row.document.id.slice(0, 11)} · r${row.document.revision}${changed}`)}  ${plainLine(label(row))}`;
+				return `${theme.fg("dim", `${row.document.id} · r${row.document.revision}${changed}`)}  ${plainLine(label(row))}`;
 			}
 			const bytes = row.response.bytes;
 			const size = bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${bytes} B`;
