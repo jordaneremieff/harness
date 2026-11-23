@@ -61,8 +61,8 @@ export const memorySearchOutputSchema = obj(
 			{ open: false },
 		),
 		pageSize: int({ minimum: 1, maximum: 512 }),
-		totalNotes: count(),
-		totalMatches: count(),
+		totalNotes: int({ minimum: 0, description: "Eligible source notes in this window, before grouping." }),
+		totalMatches: int({ minimum: 0, description: "Result rows in this window, after query grouping if applicable." }),
 		returned: count(),
 		hasMore: bool(),
 		nextCursor: union([str({ minLength: 1, maxLength: 1024 }), nul()], {
@@ -150,7 +150,14 @@ export const memorySearchOutputSchema = obj(
 					superseded_by: cue(),
 					cueProblem: cue(),
 					digest: opt(digest()),
-					rank: opt(int({ minimum: 1 })),
+					rank: opt(int({ minimum: 1, description: "Window-local row rank after grouping, not a lexical rank." })),
+					replacedMatches: opt(
+						arr(obj({ slug: str({ minLength: 1, maxLength: 120 }), title: str({ maxLength: 160 }) }, { open: false }), {
+							minItems: 1,
+							maxItems: 8,
+						}),
+					),
+					omittedReplacedMatches: opt(count()),
 					matched: opt(matched),
 					missing: opt(missing),
 					sourceMatch: opt(
@@ -197,6 +204,7 @@ export const memorySearchOutputSchema = obj(
 					complete: bool(),
 					notesSearched: count(),
 					unavailableNotes: count(),
+					lexicalMatches: int({ minimum: 0, description: "Distinct lexical matches in this window before grouping." }),
 					maxSourceBytes: opt(count()),
 					ranking: opt(union([lit("lexical"), lit("best-rank-then-reciprocal-rank-fusion")])),
 					terms: opt(terms),

@@ -390,6 +390,22 @@ describe("memory_search result cards", () => {
 		assert.equal(lines(view).length, 4);
 	});
 
+	it("lists replaced matches and overflow only in expanded search cards", () => {
+		const replacement = { slug: "old-topic", title: "Earlier \u001b[31m topic" };
+		const details = {
+			...indexPage,
+			notes: [{ ...indexPage.notes[0], replacedMatches: [replacement], omittedReplacedMatches: 2 }, indexPage.notes[1]],
+		};
+		const expanded = screen(renderResult("memory_search", result("t", details), expandedView, theme, okContext), 200);
+		assert.match(expanded, /Replaced matches:/);
+		assert.match(expanded, /old-topic · Earlier/);
+		assert.doesNotMatch(expanded, /\u001b/);
+		assert.match(expanded, /2 more replaced matches omitted\./);
+		const collapsedCard = (page: typeof indexPage) =>
+			screen(renderResult("memory_search", result("t", page), collapsed, theme, okContext));
+		assert.equal(collapsedCard(details), collapsedCard(indexPage));
+	});
+
 	it("marks partial coverage as a warning", () => {
 		const details = { ...indexPage, search: { complete: false } };
 		const shown = screen(renderResult("memory_search", result("t", details), collapsed, colorTheme, okContext));

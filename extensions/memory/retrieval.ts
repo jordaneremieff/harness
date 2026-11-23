@@ -48,6 +48,9 @@ const PAGE_CODEPOINTS = 12000;
 const MATCH_EXCERPT_POINTS = 480;
 const MATCH_CONTEXT_POINTS = 120;
 const MAX_RESULT_BYTES = 48 * 1024;
+const MAX_REPLACEMENT_HOPS = 16;
+const MAX_REPLACED_MATCHES = 8;
+const MAX_REPLACED_MATCH_BYTES = 2 * 1024;
 const MAX_QUERY_CHARS = 200;
 const MAX_ROOT_CHARS = 1024;
 const MAX_ERROR_CHARS = 500;
@@ -93,6 +96,10 @@ type NoteCue = {
 	search?: SearchHit;
 	formulations?: NoteCue[];
 };
+
+type ReplacedMatch = { slug: string; title: string };
+type ReplacementGroup = { listed: ReplacedMatch[]; omitted: number; bytes: number };
+type ResultRow = { note: NoteCue; match?: NoteCue; group?: ReplacementGroup };
 
 type Issue = { code: string; message: string };
 
@@ -1032,6 +1039,84 @@ function fuseRankings(rankings: Ranking[], signal?: AbortSignal): NoteCue[] {
 		.map(({ note }) => note);
 }
 
+function reciprocalSlugs(note: NoteCue): Set<string> {
+	const parsed = note.header.parsed;
+	const slugs =
+		note.header.metadata === "ok" && parsed && Object.hasOwn(parsed, "supersedes") ? parsed.supersedes : null;
+	if (!Array.isArray(slugs)) return new Set();
+	const result = new Set<string>();
+	for (const slug of slugs) {
+		if (
+			typeof slug !== "string" ||
+			slug.length > MAX_SLUG_CHARS ||
+			!SLUG.test(slug) ||
+			slug === "readme" ||
+			slug === note.slug ||
+			result.has(slug)
+		)
+			return new Set();
+		result.add(slug);
+	}
+	return result;
+}
+
+function verifiedReplacement(
+	start: NoteCue,
+	bySlug: Map<string, NoteCue>,
+	links: Map<string, Set<string>>,
+): NoteCue | undefined {
+	let current = start;
+	const seen = new Set([current.slug]);
+	for (let hops = 0; hops < MAX_REPLACEMENT_HOPS && current.lifecycle.status === "superseded"; hops++) {
+		const next = bySlug.get(current.lifecycle.supersededBy ?? "");
+		if (!next || seen.has(next.slug)) return undefined;
+		let reciprocal = links.get(next.slug);
+		if (!reciprocal) {
+			reciprocal = reciprocalSlugs(next);
+			links.set(next.slug, reciprocal);
+		}
+		if (!reciprocal.has(current.slug)) return undefined;
+		if (next.lifecycle.status === "active") return next;
+		seen.add(next.slug);
+		current = next;
+	}
+	return undefined;
+}
+
+function addReplacedMatch(group: ReplacementGroup, note: NoteCue): void {
+	const member = { slug: note.slug, title: bounded(note.title, MAX_TITLE_CHARS) };
+	const memberBytes = byteLength(member) + (group.listed.length > 0 ? 1 : 0);
+	if (
+		group.omitted ||
+		group.listed.length >= MAX_REPLACED_MATCHES ||
+		group.bytes + memberBytes > MAX_REPLACED_MATCH_BYTES
+	) {
+		group.omitted++;
+		return;
+	}
+	group.listed.push(member);
+	group.bytes += memberBytes;
+}
+
+function groupMatches(matches: NoteCue[], sources: NoteCue[], signal?: AbortSignal): ResultRow[] {
+	const bySlug = new Map(sources.map((note) => [note.slug, note]));
+	const links = new Map<string, Set<string>>();
+	const rows = new Map<string, ResultRow>();
+	for (const match of matches) {
+		checkAbort(signal);
+		const replacement = match.lifecycle.status === "superseded" ? verifiedReplacement(match, bySlug, links) : undefined;
+		const note = replacement ?? match;
+		// First insertion fixes the row's position even if the endpoint matches later.
+		const row = rows.get(note.slug) ?? { note };
+		rows.set(note.slug, row);
+		if (replacement) {
+			row.group ??= { listed: [], omitted: 0, bytes: 2 };
+			addReplacedMatch(row.group, match);
+		} else row.match = match;
+	}
+	return [...rows.values()];
+}
+
 function fusedPassage(
 	source: NoteCue,
 	queries: Query[],
@@ -1129,10 +1214,10 @@ function searchSummary(
 
 function fitIndexRecords(
 	result: Record<string, unknown>,
-	matches: NoteCue[],
+	matches: ResultRow[],
 	page: number,
 	limit: number,
-	render: (note: NoteCue, rank: number) => Record<string, unknown>,
+	render: (row: ResultRow, rank: number) => Record<string, unknown>,
 	signal?: AbortSignal,
 ): Record<string, unknown>[] {
 	const kept: Record<string, unknown>[] = [];
@@ -1157,6 +1242,56 @@ function indexContinuation(cursor: Cursor, scan: Scan, nextPage: number, totalMa
 	return null;
 }
 
+function renderIndexRow(
+	{ note, match, group }: ResultRow,
+	rank: number,
+	context: {
+		queries: Query[];
+		texts: string[];
+		rankings: Ranking[];
+		sources: NoteCue[];
+		fused: boolean;
+		detail: boolean;
+	},
+	signal?: AbortSignal,
+): Record<string, unknown> {
+	const { queries, texts, rankings, sources, fused, detail } = context;
+	if (queries.length === 0) {
+		const output = toOutputNote(note);
+		return detail ? output : compactNoteOutput(output, true);
+	}
+	let output: Record<string, unknown>;
+	if (match) {
+		output = fused
+			? toFusedOutput(match, sources, texts, queries, rankings, rank, detail, signal)
+			: toSearchOutput(match, queries[0], rankings[0].idf, rank, detail, signal);
+	} else {
+		output = { ...toOutputNote(note), rank, digest: note.sourceEvidence };
+		if (!detail) output = compactNoteOutput(output, false);
+	}
+	return group ? { ...output, replacedMatches: group.listed, omittedReplacedMatches: group.omitted } : output;
+}
+
+function indexCoverage(scan: Scan, browse: boolean) {
+	const traversal =
+		"A cursor chain visits a stable filename inventory. Earlier windows are not reread; this is not a frozen corpus snapshot. Ranks and counts apply only to this source window.";
+	return {
+		traversedCandidates: scan.end,
+		totalCandidates: scan.candidates,
+		traversalComplete: scan.end === scan.candidates,
+		frozenSnapshot: false,
+		meaning: browse
+			? traversal
+			: `${traversal} Query cursors, row ranks and totalMatches count rows after grouping; search.lexicalMatches counts hits before grouping.`,
+	};
+}
+
+function indexRows(scan: Scan, selected: NoteCue[], rankings: Ranking[], fused: boolean, signal?: AbortSignal) {
+	if (!rankings.length) return { rows: selected.map((note) => ({ note })), lexicalMatches: 0 };
+	const matches = fused ? fuseRankings(rankings, signal) : rankings[0].notes;
+	return { rows: groupMatches(matches, scan.notes, signal), lexicalMatches: matches.length };
+}
+
 async function runIndex(
 	root: string,
 	args: { query: string | string[] | null; cursor?: string; limit: number; includeRetired: boolean; detail: boolean },
@@ -1165,7 +1300,11 @@ async function runIndex(
 	const texts = args.query === null ? [] : [args.query].flat();
 	const queries = texts.map(parseQuery);
 	const inventory = await inventoryDirectory(root, signal);
-	const request = sha256(Buffer.from(JSON.stringify([root, "search", args.query, args.includeRetired])));
+	const request = sha256(
+		Buffer.from(
+			JSON.stringify([root, args.query === null ? "search" : "grouped-search", args.query, args.includeRetired]),
+		),
+	);
 	const cursor = decodeCursor(args.cursor, request, inventory.digest);
 	const scan = await scanCorpus(root, queries.length === 0 ? null : queries, signal, inventory, cursor.start);
 	if (cursor.evidence !== null && cursor.evidence !== scan.evidence)
@@ -1181,8 +1320,8 @@ async function runIndex(
 		),
 	);
 	const fused = Array.isArray(args.query);
-	const matches = queries.length === 0 ? selected : fused ? fuseRankings(rankings, signal) : rankings[0].notes;
-	const totalMatches = matches.length;
+	const { rows, lexicalMatches } = indexRows(scan, selected, rankings, fused, signal);
+	const totalMatches = rows.length;
 	const pageSize = args.limit;
 	if (cursor.page > totalMatches || cursor.start > scan.candidates)
 		throw new UsageError("Cursor exceeds the covered source window");
@@ -1196,14 +1335,7 @@ async function runIndex(
 		excludedRetired,
 		pageOffset: cursor.page,
 		countScope: "source-window",
-		coverage: {
-			traversedCandidates: scan.end,
-			totalCandidates: scan.candidates,
-			traversalComplete: scan.end === scan.candidates,
-			frozenSnapshot: false,
-			meaning:
-				"A cursor chain visits a stable filename inventory. Earlier windows are not reread; this is not a frozen corpus snapshot. Ranks and counts apply only to this source window.",
-		},
+		coverage: indexCoverage(scan, args.query === null),
 		pageSize,
 		totalNotes: selected.length,
 		totalMatches,
@@ -1215,25 +1347,21 @@ async function runIndex(
 		notes: [],
 	};
 	if (args.query !== null) {
-		result.search = searchSummary(scan, fused, texts, queries, rankings, selected.length, excludedRetired, args.detail);
+		result.search = {
+			...searchSummary(scan, fused, texts, queries, rankings, selected.length, excludedRetired, args.detail),
+			lexicalMatches,
+		};
 		if (totalMatches === 0)
 			result.guidance =
 				"No matches within covered sources. Matching uses exact tokens without stemming or camelCase splitting. Try alternate inflections, exact identifier forms, or quoted fragments; inspect coverage gaps.";
 	}
+	const context = { queries, texts, rankings, sources: scan.notes, fused, detail: args.detail };
 	const kept = fitIndexRecords(
 		result,
-		matches,
+		rows,
 		cursor.page,
 		pageSize,
-		(note, rank) => {
-			if (queries.length === 0) {
-				const output = toOutputNote(note);
-				return args.detail ? output : compactNoteOutput(output, true);
-			}
-			return fused
-				? toFusedOutput(note, scan.notes, texts, queries, rankings, rank, args.detail, signal)
-				: toSearchOutput(note, queries[0], rankings[0].idf, rank, args.detail, signal);
-		},
+		(row, rank) => renderIndexRow(row, rank, context, signal),
 		signal,
 	);
 	const nextCursor = indexContinuation(cursor, scan, cursor.page + kept.length, totalMatches);

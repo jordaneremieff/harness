@@ -277,7 +277,7 @@ test("compact search preserves discovery evidence in substantially smaller pages
 	);
 	assert.deepEqual(compact.coverage, detailed.coverage);
 	for (const [key, values] of [
-		["search", ["complete", "notesSearched", "unavailableNotes"]],
+		["search", ["complete", "notesSearched", "unavailableNotes", "lexicalMatches"]],
 		["scan", ["complete", "inventoryComplete", "windowStart", "windowEnd", "issueCount", "unavailableNotes"]],
 	] as const) {
 		assert.deepEqual(Object.keys(object(compact[key])).sort(), [...values].sort());
@@ -360,6 +360,159 @@ test("a search cursor permits a different detail projection without changing res
 	assert.ok(Array.isArray(notes(next)[0].formulations));
 	assert.equal(next.nextCursor, null);
 	await rejects(searchMemory(root, { detail: "yes" as unknown as boolean }), "input", /detail must be a boolean/);
+});
+
+function replacementNote(title: string, next: string | null, previous: string[], body = ""): string {
+	return `---\ntitle: ${title}\nstatus: ${next ? "superseded" : "active"}\nsuperseded_by: ${next ?? "null"}\nsupersedes: ${JSON.stringify(previous)}\n---\n\n# ${title}\n\n${body}\n`;
+}
+
+test("groups verified chains before paging and never attributes predecessor evidence to the active note", async () => {
+	const current = replacementNote("Current instructions", null, ["intermediate", "earlier"]).replace(
+		'supersedes: ["intermediate","earlier"]',
+		"supersedes:\n  - intermediate\n  - earlier",
+	);
+	const root = corpus({
+		"README.md": README,
+		"oldest.md": replacementNote("Needle choice", "intermediate", []),
+		"intermediate.md": replacementNote("Interim instructions", "current", ["oldest"]),
+		"earlier.md": replacementNote("Earlier instructions", "current", [], "needle"),
+		"current.md": current,
+		"independent.md": replacementNote("Independent instructions", null, [], "needle"),
+	});
+	for (const query of ["needle", ["needle", "anotherterm"]]) {
+		const first = await detailedSearch(root, { query, limit: 1 });
+		assert.equal(first.totalNotes, 5);
+		assert.equal(first.totalMatches, 2);
+		assert.equal(object(first.search).lexicalMatches, 3);
+		const [row] = notes(first);
+		assert.equal(row.slug, "current");
+		assert.equal(row.title, "Current instructions");
+		assert.equal(row.rank, 1);
+		assert.deepEqual(row.replacedMatches, [
+			{ slug: "oldest", title: "Needle choice" },
+			{ slug: "earlier", title: "Earlier instructions" },
+		]);
+		assert.equal(row.omittedReplacedMatches, 0);
+		for (const key of ["sourceMatch", "formulations", "matched", "missing"]) assert.equal(row[key], undefined);
+		const currentRead = await read(root, { slug: "current", digest: string(row.digest) });
+		assert.equal(currentRead.content, current);
+		assert.deepEqual(row.lifecycle, currentRead.lifecycle);
+		const next = await search(root, { query, detail: false, limit: 2, cursor: string(first.nextCursor) });
+		assert.equal(next.pageOffset, 1);
+		assert.deepEqual(
+			notes(next).map(({ slug, rank }) => [slug, rank]),
+			[["independent", 2]],
+		);
+		assert.equal(next.nextCursor, null);
+	}
+	const browse = await search(root);
+	assert.equal(browse.totalMatches, 5);
+	assert.equal(browse.search, undefined);
+	assert.ok(notes(browse).every((note) => note.replacedMatches === undefined));
+
+	const nextCurrent = `${current}\nneedle establishing the current rule\n`;
+	const oldPage = await search(root, { query: "needle", limit: 1 });
+	writeFileSync(join(root, "current.md"), nextCurrent);
+	await rejects(
+		searchMemory(root, { query: "needle", cursor: string(oldPage.nextCursor) }),
+		"changed",
+		/window changed/,
+	);
+	const ranked = await detailedSearch(root, { query: ["needle", "establishing"] });
+	assert.equal(object(ranked.search).lexicalMatches, 4);
+	assert.equal(ranked.totalMatches, 2);
+	const [row] = notes(ranked);
+	assert.equal(row.slug, "current");
+	assert.equal(row.rank, 1);
+	assert.match(string(object(row.sourceMatch).excerpt), /establishing the current rule/);
+	assert.equal(row.digest, createHash("sha256").update(nextCurrent).digest("hex"));
+	assert.ok(array(row.formulations).every((value) => object(value).rank !== null));
+});
+
+test("keeps unverified, retired, cyclic and over-limit replacement chains as lexical rows", async () => {
+	const files: Record<string, string> = { "README.md": README };
+	for (const [suffix, body] of Object.entries({
+		missing: undefined,
+		oneway: replacementNote("Successor", null, []),
+		type: replacementNote("Successor", null, ["old-type"]).replace('["old-type"]', "old-type"),
+		duplicate: replacementNote("Successor", null, ["old-duplicate"]).replace(
+			'supersedes: ["old-duplicate"]',
+			'supersedes: []\n"supersedes": [old-duplicate]',
+		),
+		retired: replacementNote("Successor", null, ["old-retired"]).replace("status: active", "status: retired"),
+		cycle: replacementNote("Successor", "old-cycle", ["old-cycle"]),
+		oversize: replacementNote("Successor", null, ["old-oversize"], "x".repeat(64 * 1024)),
+	})) {
+		const old = `old-${suffix}`;
+		const next = `new-${suffix}`;
+		files[`${old}.md`] = replacementNote("Past rule", next, suffix === "cycle" ? [next] : [], "legacytoken");
+		if (body) files[`${next}.md`] = body;
+	}
+	files["old-long.md"] = replacementNote("Past rule", "hop-1", [], "legacytoken");
+	for (let i = 1; i <= 17; i++) {
+		files[`hop-${i}.md`] = replacementNote(
+			"Later rule",
+			i < 17 ? `hop-${i + 1}` : null,
+			[i === 1 ? "old-long" : `hop-${i - 1}`],
+			i === 1 ? "legacytoken" : "",
+		);
+	}
+	const result = await search(corpus(files), { query: "legacytoken", limit: 25, includeRetired: true });
+	assert.equal(result.totalMatches, 9);
+	assert.equal(object(result.search).lexicalMatches, 9);
+	assert.equal(object(result.search).unavailableNotes, 1);
+	const bySlug = new Map(notes(result).map((note) => [note.slug, note]));
+	for (const slug of ["missing", "oneway", "type", "duplicate", "retired", "cycle", "oversize", "long"]) {
+		const row = bySlug.get(`old-${slug}`);
+		assert.ok(row);
+		assert.equal(row.replacedMatches, undefined);
+		assert.match(string(object(row.sourceMatch).excerpt), /legacytoken/);
+	}
+	assert.deepEqual(bySlug.get("hop-17")?.replacedMatches, [{ slug: "hop-1", title: "Later rule" }]);
+});
+
+test("keeps an out-of-window successor from changing either window's query rows", async () => {
+	const files: Record<string, string> = {
+		"README.md": README,
+		"old.md": replacementNote("Earlier rule", "zz-current", [], "legacytoken"),
+		"zz-current.md": replacementNote("Later rule", null, ["old"]),
+	};
+	for (let i = 0; i < 512; i++) files[`pad-${String(i).padStart(3, "0")}.md`] = ".".repeat(65536);
+	const root = corpus(files);
+	const first = await search(root, { query: "legacytoken" });
+	assert.deepEqual(
+		notes(first).map((note) => note.slug),
+		["old"],
+	);
+	assert.equal(object(first.coverage).traversalComplete, false);
+	const next = await search(root, { query: "legacytoken", cursor: string(first.nextCursor) });
+	assert.equal(next.totalMatches, 0);
+	assert.equal(object(next.search).lexicalMatches, 0);
+	assert.equal(object(next.coverage).traversalComplete, true);
+	assert.equal(next.nextCursor, null);
+});
+
+test("bounds listed replacement titles and reports every omitted match", async () => {
+	for (const [suffix, title, listed] of [
+		["normal", "Earlier rule", 8],
+		["wide", "界".repeat(160), 4],
+	] as const) {
+		const files: Record<string, string> = { "README.md": README };
+		const old = Array.from({ length: 10 }, (_, i) => `${suffix}-${i}`);
+		for (const slug of old) files[`${slug}.md`] = replacementNote(title, "current", [], "legacytoken");
+		files["current.md"] = replacementNote("Later rule", null, old);
+		const result = await search(corpus(files), { query: "legacytoken" });
+		assert.equal(result.totalMatches, 1);
+		assert.equal(object(result.search).lexicalMatches, 10);
+		const [row] = notes(result);
+		assert.deepEqual(
+			array(row.replacedMatches).map((member) => object(member).slug),
+			old.slice(0, listed),
+		);
+		assert.equal(row.omittedReplacedMatches, 10 - listed);
+		assert.ok(Buffer.byteLength(JSON.stringify(row.replacedMatches)) <= 2048);
+		assert.equal(result.nextCursor, null);
+	}
 });
 
 test("search and every note page expose source-specific freshness without renewing it", async (t) => {

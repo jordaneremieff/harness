@@ -510,6 +510,16 @@ function formulationLines(formulation: Record<string, unknown>): string[] {
 	];
 }
 
+function replacementEvidence(note: Record<string, unknown>): string[] {
+	if (!Array.isArray(note.replacedMatches) || !note.replacedMatches.length) return [];
+	const omitted = numberField(note.omittedReplacedMatches) ?? 0;
+	return [
+		"Replaced matches:",
+		...note.replacedMatches.map((member) => `  - ${noteHeading(record(member))}`),
+		...(omitted > 0 ? [`  ${omitted} more replaced ${omitted === 1 ? "match" : "matches"} omitted.`] : []),
+	];
+}
+
 function noteEvidence(note: Record<string, unknown>, query: boolean): string[] {
 	const cues = ["status", "tags", "supersedes", "superseded_by"].flatMap((key) =>
 		textField(note[key]) ? [`${key} cue: ${note[key]}`] : [],
@@ -528,6 +538,7 @@ function noteEvidence(note: Record<string, unknown>, query: boolean): string[] {
 		...formulationEvidence(note),
 		...formulations.flatMap(formulationLines),
 		...passageEvidence(note.sourceMatch, query),
+		...(query ? replacementEvidence(note) : []),
 	];
 }
 
