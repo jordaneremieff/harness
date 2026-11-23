@@ -516,24 +516,30 @@ it("reports an irreducible declared-work identity as omitted without truncating 
 	check(result);
 });
 
-it("recognizes recovery failures and exhausted retries without treating stopped work as attention", () => {
+it("recognizes independent recovery failures without treating stopped work or scheduled retries as attention", () => {
 	const result = buildStatusOverview(
 		page([
 			summary(9, { state: "stopped" }),
 			summary(8, { state: "done" }),
 			summary(1, { health: { compactionFailure: { trigger: "overflow", at: "now" } } }),
 			summary(2, { health: { lastError: "error" } }),
-			summary(3, { health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "retry" } } }),
+			summary(3, {
+				state: "working",
+				health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "retry" } },
+			}),
 			summary(4, { state: "interrupted" }),
+			summary(5, { state: "failed", error: "model error after last attempt" }),
 		]),
 		[],
 		[],
 	);
 	assert.equal(result.summary.sessions.attention, 3);
+	assert.equal(result.summary.sessions.working, 1);
 	assert.equal(result.summary.sessions.quiet, 3);
+	assert.equal(result.sessions.find((row) => row.id === "agent-3")?.health?.autoRetry?.errorMessage, "retry");
 	assert.deepEqual(
 		result.sessions.map((row) => row.modifiedAt),
-		[9, 8, 4, 3, 2, 1],
+		[9, 8, 5, 4, 3, 2, 1],
 	);
 	check(result);
 });
@@ -579,7 +585,7 @@ it("keeps the stopped aborted unknown-owner reproduction quiet without dropping 
 	check(result);
 });
 
-it("preserves every recent dashboard health and ownership attention reason on stopped rows", () => {
+it("preserves recent dashboard fault and ownership evidence on failed and stopped rows", () => {
 	const recent = (index: number, fields: Partial<AgentPrioritySummary>) =>
 		summary(index, {
 			...fields,
@@ -597,9 +603,8 @@ it("preserves every recent dashboard health and ownership attention reason on st
 				},
 			}),
 			recent(19, {
-				state: "stopped",
-				error: "aborted",
-				health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "provider failed" } },
+				state: "failed",
+				error: "provider failed after last attempt",
 			}),
 			recent(18, { state: "stopped", owner: "unavailable", error: "aborted", health: { lastError: "Aborted" } }),
 			recent(17, { state: "stopped", error: "aborted", health: { lastError: "untyped blocked-task error" } }),

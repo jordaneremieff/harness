@@ -1298,8 +1298,9 @@ and failed turns with errors count as `attention`, even when observation is also
 unavailable. Without independent fault evidence, an unavailable owner or state
 counts as `unavailable`. These observations are unknown, not healthy. `working`
 counts working or starting rows without either condition; `quiet` counts the
-remaining retained states, not a current health assertion. A deliberate stop alone
-does not establish an attention reason. Summary groups remain independent of roster priority.
+remaining retained states, not a current health assertion. A deliberate stop or
+scheduled provider retry alone does not establish an attention reason. Summary
+groups remain independent of roster priority.
 Each overview row keeps the catalogue's optional `attention` hint
 (`provider-blocked`, `task-blocked`, or `failed-turn`). Excerpts have visible shortening markers. Working and attention rows retain
 identity, cwd, ownership, model, update time, state, cost, partial-cost flag,

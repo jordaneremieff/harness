@@ -171,7 +171,6 @@ function group(row: OverviewState): OverviewGroup {
 		row.attention ||
 		row.health?.lastError ||
 		row.health?.compactionFailure ||
-		(row.health?.autoRetry && row.health.autoRetry.attempt >= row.health.autoRetry.maxAttempts) ||
 		(row.state === "failed" && Boolean(row.error))
 	)
 		return "attention";
