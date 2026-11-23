@@ -88,6 +88,96 @@ it("previews ranked search records, not request boilerplate or paging instructio
 	assert.doesNotMatch(screen(component), /Brave Search used|Repeat the search/);
 });
 
+it("removes formatter labels only from the collapsed ranked match preview", (t) => {
+	theme(t);
+	const request = { query: "railway maps", count: 3 };
+	const component = card(request);
+	const title = "Railway maps: diagrams of coastal stations and junctions from the district archives";
+	const url = "https://example.org/railway-maps";
+	const description = "A collection of track maps and station diagrams from the coastal district.";
+	const formatted = formatSearchResults(
+		{
+			originalQuery: request.query,
+			moreResultsAvailable: true,
+			results: [
+				{ title, url, description, extraSnippets: [] },
+				{
+					title: "URL: a page title",
+					url: "https://example.org/Snippet:%20archive",
+					description: "Snippet: page-origin copy with URL: inside it",
+					extraSnippets: [],
+				},
+			],
+		},
+		request,
+	);
+	const retained = result(formatted.text, { ...request, resultCount: 2, offset: 0, nextOffset: 1 });
+	component.updateResult(retained);
+	assert.ok(screen(component, 100).includes(`1. ${title}\n${url}\n${description}\n2. URL: a page title`));
+	assert.doesNotMatch(screen(component, 100), /URL: https|Snippet: A collection/);
+	assert.match(screen(component, 60), /\(\d+ more lines, ctrl\+g to expand\)/);
+	component.setExpanded(true);
+	const expanded = screen(component);
+	assert.ok(expanded.includes(`1. ${title}\nURL: ${url}\nSnippet: ${description}`));
+	assert.match(expanded, /URL: https:\/\/example\.org\/Snippet:%20archive/);
+	assert.match(expanded, /Snippet: Snippet: page-origin copy with URL: inside it/);
+	assert.equal(retained.content[0].text, formatted.text);
+
+	const second = card(request);
+	const single = formatSearchResults(
+		{
+			originalQuery: request.query,
+			moreResultsAvailable: false,
+			results: [{ title: "Snippet: a title", url, description: "Snippet: page text", extraSnippets: [] }],
+		},
+		request,
+	);
+	second.updateResult(result(single.text, { resultCount: 1 }));
+	assert.ok(screen(second).includes(`1. Snippet: a title\n${url}\nSnippet: page text`));
+});
+
+it("shows optional match evidence directly and counts only hidden evidence", (t) => {
+	theme(t);
+	const request = { query: "parsers", extra_snippets: true };
+	const component = card(request);
+	const update = (extraSnippets: string[]) => {
+		const { text } = formatSearchResults(
+			{
+				originalQuery: request.query,
+				moreResultsAvailable: false,
+				results: [
+					{
+						title: "Ranked first",
+						url: "https://example.org/source",
+						age: "2 days ago",
+						description: "Published: wording from the source",
+						extraSnippets,
+					},
+				],
+			},
+			request,
+		);
+		component.updateResult(result(text, { resultCount: 1, offset: 0 }));
+	};
+	const excerpt = "Additional excerpts: wording from the source";
+	update([excerpt]);
+	assert.match(
+		screen(component),
+		/1\. Ranked first\nhttps:\/\/example\.org\/source\n2 days ago\nPublished: wording from the source\n- Additional excerpts: wording from the source$/,
+	);
+	assert.doesNotMatch(screen(component), /^Additional excerpts:$|to expand/m);
+	update([excerpt, "Second excerpt"]);
+	assert.match(screen(component), /\.\.\. \(1 more line, ctrl\+g to expand\)$/);
+	assert.doesNotMatch(screen(component), /Second excerpt/);
+	component.setExpanded(true);
+	assert.match(screen(component), /^Published: 2 days ago$/m);
+	assert.match(
+		screen(component),
+		/^Additional excerpts:\n- Additional excerpts: wording from the source\n- Second excerpt$/m,
+	);
+	assert.doesNotMatch(screen(component), /to expand/);
+});
+
 it("distinguishes no matches, exhausted search pages, and actual producer errors", (t) => {
 	theme(t);
 	const component = card();

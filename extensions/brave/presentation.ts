@@ -101,6 +101,8 @@ function matchPreview(text: string): string {
 	const end = lines.findIndex((line) => line && !/^(?:[1-9]\d*\. | {3})/.test(line));
 	return lines
 		.slice(0, end === -1 ? undefined : end)
+		.filter((line) => line !== "   Additional excerpts:")
+		.map((line) => line.replace(/^( {3})(?:URL|Published|Snippet): /, "$1"))
 		.join("\n")
 		.trimEnd();
 }
