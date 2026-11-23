@@ -9,6 +9,7 @@ import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { JsonValue } from "@earendil-works/chord/json";
 import {
 	initTheme,
+	keyText,
 	createCodemodeExtension,
 	AssistantMessageComponent,
 	ToolExecutionComponent,
@@ -456,7 +457,7 @@ it("non-agent tool lines use the wide pane while prose, notices and agent cards 
 		"agent cards keep the reading column",
 	);
 	assert.ok(
-		widths("Report from Peer name").every((width) => width <= 102),
+		widths("from Peer name").every((width) => width <= 102),
 		"notices keep the reading column",
 	);
 });
@@ -834,18 +835,18 @@ it("retains whole-card and pending-card choices through result arrival and chang
 
 const noticeSender: Communication["sender"] = { identity: "7f7f7f7f-1111-4222-8333-444444444444", name: "Peer name" };
 const reportBody = "line one\nline two\nline three\nline four\nline five";
-const communicationEntry = (value: Communication): AgentConversationEntry => ({
-	id: "9",
+const communicationEntry = (value: Communication, id = "9"): AgentConversationEntry => ({
+	id,
 	kind: "pi.user",
 	model: [{ role: "user", content: value.body.text, timestamp: 1 }],
 	communication: {
 		state: "ready",
-		recordEntryId: "9",
+		recordEntryId: id,
 		target: {
 			mode: "input",
 			storageId: value.sender.identity,
 			conversationId: 1,
-			entryId: "9",
+			entryId: id,
 			submissionId: 3,
 			requestId: "source",
 		},
@@ -865,17 +866,23 @@ const observedLookup = (facts: {
 	threadTitle?: (id: string) => string | undefined;
 }) => Object.assign(() => [] as readonly AgentConversationSummary[], facts);
 
-it("a retained report collapses to one header row, two preview rows and a line count", () => {
+it("a retained report shows a title, sender facts, three visual lines and one hint", () => {
 	const shown = screen(new AgentConversation([communicationEntry(reportValue())], "/work", tui, false, false));
-	const lines = shown.split("\n").map((line) => line.trimEnd());
-	assert.equal(lines.length, 3);
-	assert.ok(lines[0].startsWith(`  ▸ Report from Peer name · ${dashboardClock(1_700_000_000_000)}`), lines[0]);
-	assert.equal(lines[1].trim(), "line one");
-	assert.equal(lines[2].trim(), "line two +3 lines");
-	assert.doesNotMatch(shown, /\[agent\]|Partial body|click or ctrl\+o|line five/u);
+	const lines = shown.split("\n").map((line) => line.trim());
+	const key = keyText("app.tools.expand") || "click";
+	assert.deepEqual(lines.slice(0, 6), [
+		"[agent] Report",
+		`from Peer name · ${dashboardClock(1_700_000_000_000)}`,
+		"",
+		"line one",
+		"line two",
+		"line three",
+	]);
+	assert.equal(lines.at(-1), `... (2 more lines, ${key} to expand)`);
+	assert.doesNotMatch(shown, /line four|line five|Source details/u);
 });
 
-it("a preview skips blank rows, so a one-line first paragraph still shows two rows of text", () => {
+it("a retained preview counts hidden visual rows, including interior blank rows", () => {
 	const shown = screen(
 		new AgentConversation(
 			[communicationEntry(reportValue(noticeSender, "First line.\n\n- item one\n- item two\n- item three"))],
@@ -885,29 +892,40 @@ it("a preview skips blank rows, so a one-line first paragraph still shows two ro
 			false,
 		),
 	);
-	const lines = shown.split("\n").map((line) => line.trimEnd());
-	assert.equal(lines.length, 3);
-	assert.equal(lines[1].trim(), "First line.");
-	assert.match(lines[2] ?? "", /item one \+2 lines$/u, "the count follows text, never a blank row");
+	const lines = shown.split("\n").map((line) => line.trim());
+	assert.equal(lines[3], "First line.");
+	assert.equal(lines[4], "");
+	assert.match(lines[5] ?? "", /item one$/u);
+	assert.match(lines.at(-1) ?? "", /^\.\.\. \(2 more lines, /u);
+	assert.doesNotMatch(shown, /item two|item three/u);
 });
 
-it("clicks on the report header or its count row open the retained copy, notes and identity", () => {
-	const conversation = new AgentConversation([communicationEntry(reportValue())], "/work", tui, false, false);
+it("clicks on the report title, body and hint affect only that retained row", () => {
+	const first = communicationEntry(reportValue());
+	const second = communicationEntry(
+		reportValue(noticeSender, "Unrelated first\nsecond\nthird\nfourth unrelated"),
+		"10",
+	);
+	const conversation = new AgentConversation([first, second], "/work", tui, false, false);
 	let document = conversation.render(80);
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, 0)), "the header row toggles");
+	assert.deepEqual(conversation.handleMouse(click(80, document.lines.length, 0)), { id: "9", line: 0 });
 	const opened = screen(conversation).replace(/\s+/gu, " ");
-	assert.match(opened, /▾ Report from Peer name/u);
+	assert.match(opened, /\[agent\] Report from Peer name/u);
 	assert.match(opened, /line five/u);
-	assert.match(opened, /Retained copy; it may be shorter than the original\./u);
-	assert.match(opened, /Sender identity: 7f7f7f7f-1111-4222-8333-444444444444 Recorded: 2023-11-14T22:13:20\.000Z/u);
+	assert.match(opened, /\[Retained copy: completeness not established\]/u);
+	assert.match(opened, /Sender identity: 7f7f7f7f-1111-4222-8333-444444444444/u);
+	assert.match(opened, /Recorded: 2023-11-14T22:13:20\.000Z/u);
 	assert.match(opened, /requestId: request-source/u, "the open card keeps the retained request identifier");
-	assert.doesNotMatch(opened, /\[agent\]|Partial body|click or ctrl\+o/u);
+	assert.doesNotMatch(opened, /fourth unrelated/u);
 	document = conversation.render(80);
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, 0)), "the header row closes it again");
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, 3)), "the body row closes it again");
 	assert.doesNotMatch(screen(conversation), /line five/u);
 	document = conversation.render(80);
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, 2)), "the count row toggles");
+	const hint = document.lines.findIndex((line) => stripVTControlCharacters(line).includes("to expand"));
+	assert.ok(hint > 0);
+	assert.deepEqual(conversation.handleMouse(click(80, document.lines.length, hint)), { id: "9", line: 0 });
 	assert.match(screen(conversation), /line five/u);
+	assert.doesNotMatch(screen(conversation), /fourth unrelated/u);
 });
 
 it("a report disclosure lives in the reading state and a global change clears it", () => {
@@ -956,13 +974,16 @@ it("a notice names its thread, post number and copy notes when opened", () => {
 				lookup,
 			),
 		),
-		/▸ Thread notice · Density round\s+from Peer name · #25 · /u,
+		/\[agent\] Thread notice · Density round\s+from Peer name · #25 · passive · /u,
 	);
-	const opened = screen(new AgentConversation([communicationEntry(value)], "/work", tui, true, false)).replace(
+	const opened = screen(new AgentConversation([communicationEntry(value)], "/work", tui, true, false), 160).replace(
 		/\s+/gu,
 		" ",
 	);
-	assert.match(opened, /Notice copy; the full post #25 is in Threads\./u);
+	assert.match(opened, /\[Passive copy: up to 280 UTF-16 code units retained\]/u);
+	assert.ok(
+		opened.includes('agent_collaborate({"action":"read","threadId":"storage/thread-1","before":26,"limit":1})'),
+	);
 	assert.match(opened, /Thread ID: storage\/thread-1 Event: #25 Delivery: passive, no wake requested/u);
 	assert.match(opened, /Recorded: 2023-11-14T22:13:20\.000Z/u);
 	const closed = screen(
@@ -980,7 +1001,7 @@ it("a notice names its thread, post number and copy notes when opened", () => {
 	);
 	assert.match(
 		closed,
-		/▸ Thread closed · Density round\s+from Peer name · #25 · /u,
+		/\[agent\] Thread closed · Density round\s+from Peer name · #25 · passive · /u,
 		"a known event kind says what happened",
 	);
 });
@@ -1004,7 +1025,7 @@ it("an open result card lists every retained reference and the full request iden
 	};
 	const conversation = new AgentConversation([communicationEntry(value)], "/work", tui, true, false);
 	const text = stripVTControlCharacters(conversation.render(200).lines.join("\n"));
-	assert.match(text, /▾ Result from Peer · /u);
+	assert.match(text, /\[agent\] Result\s+from Peer · /u);
 	assert.match(text, /references: 16 retained \u00b7 2 omitted at retention/u);
 	for (let index = 1; index <= 16; index++)
 		assert.match(text, new RegExp(`reference ${index}: submission ${index} \\u00b7 request `, "u"));
@@ -1020,10 +1041,40 @@ it("an open result card lists every retained reference and the full request iden
 	assert.doesNotMatch(text, /\u2026/u, "no retained field is shortened in the open card");
 });
 
-it("names an unnamed sender by its kind and short identity until the lookup knows it", () => {
+it("retained check-ins and unanswered results name their kinds and keep source facts behind disclosure", () => {
+	const checkIn: Communication = {
+		format: "agent.communication/1",
+		kind: "check-in",
+		sender: noticeSender,
+		recordedAt: 1_700_000_000_000,
+		body: { text: "What is the current state?", complete: true, redacted: false },
+		metadata: { sourceId: "report:check-in", producerRequestId: "producer", elapsedMs: 15_000, origin: "model" },
+	};
+	const result: Communication = {
+		...checkIn,
+		kind: "result",
+		body: { text: "Retained result text", complete: false, redacted: true },
+		metadata: { status: "unanswered", references: [{ submissionId: 3 }], omittedReferences: 0, reason: "No answer" },
+	};
+	const entries = [communicationEntry(checkIn), communicationEntry(result, "10")];
+	const conversation = new AgentConversation(entries, "/work", tui, false, false);
+	const collapsed = screen(conversation);
+	assert.match(collapsed, /\[agent\] Check-in\s+from Peer name · 15s elapsed · model origin/u);
+	assert.match(collapsed, /\[agent\] Result unanswered\s+from Peer name/u);
+	assert.match(collapsed, /\[Retained copy: redacted\]/u);
+	assert.doesNotMatch(collapsed, /producerRequestId|No answer/u);
+	conversation.setExpanded(true);
+	assert.match(screen(conversation), /producerRequestId: producer/u);
+	assert.match(screen(conversation), /reason: No answer/u);
+});
+
+it("names an unnamed sender by its kind and full identity until the lookup knows it", () => {
 	const agentSender: Communication["sender"] = { identity: "7f7f7f7f-1111-4222-8333-444444444444", kind: "agent" };
 	const entry = communicationEntry(reportValue(agentSender));
-	assert.match(screen(new AgentConversation([entry], "/work", tui, false, false)), /Report from Agent 7f7f7f7f · /u);
+	assert.match(
+		screen(new AgentConversation([entry], "/work", tui, false, false)),
+		/from agent 7f7f7f7f-1111-4222-8333-444444444444 · /u,
+	);
 	assert.match(
 		screen(new AgentConversation([entry], "/work", tui, true, false)),
 		/Sender identity: 7f7f7f7f-1111-4222-8333-444444444444 \(agent\)/u,
@@ -1033,14 +1084,14 @@ it("names an unnamed sender by its kind and short identity until the lookup know
 	);
 	assert.match(
 		screen(new AgentConversation([session], "/work", tui, false, false)),
-		/Report from Session 7f7f7f7f · /u,
+		/from session 7f7f7f7f-1111-4222-8333-444444444444 · /u,
 	);
 	const lookup = observedLookup({
 		nameFor: (identity) => (identity === agentSender.identity ? "Lookup name" : undefined),
 	});
 	assert.match(
 		screen(new AgentConversation([entry], "/work", tui, false, false, undefined, undefined, undefined, lookup)),
-		/Report from Lookup name · /u,
+		/from Lookup name · /u,
 	);
 });
 

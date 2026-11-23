@@ -635,7 +635,9 @@ it("preserves user model bytes and keeps communication out of input metadata", a
 				.render(80)
 				.join("\n"),
 		);
-		assert.match(card, /\[agent\] Report \u00b7 request source.*from Peer.*Partial body.*Source body/su);
+		assert.match(card, /\[agent\] Report\s+from Peer[^\n]*\n\s+Source body/u);
+		assert.match(card, /\[Retained copy: completeness not established\]/u);
+		assert.doesNotMatch(card, /requestId:|Original input/u);
 		const history = (await readInspection(
 			host.harness,
 			storageId,

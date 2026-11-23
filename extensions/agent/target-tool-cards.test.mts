@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { CustomMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import type { Communication } from "./communication.ts";
 import {
@@ -301,7 +301,7 @@ describe("compact observation cards", () => {
 			const compact = screen(component);
 			assert.ok(compact.includes(`Receipt continuation: ${receiptCall}`));
 			assert.ok(compact.includes(`Answer continuation: ${answerCall}`));
-			assert.match(compact, /more receipt references/u);
+			assert.match(compact, /1 reference shown · more reference pages/u);
 			assert.deepEqual(value, before);
 		}
 	});
@@ -620,72 +620,99 @@ describe("thread notice cards", () => {
 	const lookup = Object.assign((): AgentConversationSummary[] => [reviewer], {
 		nameFor: (identity: string) => (identity === sender ? "Reviewer" : undefined),
 	});
-	const compact = (value: Communication, expanded: boolean, rows: AgentCardLookup = lookup) => {
-		const component = compactCommunicationRenderer(rows)(
+	const compact = (value: Communication, expanded: boolean, rows: AgentCardLookup = lookup, width = 240) => {
+		const component = new CustomMessageComponent(
 			{
 				role: "custom",
 				customType: "agent.communication",
-				content: value.body.text,
+				content: "Model notice, not operator display copy",
 				details: value,
 				timestamp: 1,
 				display: true,
 			},
-			{ expanded, outputPad: 0, ...cardKeys },
-			theme,
+			compactCommunicationRenderer(rows),
 		);
-		assert.ok(component);
-		return screen(component);
+		component.setExpanded(expanded);
+		return stripVTControlCharacters(component.render(width).join("\n"))
+			.split("\n")
+			.map((line) => line.trimEnd())
+			.join("\n")
+			.trim();
 	};
 
-	it("puts what happened and the thread above the sender and its agent details", () => {
-		const [first, second, ...preview] = compact(notice({}, "Landed the four repairs on main."), false).split("\n");
-		assert.equal(first, "▸ Thread closed · Parser contract");
-		assert.match(second ?? "", /^ {2}from Reviewer · openai-codex\/gpt-6\.1-sol · high · #27 · /u);
-		assert.deepEqual(preview, ["  Landed the four repairs on main."]);
+	it("puts the thread event above the sender and observed model facts", () => {
+		const passive = compact(notice({}, "The repairs are in the branch."), false);
+		assert.match(
+			passive,
+			/^\[agent\] Thread closed · Parser contract\n from Reviewer · openai-codex\/gpt-6\.1-sol · high · #27 · passive · /u,
+		);
+		assert.match(passive, /\n\n The repairs are in the branch\./u);
+		assert.doesNotMatch(passive, /Model notice|Source details/u);
 		const posted = compact(
 			notice({ eventKind: "contribution", passive: false }, "Please check the frame bound."),
 			false,
 		);
 		assert.match(
 			posted,
-			/^▸ Thread post · Parser contract\n {2}from Reviewer · openai-codex\/gpt-6\.1-sol · high · #27 · notified this agent · /u,
+			/^\[agent\] Thread post · Parser contract\n from Reviewer · openai-codex\/gpt-6\.1-sol · high · #27 · attention requested · /u,
 		);
-		assert.match(
-			compact(notice({ eventKind: undefined }, ""), false),
-			/^▸ Thread notice · Parser contract\n/u,
-			"an unknown event kind keeps the plain notice title",
-		);
+		assert.doesNotMatch(posted, /Passive copy|was notified/u);
 		const session = Object.assign((): AgentConversationSummary[] => [], {
 			modelFor: (identity: string) =>
 				identity === sender ? { provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "max" } : undefined,
 		});
-		assert.match(
-			compact(notice({}, ""), false, session),
-			/\n {2}from Session 7f7f7f7f · anthropic\/claude-opus-5-5 · max · #27 · /u,
-			"a main session's model comes from the view",
+		assert.ok(
+			compact(notice({}, ""), false, session).includes(`from ${sender} · anthropic/claude-opus-5-5 · max · #27 · `),
+			"the sender configuration comes from the view, and an untyped sender keeps its full identity",
 		);
 	});
 
-	it("shows no placeholder for an event without text and names the facts in plain labels", () => {
+	it("separates the passive copy bound, exact source read and optional delivery facts", () => {
+		const limit = "[Passive copy: up to 280 UTF-16 code units retained]";
+		const fullRead = 'agent_collaborate({"action":"read","threadId":"storage/thread-a","before":28,"limit":1})';
 		const collapsed = compact(notice({}, ""), false);
-		assert.doesNotMatch(collapsed, /no text/u);
-		assert.equal(collapsed.split("\n").length, 2);
-		const expanded = compact(notice({}, ""), true);
+		assert.doesNotMatch(collapsed, /no text|agent_collaborate/u);
+		assert.ok(collapsed.includes(limit));
+		assert.match(collapsed, /\.\.\. \([^\n]+ to expand\)$/u);
+		const expanded = compact(notice({}, "An authored ellipsis…"), true);
 		for (const line of [
+			"An authored ellipsis…",
 			"Thread: Parser contract",
 			"Thread ID: storage/thread-a",
 			"Event: #27 · close · frame revision 2",
 			"Delivery: passive, no wake requested",
 			`Sender identity: ${sender}`,
+			limit,
+			fullRead,
 		])
 			assert.ok(expanded.includes(line), line);
-		assert.doesNotMatch(expanded, /frameRevision:|eventKind:|passive: true|threadId:/u);
-		const card = screen(
-			renderCommunicationCard(notice({ eventKind: "join" }, ""), theme, { expanded: false, ...cardKeys }),
+		assert.doesNotMatch(expanded, /to expand|frameRevision:|eventKind:|passive: true|threadId:|truncated/u);
+		const unknown = notice({ eventKind: undefined, passive: undefined }, "An authored ellipsis…");
+		assert.match(compact(unknown, false), /^\[agent\] Thread notice · Parser contract\n/u);
+		assert.doesNotMatch(compact(unknown, false), /passive|attention requested|notified/iu);
+		assert.doesNotMatch(compact(unknown, true), /Passive copy|Delivery:|notified|truncated/u);
+		assert.match(compact(notice({ passive: false }, ""), true), /Delivery: attention requested/u);
+	});
+
+	it("keeps a configured disclosure key on one row at narrow widths", (t) => {
+		const previous = nativeTui.getKeybindings();
+		nativeTui.setKeybindings(
+			new nativeTui.KeybindingsManager({
+				...nativeTui.TUI_KEYBINDINGS,
+				"app.tools.expand": { defaultKeys: "ctrl+shift+y", description: "Expand tool output" },
+			}),
 		);
-		assert.match(card, /\[agent\] Member joined · Parser contract\n/u);
-		assert.match(card, new RegExp(`from ${sender} · #27 · `, "u"));
-		assert.doesNotMatch(card, /no text/u);
+		t.after(() => nativeTui.setKeybindings(previous));
+		const value = notice({ passive: false }, "first\nsecond\nthird\nfourth\nfifth");
+		const wide = compact(value, false);
+		assert.match(wide, /\.\.\. \(2 more lines, ctrl\+shift\+y to expand\)$/u);
+		const narrow = compact(value, false, lookup, 31)
+			.split("\n")
+			.map((line) => line.trim());
+		assert.deepEqual(narrow.slice(3, 6), ["first", "second", "third"]);
+		assert.equal(narrow.filter((line) => line.includes("to expand")).length, 1);
+		assert.equal(narrow.at(-1), "... (ctrl+shift+y to expand)");
+		assert.ok(!narrow.some((line) => line.match(/fourth|fifth|Source details/u)));
 	});
 
 	it("gives an ordinary peer notice the same two tiers, with the sender's model", () => {
