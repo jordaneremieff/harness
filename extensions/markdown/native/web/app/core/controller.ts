@@ -349,12 +349,15 @@
 			c.emit("agentOperations", [...c.agentOperations.values()]);
 		}
 		function changed(change: ReaderCoreChange) {
-			const edits = change.edits;
+			if (!c.payload) return;
+			const edits = change.edits,
+				presentation = c.payload.presentation;
 			c.emit("beforeChange", change);
 			c.blocks = c.blocks.map((block) => mappedBlock(block, change, c.doc?.active?.blockId));
 			mapClaims(edits);
 			updateOperations(change);
 			host.send("edits", {
+				presentation,
 				baseGeneration: change.baseGeneration,
 				generation: change.generation,
 				origin: change.historyAction ? "history" : change.origin,
@@ -514,15 +517,23 @@
 			host.on(type, (message) => handler(message as T));
 		subscriptions.push(
 			receive<ReaderCoreDocument>("document", (m) => c.replace(m)),
-			receive<{ generation: number; meta?: ReaderCoreDocument["meta"]; [key: string]: unknown }>("ack", (m) => {
+			receive<{
+				presentation: string;
+				generation: number;
+				meta?: { capturedSource: boolean; documentKey?: string; [key: string]: unknown };
+				[key: string]: unknown;
+			}>("ack", (m) => {
+				if (!c.payload || m.presentation !== c.payload.presentation) return;
 				if (!c.doc || m.generation > c.doc.generation) {
 					c.emit("error", new Error("Unexpected acknowledgement generation."));
 					return;
 				}
-				if (m.meta && c.payload) c.payload.meta = { ...m.meta };
+				if (m.meta) c.payload.meta = { ...m.meta, documentKey: m.meta.documentKey ?? c.payload.meta.documentKey };
 				c.emit("ack", m);
 			}),
-			host.on("refused", (m) => c.emit("refused", m)),
+			receive<{ presentation: string }>("refused", (m) => {
+				if (m.presentation === c.payload?.presentation) c.emit("refused", m);
+			}),
 			receive<ReaderNotice>("notice", (m) => c.emit("notice", m)),
 			receive<AgentApply>("agentApply", applyAgent),
 			receive<ReaderClaim>("claim", (m) => {

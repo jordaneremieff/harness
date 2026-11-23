@@ -57,7 +57,13 @@ test("the page sends a batch as one prompt and refuses mixed or invalid shapes",
 		calls.push(m);
 		return { v: 1, type: "reply", id: m.id, ok: true, accepted: false, detail: "Batch too long." };
 	});
-	const header = { requestId: "request", threadId: "thread", generation: 1 };
+	const header = {
+		documentKey: "document",
+		presentation: "view",
+		requestId: "request",
+		threadId: "thread",
+		generation: 1,
+	};
 	const annotations = [
 		{ text: "Change this.", quote: "😀\n", quoteRange: { start: 0, end: 3 } },
 		{ text: "Reduce repetition." },
@@ -121,7 +127,9 @@ function documentMessage(source = "") {
 		type: "document",
 		source,
 		generation: 0,
+		presentation: "view",
 		meta: {
+			documentKey: "document",
 			documentId: "fixture",
 			kind: "published",
 			title: "Fixture",
@@ -147,6 +155,55 @@ function documentMessage(source = "") {
 		live: true,
 	};
 }
+test("documents and page writes require the identity of their source", () => {
+	const { native, page } = bridge().bridge;
+	const doc = documentMessage();
+	assert.throws(() => native({ ...doc, presentation: undefined }));
+	assert.throws(() => native({ ...doc, meta: { ...doc.meta, documentKey: undefined } }));
+	const prompt = {
+		v: 1,
+		type: "prompt",
+		requestId: "r",
+		threadId: "t",
+		generation: 0,
+		text: "Why?",
+		documentKey: doc.meta.documentKey,
+		presentation: doc.presentation,
+	};
+	assert.equal(page(prompt).type, "prompt");
+	assert.throws(() => page({ ...prompt, documentKey: undefined }));
+	assert.throws(() => page({ ...prompt, presentation: "" }));
+	assert.throws(() =>
+		page({
+			v: 1,
+			type: "edits",
+			baseGeneration: 0,
+			generation: 1,
+			origin: "person",
+			edits: [{ start: 0, end: 0, expected: "", text: "a" }],
+		}),
+	);
+});
+test("a fresh prompt refusal distinguishes a known non-delivery from an uncertain receipt", () => {
+	const { reply } = bridge().bridge;
+	const response = {
+		v: 1,
+		type: "reply",
+		id: "r",
+		ok: true,
+		accepted: false,
+		fresh: true,
+		detail: "The document changed.",
+	};
+	assert.equal(reply(response, "r", "prompt", {}).fresh, true);
+	for (const patch of [
+		{ accepted: true },
+		{ detail: undefined },
+		{ uncertain: true, retryable: true },
+		{ fresh: "yes" },
+	])
+		assert.throws(() => reply({ ...response, ...patch }, "r", "prompt", {}));
+});
 test("document source uses raw UTF-8 rather than escaped JSON bytes", () => {
 	const api = bridge(),
 		message = documentMessage("é".repeat(1024 * 1024));
@@ -233,7 +290,7 @@ test("edits use their exact compact JSON bound independently of metadata", () =>
 		];
 	const excess = Buffer.byteLength(JSON.stringify(edits)) - 5 * 1024 * 1024;
 	edits[1].text = edits[1].text.slice(0, edits[1].text.length - excess);
-	const page = { v: 1, type: "edits", baseGeneration: 0, generation: 1, origin: "person", edits };
+	const page = { v: 1, type: "edits", presentation: "view", baseGeneration: 0, generation: 1, origin: "person", edits };
 	assert.equal(api.bridge.page(page).type, "edits");
 	assert.equal(
 		api.bridge.native({ v: 1, type: "agentApply", baseGeneration: 0, operationId: "agent", edits }).type,

@@ -15,7 +15,8 @@ function setup(source = "abcdef", captured = false) {
 	payload.meta.capturedSource = captured;
 	return { api, payload, host: api.createMemoryHost(payload, api.fixtures.render) };
 }
-const change = (edits: ReaderEdit[], base = 0) => ({
+const change = (host: ReaderMemoryHost, edits: ReaderEdit[], base = 0) => ({
+	presentation: host.document.presentation,
 	baseGeneration: base,
 	generation: base + 1,
 	origin: "person",
@@ -25,7 +26,7 @@ test("the first accepted change creates a copy and retains the exact recovery so
 	const { payload, host } = setup("a\r\nb", true);
 	host.send("lock", { lock: "writing", copy: true });
 	assert.equal(Boolean(host.draft), false);
-	host.send("edits", change([{ start: 0, end: 1, text: "A", expected: "a" }]));
+	host.send("edits", change(host, [{ start: 0, end: 1, text: "A", expected: "a" }]));
 	assert.equal(host.source, "A\r\nb");
 	assert.equal(payload.source, "a\r\nb");
 	assert.equal(host.mirror.originalSource, "a\r\nb");
@@ -36,10 +37,10 @@ test("the first accepted change creates a copy and retains the exact recovery so
 });
 test("wrong generation and expected text never change the mirror", () => {
 	const { host } = setup();
-	host.send("edits", change([{ start: 1, end: 3, text: "XY", expected: "bc" }], 4));
+	host.send("edits", change(host, [{ start: 1, end: 3, text: "XY", expected: "bc" }], 4));
 	assert.equal(host.source, "abcdef");
 	assert.equal(host.generation, 0);
-	host.send("edits", change([{ start: 1, end: 3, text: "XY", expected: "zz" }]));
+	host.send("edits", change(host, [{ start: 1, end: 3, text: "XY", expected: "zz" }]));
 	assert.equal(host.source, "abcdef");
 	assert.equal(host.generation, 0);
 	assert.deepEqual(plain(host.sent.map((m) => m.type)), ["edits", "edits"]);
@@ -51,7 +52,7 @@ test("unordered and overlapping edits refuse at the transport boundary", () => {
 	assert.throws(() =>
 		host.send(
 			"edits",
-			change([
+			change(host, [
 				{ start: 2, end: 4, text: "X", expected: "cd" },
 				{ start: 1, end: 2, text: "Y", expected: "b" },
 			]),
@@ -61,7 +62,7 @@ test("unordered and overlapping edits refuse at the transport boundary", () => {
 	assert.throws(() =>
 		host.send(
 			"edits",
-			change([
+			change(host, [
 				{ start: 1, end: 3, text: "X", expected: "bc" },
 				{ start: 2, end: 4, text: "Y", expected: "cd" },
 			]),
@@ -74,7 +75,7 @@ test("ordered edits compose through an independent mirror application", () => {
 	const { host } = setup();
 	host.send(
 		"edits",
-		change([
+		change(host, [
 			{ start: 0, end: 2, text: "A", expected: "ab" },
 			{ start: 4, end: 6, text: "F", expected: "ef" },
 		]),
@@ -94,7 +95,7 @@ test("agentApply does not change the mirror before the page sends its edits", ()
 	assert.equal(host.emit("agentApply", { operationId: "agent", baseGeneration: 0, edits }), true);
 	assert.equal(received, true);
 	assert.equal(host.source, "abcdef");
-	host.send("edits", { ...change(edits), origin: "agent", operationId: "agent" });
+	host.send("edits", { ...change(host, edits), origin: "agent", operationId: "agent" });
 	assert.equal(host.source, "Abcdef");
 	host.dispose();
 });
@@ -157,7 +158,7 @@ test("listeners unsubscribe and disposal rejects later work", async () => {
 	let count = 0;
 	const off = host.on("ack", () => count++);
 	off();
-	host.send("edits", change([{ start: 0, end: 1, text: "A", expected: "a" }]));
+	host.send("edits", change(host, [{ start: 0, end: 1, text: "A", expected: "a" }]));
 	assert.equal(count, 0);
 	host.dispose();
 	assert.equal(host.emit("command", { name: "undo" }), false);

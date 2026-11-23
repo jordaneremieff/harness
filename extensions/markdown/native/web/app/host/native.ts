@@ -158,8 +158,9 @@
 		);
 		ensure(optional(s.outlineWidth, number) && optional(s.outlineOpen, (v) => typeof v === "boolean"));
 	}
-	function meta(value: unknown) {
+	function meta(value: unknown, complete: boolean) {
 		const m = object(value);
+		ensure((!complete && m.documentKey === undefined) || string(m.documentKey, 200));
 		ensure(string(m.documentId, 200) && one(m.kind, ["response", "file", "published", "draft", "localFile"]));
 		ensure(
 			string(m.title, META, true) &&
@@ -176,7 +177,8 @@
 	}
 	function documentMessage(m: Fields) {
 		ensure(typeof m.source === "string" && string(m.source, SOURCE, true) && integer(m.generation));
-		meta(m.meta);
+		ensure(string(m.presentation, 200));
+		meta(m.meta, true);
 		settings(m.settings, true);
 		blocks(m.blocks, m.source.length, true);
 		ensure(one(m.chrome, ["pane", "window"]) && typeof m.live === "boolean");
@@ -272,10 +274,12 @@
 	const nativeValidators: Record<string, (m: Fields) => void> = {
 		document: documentMessage,
 		ack(m) {
+			ensure(string(m.presentation, 200));
 			ensure(integer(m.generation) && string(m.digest, 200) && one(m.recovery, ["retained", "pending"]));
-			if (m.meta !== undefined) meta(m.meta);
+			if (m.meta !== undefined) meta(m.meta, false);
 		},
 		refused(m) {
+			ensure(string(m.presentation, 200));
 			ensure(integer(m.generation) && string(m.reason, 2000));
 		},
 		agentApply(m) {
@@ -394,6 +398,7 @@
 		if (m.quoteRange !== undefined) range(m.quoteRange);
 	}
 	function prompt(m: Fields) {
+		ensure(string(m.documentKey, 200) && string(m.presentation, 200));
 		ensure(string(m.requestId, 200) && string(m.threadId, 200) && integer(m.generation));
 		if (m.annotations === undefined) {
 			ensure(m.overall === undefined);
@@ -413,6 +418,7 @@
 		},
 		state,
 		edits(m) {
+			ensure(string(m.presentation, 200));
 			ensure(
 				integer(m.baseGeneration) &&
 					m.generation === m.baseGeneration + 1 &&
@@ -538,6 +544,13 @@
 			if (m.store !== undefined) store(m.store);
 		}
 	}
+	function promptReply(m: Fields) {
+		ensure(typeof m.accepted === "boolean" && optional(m.detail, (v) => string(v, 8192, true)));
+		if (m.fresh !== undefined)
+			ensure(m.fresh === true && !m.accepted && m.uncertain === undefined && string(m.detail, 8192));
+		if (m.uncertain === undefined) ensure(m.retryable === undefined);
+		else ensure(m.uncertain === true && !m.accepted && typeof m.retryable === "boolean");
+	}
 	function reply(value: unknown, id: string, kind: string, fields: Fields) {
 		const m = envelope(value);
 		ensure(m.type === "reply" && m.id === id && typeof m.ok === "boolean", "Unexpected reader reply.");
@@ -550,11 +563,7 @@
 			ensure(integer(m.generation));
 			blocks(m.blocks);
 		}
-		if (kind === "prompt") {
-			ensure(typeof m.accepted === "boolean" && optional(m.detail, (v) => string(v, 8192, true)));
-			if (m.uncertain === undefined) ensure(m.retryable === undefined);
-			else ensure(m.uncertain === true && !m.accepted && typeof m.retryable === "boolean");
-		}
+		if (kind === "prompt") promptReply(m);
 		if (kind === "query") queryReply(m, fields);
 		if (kind === "command") commandReply(m, fields);
 		return m;

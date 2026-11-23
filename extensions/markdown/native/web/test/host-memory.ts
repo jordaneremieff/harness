@@ -8,6 +8,7 @@
 			disposed = false,
 			draft: ReaderDocument | undefined;
 		let retained = clone(payload);
+		let delivery = 0;
 		const mirror: ReaderMirror = {
 			originalSource: input.source,
 			source: input.source,
@@ -61,9 +62,12 @@
 		function snapshot(): ReaderDocument {
 			return { ...clone(payload), source: mirror.source, generation: mirror.generation, meta: clone(mirror.meta) };
 		}
-		function refuse(reason: string) {
-			emit("refused", { generation: mirror.generation, reason });
-			emit("document", snapshot());
+		function install() {
+			emit("document", { ...snapshot(), presentation: `memory-view-${++delivery}` });
+		}
+		function refuse(presentation: string, reason: string) {
+			emit("refused", { presentation, generation: mirror.generation, reason });
+			if (presentation === payload.presentation) install();
 		}
 		function copyMeta() {
 			if (!mirror.meta.capturedSource) return false;
@@ -71,6 +75,7 @@
 				...mirror.meta,
 				kind: "draft",
 				documentId: "memory-copy",
+				documentKey: "memory-copy-key",
 				shortId: "copy",
 				copyOf: mirror.meta.documentId,
 				capturedSource: false,
@@ -88,6 +93,7 @@
 			retained = { ...payload };
 			if (input.meta.capturedSource) draft = { ...payload };
 			emit("ack", {
+				presentation: payload.presentation,
 				generation,
 				digest: `memory-${generation}`,
 				...(copied ? { meta: clone(mirror.meta) } : {}),
@@ -95,13 +101,18 @@
 			});
 		}
 		function mirrorEdit(m: ReaderHostMessage) {
+			const presentation = m.presentation as string;
+			if (presentation !== payload.presentation) {
+				refuse(presentation, "presentation");
+				return;
+			}
 			if (m.baseGeneration !== mirror.generation) {
-				refuse("generation");
+				refuse(presentation, "generation");
 				return;
 			}
 			const edits = m.edits as ReaderEdit[];
 			if (!matching(edits)) {
-				refuse("expected");
+				refuse(presentation, "expected");
 				return;
 			}
 			let next = "",
@@ -112,7 +123,7 @@
 			}
 			next += mirror.source.slice(cursor);
 			if (new TextEncoder().encode(next).length > 2 * 1024 * 1024) {
-				refuse("size");
+				refuse(presentation, "size");
 				return;
 			}
 			commitMirror(next, m.generation as number);
@@ -123,7 +134,7 @@
 			sent.push(message);
 			messages.push(message);
 			if (type === "edits") mirrorEdit(message);
-			else if (type === "ready") emit("document", snapshot());
+			else if (type === "ready") install();
 			else if (type === "lock") payload.settings.lock = fields.lock as "reading" | "writing";
 			else if (type === "command") acceptCommand(message);
 		}

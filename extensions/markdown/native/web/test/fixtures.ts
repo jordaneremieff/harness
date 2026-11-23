@@ -78,14 +78,17 @@
 		}
 		return result;
 	}
+	let presentation = 0;
 	function documentPayload(
 		source = "A paragraph with **bold words**, *italic words* and `code`.\r\n\r\n## A heading\r\n\r\n- A list item\r\n\r\nremote",
 	): ReaderCoreDocument {
 		return {
 			source,
+			presentation: `fixture-view-${++presentation}`,
 			generation: 0,
 			meta: {
 				documentId: "fixture",
+				documentKey: "fixture-document",
 				kind: "published",
 				title: "Fixture",
 				shortId: "fixture",

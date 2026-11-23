@@ -24,7 +24,8 @@ declare global {
 	interface ReaderCoreDocument {
 		source: string;
 		generation: number;
-		meta: { capturedSource: boolean; [key: string]: unknown };
+		presentation: string;
+		meta: { documentKey: string; capturedSource: boolean; [key: string]: unknown };
 		blocks: ReaderMappedBlock[];
 		settings: { lock: "reading" | "writing"; [key: string]: unknown };
 		[key: string]: unknown;

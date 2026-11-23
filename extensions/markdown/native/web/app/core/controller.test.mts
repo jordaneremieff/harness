@@ -162,6 +162,7 @@ test("wrong base or expected text never changes the page or mirror; a host refus
 		[0, "z"],
 	] as const) {
 		host.send("edits", {
+			presentation: host.document.presentation,
 			baseGeneration: base,
 			generation: base + 1,
 			origin: "person",
@@ -202,6 +203,59 @@ test("the whole open block stays held without focus or a time limit and claims r
 	dispose();
 });
 
+test("late acknowledgements and refusals do not reach a replacement at the same generation", () => {
+	const { api, host, controller: c, dispose } = setup();
+	const before = host.document,
+		after = api.fixtures.document("replacement");
+	after.meta.documentKey = "replacement-key";
+	assert.equal(host.emit("document", after), true);
+	const events: string[] = [];
+	for (const type of ["ack", "refused", "error"] as const) c.on(type, () => events.push(type));
+	for (const generation of [after.generation, after.generation + 1]) {
+		assert.equal(
+			host.emit("ack", {
+				presentation: before.presentation,
+				generation,
+				digest: "copy",
+				recovery: "retained",
+				meta: before.meta,
+			}),
+			true,
+		);
+	}
+	assert.equal(host.emit("refused", { presentation: before.presentation, generation: 0, reason: "stale" }), true);
+	assert.deepEqual(events, []);
+	assert.equal(c.payload?.meta.documentKey, after.meta.documentKey);
+	assert.equal(host.emit("refused", { presentation: after.presentation, generation: 0, reason: "conflict" }), true);
+	assert.deepEqual(events, ["refused"]);
+	dispose();
+});
+
+test("each edit names its installed presentation and a copy acknowledgement retains the logical key", () => {
+	const { api, host, controller: c, dispose } = setup();
+	const next = api.fixtures.document("abc");
+	assert.notEqual(c.payload?.presentation, next.presentation);
+	assert.equal(host.emit("document", next), true);
+	c.setLock("writing");
+	person(c, 0, 1, "A");
+	assert.equal(host.sent.findLast((m) => m.type === "edits")?.presentation, next.presentation);
+	const { documentKey, ...copy } = next.meta;
+	assert.equal(
+		host.emit("ack", {
+			presentation: next.presentation,
+			generation: 1,
+			digest: "copy",
+			recovery: "retained",
+			meta: { ...copy, documentId: "copy" },
+		}),
+		true,
+	);
+	assert.equal(c.payload?.meta.documentId, "copy");
+	assert.equal(c.payload?.meta.documentKey, documentKey);
+	assert.equal(c.payload?.presentation, next.presentation);
+	dispose();
+});
+
 test("a captured source gets its copy only on the first edit and the original stays unchanged", () => {
 	const { payload, host, controller: c, dispose } = setup("a\r\nb", true);
 	assert.equal(c.lock, "reading");
@@ -213,6 +267,9 @@ test("a captured source gets its copy only on the first edit and the original st
 	assert.equal(host.draft?.source, "A\r\nb");
 	assert.equal(c.payload?.meta.capturedSource, false);
 	assert.equal(c.payload?.meta.copyOf, "fixture");
+	assert.notEqual(c.payload?.meta.documentKey, payload.meta.documentKey);
+	assert.equal(c.payload?.meta.documentKey, host.document.meta.documentKey);
+	assert.equal(c.payload?.presentation, payload.presentation);
 	assert.equal(person(c, 3, 4, "B").status, "ok");
 	assert.equal(host.document.meta.documentId, copyId);
 	assert.equal(c.undo()?.status, "ok");
