@@ -206,7 +206,7 @@ test("Refresh retries the selected record's failed read, and Restore stays unava
 	assert.ok(screenOf(view).includes("Entry "), "the exact record is read");
 	act(view, "Restore");
 	assert.ok(
-		await waitFor(() => notices.some((notice) => notice.startsWith("Restored (1L/"))),
+		await waitFor(() => notices.some((notice) => notice.startsWith("Restored to the clipboard ("))),
 		"the restore receipt shows",
 	);
 	assert.deepEqual(

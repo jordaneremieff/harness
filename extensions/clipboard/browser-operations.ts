@@ -3,7 +3,7 @@
 import { pbCopy } from "./pb.ts";
 import { searchEntries, type SearchPage } from "./search.ts";
 import { type ClipboardEntry, readEntries } from "./store.ts";
-import { shortField } from "./text.ts";
+import { restoreOutcome } from "./presentation.ts";
 
 export type RestoreOutcome = { ok: true } | { ok: false; error: string };
 
@@ -58,7 +58,6 @@ export function searchArchive(
 }
 
 /** One line for the operator after a successful restore. */
-export function restoredNotice(restored: Pick<ClipboardEntry, "lines" | "chars" | "label">): { text: string } {
-	const label = restored.label ? ` | ${shortField(restored.label)}` : "";
-	return { text: `Restored (${restored.lines}L/${restored.chars}c)${label}` };
+export function restoredNotice(restored: Pick<ClipboardEntry, "lines" | "chars">): { text: string } {
+	return { text: restoreOutcome(restored) };
 }

@@ -1,401 +1,193 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { createRequire } from "node:module";
+import { it, type TestContext } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import {
-	renderCopyCall,
-	renderCopyResult,
-	renderGetCall,
-	renderGetResult,
-	renderListCall,
-	renderListResult,
-	renderPasteCall,
-	renderPasteResult,
-	renderRestoreCall,
-	renderRestoreResult,
-} from "./presentation.ts";
+import { defineTool, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { obj } from "@earendil-works/pi-schema";
+import { type KeyId, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { toolDisplay } from "./display.ts";
 
-const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
-const screen = (component: { render(width: number): readonly string[] }, width = 100) =>
-	component
-		.render(width)
-		.map((line) => stripVTControlCharacters(line).trimEnd())
-		.join("\n")
-		.replace(/^\n+/, "");
-const raw = (component: { render(width: number): readonly string[] }, width = 1000) =>
-	component.render(width).join("\n");
-const text = (value: string, details?: unknown) => ({ content: [{ type: "text" as const, text: value }], details });
-const collapsed = { expanded: false, isError: false };
-const expanded = { expanded: true, isError: false };
+const requirePi = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+const tui: typeof import("@earendil-works/pi-tui") = await import(requirePi.resolve("@earendil-works/pi-tui"));
+const ui = { requestRender() {} } as unknown as TUI;
+const privateText = "private clipboard fixture";
+const sourceId = "a".repeat(64);
 
-function assertFits(component: { render(width: number): readonly string[] }, widths: number[] = [20, 60, 100]): void {
-	for (const width of widths)
-		assert.ok(
-			component.render(width).every((line) => visibleWidth(line) <= width),
-			`width ${width}`,
-		);
+function theme(t: TestContext, keys: KeyId | KeyId[] = "ctrl+g") {
+	initTheme("dark", false);
+	const previous = tui.getKeybindings();
+	tui.setKeybindings(
+		new tui.KeybindingsManager({
+			...tui.TUI_KEYBINDINGS,
+			"app.tools.expand": { defaultKeys: keys, description: "Expand tool output" },
+		}),
+	);
+	t.after(() => tui.setKeybindings(previous));
 }
 
-const SECRET = "rollback-draft-secret-body";
-
-describe("clipboard_copy cards", () => {
-	it("shows label and size at the call, never the copied content", () => {
-		const card = renderCopyCall({ content: SECRET, label: "rollback" }, theme, { ...collapsed, argsComplete: true });
-		const rendered = screen(card);
-		assert.match(rendered, /^clipboard_copy · rollback/);
-		assert.match(rendered, /26 UTF-16 code units · [Ee]xpand/);
-		assert.ok(!rendered.includes(SECRET));
-		assertFits(card);
+function card(name: string, args: Record<string, unknown> = {}, complete = true) {
+	const display = toolDisplay().tools.find((tool) => tool.name === name);
+	assert.ok(display);
+	const definition = defineTool({
+		...display,
+		label: name,
+		description: "Display fixture",
+		parameters: obj({}, { open: true }),
+		async execute() {
+			throw new Error("Display fixture must not execute");
+		},
 	});
+	const component = new ToolExecutionComponent(name, "fixture", args, { outputPad: 1 }, definition, ui, ".");
+	if (complete) component.setArgsComplete();
+	return component;
+}
 
-	it("does not claim a size while the content still streams", () => {
-		const card = renderCopyCall({ content: SECRET }, theme, { ...collapsed, argsComplete: false });
-		const rendered = screen(card);
-		assert.match(rendered, /content pending/);
-		assert.ok(!rendered.includes(SECRET));
-	});
+function screen(component: ToolExecutionComponent, width = 120): string {
+	return component
+		.render(width)
+		.map((row) => stripVTControlCharacters(row).trim())
+		.filter(Boolean)
+		.join("\n");
+}
 
-	it("shows the copied content only when the arguments are expanded", () => {
-		const card = renderCopyCall({ content: SECRET, label: "rollback" }, theme, { ...expanded, argsComplete: true });
-		assert.match(screen(card, 400), /rollback-draft-secret-body/);
-	});
+function result(text: string, details?: unknown, isError = false) {
+	return { content: [{ type: "text" as const, text }], details, isError };
+}
 
-	it("escapes bidi and C1 controls in collapsed and expanded text", () => {
-		const hostile = "a\u202eb\u009bc";
-		const call = renderCopyCall({ content: hostile, label: "l" }, theme, { ...expanded, argsComplete: true });
-		assert.ok(!raw(call).includes("\u202e"));
-		assert.ok(!raw(call).includes("\u009b"));
-		assert.match(screen(call, 1000), /\\u202e/);
-		assert.match(screen(call, 1000), /\\x9b/);
-		const result = renderCopyResult(text(`body ${hostile}`), { expanded: true, isPartial: false }, theme, expanded);
-		assert.ok(!raw(result).includes("\u202e"));
-		assert.ok(!raw(result).includes("\u009b"));
-		const list = renderListCall({ query: hostile }, theme, expanded);
-		assert.ok(!raw(list).includes("\u202e"));
-		assert.ok(!raw(list).includes("\u009b"));
-	});
+it("discloses only the size of a copy argument before and after expansion", (t) => {
+	theme(t);
+	const component = card("clipboard_copy", { content: `${privateText}😀`, label: "archive this" }, false);
+	assert.equal(screen(component), "clipboard_copy archive this\ncontent still arriving");
+	component.setArgsComplete();
+	assert.match(screen(component), /26 characters/);
+	assert.doesNotMatch(screen(component), /expand/);
+	component.setExpanded(true);
+	assert.match(screen(component), /content: 26 characters/);
+	assert.doesNotMatch(screen(component), /private clipboard fixture|😀/);
+	component.setExpanded(false);
+	component.updateResult(result(`Preview: ${privateText}`, { lines: 1, chars: 26, id: "archive-id" }));
+	assert.match(screen(component), /Copied to the clipboard \(26 characters · 1 line\)\. Archive entry archive-id\./);
+	assert.doesNotMatch(screen(component), /private clipboard fixture|more lines/);
+	assert.match(screen(component), /\.\.\. \(ctrl\+g to expand\)$/);
+	component.setExpanded(true);
+	assert.match(screen(component), /Preview: private clipboard fixture/);
+	assert.doesNotMatch(screen(component), /content: private|to expand/);
+});
 
-	it("reports size and id without the preview", () => {
-		const card = renderCopyResult(
-			text(`Copied to clipboard | rollback (1 lines, 26 chars)\nPreview: ${SECRET}`, {
-				lines: 1,
-				chars: 26,
-				id: "entry-1",
+it("keeps the confirmed clipboard write separate from an archive failure or opt-out", (t) => {
+	theme(t);
+	const component = card("clipboard_copy", { content: privateText });
+	component.updateResult(
+		result(`Preview: ${privateText}`, { chars: 25, lines: 1, id: "not-archived", archiveError: "Permission denied" }),
+	);
+	assert.match(
+		screen(component),
+		/Copied to the clipboard \(25 characters · 1 line\)\.\n\[Clipboard history write failed: Permission denied\]/,
+	);
+	assert.doesNotMatch(screen(component), /Archive entry not-archived|private clipboard fixture/);
+	component.updateResult(result("Receipt", { chars: 25, lines: 1, archived: false }));
+	assert.match(screen(component), /Copied to the clipboard .* without archiving\./);
+	assert.doesNotMatch(screen(component), /write failed/);
+});
+
+it("does not preview host copy diagnostics that echo private arguments", (t) => {
+	theme(t);
+	const component = card("clipboard_copy");
+	component.updateResult(
+		result(`Invalid arguments: ${privateText}\nReceived arguments:\n${privateText}`, undefined, true),
+	);
+	assert.equal(screen(component), "clipboard_copy\nClipboard copy failed.\n... (ctrl+g to expand)");
+	component.setExpanded(true);
+	assert.match(screen(component), /Invalid arguments: private clipboard fixture/);
+	assert.doesNotMatch(screen(component), /to expand/);
+});
+
+it("keeps clipboard bodies hidden when collapsed and offers exact read continuations", (t) => {
+	theme(t, []);
+	for (const tool of ["clipboard_get", "clipboard_paste"]) {
+		const args = tool === "clipboard_get" ? { id: "entry-1", max_chars: 4 } : { max_chars: 4 };
+		const component = card(tool, args);
+		assert.doesNotMatch(screen(component), /expand/);
+		component.updateResult(result(privateText, { chars: 25, lines: 1, sourceId, nextOffset: 4 }));
+		assert.match(screen(component), /more content follows\.\n\.\.\. \(click to expand\)$/);
+		assert.doesNotMatch(screen(component), /private clipboard fixture|a{64}|more lines/);
+		component.setExpanded(true);
+		const expanded = screen(component, 190);
+		assert.match(expanded, /private clipboard fixture/);
+		assert.ok(expanded.includes(`${tool} ${JSON.stringify({ ...args, offset: 4, sourceId })}`));
+		assert.doesNotMatch(expanded, /to expand/);
+	}
+});
+
+it("distinguishes empty clipboard, empty history, partial archive page and thrown failure", (t) => {
+	theme(t);
+	const paste = card("clipboard_paste");
+	paste.updateResult(result(`Clipboard is empty.\nsourceId: ${sourceId}`, { chars: 0 }));
+	assert.match(screen(paste), /Clipboard is empty\./);
+	paste.setExpanded(true);
+	assert.ok(screen(paste).includes(sourceId));
+	const recent = card("clipboard_list");
+	recent.updateResult(result("Clipboard history is empty.", { count: 0, hasMore: false }));
+	assert.match(screen(recent), /No clipboard history entries\./);
+	assert.doesNotMatch(screen(recent), /to expand/);
+	const list = card("clipboard_list", { query: "example", date: "2026-01-02" });
+	list.updateResult(
+		result(
+			JSON.stringify({
+				query: "example",
+				date: "2026-01-02",
+				matches: [],
+				hasMore: true,
+				stop: "record-limit",
+				nextCursor: "full-cursor",
+				scan: { malformed: 2 },
+				note: "Model guidance",
 			}),
-			{ expanded: false, isPartial: false },
-			theme,
-			collapsed,
-		);
-		const rendered = screen(card);
-		assert.match(rendered, /^copied 26 chars · 1 lines · id entry-1/);
-		assert.ok(!rendered.includes(SECRET));
-		assertFits(card);
-	});
-
-	it("appends a warning when the archive write failed", () => {
-		const card = renderCopyResult(
-			text("Copied to clipboard (1 lines, 26 chars)\nWarning: archive write failed: disk full", {
-				lines: 1,
-				chars: 26,
-				archiveError: "disk full is not available",
-			}),
-			{ expanded: false, isPartial: false },
-			theme,
-			collapsed,
-		);
-		assert.match(screen(card), /archive write failed: disk full/);
-	});
-
-	it("says when a copy was not archived", () => {
-		const card = renderCopyResult(
-			text("Copied to clipboard (1 lines, 26 chars)\nNot added to clipboard history.", {
-				archived: false,
-				lines: 1,
-				chars: 26,
-			}),
-			{ expanded: false, isPartial: false },
-			theme,
-			collapsed,
-		);
-		assert.match(screen(card), /^copied 26 chars · 1 lines · not archived/);
-		assertFits(card);
-	});
-
-	it("styles the error and partial states", () => {
-		const error = renderCopyResult(text("pbcopy failed: not found"), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			isError: true,
-		});
-		assert.equal(screen(error), "clipboard_copy: pbcopy failed: not found");
-		const partial = renderCopyResult(text(""), { expanded: false, isPartial: true }, theme, collapsed);
-		assert.equal(screen(partial), "Copying to the clipboard...");
-	});
+		),
+	);
+	assert.match(screen(list), /No matches on this clipboard archive page; the scan has more pages\./);
+	assert.match(screen(list), /\[Partial coverage: archive records skipped\]/);
+	assert.doesNotMatch(screen(list), /Model guidance|full-cursor/);
+	list.setExpanded(true);
+	assert.match(screen(list), /clipboard_list \{"query":"example","date":"2026-01-02","cursor":"full-cursor"\}/);
+	list.setExpanded(false);
+	list.updateResult(result("clipboard_list cancelled", { count: 0 }, true));
+	assert.match(screen(list), /clipboard_list cancelled/);
+	assert.doesNotMatch(screen(list), /No matches|to expand/);
 });
 
-describe("clipboard_paste cards", () => {
-	it("names only the page bounds at the call", () => {
-		assert.equal(screen(renderPasteCall({}, theme, collapsed)), "clipboard_paste");
-		const bounded = renderPasteCall({ offset: 8000, max_chars: 100 }, theme, collapsed);
-		assert.equal(screen(bounded), "clipboard_paste\noffset 8000 · max 100");
-	});
-
-	it("summarizes the page without pasted content", () => {
-		const card = renderPasteResult(
-			text(`Clipboard contents (2 lines, 30 characters):\n\n${SECRET}`, { lines: 2, chars: 30, offset: 8000 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{ ...collapsed, args: { offset: 8000 } },
-		);
-		const rendered = screen(card);
-		assert.match(rendered, /^clipboard 30 chars · 2 lines/);
-		assert.ok(!rendered.includes(SECRET));
-		assertFits(card);
-	});
-
-	it("flags an empty clipboard and a continuation page", () => {
-		const empty = renderPasteResult(
-			text("Clipboard is empty.", { lines: 0, chars: 0 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				args: {},
-			},
-		);
-		assert.equal(screen(empty), "clipboard is empty");
-		const continued = renderPasteResult(
-			text("Clipboard contents (2 lines, 30 characters): x", { lines: 2, chars: 30, nextOffset: 20 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			collapsed,
-		);
-		assert.match(screen(continued), /continuation offset 20/);
-	});
-
-	it("styles the error and partial states", () => {
-		const error = renderPasteResult(text("pbpaste failed"), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			isError: true,
-		});
-		assert.equal(screen(error), "clipboard_paste: pbpaste failed");
-		const partial = renderPasteResult(text(""), { expanded: false, isPartial: true }, theme, collapsed);
-		assert.equal(screen(partial), "Reading the clipboard...");
-	});
+it("keeps stable IDs until width clips them and hands off a single hint after a result", (t) => {
+	theme(t);
+	const id = `entry-${"界".repeat(105)}`;
+	const component = card("clipboard_restore", { id, date: "2026-01-02" });
+	assert.ok(screen(component, 300).includes(id));
+	assert.doesNotMatch(screen(component, 300), /expand/);
+	assert.match(screen(component, 60), /clipboard_restore .*…\ndate .*\n\.\.\. \(ctrl\+g to expand\)$/);
+	component.updateResult(result("", undefined), true);
+	assert.match(screen(component, 60), /Restoring to the clipboard…\n\.\.\. \(ctrl\+g to expand\)$/);
+	component.updateResult(result("Restored", { id, chars: 1, lines: 1 }));
+	assert.match(
+		screen(component, 60),
+		/Restored to the clipboard \(1 character · 1 line\)\.\n\.\.\. \(ctrl\+g to expand\)$/,
+	);
+	assert.equal(screen(component, 60).match(/to expand/g)?.length, 1);
+	assert.doesNotMatch(screen(component, 300), /expand/);
+	for (const raw of component.render(60)) {
+		assert.ok(visibleWidth(raw) <= 60);
+		assert.doesNotMatch(raw, /\x1b\[0m/);
+	}
 });
 
-describe("clipboard_list cards", () => {
-	it("names the query and its bounds at the call", () => {
-		const card = renderListCall({ query: "rollback instructions", date: "2026-01-02", limit: 5 }, theme, collapsed);
-		assert.equal(screen(card), "clipboard_list · query rollback instructions\ndate 2026-01-02 · limit 5");
-		assert.equal(screen(renderListCall({ date: "2026-01-02" }, theme, collapsed)), "clipboard_list · 2026-01-02");
-	});
-
-	it("counts recent entries and marks more available", () => {
-		const card = renderListResult(
-			text("Clipboard history (10+ entries, newest first):\n- ...", { count: 10, hasMore: true }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				args: {},
-			},
-		);
-		assert.match(screen(card), /^10 entries · more available/);
-		const single = renderListResult(
-			text("Clipboard history (1 entries): x", { count: 1, hasMore: false }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				args: {},
-			},
-		);
-		assert.match(screen(single), /^1 entry/);
-	});
-
-	it("counts query matches and states scan limits", () => {
-		const paging = renderListResult(
-			text("{}", { count: 3, hasMore: true, nextCursor: "next-page" }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				args: { query: "rollback" },
-			},
-		);
-		assert.match(screen(paging), /^3 matches · more available \(not absence\) · continuation/);
-		const complete = renderListResult(
-			text("{}", { count: 3, hasMore: false }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				args: { query: "rollback" },
-			},
-		);
-		assert.match(screen(complete), /^3 matches · end of scan/);
-	});
-
-	it("styles the error and partial states", () => {
-		const error = renderListResult(
-			text("cursor requires the original query"),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				isError: true,
-			},
-		);
-		assert.equal(screen(error), "clipboard_list: cursor requires the original query");
-		const partial = renderListResult(text(""), { expanded: false, isPartial: true }, theme, collapsed);
-		assert.equal(screen(partial), "Listing clipboard history...");
-	});
-});
-
-describe("clipboard_get cards", () => {
-	it("names the entry and page bounds at the call", () => {
-		const card = renderGetCall({ id: "entry-1", date: "2026-01-02", offset: 20, max_chars: 500 }, theme, collapsed);
-		assert.equal(screen(card), "clipboard_get · entry-1\ndate 2026-01-02 · offset 20 · max 500");
-	});
-
-	it("summarizes the entry without its text", () => {
-		const card = renderGetResult(
-			text(`Entry entry-1 (2 lines, 30 characters, 2026-01-02T00:00:00Z):\n\n${SECRET}`, {
-				lines: 2,
-				chars: 30,
-				offset: 20,
-			}),
-			{ expanded: false, isPartial: false },
-			theme,
-			{ ...collapsed, args: { id: "entry-1", offset: 20 } },
-		);
-		const rendered = screen(card);
-		assert.match(rendered, /^30 chars · 2 lines/);
-		assert.ok(!rendered.includes(SECRET));
-		assertFits(card);
-	});
-
-	it("styles the error and partial states", () => {
-		const error = renderGetResult(
-			text('no clipboard entry with id "entry-9"'),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				isError: true,
-			},
-		);
-		assert.match(screen(error), /clipboard_get: no clipboard entry/);
-		const partial = renderGetResult(text(""), { expanded: false, isPartial: true }, theme, collapsed);
-		assert.equal(screen(partial), "Reading the entry...");
-	});
-});
-
-describe("clipboard_restore cards", () => {
-	it("names the entry at the call and reports the new size without repeating the id", () => {
-		const call = renderRestoreCall({ id: "entry-1", date: "2026-01-02" }, theme, collapsed);
-		assert.equal(screen(call), "clipboard_restore · entry-1\ndate 2026-01-02");
-		const result = renderRestoreResult(
-			text("Restored entry-1 to clipboard (2 lines, 30 chars).", { lines: 2, chars: 30 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{ ...collapsed, args: { id: "entry-1" } },
-		);
-		assert.equal(screen(result), "restored · 30 chars · 2 lines");
-	});
-
-	it("ignores an archive note and styles errors", () => {
-		const stale = renderRestoreResult(
-			text("Restored entry-1 to clipboard (2 lines, 30 chars).", {
-				lines: 2,
-				chars: 30,
-				archiveError: "not part of a restore",
-			}),
-			{ expanded: false, isPartial: false },
-			theme,
-			collapsed,
-		);
-		assert.equal(
-			screen(stale),
-			"restored · 30 chars · 2 lines",
-			"a restore writes no archive record, so it reports no archive note",
-		);
-		const error = renderRestoreResult(text("pbcopy failed"), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			isError: true,
-		});
-		assert.equal(screen(error), "clipboard_restore: pbcopy failed");
-	});
-});
-
-describe("clipboard card robustness", () => {
-	it("escapes controls and clips long values", () => {
-		const id = `\u0007${"y".repeat(300)}`;
-		const card = renderGetCall({ id }, theme, collapsed);
-		const rendered = screen(card, 1000);
-		assert.ok(!rendered.includes("\u0007"));
-		assert.match(rendered, /\\x07y{90,}…/);
-		assertFits(card);
-	});
-
-	it("renders with missing, partial, and malformed arguments and details", () => {
-		const cards = [
-			renderCopyCall(undefined, theme, { ...collapsed, argsComplete: false }),
-			renderCopyCall({ content: 5, label: null }, theme, collapsed),
-			renderPasteCall([], theme, collapsed),
-			renderListCall({ query: 7, limit: "5" }, theme, collapsed),
-			renderGetCall({ id: null }, theme, collapsed),
-			renderRestoreCall("entry-1", theme, collapsed),
-			renderCopyResult(text("x", "bad"), { expanded: false, isPartial: false }, theme, collapsed),
-			renderPasteResult(text("", { lines: "two" }), { expanded: false, isPartial: false }, theme, collapsed),
-			renderListResult(text("", []), { expanded: false, isPartial: false }, theme, collapsed),
-			renderGetResult(text("x", null), { expanded: false, isPartial: false }, theme, collapsed),
-			renderRestoreResult(text("x", { chars: "n" }), { expanded: false, isPartial: false }, theme, collapsed),
-		];
-		for (const card of cards) {
-			assertFits(card);
-			assert.ok(screen(card).length > 0);
-		}
-	});
-
-	it("bounds the expanded result text", () => {
-		const long = "line\n".repeat(9000);
-		const card = renderPasteResult(text(long), { expanded: true, isPartial: false }, theme, expanded);
-		assert.match(screen(card, 4000), /Display limit\. The full text remains in the native tool history\./);
-	});
-});
-
-describe("clipboard error cards", () => {
-	const failure = "pbcopy failed: exit 7\nstderr: permission denied\nhint: check the clipboard service";
-
-	it("collapses a multiline error to its first line and names the expansion", () => {
-		const card = renderCopyResult(text(failure), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			isError: true,
-		});
-		const rendered = screen(card, 200);
-		assert.match(rendered, /^clipboard_copy: pbcopy failed: exit 7/);
-		assert.doesNotMatch(rendered, /permission denied/);
-		assert.match(rendered, /to expand diagnostics|Expand for full diagnostics/);
-	});
-
-	it("reveals the retained diagnostic lines when expanded", () => {
-		const card = renderRestoreResult(text(failure), { expanded: true, isPartial: false }, theme, {
-			...expanded,
-			isError: true,
-		});
-		const rendered = screen(card, 200);
-		assert.match(rendered, /clipboard_restore: pbcopy failed: exit 7/);
-		assert.match(rendered, /stderr: permission denied/);
-		assert.match(rendered, /hint: check the clipboard service/);
-	});
-
-	it("keeps a single-line error without an expansion hint", () => {
-		const card = renderGetResult(text("no clipboard entry with id x"), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			isError: true,
-		});
-		assert.equal(screen(card), "clipboard_get: no clipboard entry with id x");
-	});
+it("bounds long diagnostics in both views and does not count undisclosed private lines", (t) => {
+	theme(t);
+	const component = card("clipboard_get", { id: "entry-1" });
+	component.updateResult(result(`Archive error\n${"x".repeat(242)}\u202e\x1b[31m\tTail`, undefined, true));
+	assert.doesNotMatch(screen(component, 40), /xxxx|Tail|more line/);
+	assert.match(screen(component, 50), /\.\.\. \(ctrl\+g to expand\)/);
+	component.setExpanded(true);
+	assert.match(screen(component), /Tail/);
+	assert.doesNotMatch(screen(component), /\u202e|\[31m|to expand/);
+	component.updateResult(result(`${"x".repeat(32_001)}TAIL`, undefined, true));
+	assert.match(screen(component), /\[Truncated: showing 32000 of 32005 characters\]/);
+	assert.doesNotMatch(screen(component), /TAIL/);
 });

@@ -350,26 +350,18 @@ usable.
 
 ## Tool cards
 
-Each tool draws a compact TUI card. A collapsed card never shows copied, pasted, or
-archived content; it shows the label, size, id, and outcome instead. Expansion reveals the
-full arguments or result text with a display bound, and terminal controls escape to text
-in every collapsed value.
+The cards follow the [emission grammar](../../docs/conventions/emissions.md).
+Collapsed cards show sizes, identifiers and outcomes without copied, pasted or
+archived bodies. Even expanded copy arguments show only the size of the content.
+Previously retained result text, including a copy receipt’s bounded preview, is
+available only on expansion. Copy diagnostics also stay in the expanded result:
+Pi can include the original arguments in a validation error. A successful clipboard write remains a success if
+its optional history write fails; a separate warning gives the archive error.
 
-- `clipboard_copy` names the label and reports the content size in UTF-16 code units
-  (or that the content is still streaming), then the copied size, the id, and any archive
-  warning, or `not archived` for a copy with `archive: false`.
-- `clipboard_paste` names only the requested page bounds, then the page size, any
-  continuation offset, the escaped-control note, and the empty state.
-- `clipboard_list` names the query or date and its bounds, then the entry or match count,
-  whether more is available, and whether a continuation exists.
-- `clipboard_get` names the entry id and page bounds, then the entry size, any
-  continuation offset, and the escaped-control note.
-- `clipboard_restore` names the entry id, then the restored size.
-
-A result that hides content carries the expansion hint; a restore result, which repeats no
-hidden content, carries none. An error card shows the first diagnostic line when collapsed and
-reveals the full retained diagnostic text when expanded; the expansion hint appears only when
-the diagnostic has more than one line.
+Reads and archive searches distinguish an empty clipboard or result page from
+an error. Expanded pages show the result evidence and exact continuation when
+one exists. Restore uses the same completion wording in the card and the
+operator view.
 
 ## Files
 

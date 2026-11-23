@@ -444,18 +444,34 @@ describe("clipboard entrypoint", () => {
 		await assert.rejects(execute(tools.get("clipboard_list"), { cursor: "invalid" }), /requires the original query/);
 	});
 
-	it("uses a useful RPC notification instead of the TUI-only overlay", async () => {
-		const { commands } = registry();
-		const notifications: string[] = [];
-		await commands.get("clipboard").handler("", {
-			hasUI: true,
-			mode: "rpc",
-			ui: {
-				notify: (message: string) => notifications.push(message),
-				custom: () => assert.fail("RPC must not open the terminal overlay"),
-			},
+	it("uses a useful RPC notification instead of the TUI-only overlay", async (t) => {
+		const rpcArchive = join(root, "rpc-archive");
+		process.env.PI_CLIPBOARD_DIR = rpcArchive;
+		t.after(() => {
+			process.env.PI_CLIPBOARD_DIR = archiveDir;
 		});
-		assert.ok(notifications.some((message) => message.includes("clipboard_list")));
+		const { commands } = registry();
+		const notifications: [string, string][] = [];
+		const notify = () =>
+			commands.get("clipboard").handler("", {
+				hasUI: true,
+				mode: "rpc",
+				ui: {
+					notify: (message: string, level = "info") => notifications.push([message, level]),
+					custom: () => assert.fail("RPC must not open the terminal overlay"),
+				},
+			});
+		await notify();
+		assert.equal(await appendEntry(rpcArchive, makeEntry("private fixture")), null);
+		await notify();
+		for (let index = 0; index < 5; index++)
+			assert.equal(await appendEntry(rpcArchive, makeEntry(`fixture ${index}`)), null);
+		await notify();
+		assert.deepEqual(notifications, [
+			["Clipboard history is empty.", "info"],
+			["Clipboard history has 1 entry; use clipboard_list to inspect it.", "info"],
+			["Clipboard history has at least 5 entries; use clipboard_list to inspect it.", "info"],
+		]);
 	});
 
 	it("contains early stdin closure for large failed copies without a false archive entry", async () => {

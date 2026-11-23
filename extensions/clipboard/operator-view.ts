@@ -348,7 +348,7 @@ class ClipboardView {
 
 	private async restore(entry: ClipboardEntry): Promise<void> {
 		this.restoring = true;
-		this.host.notify(`Restoring ${entry.lines}L/${entry.chars}c…`, "pending");
+		this.host.notify("Restoring to the clipboard…", "pending");
 		let outcome: RestoreOutcome;
 		try {
 			outcome = await this.ops.restore(entry, this.host.signal);
@@ -358,7 +358,7 @@ class ClipboardView {
 		this.restoring = false;
 		if (this.host.signal.aborted) return;
 		if (!outcome.ok) {
-			this.host.notify(`Restore failed: ${safeLine(outcome.error)}`, "error");
+			this.host.notify(`Clipboard restore failed: ${safeLine(outcome.error)}`, "error");
 			return;
 		}
 		const notice = restoredNotice(entry);

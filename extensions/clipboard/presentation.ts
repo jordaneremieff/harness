@@ -1,307 +1,376 @@
-/** Terminal cards for the clipboard tools: sizes, ids, and outcomes without archived content. */
-import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import type { KeybindingHints } from "@earendil-works/pi-coding-agent";
-import { Text, type Component } from "@earendil-works/pi-tui";
-import { sanitizeTerminalText } from "./text.ts";
+import {
+	type AgentToolResult,
+	type KeybindingHints,
+	type Theme,
+	type ToolRenderResultOptions,
+	truncateToVisualLines,
+} from "@earendil-works/pi-coding-agent";
+import { type Component, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-const RESULT_DISPLAY_LIMIT = 32_000;
+const DISPLAY_LIMIT = 32_000;
 
+type Tool = "clipboard_copy" | "clipboard_paste" | "clipboard_list" | "clipboard_get" | "clipboard_restore";
 interface CardContext extends Partial<KeybindingHints> {
 	expanded: boolean;
 	isError: boolean;
 	args?: unknown;
 	argsComplete?: boolean;
-	lastComponent?: Component;
+	state?: { hasClipboardResult?: boolean };
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+type Fields = Record<string, unknown>;
+function record(value: unknown): Fields {
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Fields) : {};
 }
 
-function stringField(value: unknown, key: string): string {
-	const field = asRecord(value)[key];
-	return typeof field === "string" ? field : "";
+function safeText(text: string): string {
+	return stripTerminalSequences(text)
+		.replace(/\r\n/g, "\n")
+		.replace(/[\p{Cc}\p{Cf}]/gu, (char) => (char === "\n" || char === "\t" ? char : ""));
 }
 
-function numberField(value: unknown, key: string): number | undefined {
-	const field = asRecord(value)[key];
-	return typeof field === "number" && Number.isFinite(field) ? field : undefined;
+function oneLine(value: unknown): string {
+	return typeof value === "string" ? safeText(value).replace(/\s+/gu, " ").trim() : "";
 }
 
-function booleanField(value: unknown, key: string): boolean | undefined {
-	const field = asRecord(value)[key];
-	return typeof field === "boolean" ? field : undefined;
+function count(fields: Fields, key: string): number | undefined {
+	const value = fields[key];
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-function clip(value: string, limit: number): string {
-	const end = Math.min(value.length, limit);
-	const bounded = value.slice(0, /[\uD800-\uDBFF]/u.test(value[end - 1] ?? "") ? end - 1 : end);
-	return bounded.length < value.length ? `${bounded}…` : value;
+function tally(n: number, unit: string, plural = `${unit}s`): string {
+	return `${n} ${n === 1 ? unit : plural}`;
 }
 
-/** Controls become text and whitespace collapses, so a summary stays on one row. */
-function displayValue(value: string, limit: number): string {
-	return clip(sanitizeTerminalText(value).text.replace(/\s+/gu, " ").trim(), limit) || "(empty)";
+function size(fields: Fields): string {
+	const chars = count(fields, "chars");
+	const lines = count(fields, "lines");
+	return [chars === undefined ? "" : tally(chars, "character"), lines === undefined ? "" : tally(lines, "line")]
+		.filter(Boolean)
+		.join(" · ");
 }
 
-function textContent(result: AgentToolResult<unknown>): string {
-	return result.content
-		.filter((block) => block.type === "text")
-		.map((block) => block.text)
-		.join("\n");
+function characters(text: string): number {
+	let n = 0;
+	for (const _ of text) n++;
+	return n;
 }
 
-function firstLine(output: string): string {
+function clip(text: string, width: number): string {
+	// Pi owns the row background; close only the text styles after the ellipsis.
+	return truncateToWidth(text, width, "…").replace(/\x1b\[0m…\x1b\[0m$/u, "…\x1b[22;23;24;25;27;28;29;39m");
+}
+
+function rows(text: string, width: number, expanded: boolean): readonly string[] {
+	if (!text) return [];
+	return expanded ? truncateToVisualLines(text, Infinity, width, 0, "start").visualLines : [clip(text, width)];
+}
+
+function hint(theme: Theme, context: Partial<KeybindingHints>): string {
+	const key = context.keyText?.("app.tools.expand");
+	const action = key
+		? (context.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
+		: theme.fg("muted", "click to expand");
+	return theme.fg("muted", "... (") + action + theme.fg("muted", ")");
+}
+
+/** The result renderer registers its presence before Pi draws the call. */
+function atWidth(draw: (width: number) => string[]): Component {
+	let previousWidth: number | undefined;
+	let lines: string[] = [];
+	return {
+		render(width) {
+			if (width !== previousWidth) {
+				lines = draw(width);
+				previousWidth = width;
+			}
+			return lines;
+		},
+		invalidate() {
+			previousWidth = undefined;
+		},
+	};
+}
+
+function callSubject(tool: Tool, args: Fields): string {
+	switch (tool) {
+		case "clipboard_copy":
+			return oneLine(args.label);
+		case "clipboard_list":
+			return oneLine(args.query) || oneLine(args.date);
+		case "clipboard_get":
+		case "clipboard_restore":
+			return oneLine(args.id);
+		case "clipboard_paste":
+			return "";
+	}
+}
+
+function copiedSize(args: Fields, complete: boolean): string {
+	if (typeof args.content !== "string") return "";
+	return complete ? tally(characters(args.content), "character") : "content still arriving";
+}
+
+function callFacts(tool: Tool, args: Fields, copySize: string): string {
+	const date = tool !== "clipboard_list" || args.query !== undefined ? oneLine(args.date) : "";
+	const source = oneLine(args.sourceId);
+	const facts = [date && `date ${date}`, source && `source ${source}`];
+	for (const [key, label] of [
+		["limit", "limit"],
+		["offset", "offset"],
+		["max_chars", "max characters"],
+	] as const) {
+		const value = count(args, key);
+		if (value !== undefined) facts.push(`${label} ${value}`);
+	}
+	if (oneLine(args.cursor)) facts.push("continuation");
+	if (tool === "clipboard_copy") facts.push(copySize, args.archive === false ? "skip archive" : "");
+	return facts.filter(Boolean).join(" · ");
+}
+
+function hiddenCall(tool: Tool, subject: string, facts: string, args: Fields, width: number): boolean {
 	return (
-		output
-			.split("\n")
-			.find((line) => line.trim().length > 0)
-			?.trim() ?? ""
+		visibleWidth(`${tool} ${subject}`.trimEnd()) > width || visibleWidth(facts) > width || Boolean(oneLine(args.cursor))
 	);
 }
 
-/** Collapsed errors show the first diagnostic line; expanded errors reveal the retained text. */
-function errorCard(
-	name: string,
-	output: string,
-	fallback: string,
-	theme: Theme,
-	expanded: boolean,
-	context: CardContext,
-): Component {
-	const head = displayValue(firstLine(output) || fallback, 200);
-	const hasMore = output.split("\n").filter((line) => line.trim().length > 0).length > 1;
-	let text = `\n${theme.fg("error", `${name}: ${head}`)}`;
-	if (expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output.trim()))}`;
-	else if (hasMore) text += theme.fg("dim", ` · ${expansionHint("diagnostics", context)}`);
-	return textComponent(text, context.lastComponent);
+function expandedArguments(args: Fields, copySize: string): string {
+	return Object.entries(args)
+		.flatMap(([key, value]) => {
+			// No clipboard content from a copy call is displayed, even when expanded.
+			if (key === "content") return copySize ? [`  content: ${copySize}`] : [];
+			const text = typeof value === "string" ? oneLine(value) : JSON.stringify(value, null, 2);
+			return text === undefined ? [] : [`  ${oneLine(key)}: ${safeText(text).replace(/\n/g, "\n    ")}`];
+		})
+		.join("\n");
 }
 
-function textComponent(text: string, previous?: Component): Text {
-	const component = previous instanceof Text ? previous : new Text("", 0, 0);
-	component.setText(text);
-	return component;
+function renderCall(tool: Tool, value: unknown, theme: Theme, context: CardContext): Component {
+	const args = record(value);
+	const subject = callSubject(tool, args);
+	const copySize = tool === "clipboard_copy" ? copiedSize(args, context.argsComplete !== false) : "";
+	const facts = callFacts(tool, args, copySize);
+	const title = theme.fg("toolTitle", theme.bold(tool));
+	const heading = subject ? `${title} ${theme.fg("accent", subject)}` : title;
+	return atWidth((width) => {
+		const body = [clip(heading, width), ...rows(facts, width, context.expanded).map((row) => theme.fg("muted", row))];
+		const hidden = hiddenCall(tool, subject, facts, args, width);
+		if (context.expanded && (hidden || copySize))
+			body.push(...rows(expandedArguments(args, copySize), width, true).map((row) => theme.fg("muted", row)));
+		if (!context.expanded && hidden && !context.state?.hasClipboardResult && context.keyText?.("app.tools.expand"))
+			body.push(clip(hint(theme, context), width));
+		return body;
+	});
 }
 
-/** The host injects keyText with the operator's configured bindings; without it the hint names no key. */
-function expansionHint(subject: string, keys: Partial<KeybindingHints>): string {
-	const key = keys.keyText?.("app.tools.expand");
-	return key ? `${key} to expand ${subject}` : `Expand for full ${subject}`;
-}
-
-function boundedDisplay(value: string): string {
-	const safe = sanitizeTerminalText(value).text;
-	const prefix = clip(safe, RESULT_DISPLAY_LIMIT);
-	return prefix.length < safe.length
-		? `${prefix}\n[Display limit. The full text remains in the native tool history.]`
-		: safe;
-}
-
-function expandedArguments(args: Record<string, unknown>, theme: Theme): string {
-	return theme.fg("toolOutput", boundedDisplay(JSON.stringify(args, null, 2) ?? "(none)"));
-}
-
-function heading(name: string, subject: string, theme: Theme, limit = 100): string {
-	return subject
-		? theme.fg("toolTitle", theme.bold(name)) + theme.fg("accent", ` · ${displayValue(subject, limit)}`)
-		: theme.fg("toolTitle", theme.bold(name));
-}
-
-function sizeLine(lines: number | undefined, chars: number | undefined): string {
-	const parts: string[] = [];
-	if (chars !== undefined) parts.push(`${chars} chars`);
-	if (lines !== undefined) parts.push(`${lines} lines`);
-	return parts.join(" · ");
-}
-
-function continuationNote(next: number | undefined): string {
-	return next === undefined ? "" : `continuation offset ${next}`;
-}
-
-function archiveNote(details: Record<string, unknown>, theme: Theme): string {
-	const error = details.archiveError;
-	if (typeof error === "string" && error)
-		return theme.fg("warning", ` · archive write failed: ${displayValue(error, 160)}`);
-	return details.archived === false ? theme.fg("dim", " · not archived") : "";
-}
-
-/** Copy requests show the label and content size; the content itself stays out of the card. */
-export function renderCopyCall(value: unknown, theme: Theme, context: CardContext): Component {
-	const args = asRecord(value);
-	const lines = [heading("clipboard_copy", stringField(args, "label"), theme)];
-	if (context.expanded) {
-		lines.push(expandedArguments(args, theme));
-		return textComponent(lines.join("\n"), context.lastComponent);
+/** Search's own model-facing envelope also carries page facts in retained results. */
+function resultDetails(tool: Tool, details: unknown, text: string): Fields {
+	const fields = record(details);
+	if (tool !== "clipboard_list" || count(fields, "count") !== undefined) return fields;
+	try {
+		const page = record(JSON.parse(text));
+		if (
+			typeof page.query === "string" &&
+			Array.isArray(page.matches) &&
+			typeof page.hasMore === "boolean" &&
+			typeof page.stop === "string"
+		)
+			return { ...page, count: page.matches.length };
+	} catch {
+		/* A recent-list receipt or malformed result is not a search page. */
 	}
-	const content = stringField(args, "content");
-	if (content) {
-		const size = context.argsComplete === false ? "content pending" : `${content.length} UTF-16 code units`;
-		lines.push(theme.fg("dim", `${size} · ${expansionHint("arguments", context)}`));
+	return fields;
+}
+
+function listOutcome(details: Fields, args: Fields): string | undefined {
+	const n = count(details, "count");
+	if (n === undefined) return undefined;
+	if (typeof args.query === "string" || typeof details.stop === "string") {
+		const coverage = details.hasMore === true ? "; the scan has more pages" : "";
+		return `${n ? `Found ${tally(n, "match", "matches")}` : "No matches"} on this clipboard archive page${coverage}.`;
 	}
-	return textComponent(lines.join("\n"), context.lastComponent);
+	return `${n ? `Returned ${tally(n, "clipboard history entry", "clipboard history entries")}` : "No clipboard history entries"}${details.hasMore === true ? "; more entries follow" : ""}.`;
 }
 
-export function renderCopyResult(
+export function restoreOutcome(details: Fields): string {
+	const amount = size(details);
+	return amount ? `Restored to the clipboard (${amount}).` : "Clipboard restore details are not available.";
+}
+
+function outcome(tool: Tool, details: Fields, args: Fields): string {
+	const amount = size(details);
+	const more = count(details, "nextOffset") === undefined ? "" : "; more content follows";
+	switch (tool) {
+		case "clipboard_list":
+			return listOutcome(details, args) ?? "Clipboard history details are not available.";
+		case "clipboard_copy":
+			if (!amount) return "Clipboard copy details are not available.";
+			return `Copied to the clipboard (${amount})${details.archived === false ? " without archiving" : ""}.`;
+		case "clipboard_restore":
+			return restoreOutcome(details);
+		case "clipboard_paste":
+			if (details.chars === 0) return "Clipboard is empty.";
+			return amount ? `Read the clipboard (${amount})${more}.` : "Clipboard read details are not available.";
+		case "clipboard_get":
+			return amount ? `Read the archive entry (${amount})${more}.` : "Clipboard entry details are not available.";
+	}
+}
+
+function callJson(value: Fields): string {
+	return JSON.stringify(value).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
+		char
+			.split("")
+			.map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`)
+			.join(""),
+	);
+}
+
+function nextCall(tool: Tool, args: Fields, details: Fields): string {
+	const offset = count(details, "nextOffset");
+	if (
+		offset !== undefined &&
+		(tool === "clipboard_get" || tool === "clipboard_paste") &&
+		typeof details.sourceId === "string"
+	) {
+		return `${tool} ${callJson({ ...args, offset, sourceId: details.sourceId })}`;
+	}
+	if (tool === "clipboard_list" && typeof details.nextCursor === "string") {
+		const query = args.query ?? details.query;
+		if (typeof query === "string")
+			return `${tool} ${callJson({ ...args, query, date: args.date ?? details.date, cursor: details.nextCursor })}`;
+	}
+	return "";
+}
+
+interface Receipt {
+	outcome: string;
+	body: string;
+	warning: string;
+}
+
+function errorReceipt(tool: Tool, text: string): Receipt {
+	// Host argument errors can echo private copy input, even in the first diagnostic line.
+	if (tool === "clipboard_copy") return { outcome: "Clipboard copy failed.", body: text, warning: "" };
+	const lines = text.split("\n");
+	const first = lines.findIndex((line) => oneLine(line));
+	return { outcome: oneLine(lines[first]), body: first < 0 ? "" : lines.slice(first + 1).join("\n"), warning: "" };
+}
+
+function receipt(tool: Tool, details: Fields, args: Fields, text: string, isError: boolean): Receipt {
+	if (isError) return errorReceipt(tool, text);
+	const archiveError = tool === "clipboard_copy" ? oneLine(details.archiveError) : "";
+	const scan = record(details.scan);
+	const warnings = [
+		archiveError && `Clipboard history write failed: ${archiveError}`,
+		details.retainedTruncated === true && "Retained result was truncated",
+		(count(scan, "malformed") ?? 0) + (count(scan, "oversized") ?? 0) > 0 &&
+			"Partial coverage: archive records skipped",
+	].filter(Boolean);
+	const id = !archiveError && tool === "clipboard_copy" ? oneLine(details.id) : "";
+	const facts = [
+		id && `Archive entry ${id}.`,
+		details.controlsEscaped === true && "Terminal controls were escaped.",
+	].filter(Boolean);
+	const lead = [outcome(tool, details, args), ...facts].join(" ");
+	const body = repeatsOutcome(tool, details, args) ? "" : text;
+	return {
+		outcome: lead,
+		body: [body, nextCall(tool, args, details)].filter(Boolean).join("\n"),
+		warning: warnings.join("; "),
+	};
+}
+
+function repeatsOutcome(tool: Tool, details: Fields, args: Fields): boolean {
+	if (tool === "clipboard_restore")
+		return Boolean(size(details) && oneLine(args.id) && oneLine(args.id) === oneLine(details.id));
+	return (
+		tool === "clipboard_list" &&
+		details.count === 0 &&
+		details.hasMore === false &&
+		typeof details.stop !== "string" &&
+		typeof args.query !== "string"
+	);
+}
+
+function bound(text: string): { text: string; warning: string } {
+	if (text.length <= DISPLAY_LIMIT) return { text, warning: "" };
+	const chars = Array.from(text);
+	return chars.length > DISPLAY_LIMIT
+		? {
+				text: chars.slice(0, DISPLAY_LIMIT).join(""),
+				warning: `Truncated: showing ${DISPLAY_LIMIT} of ${chars.length} characters`,
+			}
+		: { text, warning: "" };
+}
+
+const progress: Record<Tool, string> = {
+	clipboard_copy: "Copying to the clipboard…",
+	clipboard_paste: "Reading the clipboard…",
+	clipboard_list: "Reading clipboard history…",
+	clipboard_get: "Reading the clipboard entry…",
+	clipboard_restore: "Restoring to the clipboard…",
+};
+
+function renderResult(
+	tool: Tool,
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	context: CardContext,
 ): Component {
+	if (context.state) context.state.hasClipboardResult = true;
+	const args = record(context.args);
+	const subject = callSubject(tool, args);
+	const copySize = tool === "clipboard_copy" ? copiedSize(args, context.argsComplete !== false) : "";
+	const facts = callFacts(tool, args, copySize);
+	const discloseCall = (width: number) => hiddenCall(tool, subject, facts, args, width);
 	if (options.isPartial)
-		return textComponent(`\n${theme.fg("warning", "Copying to the clipboard...")}`, context.lastComponent);
-	const output = textContent(result);
-	if (context.isError) return errorCard("clipboard_copy", output, "copy failed", theme, options.expanded, context);
-	const details = asRecord(result.details);
-	let text = `\n${theme.fg("success", `copied ${sizeLine(numberField(details, "lines"), numberField(details, "chars"))}`)}`;
-	const id = stringField(details, "id");
-	if (id) text += theme.fg("dim", ` · id ${displayValue(id, 80)}`);
-	text += archiveNote(details, theme);
-	text += options.expanded
-		? `\n${theme.fg("toolOutput", boundedDisplay(output))}`
-		: `\n${theme.fg("dim", expansionHint("result", context))}`;
-	return textComponent(text, context.lastComponent);
+		return atWidth((width) => [
+			"",
+			theme.fg("muted", clip(progress[tool], width)),
+			...(!options.expanded && discloseCall(width) ? [clip(hint(theme, context), width)] : []),
+		]);
+	const text = safeText(result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"))
+		.replace(/\t/g, "   ")
+		.trim();
+	const details = resultDetails(tool, result.details, text);
+	const bounded = bound(text);
+	const view = receipt(tool, details, args, bounded.text, context.isError);
+	const limit = [view.warning, bounded.warning].filter(Boolean).join("; ");
+	const warning = limit ? `[${limit}]` : "";
+	const color = context.isError ? "error" : "toolOutput";
+	const preview = options.expanded ? view.body : "";
+	return atWidth((width) => {
+		const body = rows(preview, width, true);
+		const lines = [
+			"",
+			...rows(view.outcome, width, options.expanded).map((row) => theme.fg(color, row)),
+			...body.map((row) => theme.fg(color, row)),
+			...rows(warning, width, options.expanded).map((row) => theme.fg("warning", row)),
+		];
+		if (options.expanded) return lines;
+		if (view.body || discloseCall(width) || visibleWidth(view.outcome) > width || visibleWidth(warning) > width)
+			lines.push(clip(hint(theme, context), width));
+		return lines;
+	});
 }
 
-/** Paste requests name only their page bounds; the clipboard text stays out of the card. */
-export function renderPasteCall(value: unknown, theme: Theme, context: CardContext): Component {
-	const args = asRecord(value);
-	const lines = [heading("clipboard_paste", "", theme)];
-	const parts: string[] = [];
-	const offset = numberField(args, "offset");
-	const max = numberField(args, "max_chars");
-	if (offset !== undefined && offset > 0) parts.push(`offset ${offset}`);
-	if (max !== undefined) parts.push(`max ${max}`);
-	if (parts.length > 0) lines.push(theme.fg("dim", parts.join(" · ")));
-	if (context.expanded) lines.push(expandedArguments(args, theme));
-	return textComponent(lines.join("\n"), context.lastComponent);
+function call(tool: Tool) {
+	return (args: unknown, theme: Theme, context: CardContext) => renderCall(tool, args, theme, context);
 }
 
-export function renderPasteResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: CardContext,
-): Component {
-	if (options.isPartial)
-		return textComponent(`\n${theme.fg("warning", "Reading the clipboard...")}`, context.lastComponent);
-	const output = textContent(result);
-	if (context.isError) return errorCard("clipboard_paste", output, "paste failed", theme, options.expanded, context);
-	const details = asRecord(result.details);
-	const chars = numberField(details, "chars");
-	if (chars === 0) return textComponent(`\n${theme.fg("success", "clipboard is empty")}`, context.lastComponent);
-	const page = continuationNote(numberField(details, "nextOffset"));
-	let text = `\n${theme.fg("success", `clipboard ${sizeLine(numberField(details, "lines"), chars)}${page ? ` · ${page}` : ""}`)}`;
-	if (booleanField(details, "controlsEscaped") === true) text += theme.fg("dim", " · controls escaped");
-	text += options.expanded
-		? `\n${theme.fg("toolOutput", boundedDisplay(output))}`
-		: `\n${theme.fg("dim", expansionHint("result", context))}`;
-	return textComponent(text, context.lastComponent);
+function result(tool: Tool) {
+	return (value: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: CardContext) =>
+		renderResult(tool, value, options, theme, context);
 }
 
-/** List requests name the query or date; archive previews stay out of the collapsed card. */
-export function renderListCall(value: unknown, theme: Theme, context: CardContext): Component {
-	const args = asRecord(value);
-	const query = stringField(args, "query");
-	const date = stringField(args, "date");
-	const lines = [heading("clipboard_list", query ? `query ${displayValue(query, 120)}` : date, theme)];
-	const parts: string[] = [];
-	if (query && date) parts.push(`date ${displayValue(date, 20)}`);
-	const limit = numberField(args, "limit");
-	if (limit !== undefined) parts.push(`limit ${limit}`);
-	if (stringField(args, "cursor")) parts.push("continuation");
-	if (parts.length > 0) lines.push(theme.fg("dim", parts.join(" · ")));
-	if (context.expanded) lines.push(expandedArguments(args, theme));
-	return textComponent(lines.join("\n"), context.lastComponent);
-}
-
-export function renderListResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: CardContext,
-): Component {
-	if (options.isPartial)
-		return textComponent(`\n${theme.fg("warning", "Listing clipboard history...")}`, context.lastComponent);
-	const output = textContent(result);
-	if (context.isError) return errorCard("clipboard_list", output, "list failed", theme, options.expanded, context);
-	const searching = stringField(context.args, "query") !== "";
-	const details = asRecord(result.details);
-	const count = numberField(details, "count") ?? 0;
-	const noun = count === 1 ? (searching ? "match" : "entry") : searching ? "matches" : "entries";
-	let lead = `${count} ${noun}`;
-	if (booleanField(details, "hasMore") === true)
-		lead += searching ? " · more available (not absence)" : " · more available";
-	else if (searching) lead += " · end of scan";
-	let text = `\n${theme.fg("success", lead)}`;
-	if (stringField(details, "nextCursor")) text += theme.fg("dim", " · continuation");
-	text += options.expanded
-		? `\n${theme.fg("toolOutput", boundedDisplay(output))}`
-		: `\n${theme.fg("dim", expansionHint("result", context))}`;
-	return textComponent(text, context.lastComponent);
-}
-
-/** Get requests name the entry id and page; entry text stays out of the collapsed card. */
-export function renderGetCall(value: unknown, theme: Theme, context: CardContext): Component {
-	const args = asRecord(value);
-	const lines = [heading("clipboard_get", stringField(args, "id"), theme)];
-	const parts: string[] = [];
-	const date = stringField(args, "date");
-	if (date) parts.push(`date ${displayValue(date, 20)}`);
-	const offset = numberField(args, "offset");
-	if (offset !== undefined && offset > 0) parts.push(`offset ${offset}`);
-	const max = numberField(args, "max_chars");
-	if (max !== undefined) parts.push(`max ${max}`);
-	if (parts.length > 0) lines.push(theme.fg("dim", parts.join(" · ")));
-	if (context.expanded) lines.push(expandedArguments(args, theme));
-	return textComponent(lines.join("\n"), context.lastComponent);
-}
-
-export function renderGetResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: CardContext,
-): Component {
-	if (options.isPartial)
-		return textComponent(`\n${theme.fg("warning", "Reading the entry...")}`, context.lastComponent);
-	const output = textContent(result);
-	if (context.isError) return errorCard("clipboard_get", output, "read failed", theme, options.expanded, context);
-	const details = asRecord(result.details);
-	const page = continuationNote(numberField(details, "nextOffset"));
-	let text = `\n${theme.fg(
-		"success",
-		`${sizeLine(numberField(details, "lines"), numberField(details, "chars"))}${page ? ` · ${page}` : ""}`,
-	)}`;
-	if (booleanField(details, "controlsEscaped") === true) text += theme.fg("dim", " · controls escaped");
-	text += options.expanded
-		? `\n${theme.fg("toolOutput", boundedDisplay(output))}`
-		: `\n${theme.fg("dim", expansionHint("result", context))}`;
-	return textComponent(text, context.lastComponent);
-}
-
-/** Restore requests name the entry id; the result states the restored size. */
-export function renderRestoreCall(value: unknown, theme: Theme, context: CardContext): Component {
-	const args = asRecord(value);
-	const lines = [heading("clipboard_restore", stringField(args, "id"), theme)];
-	const date = stringField(args, "date");
-	if (date) lines.push(theme.fg("dim", `date ${displayValue(date, 20)}`));
-	if (context.expanded) lines.push(expandedArguments(args, theme));
-	return textComponent(lines.join("\n"), context.lastComponent);
-}
-
-export function renderRestoreResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: CardContext,
-): Component {
-	if (options.isPartial)
-		return textComponent(`\n${theme.fg("warning", "Restoring to the clipboard...")}`, context.lastComponent);
-	const output = textContent(result);
-	if (context.isError)
-		return errorCard("clipboard_restore", output, "restore failed", theme, options.expanded, context);
-	const details = asRecord(result.details);
-	let text = `\n${theme.fg("success", `restored · ${sizeLine(numberField(details, "lines"), numberField(details, "chars"))}`)}`;
-	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
-	return textComponent(text, context.lastComponent);
-}
+export const renderCopyCall = call("clipboard_copy");
+export const renderCopyResult = result("clipboard_copy");
+export const renderPasteCall = call("clipboard_paste");
+export const renderPasteResult = result("clipboard_paste");
+export const renderListCall = call("clipboard_list");
+export const renderListResult = result("clipboard_list");
+export const renderGetCall = call("clipboard_get");
+export const renderGetResult = result("clipboard_get");
+export const renderRestoreCall = call("clipboard_restore");
+export const renderRestoreResult = result("clipboard_restore");

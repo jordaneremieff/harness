@@ -193,7 +193,7 @@ function listRow(entry: ClipboardEntry): string {
 
 type RecentListDetails =
 	| { count: number; hasMore: boolean }
-	| { count: number; hasMore: boolean; ids: string[]; truncated: boolean };
+	| { count: number; hasMore: boolean; ids: string[]; truncated: boolean; retainedTruncated?: true };
 
 function recentListResult(
 	entries: ClipboardEntry[],
@@ -222,6 +222,7 @@ function recentListResult(
 			hasMore,
 			ids: shown.map((entry) => entry.id),
 			truncated: hasMore || bounded.truncated,
+			...(bounded.truncated ? { retainedTruncated: true } : {}),
 		},
 	};
 }
@@ -369,6 +370,7 @@ export async function clipboardPaste(
 			offset: result.page.offset,
 			...(result.page.nextOffset === undefined ? {} : { nextOffset: result.page.nextOffset }),
 			truncated: result.page.nextOffset !== undefined || result.bounded.truncated,
+			...(result.bounded.truncated ? { retainedTruncated: true } : {}),
 			controlsEscaped: result.sanitized.changed,
 		},
 	};
@@ -423,6 +425,7 @@ export async function clipboardGet(
 			offset: result.page.offset,
 			...(result.page.nextOffset === undefined ? {} : { nextOffset: result.page.nextOffset }),
 			truncated: result.page.nextOffset !== undefined || result.bounded.truncated,
+			...(result.bounded.truncated ? { retainedTruncated: true } : {}),
 			controlsEscaped: result.sanitized.changed,
 		},
 	};

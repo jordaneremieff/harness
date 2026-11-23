@@ -50,15 +50,17 @@ function archiveOperations(archive: typeof import("./browser-operations.ts")): C
 
 async function notifyRecent(ctx: ExtensionContext): Promise<void> {
 	try {
-		const entries = await readEntries(storeDir(), { limit: 5, contentChars: 0 });
+		const entries = await readEntries(storeDir(), { limit: 6, contentChars: 0 });
+		const amount =
+			entries.length > 5 ? "at least 5 entries" : `${entries.length} ${entries.length === 1 ? "entry" : "entries"}`;
 		ctx.ui.notify(
 			entries.length === 0
 				? "Clipboard history is empty."
-				: `Clipboard: ${entries.length} recent entries. Use clipboard_list in this mode.`,
+				: `Clipboard history has ${amount}; use clipboard_list to inspect it.`,
 			"info",
 		);
 	} catch (error) {
-		ctx.ui.notify(`Could not open clipboard history: ${errorText(error)}`, "error");
+		ctx.ui.notify(`Clipboard history could not be read: ${errorText(error)}`, "error");
 	}
 }
 
