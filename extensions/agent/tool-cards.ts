@@ -691,19 +691,104 @@ export function renderAgentCall(name: string, value: unknown, theme: Theme, cont
 		}
 	};
 
+	const presentSpawnOrBrief = () => {
+		const subject = target() || target("handle", (input) => `@${input.replace(/^@/u, "")}`) || take("name");
+		if (!shownArgs.includes("name")) facts.push(take("name", "name "));
+		creation();
+		facts.push(take("cwd", "in ", homePath));
+		if (name !== "agent_brief") return { subject, body: bodyFor("prompt", "role") };
+		facts.push(take("kind"), take("mode", "mode "), flag("preview", "preview"), ...briefSectionFacts(args));
+		return { subject, body: bodyFor("objective") };
+	};
+
+	const presentIntent = () => {
+		const identity = text(context.state?.observation?.identity);
+		const subject =
+			args.action === "read" ? "related efforts" : identity ? targetLabel(identity, context) : "this session";
+		facts.push(targetConfiguration(identity, context), take("action"));
+		if (identity && identity !== subject) expanded = `  resolved session: ${identity}`;
+		return { subject, body: bodyFor("purpose") };
+	};
+
+	const presentList = () => {
+		let subject = take("query");
+		if (subject) facts.push(take("cwd", "in ", homePath));
+		else subject = take("cwd", "", homePath) || "stored conversations";
+		facts.push(take("limit", "limit "), text(args.cursor) ? "continuation page" : "");
+		return subject;
+	};
+
+	const presentCommand = () => {
+		const subject = take("name");
+		const recipient = target();
+		facts.push(recipient ? `on ${recipient}` : "", observedModel());
+		if (text(args.args).includes("\n")) return { subject, body: bodyFor("args") };
+		facts.push(take("args", "args "));
+		return { subject, body: undefined };
+	};
+
+	const presentInspect = () => {
+		const query = take("query");
+		const entry = take("entryId", "entry ");
+		const operation = take("operationId", "operation ");
+		const submission = take("submissionId", "submission ");
+		const request = take("requestId", "request ");
+		const recipient = target() || "this session";
+		const objects = [query, entry, operation, submission, request].filter(Boolean);
+		const subject = objects.shift() || recipient;
+		facts.push(
+			subject === recipient ? "" : recipient,
+			observedModel(),
+			take("view"),
+			...objects,
+			take("source", "source "),
+			take("fromId", "from "),
+			take("offset", "offset "),
+			take("limit", "limit "),
+			flag("finalReport", "final report"),
+			text(args.receiptCursor) ? "receipt references page" : "",
+			args.cursor !== undefined ? "continuation page" : "",
+		);
+		return subject;
+	};
+
+	const presentCollaboration = () => {
+		const thread = text(args.threadId);
+		const title = thread ? context.lookup?.threadTitle?.(thread)?.trim() : undefined;
+		const targetSession = target();
+		let subject = title || take("threadId") || take("title") || take("query") || targetSession;
+		if (!subject && args.action === "list") subject = "threads";
+		facts.push(
+			take("action"),
+			targetSession === subject ? "" : targetSession,
+			shownArgs.includes("title") ? "" : take("title", "title "),
+			take("kind"),
+			take("replyTo", "reply to event "),
+			take("before", "before "),
+			take("after", "after "),
+			take("knownFrameRevision", "known frame "),
+			take("limit", "limit "),
+			text(args.cursor) ? "continuation page" : "",
+		);
+		return { subject, body: bodyFor("message", "participation", "purpose") };
+	};
+
+	const presentWork = () => {
+		const subject = take("request", "request ") || "open work";
+		facts.push(
+			take("action"),
+			take("status"),
+			Array.isArray(args.results) && args.results.length ? cardinal(args.results.length, "result reference") : "",
+		);
+		if (Array.isArray(args.results) && !args.results.length) shownArgs.push("results");
+		return { subject, body: bodyFor("message", "note") };
+	};
+
 	switch (name) {
 		case "agent_spawn":
-		case "agent_brief": {
-			subject = target() || target("handle", (input) => `@${input.replace(/^@/u, "")}`) || take("name");
-			if (!shownArgs.includes("name")) facts.push(take("name", "name "));
-			creation();
-			facts.push(take("cwd", "in ", homePath));
-			if (name === "agent_brief") {
-				facts.push(take("kind"), take("mode", "mode "), flag("preview", "preview"), ...briefSectionFacts(args));
-				body = bodyFor("objective");
-			} else body = bodyFor("prompt", "role");
+		case "agent_brief":
+			({ subject, body } = presentSpawnOrBrief());
 			break;
-		}
 		case "agent_attach":
 		case "agent_configure":
 			subject = target();
@@ -739,19 +824,11 @@ export function renderAgentCall(name: string, value: unknown, theme: Theme, cont
 			facts.push(observedModel(), text(args.summary).trim() ? "supplied summary" : "");
 			body = bodyFor("summary", "instructions");
 			break;
-		case "agent_intent": {
-			const identity = text(context.state?.observation?.identity);
-			subject = args.action === "read" ? "related efforts" : identity ? targetLabel(identity, context) : "this session";
-			facts.push(targetConfiguration(identity, context), take("action"));
-			if (identity && identity !== subject) expanded = `  resolved session: ${identity}`;
-			body = bodyFor("purpose");
+		case "agent_intent":
+			({ subject, body } = presentIntent());
 			break;
-		}
 		case "agent_list":
-			subject = take("query");
-			if (subject) facts.push(take("cwd", "in ", homePath));
-			else subject = take("cwd", "", homePath) || "stored conversations";
-			facts.push(take("limit", "limit "), text(args.cursor) ? "continuation page" : "");
+			subject = presentList();
 			break;
 		case "agent_abort": {
 			subject = target();
@@ -765,70 +842,18 @@ export function renderAgentCall(name: string, value: unknown, theme: Theme, cont
 			);
 			break;
 		}
-		case "agent_command": {
-			subject = take("name");
-			const recipient = target();
-			facts.push(recipient ? `on ${recipient}` : "", observedModel());
-			if (text(args.args).includes("\n")) body = bodyFor("args");
-			else facts.push(take("args", "args "));
+		case "agent_command":
+			({ subject, body } = presentCommand());
 			break;
-		}
-		case "agent_inspect": {
-			const query = take("query");
-			const entry = take("entryId", "entry ");
-			const operation = take("operationId", "operation ");
-			const submission = take("submissionId", "submission ");
-			const request = take("requestId", "request ");
-			const recipient = target() || "this session";
-			const objects = [query, entry, operation, submission, request].filter(Boolean);
-			subject = objects.shift() || recipient;
-			facts.push(
-				subject === recipient ? "" : recipient,
-				observedModel(),
-				take("view"),
-				...objects,
-				take("source", "source "),
-				take("fromId", "from "),
-				take("offset", "offset "),
-				take("limit", "limit "),
-				flag("finalReport", "final report"),
-				text(args.receiptCursor) ? "receipt references page" : "",
-				args.cursor !== undefined ? "continuation page" : "",
-			);
+		case "agent_inspect":
+			subject = presentInspect();
 			break;
-		}
-		case "agent_collaborate": {
-			const thread = text(args.threadId);
-			const title = thread ? context.lookup?.threadTitle?.(thread)?.trim() : undefined;
-			const targetSession = target();
-			subject = title || take("threadId") || take("title") || take("query") || targetSession;
-			if (!subject && args.action === "list") subject = "threads";
-			facts.push(
-				take("action"),
-				targetSession === subject ? "" : targetSession,
-				shownArgs.includes("title") ? "" : take("title", "title "),
-				take("kind"),
-				take("replyTo", "reply to event "),
-				take("before", "before "),
-				take("after", "after "),
-				take("knownFrameRevision", "known frame "),
-				take("limit", "limit "),
-				text(args.cursor) ? "continuation page" : "",
-			);
-			body = bodyFor("message", "participation", "purpose");
+		case "agent_collaborate":
+			({ subject, body } = presentCollaboration());
 			break;
-		}
-		case "agent_work": {
-			subject = take("request", "request ") || "open work";
-			facts.push(
-				take("action"),
-				take("status"),
-				Array.isArray(args.results) && args.results.length ? cardinal(args.results.length, "result reference") : "",
-			);
-			if (Array.isArray(args.results) && !args.results.length) shownArgs.push("results");
-			body = bodyFor("message", "note");
+		case "agent_work":
+			({ subject, body } = presentWork());
 			break;
-		}
 		case "agent_reset":
 			subject = target();
 			facts.push(observedModel());
