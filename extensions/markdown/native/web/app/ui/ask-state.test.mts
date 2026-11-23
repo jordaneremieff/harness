@@ -124,6 +124,38 @@ test("a replaced pending or parked comment cannot move to another occurrence, ev
 	assert.equal(item.authoredRevision, 1);
 });
 
+test("a refetched review mark follows known edits but never reanchors after its passage was deleted", () => {
+	const source = "# Section\nAlpha ready.",
+		quote = "ready";
+	const range = { start: source.indexOf(quote), end: source.indexOf(quote) + quote.length };
+	const sessions = reader.createAskSessions(),
+		owner = sessions.show("A", source, "original");
+	sessions.render(viewOf(source));
+	const seed = {
+		text: "Explain",
+		quote,
+		range,
+		sourceAnchor: reader.uiLogic.capturePassage(source, range, viewOf(source), quote),
+		anchorDigest: "original",
+	};
+	const mark = sessions.trackReview(owner, "row", seed);
+	assert.deepEqual(plain(mark.range), range);
+	sessions.change([{ start: 0, end: 0, expected: "", text: "🍐\n" }], `🍐\n${source}`);
+	assert.equal(mark.range?.start, range.start + 3);
+	const revised = `🍐\n${source.replace("ready", "gone")}`;
+	sessions.change([{ start: range.start + 3, end: range.end + 3, expected: quote, text: "gone" }], revised);
+	sessions.render(viewOf(revised));
+	assert.equal(mark.range, undefined);
+	sessions.show("B", "B", "other");
+	const other = sessions.trackReview(sessions.shown, "row", seed);
+	assert.notEqual(other, mark);
+	sessions.show("A", source, "original");
+	sessions.render(viewOf(source));
+	assert.equal(sessions.trackReview(owner, "row", structuredClone(seed)), mark);
+	assert.equal(mark.range, undefined);
+	assert.equal(mark.quote, quote);
+});
+
 test("restored offsets are authoritative only for matching source, including repeated headings and emoji", () => {
 	const text = "# Same\n🍋 pass\n# Same\n🍋 pass",
 		range = { start: text.lastIndexOf("pass"), end: text.length };

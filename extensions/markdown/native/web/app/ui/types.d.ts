@@ -65,6 +65,7 @@ declare global {
 		render(view: ReaderPassageView): void;
 		captureAnchors(): void;
 		restoreRanges(owner: ReaderAskDocument): void;
+		trackReview(owner: ReaderAskDocument, id: string, seed: ReaderComment): ReaderComment;
 		register(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage): void;
 		delivery(requestId: string, threadId: string): ReaderAskDelivery | undefined;
 		packet(thread: ReaderThread, message: ReaderAskMessage, version: ReaderPromptVersion): Record<string, unknown>;

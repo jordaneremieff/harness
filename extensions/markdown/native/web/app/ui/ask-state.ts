@@ -76,6 +76,12 @@
 		const requests = new Map<string, ReaderAskDelivery>();
 		const packets = new WeakMap<ReaderAskMessage, Record<string, unknown>>();
 		const damaged = new WeakMap<Passage, { anchor: ReaderPassageAnchor; within: ReaderRange }>();
+		const reviewMarks = new WeakMap<ReaderAskDocument, Map<string, ReaderComment>>();
+		function* locations(owner: ReaderAskDocument) {
+			yield* passages(owner);
+			const marks = reviewMarks.get(owner);
+			if (marks) yield* marks.values();
+		}
 		let shown = empty(""),
 			source = "",
 			view: ReaderPassageView | undefined,
@@ -129,7 +135,7 @@
 				const next = documents.get(key) ?? empty(key);
 				const unchanged = (next === shown && text === source) || (digest !== undefined && next.digest === digest);
 				if (!unchanged)
-					for (const item of passages(next)) {
+					for (const item of locations(next)) {
 						item.range = undefined;
 						damaged.delete(item);
 					}
@@ -142,7 +148,7 @@
 				return next;
 			},
 			change(edits, text) {
-				for (const item of passages(shown)) mapPassage(item, edits);
+				for (const item of locations(shown)) mapPassage(item, edits);
 				source = text;
 				view = undefined;
 				edited = true;
@@ -150,16 +156,26 @@
 			},
 			render(fresh) {
 				view = fresh;
-				for (const item of passages(shown)) locate(item, fresh);
+				for (const item of locations(shown)) locate(item, fresh);
 			},
 			captureAnchors() {
 				if (!edited || !view) return;
-				for (const item of passages(shown))
+				for (const item of locations(shown))
 					if (item.range) item.sourceAnchor = api.uiLogic.capturePassage(source, item.range, view, item.quote);
 				edited = false;
 			},
 			restoreRanges(owner) {
 				for (const item of pending(owner)) restoreRange(owner, item);
+			},
+			trackReview(owner, id, seed) {
+				const marks = reviewMarks.get(owner) ?? new Map<string, ReaderComment>();
+				const existing = marks.get(id);
+				if (existing) return existing;
+				const mark = structuredClone(seed);
+				restoreRange(owner, mark);
+				marks.set(id, mark);
+				reviewMarks.set(owner, marks);
+				return mark;
 			},
 			register(owner, thread, message) {
 				requests.set(message.requestId, { owner, thread, message });
