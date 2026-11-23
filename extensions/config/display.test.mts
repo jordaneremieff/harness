@@ -357,19 +357,39 @@ test("config_tools separates the session selection, configured defaults, and ref
 		tools: [{ name: "grep", exposure: "deferred", active: true }],
 		defaults: { resolved: ["read"] },
 	};
+	receiptOnly(component, { ...ordinary, change: { applied: true, activated: ["grep"] } });
+	assert.ok(screen(component).includes("Pi activated 1 tool."));
 	receiptOnly(component, {
 		...ordinary,
-		change: { applied: true, activated: ["grep"], rejected: [{ name: "absent", reason: "Tool not found." }] },
+		change: {
+			applied: true,
+			activated: ["grep"],
+			deactivated: ["bash", "ls"],
+			rejected: [{ name: "absent", reason: "Tool not found." }],
+		},
 	});
 	const rows = screen(component);
-	assert.ok(rows.includes("Pi activated 1; rejected 1."));
-	assert.ok(rows.includes("Selected in this session: grep"));
-	assert.ok(rows.includes("Configured for new sessions: read"));
+	assert.ok(rows.includes("Pi activated 1 tool and deactivated 2 tools; rejected 1 tool name."));
+	assert.ok(rows.includes("Pi activated grep."));
+	assert.ok(rows.includes("Pi deactivated bash, ls."));
+	assert.ok(rows.includes("Pi rejected absent. Tool not found."));
+	assert.ok(rows.includes("This session selects grep."));
+	assert.ok(rows.includes("New sessions default to read."));
+	assert.doesNotMatch(
+		rows.join("\n"),
+		/(?:Activated|Deactivated|Selected in this session|Configured for new sessions):/u,
+	);
 	receiptOnly(component, { ...ordinary, change: { applied: false, activated: ["grep"] } });
 	assert.ok(screen(component).includes("Pi did not confirm the full session selection."));
 	assert.ok(screen(component).includes("[Some requested effects were not confirmed.]"));
-	receiptOnly(component, { ...ordinary, session: false, active: [], tools: [] });
-	assert.ok(screen(component).includes("This host exposes no current-session tool controls."));
-	assert.ok(screen(component).includes("Configured for new sessions: read"));
-	assert.deepEqual(hints(screen(component)), []);
+	const empty = { ...ordinary, active: [], tools: [] };
+	receiptOnly(component, { ...empty, defaults: { resolved: [] } });
+	assert.ok(screen(component).includes("This session selects no tools."));
+	assert.ok(screen(component).includes("No tools are configured for new sessions."));
+	receiptOnly(component, { ...empty, session: false });
+	const unavailable = screen(component);
+	assert.ok(unavailable.includes("This host exposes no current-session tool controls."));
+	assert.ok(unavailable.includes("New sessions default to read."));
+	assert.ok(!unavailable.includes("This session selects no tools."));
+	assert.deepEqual(hints(unavailable), []);
 });

@@ -405,10 +405,13 @@ function toolChangeOutcome(change: Record<string, unknown>, rejected: number): s
 	const deactivated = names(change.deactivated).length;
 	if (!change.applied) return "Pi did not confirm the full session selection.";
 	if (activated || deactivated) {
-		const applied = [activated ? `activated ${activated}` : "", deactivated ? `deactivated ${deactivated}` : ""]
+		const applied = [
+			activated ? `activated ${countOf(activated, "tool")}` : "",
+			deactivated ? `deactivated ${countOf(deactivated, "tool")}` : "",
+		]
 			.filter(Boolean)
-			.join(", ");
-		return `Pi ${applied}${rejected ? `; rejected ${rejected}` : ""}.`;
+			.join(" and ");
+		return `Pi ${applied}${rejected ? `; rejected ${countOf(rejected, "tool name")}` : ""}.`;
 	}
 	return rejected
 		? `Pi rejected ${countOf(rejected, "tool name")}; no selection changed.`
@@ -421,14 +424,14 @@ function toolsReadback(value: Record<string, unknown>): Readback | undefined {
 	const change = record(value.change);
 	const rejected = list(change.rejected).map(record);
 	const active = value.active.map(oneLine);
+	const activated = names(change.activated);
+	const deactivated = names(change.deactivated);
 	const lines = [
-		...rejected.map(({ name, reason }) => `${string(name)}: ${string(reason)}`),
-		...names(change.activated).map((tool) => `Activated: ${tool}`),
-		...names(change.deactivated).map((tool) => `Deactivated: ${tool}`),
-		...(value.session && active.length ? [`Selected in this session: ${active.join(", ")}`] : []),
-		...(defaults.length
-			? [`Configured for new sessions: ${defaults.join(", ")}`]
-			: ["No tools are configured for new sessions."]),
+		...rejected.map(({ name, reason }) => `Pi rejected ${string(name)}. ${string(reason)}`.trimEnd()),
+		...(activated.length ? [`Pi activated ${activated.join(", ")}.`] : []),
+		...(deactivated.length ? [`Pi deactivated ${deactivated.join(", ")}.`] : []),
+		...(value.session ? [`This session selects ${active.length ? active.join(", ") : "no tools"}.`] : []),
+		defaults.length ? `New sessions default to ${defaults.join(", ")}.` : "No tools are configured for new sessions.",
 	];
 	const extra = value.tools.map((row: unknown) => {
 		const { name, exposure, source, active } = record(row);
