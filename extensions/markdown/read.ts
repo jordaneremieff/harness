@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import { ShowRequestSchema, type ShowRequest } from "./pane-state.ts";
@@ -17,6 +18,7 @@ import {
 /** UTF-8 bytes of source text in one page. */
 export const READ_PAGE_BYTES = 64 * 1024;
 const FIND_ROWS = 20;
+const CURSOR_CHARS = 1024;
 /** A source search reads the listed revisions, newest first, up to these document and byte bounds. */
 export const SEARCH_LIMITS = { documents: 200, bytes: 32 * 1024 * 1024 } as const;
 const EXCERPT_CHARS = 160;
@@ -47,7 +49,15 @@ export const ReadParameters = obj(
 				minLength: 1,
 				maxLength: 200,
 				description:
-					"Without document: literal, case-insensitive text in the current revision's source. Searches at most 200 documents, newest first.",
+					"Without document: literal, case-insensitive text in the current revision's source. Each page searches at most 200 remaining documents, newest update first.",
+			}),
+		),
+		cursor: opt(
+			str({
+				minLength: 1,
+				maxLength: CURSOR_CHARS,
+				description:
+					"Without document: pass nextCursor from the previous listing with the same query, contains and kind, even after an empty page.",
 			}),
 		),
 		kind: opt(
@@ -100,6 +110,8 @@ export type ReadOutcome =
 			scanned: number;
 			unreadable: number;
 			bounded: boolean;
+			nextCursor: string | null;
+			earlierRevisionsChanged?: true;
 	  }
 	| ({
 			ok: true;
@@ -125,7 +137,7 @@ export type ReadOutcome =
 			| { status: "complete"; offset: 0; nextOffset: null; text: string }
 			| { status: "page"; offset: number; nextOffset: number | null; fragment: string }
 	  ))
-	| { ok: false; error: { code: "invalid" | "not-found" | "store-failure"; message: string } };
+	| { ok: false; error: { code: "invalid" | "not-found" | "store-failure" | "inventory-changed"; message: string } };
 
 const KindSchema = union([lit("published"), lit("response"), lit("file")]);
 const ReadFields = {
@@ -175,6 +187,8 @@ export const ReadOutcomeSchema = union([
 		scanned: int(),
 		unreadable: int(),
 		bounded: bool(),
+		nextCursor: union([str(), lit(null)]),
+		earlierRevisionsChanged: opt(lit(true)),
 	}),
 	obj({ ...ReadFields, status: lit("complete"), offset: lit(0), nextOffset: lit(null), text: str() }, { open: false }),
 	obj(
@@ -183,12 +197,15 @@ export const ReadOutcomeSchema = union([
 	),
 	obj({
 		ok: lit(false),
-		error: obj({ code: union([lit("invalid"), lit("not-found"), lit("store-failure")]), message: str() }),
+		error: obj({
+			code: union([lit("invalid"), lit("not-found"), lit("store-failure"), lit("inventory-changed")]),
+			message: str(),
+		}),
 	}),
 ]);
 
 const DESCRIPTION =
-	"Find and read stored Markdown documents exactly, without opening a window. Without document, list the newest documents of one collection, optionally matching query against titles and IDs and contains against the current source (a bounded search that reports its coverage). With document, read the exact source of its current revision, or of a named revision, in pages of at most 64 KiB; use a fragment on its own for a passage. Before copying or republishing a whole document, join all fragments in order from offset zero using nextOffset and the same revision. The result names the current revision, the source digest and the reference coverage. For a connected pane, use markdown_live to read or edit its actual buffer. To correct a stored publication instead, read its entire current revision, then call markdown_publish with document and expectedRevision set to that revision. After a conflict, read the revision that the conflict names before you publish again. Reading starts no model work and leaves stored document content unchanged.";
+	"Find and read stored Markdown documents exactly, without opening a window. Without document, list the newest documents of one collection, optionally matching query against titles and IDs and contains against the current source. If nextCursor is not null, pass it as cursor with the same filters, even after an empty page. A changed inventory requires a fresh search; new revisions do not invalidate the cursor. With document, read the exact source of its current revision, or of a named revision, in pages of at most 64 KiB; use a fragment on its own for a passage. Before copying or republishing a whole document, join all fragments in order from offset zero using nextOffset and the same revision. The result names the current revision, the source digest and the reference coverage. For a connected pane, use markdown_live to read or edit its actual buffer. To correct a stored publication instead, read its entire current revision, then call markdown_publish with document and expectedRevision set to that revision. After a conflict, read the revision that the conflict names before you publish again. Reading starts no model work and leaves stored document content unchanged.";
 
 function validate(params: ReadInput): void {
 	if (!params || typeof params !== "object")
@@ -199,9 +216,12 @@ function validate(params: ReadInput): void {
 		throw new StoreError("invalid", "A continued page needs the revision of its first page.");
 	if (
 		params.document !== undefined &&
-		(params.query !== undefined || params.kind !== undefined || params.contains !== undefined)
+		(params.query !== undefined ||
+			params.kind !== undefined ||
+			params.contains !== undefined ||
+			params.cursor !== undefined)
 	)
-		throw new StoreError("invalid", "A query, contains or kind finds documents; omit document to use it.");
+		throw new StoreError("invalid", "A query, contains, kind or cursor finds documents; omit document to use it.");
 	for (const value of [params.query, params.contains])
 		if (value !== undefined && (typeof value !== "string" || !value.trim() || /[\p{Cc}\ud800-\udfff]/u.test(value)))
 			throw new StoreError("invalid", "Search text must be nonempty text on one line.");
@@ -218,25 +238,93 @@ function row(record: DocumentRecord): FoundDocument {
 		updatedAt: record.updatedAt,
 	};
 }
+const fingerprint = (...parts: unknown[]) => createHash("sha256").update(JSON.stringify(parts)).digest("base64url");
+
+type Cursor = { inventory: string; revisions: string; bits: Buffer };
+function encodeCursor(scope: string, { inventory, revisions, bits }: Cursor): string {
+	const page = `${inventory}.${revisions}.${bits.toString("base64url")}`;
+	return `${page}.${fingerprint(scope, page)}`;
+}
+function decodeCursor(value: string, scope: string): Cursor {
+	if (typeof value === "string" && value.length <= CURSOR_CHARS) {
+		const parts = /^([\w-]{43})\.([\w-]{43})\.([\w-]+)\.([\w-]{43})$/u.exec(value);
+		if (parts) {
+			const [, inventory, revisions, encodedBits] = parts;
+			const state = { inventory, revisions, bits: Buffer.from(encodedBits, "base64url") };
+			if (encodeCursor(scope, state) === value) return state;
+		}
+	}
+	throw new StoreError(
+		"invalid",
+		"Use the returned cursor with the same store, kind, query and contains, or restart without cursor.",
+	);
+}
+
+/** A revision can move a document anywhere in update order. Its bit instead uses the stable ID order. */
+function searchVisits(documents: DocumentRecord[], saved?: Cursor) {
+	const ordered = [...documents].sort((a, b) => a.id.localeCompare(b.id));
+	const slots: Record<string, number> = Object.fromEntries(ordered.map((document, index) => [document.id, index]));
+	const bytes = Math.ceil(ordered.length / 8);
+	if (saved && saved.bits.length !== bytes)
+		throw new StoreError("invalid", "Invalid search cursor; restart without cursor.");
+	const bits = saved?.bits ?? Buffer.alloc(bytes);
+	const seen = (index: number) => (bits[index >> 3] & (1 << (index % 8))) !== 0;
+	const revisions = () =>
+		fingerprint(ordered.filter((_doc, index) => seen(index)).map((doc) => [doc.revision, doc.digest]));
+	return {
+		bits,
+		revisions,
+		earlierRevisionsChanged: saved !== undefined && saved.revisions !== revisions(),
+		seen: (doc: DocumentRecord) => seen(slots[doc.id]),
+		mark(doc: DocumentRecord) {
+			const index = slots[doc.id];
+			bits[index >> 3] |= 1 << (index % 8);
+		},
+	};
+}
+function matchingTitles(documents: DocumentRecord[], query?: string): DocumentRecord[] {
+	if (query === undefined) return documents;
+	const needle = query.toLowerCase();
+	return documents.filter((doc) => doc.title.toLowerCase().includes(needle) || doc.id.includes(needle));
+}
 async function find(store: MarkdownStore, params: ReadInput): Promise<ReadOutcome> {
 	const kind = params.kind ?? "published";
-	const needle = params.query?.toLowerCase();
-	const match = needle
-		? (record: DocumentRecord) => record.title.toLowerCase().includes(needle) || record.id.includes(needle)
-		: undefined;
-	const listing = await store.list({ kind, limit: params.contains === undefined ? FIND_ROWS : undefined, match });
-	const base = {
-		ok: true as const,
-		op: "find" as const,
+	const scope = fingerprint(store.root, kind, params.query ?? null, params.contains ?? null);
+	const saved = params.cursor === undefined ? undefined : decodeCursor(params.cursor, scope);
+	const [listing, identity] = await Promise.all([store.list({ kind }), store.identity()]);
+	const inventory = fingerprint(identity?.storeId, listing.inventory);
+	if (saved && saved.inventory !== inventory)
+		return {
+			ok: false,
+			error: {
+				code: "inventory-changed",
+				message: "The document inventory changed. Restart the search without cursor.",
+			},
+		};
+	const visits = searchVisits(listing.documents, saved);
+	const matching = matchingTitles(listing.documents, params.query);
+	const candidates = matching.filter((doc) => !visits.seen(doc));
+	const found = params.contains === undefined ? undefined : await searchSources(store, candidates, params.contains);
+	const rows = found?.rows ?? candidates.slice(0, FIND_ROWS).map(row);
+	const examined = found?.search.searched ?? rows.length;
+	for (const doc of candidates.slice(0, examined)) visits.mark(doc);
+	return {
+		ok: true,
+		op: "find",
 		kind,
 		...(params.query === undefined ? {} : { query: params.query }),
+		...(found ? { search: found.search } : {}),
+		rows,
+		matched: found ? rows.length : matching.length,
 		scanned: listing.scanned,
 		unreadable: listing.unreadable,
 		bounded: listing.bounded,
+		nextCursor:
+			examined < candidates.length
+				? encodeCursor(scope, { inventory, revisions: visits.revisions(), bits: visits.bits })
+				: null,
+		...(visits.earlierRevisionsChanged ? { earlierRevisionsChanged: true } : {}),
 	};
-	if (params.contains === undefined) return { ...base, rows: listing.documents.map(row), matched: listing.matched };
-	const found = await searchSources(store, listing.documents, params.contains);
-	return { ...base, search: found.search, rows: found.rows.slice(0, FIND_ROWS), matched: found.rows.length };
 }
 /**
  * Reads the listed revisions newest first until the bounds stop it, and keeps those whose source
@@ -254,7 +342,12 @@ async function searchSources(
 	let bytes = 0;
 	let unreadable = 0;
 	for (const candidate of candidates) {
-		if (searched >= SEARCH_LIMITS.documents || bytes + candidate.bytes > SEARCH_LIMITS.bytes) break;
+		if (
+			rows.length >= FIND_ROWS ||
+			searched >= SEARCH_LIMITS.documents ||
+			bytes + candidate.bytes > SEARCH_LIMITS.bytes
+		)
+			break;
 		searched++;
 		bytes += candidate.bytes;
 		let source: string;
@@ -391,9 +484,15 @@ function findText(outcome: Found): string {
 	const failed = outcome.search?.unreadable ?? 0;
 	const unsearched = failed
 		? [
-				`${failed} document${failed === 1 ? " could not be read and was" : "s could not be read and were"} not searched.`,
+				`${failed} document${failed === 1 ? " could not be read and was" : "s could not be read and were"} not searched. Restart without cursor to retry.`,
 			]
 		: [];
+	const more = {
+		kind: outcome.kind === "published" ? undefined : outcome.kind,
+		query: outcome.query,
+		contains: outcome.search?.contains,
+		cursor: outcome.nextCursor,
+	};
 	const rows = outcome.rows.flatMap((document) => [
 		`${document.id} · revision ${document.revision} · ${document.updatedAt} · ${line(document.title)}`,
 		...(document.excerpt ? [`  line ${document.excerpt.line}: ${line(document.excerpt.text)}`] : []),
@@ -402,8 +501,14 @@ function findText(outcome: Found): string {
 		head,
 		...unreadable,
 		...unsearched,
+		...(outcome.earlierRevisionsChanged
+			? [
+					"One or more already examined documents changed revision. This page does not revisit them; restart without cursor to search their new revisions.",
+				]
+			: []),
 		...rows,
 		...(outcome.rows.length ? ['Read one with markdown_read {"document":"<id>"}.'] : []),
+		...(outcome.nextCursor ? [`Continue with markdown_read ${JSON.stringify(more)}.`] : []),
 	].join("\n");
 }
 function findSubject(outcome: Found): string {
@@ -418,15 +523,17 @@ function findScope(outcome: Found): string {
 		? `the first ${outcome.scanned} scanned entries`
 		: `${outcome.scanned} scanned entries`;
 	return outcome.search
-		? `among ${outcome.search.searched} searched of ${outcome.search.candidates} candidates in ${scanned}`
+		? `among ${outcome.search.searched - outcome.search.unreadable} searched of ${outcome.search.candidates} candidates in ${scanned}`
 		: `among ${scanned}`;
 }
 function findLimits(outcome: Found): string {
 	const parts = [
-		outcome.matched > outcome.rows.length ? `; the newest ${outcome.rows.length} follow` : "",
-		outcome.bounded ? ". The scan stopped before the end of the collection, so newer documents can exist" : "",
+		outcome.matched > outcome.rows.length ? `; this page lists ${outcome.rows.length}` : "",
+		outcome.bounded
+			? ". Documents beyond the collection scan limit remain outside this search, including its later pages"
+			: "",
 		outcome.search && !outcome.search.complete
-			? ". The source search stopped at its bound, so older candidates were not searched"
+			? ". This page reached its row or source limit; more candidates remain"
 			: "",
 	];
 	return parts.join("");

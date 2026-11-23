@@ -317,6 +317,10 @@ function listLimit(limit?: number): number {
 		throw new StoreError("invalid", "Listing limit must be a positive integer.");
 	return Math.min(LIMITS.listing, limit ?? LIMITS.listing);
 }
+async function listingInventory(path: string, members: string[], bounded: boolean): Promise<string> {
+	const directoryTime = bounded ? (await stat(path, { bigint: true })).mtimeNs.toString() : null;
+	return hash(JSON.stringify([directoryTime, members.sort()]));
+}
 function absent(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException)?.code === "ENOENT";
 }
@@ -538,14 +542,6 @@ export class MarkdownStore {
 			throw new StoreError("store-failure", "Document is unavailable or invalid.");
 		}
 	}
-	/**
-	 * Lists the newest documents among at most `LIMITS.listing` entries of one collection, in
-	 * directory order. `bounded` says that the scan stopped before the end of the collection, so the
-	 * rows are the newest scanned, not the newest stored. `unreadable` counts document directories
-	 * whose pointer is missing, unreadable or invalid; they are not rows. `matched` counts the rows
-	 * that `match` accepted before the result limit. An absent collection is an empty listing; any
-	 * other failure to open it is a store error.
-	 */
 	/** The bytes of one retained image of a revision, checked against the recorded digest and size. */
 	async retainedAsset(id: string, revision: number, item: AssetRecord): Promise<Uint8Array> {
 		if (
@@ -567,21 +563,35 @@ export class MarkdownStore {
 			throw new StoreError("store-failure", "Retained image does not match its record.");
 		return bytes;
 	}
+	/**
+	 * The newest matching documents among at most LIMITS.listing directory entries. The inventory
+	 * identifies document membership and pointer readability before filtering, not mutable revisions.
+	 * A bounded inventory also watches the directory modification time for changes beyond the scan.
+	 */
 	async list(
 		options: { kind?: DocumentKind; limit?: number; match?: (record: DocumentRecord) => boolean } = {},
-	): Promise<{ documents: DocumentRecord[]; bounded: boolean; scanned: number; matched: number; unreadable: number }> {
+	): Promise<{
+		documents: DocumentRecord[];
+		bounded: boolean;
+		scanned: number;
+		matched: number;
+		unreadable: number;
+		inventory: string;
+	}> {
 		const limit = listLimit(options.limit);
 		const kind = options.kind ?? "published";
 		const matches = (record: DocumentRecord) => record.kind === kind && (options.match?.(record) ?? true);
 		const documents: DocumentRecord[] = [];
+		const members: string[] = [];
+		const path = join(this.root, collection(kind));
 		let scanned = 0;
 		let bounded = false;
 		let unreadable = 0;
 		let entries: Awaited<ReturnType<typeof opendir>>;
 		try {
-			entries = await opendir(join(this.root, collection(kind)));
+			entries = await opendir(path);
 		} catch (error) {
-			if (absent(error)) return { documents, bounded, scanned, matched: 0, unreadable };
+			if (absent(error)) return { documents, bounded, scanned, matched: 0, unreadable, inventory: hash("absent") };
 			throw new StoreError("store-failure", "Document collection is unreadable.");
 		}
 		for await (const entry of entries) {
@@ -592,11 +602,13 @@ export class MarkdownStore {
 			scanned++;
 			if (!entry.isDirectory() || !validId(entry.name)) continue;
 			const record = await this.listingPointer(entry.name, kind);
+			members.push(`${entry.name}:${record?.kind ?? "unreadable"}`);
 			if (!record) unreadable++;
 			else if (matches(record)) documents.push(record);
 		}
 		documents.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
-		return { documents: documents.slice(0, limit), bounded, scanned, matched: documents.length, unreadable };
+		const inventory = await listingInventory(path, members, bounded);
+		return { documents: documents.slice(0, limit), bounded, scanned, matched: documents.length, unreadable, inventory };
 	}
 	/** The pointer of a listed directory, or nothing when it is missing, unreadable or invalid. */
 	private async listingPointer(name: string, kind: DocumentKind): Promise<DocumentRecord | undefined> {

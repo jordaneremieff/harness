@@ -15,7 +15,7 @@ import {
 	sourcePage,
 	type ReadOutcome,
 } from "./read.ts";
-import { MarkdownStore } from "./store.ts";
+import { LIMITS, MarkdownStore } from "./store.ts";
 
 async function fixture(run: (root: string, store: MarkdownStore) => Promise<void>) {
 	const root = await mkdtemp(join(tmpdir(), "markdown-read-"));
@@ -56,6 +56,7 @@ test("finding lists the newest matching documents with honest coverage", () =>
 			scanned: 0,
 			unreadable: 0,
 			bounded: false,
+			nextCursor: null,
 		});
 		const options = { cwd: root, store };
 		const report = saved(await publish({ title: "Quarterly Report", text: "# Report" }, options));
@@ -248,6 +249,136 @@ test("source search pins candidate revisions across a concurrent publication", (
 		assert.equal(outcome.search?.unreadable, 0);
 		assert.equal((await store.get(first.documentId)).document.revision, 2);
 	}));
+
+test("continued searches cover each matching document once across draft revisions", (t) =>
+	fixture(async (_root, store) => {
+		const input = {
+			title: "Note",
+			source: "shared phrase",
+			contentOrigin: { kind: "tool" as const, capturedAt: new Date().toISOString() },
+		};
+		const ids: string[] = [];
+		for (let index = 0; index < 23; index++)
+			ids.push((await store.create({ ...input, title: `Note ${index}` })).document.id);
+
+		await t.test("a title search continues in recent-update order even when an unseen draft moves", async () => {
+			const params = { query: "Note" };
+			const first = found(await readStored(store, params));
+			assert.equal(first.rows.length, 20);
+			assert.ok(first.nextCursor);
+			const visited = first.rows.map(({ id }) => id);
+			const pending = ids.find((id) => !visited.includes(id));
+			assert.ok(pending);
+			await store.update(visited[0], 1, { ...input, title: "Changed title" });
+			await store.update(pending, 1, { ...input, title: "Revised note" });
+			const args = { ...params, cursor: first.nextCursor };
+			assert.ok(readText(first).header.includes(JSON.stringify(args)));
+			const next = found(await readStored(store, args));
+			assert.equal(next.nextCursor, null);
+			assert.equal(next.earlierRevisionsChanged, true);
+			assert.match(readText(next).header, /already examined.*changed/iu);
+			assert.deepEqual(
+				next.rows
+					.map(({ id }) => id)
+					.concat(visited)
+					.sort(),
+				[...ids].sort(),
+			);
+			assert.equal(next.rows[0]?.id, pending);
+			assert.equal(next.rows[0]?.revision, 2);
+		});
+
+		await t.test("source matches continue past the row limit with the same literal filters", async () => {
+			const params = { contains: "shared phrase" };
+			const first = found(await readStored(store, params));
+			assert.equal(first.rows.length, 20);
+			assert.ok(first.nextCursor);
+			for (const other of [
+				{},
+				{ ...params, query: "shared" },
+				{ contains: "other" },
+				{ ...params, kind: "file" as const },
+				{ document: ids[0] },
+			]) {
+				failed(await readStored(store, { ...other, cursor: first.nextCursor }), "invalid");
+			}
+			const pending = ids.find((id) => first.rows.every((doc) => doc.id !== id));
+			assert.ok(pending);
+			const { document } = await store.get(pending);
+			const updated = await store.update(pending, document.revision, { ...input, source: "A new shared phrase." });
+			const next = found(await readStored(store, { ...params, cursor: first.nextCursor }));
+			assert.equal(next.nextCursor, null);
+			assert.equal(next.search?.searched, 3);
+			assert.equal(next.rows[0]?.id, pending);
+			assert.equal(next.rows[0]?.revision, updated.document.revision);
+			assert.deepEqual(next.rows[0]?.excerpt, { line: 1, text: "A new shared phrase." });
+			assert.deepEqual(
+				first.rows
+					.concat(next.rows)
+					.map(({ id }) => id)
+					.sort(),
+				[...ids].sort(),
+			);
+		});
+
+		await t.test("an equal-size inventory replacement invalidates the continuation", async () => {
+			const params = { query: "Note" };
+			const first = found(await readStored(store, params));
+			assert.ok(first.nextCursor);
+			await rm(join(store.root, "documents", ids[0]), { recursive: true });
+			await store.create({ ...input, title: "Replacement note" });
+			const changed = await readStored(store, { ...params, cursor: first.nextCursor });
+			failed(changed, "inventory-changed");
+			assert.match(readText(changed).header, /restart.*without.*cursor/iu);
+		});
+	}));
+
+for (const [bound, count, size] of [
+	["document", SEARCH_LIMITS.documents, 1],
+	["byte", SEARCH_LIMITS.bytes / LIMITS.sourceBytes, LIMITS.sourceBytes],
+] as const) {
+	test(`an empty source page continues past its ${bound} limit`, (t) =>
+		fixture(async (_root, store) => {
+			const input = { title: "Note", contentOrigin: { kind: "tool" as const, capturedAt: new Date().toISOString() } };
+			const miss = await store.create({ ...input, source: "x".repeat(size) });
+			const hit = await store.create({ ...input, source: "needle" });
+			const listing = await store.list();
+			const documents = Array.from({ length: count }, (_, i) => ({
+				...miss.document,
+				id: `md-${i.toString(16).padStart(20, "0")}`,
+			})).concat(hit.document);
+			t.mock.method(store, "list", async () => ({
+				...listing,
+				documents,
+				scanned: documents.length,
+				matched: documents.length,
+			}));
+			const reads: string[] = [];
+			t.mock.method(store, "get", async (id: string) => {
+				reads.push(id);
+				return id === hit.document.id
+					? hit
+					: { ...miss, document: { ...miss.document, id }, revision: { ...miss.revision, document: id } };
+			});
+			const first = found(await readStored(store, { contains: "needle" }));
+			assert.deepEqual(first.rows, []);
+			assert.equal(first.search?.searched, count);
+			assert.equal(first.search?.bytes, count * size);
+			assert.equal(first.search?.complete, false);
+			assert.ok(first.nextCursor);
+			const next = found(await readStored(store, { contains: "needle", cursor: first.nextCursor }));
+			assert.deepEqual(
+				next.rows.map(({ id }) => id),
+				[hit.document.id],
+			);
+			assert.equal(next.search?.complete, true);
+			assert.equal(next.nextCursor, null);
+			assert.deepEqual(
+				reads,
+				documents.map(({ id }) => id),
+			);
+		}));
+}
 
 test("historical read guidance requires the current source before a correction", () =>
 	fixture(async (root, store) => {
