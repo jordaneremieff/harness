@@ -54,9 +54,14 @@ and LF, and format characters such as joiners.
 
 Limits: `source` is 1 to 32 lowercase letters, digits and hyphens, starting
 with a letter; `application` is one line of 1 to 48 characters without `[` or
-`]`; `subject` and `place` are one line of 1 to 200 characters; header fields
-contain no control or format characters; the body is nonblank, well-formed
-Unicode and at most 128 KiB in UTF-8.
+`]`; `subject` is one line of 1 to 200 characters; `place` is one line of at
+most 4,200 bytes in UTF-8, so that it can name a whole file system path; header
+fields contain no control or format characters; the body is nonblank,
+well-formed Unicode and at most 128 KiB in UTF-8.
+
+A place is exact: the model acts on it. An application that cannot represent
+its place within these limits refuses the request and says why; it never
+shortens or alters the place.
 
 The stored message never changes after placement. Standing explanation and
 guidance are added to the model's view of the context, never to the stored
