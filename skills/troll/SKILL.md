@@ -16,7 +16,8 @@ compatibility: >
   otherwise. Clipboard handoffs use clipboard_copy; named-session intake,
   delivery and readback use agent-session tools when available. Automatic
   reply checks use Node.js, local Rex and managed background jobs in ordinary
-  interactive Pi; a reply-ready cue works without them.
+  interactive Pi; a reply-ready cue works without them. A Markdown reader
+  beside the named session shows the same review as the chat.
 ---
 
 # Troll
@@ -58,10 +59,10 @@ Take the tone, length and vocabulary from the sender's recent messages already v
 
 - **Answer here:** give the challenge in this chat. Do not copy or send it elsewhere.
 - **Clipboard handoff:** use `clipboard_copy` for the complete reply the operator will review and take back. Use the subject for the label and the ordinary archive setting unless the operator asks otherwise. For a revision, apply the operator's changes throughout and copy the new text. Say it was copied only after a successful write of *this version*. If the tool is unavailable or the write fails, give the draft in chat and state the actual copy status. Do not use another clipboard writer.
-- **Named exchange:** prepare the exact text for the operator and follow the named-session review. Neither a target name nor a request for more rounds authorises submission on the operator's behalf. Send in your own voice only on the requested peer route.
+- **Named exchange:** put the full review in your chat and, by default, in a reader beside the named session's verified Pi pane. Follow [Named sessions](references/sessions.md) for placement and updates. Neither a target name nor a request for more rounds authorises submission on the operator's behalf. Send in your own voice only on the requested peer route.
 
 Keep your confirmation separate from anything the recipient receives. State what you did and what the message asks. Keep its conditions and attribution intact: do not turn a question into a finding or imply you inspected a source the recipient mentioned. For a challenge here, the answer itself makes the point; do not summarise it again. In a second short line, name the governing rule and whether you checked it in the full corpus or used the skill's local guide. If neither supplied a fit, identify the first-principles question and any limit on the sources you could read. Use ordinary words, not labels for the skill's stages. Include a missing permission, delivery limit or next act only where it affects the operator. A copy is not a send; admission is not a reply.
 
-Finish every clipboard handoff with the complete source, the exact paste-ready draft and its actual copy state together in the same response, unless the operator requests a different display. This includes your answer after the operator clarifies which session they mean. If they supplied an excerpt, show that excerpt, not a reconstruction. A copy receipt does not replace the review. Do not copy commentary or the confirmation into the draft. Keep normal records; do not write extra copies to other stores.
+Finish every clipboard handoff with the complete source, the exact paste-ready draft and its actual copy state together in the same response, unless the operator requests a different display. This includes your answer after the operator clarifies which session they mean. If they supplied an excerpt, show that excerpt, not a reconstruction. Neither a copy receipt nor a reader pane replaces the chat review. Do not copy commentary or the confirmation into the draft. Apart from the named exchange's review document, do not write extra copies to other stores.
 
 When a reply comes back, the operator asks what happened, or they request a sustained exchange, read [Replies and outcomes](references/iteration.md). A named exchange includes readback and, if the reply warrants it, a proposed next round. A one-off handoff ends at delivery. Silence never calls for another message.

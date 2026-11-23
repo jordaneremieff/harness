@@ -36,4 +36,4 @@ When the operator supplies or asks for an outcome, or a sustained sequence stops
 3. **What supplied evidence establishes.** State only the result that follows from the supplied evidence. The action record belongs in the previous row, not in the argument about who was right. Agreement alone establishes no result; a useful action does not validate every premise.
 4. **What remains unknown.** Include missing replies, unavailable inspection, or unverified completion where material.
 
-Then give one recommendation: stop and name why; press again if the operator directs it and a named consequential gap remains; or have the operator supply the missing authorization through their own channel. Readback alone never authorizes another message.
+Then give one recommendation: stop and name why; press again if the operator directs it and a named consequential gap remains; or have the operator supply the missing authorization through their own channel. Put the final readback in the chat and update this exchange's existing review document in place. Do not open a reader just for readback. Readback alone never authorizes another message.
