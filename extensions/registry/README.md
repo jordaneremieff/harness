@@ -199,29 +199,21 @@ or benefit.
 
 ## Terminal cards
 
-The `registry` tool renders its own card in the interactive transcript. A
-collapsed card shows the request on its heading row and at most one qualifier
-row (kind, match mode, detail, provider, filters, limit, continuation), then
-one or two outcome rows built from the structured details: the outcome, the
-returned count against the matched total, the returned resource kinds, page
-bounds, and any continuation. A single-record page replaces the kind tally with
-that record's key facts: a model's cached availability, configured auth, context
-window, and supported thinking levels, or a tool's configured and active state.
-A bounded kind tally reports the number of omitted kinds. The host context
-percent is a whole number. The argument and result expansion
-hints appear only when the collapsed view hides or clips content, and each
-rides the row it belongs to. An expanded card shows the full arguments or the
-bounded result text.
+The `registry` card follows the [emission grammar](../../docs/conventions/emissions.md).
+It states the page scope and whether another page is available. Its preview
+shows returned record names and known facts: configured, active and callable
+are separate tool facts; model availability is cached and auth is configuration
+presence, not validity. The local catalog review does not check remote health.
+Model queries cover chat models only, including when no model matches.
 
-Cards with `catalogBoundary` state `chat models only`, including no-match cards.
-A model page with no matched records also points to native codemode `models.*`
-discovery; expansion shows the complete catalog boundary and API names.
+Settings cover responding publishers. Context paths come from a prior
+observation, not a file read. A content scan names its resolved resource and
+states how much of the file it read. Partial coverage does not establish absence.
 
-Resource and model list cards do not repeat the requested name, search, or
-content phrase. Content-scan cards name the resolved resource. Counts are page
-counts, not an inventory; the result text carries the evidence and observation
-boundaries, and a bounded or partial page never reads as an absence result.
-Terminal controls are escaped and long values are clipped.
+Expand for source paths, retained evidence, and the exact next `registry` call
+when a cursor exists. The display reports any cut at its 32,000-character bound.
+The `[registry]` text appended to other tool results stays in those results; it
+is not a custom message.
 
 ## Compact results and exact records
 

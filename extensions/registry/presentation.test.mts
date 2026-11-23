@@ -1,545 +1,401 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { stripVTControlCharacters } from "node:util";
-import type {
-	ExtensionAPI,
-	ExtensionContext,
-	ExtensionToolContext,
+import { homedir } from "node:os";
+import { it, type TestContext } from "node:test";
+import {
+	initTheme,
 	Theme,
-	ToolDefinition,
+	ToolExecutionComponent,
+	type AgentToolResult,
+	type ExtensionAPI,
+	type ExtensionToolContext,
+	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import {
+	getKeybindings,
+	KeybindingsManager,
+	setKeybindings,
+	stripTerminalSequences,
+	TUI_KEYBINDINGS,
+	type KeyId,
+	type TUI,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
+import { toolDisplay } from "./display.ts";
+import { boundResult } from "./format.ts";
 import registerRegistry, { type RegistryParams } from "./index.ts";
-import { renderRegistryCall, renderRegistryResult } from "./presentation.ts";
+import { lookup, lookupIsError } from "./lookup.ts";
 
-const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
-const screen = (component: { render(width: number): readonly string[] }, width = 140) =>
-	component
-		.render(width)
-		.map((line) => stripVTControlCharacters(line).trimEnd())
-		.join("\n");
-const rows = (component: { render(width: number): readonly string[] }, width = 100) =>
-	component
-		.render(width)
-		.map((line) => stripVTControlCharacters(line).trimEnd())
-		.filter((line) => line !== "");
-const resultOf = (text: string, details: Record<string, unknown>) => ({
-	content: [{ type: "text" as const, text }],
-	details,
-});
+initTheme("dark", false);
 
 const sourceInfo = {
-	path: "/fixtures/TOOL.ts",
+	path: "/fixtures/extension.ts",
 	source: "fixture",
 	scope: "temporary" as const,
 	origin: "top-level" as const,
 };
-const baseContext = {
+const toolName = `synthetic_${"registry_".repeat(22)}end`;
+const context = {
 	cwd: "/fixtures",
 	mode: "rpc",
+	tools: [],
 	hasUI: false,
 	isProjectTrusted: () => true,
 	model: { provider: "provider", id: "model" },
 	thinkingLevel: "high",
 	getContextUsage: () => ({ tokens: 7500, contextWindow: 10000, percent: 75 }),
 	sessionManager: { getSessionId: () => "session-1", getSessionFile: () => null },
-} as unknown as ExtensionContext;
-const context = {
-	...baseContext,
-	tools: [],
-	executeTool: async () => {
-		throw new Error("Unexpected nested tool call");
-	},
-} satisfies ExtensionToolContext;
+} as unknown as ExtensionToolContext;
 
-function registryTool(): ToolDefinition<typeof RegistryParams, Record<string, unknown>> {
+function registeredTool() {
 	let tool: ToolDefinition<typeof RegistryParams, Record<string, unknown>> | undefined;
-	const pi = {
+	registerRegistry({
 		on: () => {},
 		events: { emit: () => {}, on: () => () => {} },
 		registerTool: (value: NonNullable<typeof tool>) => {
 			tool = value;
 		},
 		getAllTools: () => [
-			{ name: "bash", description: "Run a shell command", sourceInfo },
-			{ name: "read", sourceInfo },
+			{ name: "first", sourceInfo, parameters: { title: "Exact schema" } },
+			{ name: toolName, sourceInfo, parameters: { title: "Long-name schema" } },
 		],
-		getActiveTools: () => ["bash"],
+		getActiveTools: () => ["first"],
 		getCommands: () => [{ name: "skill:example", source: "skill", sourceInfo }],
-	} as unknown as ExtensionAPI;
-	registerRegistry(pi);
+	} as unknown as ExtensionAPI);
 	assert.ok(tool);
 	return tool;
 }
 
-describe("registry tool registration", () => {
-	it("attaches call and result renderers without changing execution", async () => {
-		const tool = registryTool();
-		assert.equal(tool.renderCall, renderRegistryCall);
-		assert.equal(tool.renderResult, renderRegistryResult);
-		assert.equal(typeof tool.execute, "function");
-		const result = await tool.execute("lookup", {}, undefined, undefined, context);
-		assert.equal(result.details?.outcome, "host_summary");
-	});
+function key(t: TestContext, keys: KeyId[]): void {
+	const old = getKeybindings();
+	setKeybindings(
+		new KeybindingsManager(
+			{ ...TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand" } },
+			{ "app.tools.expand": keys },
+		),
+	);
+	t.after(() => setKeybindings(old));
+}
+
+function card(args: Record<string, unknown> = {}): ToolExecutionComponent {
+	const definition = toolDisplay().tools[0];
+	return new ToolExecutionComponent(
+		definition.name,
+		"registry-test",
+		args,
+		{ outputPad: 1 },
+		definition,
+		{ requestRender() {} } as TUI,
+		"/fixtures",
+	);
+}
+
+function rows(component: ToolExecutionComponent, width = 128): string[] {
+	const lines = component.render(width);
+	assert.ok(lines.every((line) => visibleWidth(line) <= width));
+	return lines.map((line) => stripTerminalSequences(line).slice(1).trimEnd());
+}
+
+function screen(component: ToolExecutionComponent, width?: number): string {
+	return rows(component, width).join("\n");
+}
+
+function resultOf(text: string, details: Record<string, unknown>, isError = false) {
+	return { content: [{ type: "text" as const, text }], details, isError };
+}
+
+function settle(component: ToolExecutionComponent, result: AgentToolResult<unknown> & { isError?: boolean }): void {
+	component.updateResult({ ...result, isError: result.isError === true });
+}
+
+it("shows one Pi expansion hint at the correct position, only for hidden content", (t) => {
+	key(t, ["ctrl+g"]);
+	const plain = card({ kind: "model", available: false, provider: "p" });
+	assert.match(screen(plain), /registry model\nprovider p · cached unavailable only/);
+	assert.doesNotMatch(screen(plain), /to expand/);
+	settle(plain, resultOf("No matches", {}));
+	assert.doesNotMatch(screen(plain), /to expand/);
+
+	const component = card({ cursor: "opaque-input-cursor" });
+	assert.deepEqual(rows(component).filter(Boolean), ["registry continuation", "... (ctrl+g to expand)"]);
+	component.updateResult(resultOf("", {}), true);
+	assert.deepEqual(rows(component).filter(Boolean).slice(1), ["Reading the registry…", "... (ctrl+g to expand)"]);
+	settle(component, resultOf("One line", {}));
+	assert.deepEqual(rows(component).filter(Boolean), ["registry continuation", "One line", "... (ctrl+g to expand)"]);
+	component.setExpanded(true);
+	assert.match(screen(component), /cursor: opaque-input-cursor/);
+	assert.doesNotMatch(screen(component), /to expand/);
 });
 
-describe("registry call card", () => {
-	it("names the lookup and carries one qualifier row", () => {
-		const named = renderRegistryCall({ name: "registry", kind: "tool", detail: true, limit: 5 }, theme, {
-			expanded: false,
-			argsComplete: true,
-		});
-		assert.match(screen(named), /registry · registry/);
-		assert.match(screen(named), /tool · detail · limit 5/);
-		assert.equal(rows(named).length, 2);
-		assert.match(screen(renderRegistryCall({}, theme, { argsComplete: true })), /registry · session overview/);
-		assert.equal(rows(renderRegistryCall({}, theme, { argsComplete: true })).length, 1);
-		assert.match(
-			screen(renderRegistryCall({ search: "file contents", kind: "tool" }, theme, { argsComplete: true })),
-			/registry · search "file contents"/,
-		);
-		assert.match(
-			screen(renderRegistryCall({ contains: "needle", kind: "skill" }, theme, { argsComplete: true })),
-			/registry · contains "needle"/,
-		);
-		assert.match(
-			screen(renderRegistryCall({ kind: "model", provider: "p", available: true }, theme, { argsComplete: true })),
-			/registry · model/,
-		);
-		assert.match(
-			screen(renderRegistryCall({ kind: "model", provider: "p", available: true }, theme, { argsComplete: true })),
-			/provider p · available only/,
-		);
-		const continuation = renderRegistryCall({ cursor: "opaque-cursor" }, theme, { argsComplete: true });
-		assert.match(screen(continuation), /registry · continuation/);
-		assert.doesNotMatch(screen(continuation), /expand result|expand arguments/i);
-	});
-
-	it("clips long values, escapes controls, and expands the full arguments", () => {
-		const view = renderRegistryCall({ name: `\x1b]52;c;x\x07${"n".repeat(200)}` }, theme, {
-			expanded: false,
-			argsComplete: true,
-		});
-		const shown = screen(view, 80);
-		assert.doesNotMatch(shown, /[\x1b\x07]/);
-		assert.match(shown, /Expand for arguments/);
-		const keyed = renderRegistryCall({ name: "n".repeat(200) }, theme, {
-			expanded: false,
-			argsComplete: true,
-			keyText: () => "ctrl+g",
-		});
-		assert.match(screen(keyed, 80), /ctrl\+g to expand arguments/, "the hint uses the host-injected binding");
-		const expanded = screen(
-			renderRegistryCall({ name: "registry", detail: true }, theme, { expanded: true, argsComplete: true }),
-		);
-		assert.match(expanded, /"detail": true/);
-	});
+it("never advertises a click on an unsettled call without a key", (t) => {
+	key(t, []);
+	const component = card({ name: toolName, kind: "tool", detail: true, limit: 5 });
+	assert.match(screen(component, 40), /registry synthetic_registry_registry_…/);
+	assert.doesNotMatch(screen(component), /expand/);
+	settle(component, resultOf("A receipt", {}));
+	assert.match(screen(component), /A receipt\n\.\.\. \(click to expand\)/);
 });
 
-describe("registry result card", () => {
-	it("summarizes a real host summary with model, context, and counts", async () => {
-		const result = await registryTool().execute("host", {}, undefined, undefined, context);
-		const view = renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false });
-		const shown = screen(view);
-		assert.match(shown, /session overview · model provider\/model · context 75%/);
-		assert.match(shown, /tool 2 · command 0 · skill 1 · prompt 0/);
-		assert.equal(rows(view).length, 2);
-	});
+it("renders a real registered overview and tool detail, with full identifiers on expansion", async (t) => {
+	key(t, ["ctrl+o"]);
+	const tool = registeredTool();
+	assert.equal(tool.renderCall, toolDisplay().tools[0].renderCall);
+	assert.equal(tool.renderResult, toolDisplay().tools[0].renderResult);
+	const overview = card();
+	settle(overview, await tool.execute("host", {}, undefined, undefined, context));
+	assert.match(screen(overview), /Session overview\nprovider\/model · high · context 75%\n2 tools · 1 active/);
+	assert.match(screen(overview), /0 commands · 1 skill · 0 prompts/);
+	assert.doesNotMatch(screen(overview), /unknown|unavailable \(/);
 
-	it("summarizes a real tool listing by count and kind", async () => {
-		const result = await registryTool().execute("list", { kind: "tool" }, undefined, undefined, context);
-		assert.equal(result.details?.outcome, "ok");
-		const view = renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false });
-		const shown = screen(view);
-		assert.match(shown, /ok · 2 shown of 2/);
-		assert.match(shown, /tool 2/);
-		assert.doesNotMatch(shown, /TOOL bash|description:/);
-		assert.equal(rows(view).length, 2);
-	});
+	const args = { kind: "tool", name: toolName, detail: true };
+	const component = card(args);
+	const result = await tool.execute("detail", args, undefined, undefined, context);
+	settle(component, result);
+	assert.match(screen(component, 80), /Returned 1 of 1 match/);
+	assert.equal(rows(component, 80).filter((line) => line.includes("to expand")).length, 1);
+	assert.match(screen(component, 800), new RegExp(toolName));
+	component.setExpanded(true);
+	assert.match(screen(component, 800), new RegExp(`Source for ${toolName}: /fixtures/extension.ts`));
+	assert.match(screen(component), /parameters:.*Long-name schema/);
+	assert.doesNotMatch(screen(component), /to expand/);
+});
 
-	it("reports no match without claiming absence", async () => {
-		const result = await registryTool().execute("miss", { kind: "tool", name: "nope" }, undefined, undefined, context);
-		assert.equal(result.details?.outcome, "missing");
-		assert.match(
-			screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/no match · 0 shown of 0/,
-		);
-	});
+it("reports real page scope and renders the exact continuation argument", async () => {
+	const tool = registeredTool();
+	const args = { kind: "tool", limit: 1 };
+	const component = card(args);
+	const first = await tool.execute("first", args, undefined, undefined, context);
+	settle(component, first);
+	assert.match(screen(component), /Returned 1 of 2 matches; continuation available/);
+	assert.match(screen(component), /Tool first · configured · active · not callable in this host/);
+	assert.doesNotMatch(screen(component), /Next call:|pass cursor=/);
+	component.setExpanded(true);
+	const cursor = first.details?.cursor;
+	assert.equal(typeof cursor, "string");
+	assert.ok(screen(component, 2048).includes(`Next call: registry ${JSON.stringify({ cursor })}`));
+	const second = card({ cursor });
+	assert.equal(typeof cursor, "string");
+	settle(second, await tool.execute("second", { cursor: cursor as string }, undefined, undefined, context));
+	assert.match(screen(second), /Returned 1 of 2 matches \(offset 1\); no further known matches/);
+});
 
-	it("keeps the chat-only boundary visible on a missing model card", async () => {
-		const modelContext = {
-			...context,
-			model: undefined,
-			scopedModels: [],
-			modelRegistry: {
-				getAll: () => [],
-				getAvailable: () => [],
-				getError: () => undefined,
-				getRegisteredProviderIds: () => [],
-			},
-		} as unknown as ExtensionToolContext;
-		const result = await registryTool().execute(
-			"model",
-			{ kind: "model", name: "cloudflare-workers-ai/@cf/cloudflare/clef" },
-			undefined,
-			undefined,
-			modelContext,
-		);
-		assert.equal(result.details?.outcome, "missing");
-		const card = renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false });
-		const shown = screen(card);
-		assert.match(shown, /no match · 0 shown of 0 · chat models only/);
-		assert.match(shown, /Classifier\/image discovery: codemode models\.\*/);
-		assert.match(shown, /(?:to expand result|expand for result)/i);
-		assert.equal(rows(card, 140).length, 2);
-		const expanded = screen(
-			renderRegistryResult(result, { expanded: true, isPartial: false }, theme, { isError: false }),
-		);
-		assert.match(expanded, /missing here does not establish their absence/);
-		assert.match(expanded, /models\.getModelsOfType\("classifier"\)/);
-	});
-	it("summarizes a scanned file result with counts, scan coverage, and bounds", () => {
-		const scanned = resultOf("registry outcome=ok", {
+it("shows a missing chat model and a local catalog review without implying remote checks", async () => {
+	const tool = registeredTool();
+	const modelContext = {
+		...context,
+		model: undefined,
+		scopedModels: [],
+		modelRegistry: {
+			getAll: () => [],
+			getAvailable: () => [],
+			getError: () => undefined,
+			getRegisteredProviderIds: () => [],
+		},
+	} as unknown as ExtensionToolContext;
+	const args = { kind: "model", name: "p/missing" };
+	const missing = card(args);
+	settle(missing, await tool.execute("model", args, undefined, undefined, modelContext));
+	assert.match(screen(missing), /No matches; no further known matches/);
+	assert.match(screen(missing), /Chat models only; find classifier and image models via codemode models\.\*/);
+	missing.setExpanded(true);
+	assert.match(screen(missing), /models\.getModelsOfType\("classifier"\)/);
+
+	const healthArgs = { kind: "model", health: true };
+	const health = card(healthArgs);
+	settle(health, await tool.execute("health", healthArgs, undefined, undefined, modelContext));
+	assert.match(screen(health), /No flagged records in the local catalog review/);
+	assert.match(screen(health), /remote health not checked/);
+});
+
+it("omits absent model facts and distinguishes cached availability from configured auth", () => {
+	const model = card({ kind: "model" });
+	settle(
+		model,
+		resultOf("Catalog boundaries", {
 			outcome: "ok",
-			scanned: true,
-			resolved: { kind: "skill", name: "example" },
+			catalogBoundary: "Chat only",
+			returnedRecords: 2,
 			total: 2,
-			returnedRecords: 2,
-			records: [{ line: 3, text: "needle here" }],
-			partialScan: false,
-		});
-		const view = renderRegistryResult(scanned, { expanded: false, isPartial: false }, theme, { isError: false });
-		const shown = screen(view);
-		assert.match(shown, /ok · 2 of 2 matches · in skill example/);
-		assert.match(shown, /whole file scanned/);
-		assert.match(shown, /(?:to expand result|expand for result)/i);
-		const partial = screen(
-			renderRegistryResult(
-				resultOf("x", {
-					outcome: "partial",
-					scanned: true,
-					resolved: { kind: "skill", name: "example" },
-					total: 3,
-					returnedRecords: 1,
-					records: [],
-					partialScan: true,
-				}),
-				{ expanded: false, isPartial: false },
-				theme,
-				{ isError: false },
-			),
-		);
-		assert.match(partial, /partial scan · 1 of 3 matches · in skill example/);
-		assert.match(partial, /scan partial · absence not established/);
-	});
-
-	it("reports bounds, page blocking, and continuation", () => {
-		const bounded = resultOf("x", {
-			outcome: "ok",
-			total: 5,
-			returnedRecords: 2,
 			records: [
-				{ kind: "tool", name: "a" },
-				{ kind: "tool", name: "b" },
+				{ kind: "model", name: "provider/present", available: false, configuredAuth: true, contextWindow: 250000 },
+				{ kind: "model", name: "provider/limited", available: null, configuredAuth: null, contextWindow: null },
 			],
-			resultBounded: true,
-			omittedRecordBlocks: 3,
-			cursor: "opaque",
-			pageTruncated: true,
-			continuationStatus: "available",
-		});
-		const shown = screen(
-			renderRegistryResult(bounded, { expanded: false, isPartial: false }, theme, { isError: false }),
-		);
-		assert.match(shown, /ok · 2 shown of 5/);
-		assert.match(shown, /tool 2 · 3 omitted from this page · continuation available/);
-		const blocked = resultOf("x", {
-			outcome: "ok",
-			total: 5,
-			returnedRecords: 0,
-			records: [],
-			resultBounded: true,
-			omittedRecordBlocks: 5,
-			pageBlocked: true,
-			pageTruncated: true,
-			continuationStatus: "blocked",
-			continuationReason: "The first record exceeds the result bound.",
-		});
-		assert.match(
-			screen(renderRegistryResult(blocked, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/first record exceeds the result bound/,
-		);
-	});
-
-	it("distinguishes stale cursors, read errors, and invalid arguments", () => {
-		const stale = screen(
-			renderRegistryResult(
-				resultOf("x", { outcome: "stale_cursor", staleCursor: true, reason: "the session changed" }),
-				{ expanded: false, isPartial: false },
-				theme,
-				{ isError: false },
-			),
-		);
-		assert.match(stale, /stale cursor · the session changed/);
-		const io = screen(
-			renderRegistryResult(
-				resultOf("x", { outcome: "io_error", scanned: false, ioError: "EACCES" }),
-				{ expanded: false, isPartial: false },
-				theme,
-				{ isError: false },
-			),
-		);
-		assert.match(io, /read error · EACCES/);
-		const invalid = screen(
-			renderRegistryResult(
-				resultOf("x", { outcome: "invalid_arguments", reason: "invalid_arguments" }),
-				{ expanded: false, isPartial: false },
-				theme,
-				{ isError: false },
-			),
-		);
-		assert.match(invalid, /invalid arguments/);
-		assert.doesNotMatch(invalid, /· invalid_arguments/);
-		const cancelled = screen(
-			renderRegistryResult(
-				resultOf("x", { outcome: "cancelled", cancelled: true }),
-				{ expanded: false, isPartial: false },
-				theme,
-				{ isError: false },
-			),
-		);
-		assert.match(cancelled, /cancelled/);
-	});
-
-	it("summarizes a model discovery page with kind counts and a health line", () => {
-		const discovery = resultOf("x", {
-			outcome: "ok",
-			total: 3,
-			returnedRecords: 2,
-			records: [
-				{ kind: "model", name: "p/a" },
-				{ kind: "model", name: "p/b" },
-			],
-			cursor: "next",
-			pageTruncated: true,
-			continuationStatus: "available",
-		});
-		const shown = screen(
-			renderRegistryResult(discovery, { expanded: false, isPartial: false }, theme, { isError: false }),
-		);
-		assert.match(shown, /ok · 2 shown of 3/);
-		assert.match(shown, /model 2 · continuation available/);
-	});
-
-	it("replaces the tally with key facts for a single-record page", () => {
-		const model = resultOf("x", {
-			outcome: "ok",
-			total: 1,
-			returnedRecords: 1,
-			records: [
-				{
-					kind: "model",
-					name: "provider/model",
-					metadataAvailable: true,
-					available: true,
-					configuredAuth: true,
-					contextWindow: 1_000_000,
-					supportedThinkingLevels: ["low", "high", "max"],
-				},
-			],
-		});
-		const shown = screen(renderRegistryResult(model, { expanded: false, isPartial: false }, theme, { isError: false }));
-		assert.match(shown, /ok · 1 shown of 1/);
-		assert.match(shown, /available \(cached\) · auth configured · 1M context · thinking low, high, max/);
-		assert.doesNotMatch(shown, /model 1/);
-		const tool = resultOf("x", {
-			outcome: "ok",
-			total: 1,
-			returnedRecords: 1,
-			records: [{ kind: "tool", name: "bash", configured: true, active: true }],
-		});
-		assert.match(
-			screen(renderRegistryResult(tool, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/configured · active/,
-		);
-		const unknown = resultOf("x", {
-			outcome: "ok",
-			total: 1,
-			returnedRecords: 1,
-			records: [{ kind: "command", name: "x" }],
-		});
-		assert.match(
-			screen(renderRegistryResult(unknown, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/command 1/,
-		);
-		const many = resultOf("x", {
-			outcome: "ok",
-			total: 8,
-			returnedRecords: 8,
-			records: ["a", "b", "c", "d", "e", "f", "g", "h"].map((kind) => ({ kind, name: kind })),
-		});
-		assert.match(
-			screen(renderRegistryResult(many, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/\+2 more/,
-		);
-	});
-
-	it("states unknown model metadata without invented context or thinking capability", () => {
-		const unknown = resultOf("x", {
-			outcome: "ok",
-			total: 1,
-			returnedRecords: 1,
-			pageTruncated: false,
-			continuationStatus: "complete",
-			records: [
-				{
-					kind: "model",
-					name: "provider/unknown",
-					metadataAvailable: false,
-					available: null,
-					configuredAuth: null,
-					contextWindow: null,
-					supportedThinkingLevels: null,
-				},
-			],
-		});
-		const shown = screen(
-			renderRegistryResult(unknown, { expanded: false, isPartial: false }, theme, { isError: false }),
-		);
-		assert.match(shown, /metadata unknown/);
-		assert.match(shown, /availability unknown/);
-		assert.match(shown, /no further known match \(no reported gap\)/);
-		assert.doesNotMatch(shown, /complete source/);
-		assert.doesNotMatch(shown, /0 context|thinking off|thinking low/);
-	});
-
-	it("retains the explicit reason when continuation is unavailable", () => {
-		const partial = resultOf("x", {
-			outcome: "partial",
-			total: 2,
-			returnedRecords: 1,
-			pageTruncated: true,
-			continuationStatus: "unavailable",
-			continuationReason: "The catalogue is incomplete.",
-			records: [{ kind: "model", name: "provider/model" }],
-		});
-		const shown = screen(
-			renderRegistryResult(partial, { expanded: false, isPartial: false }, theme, { isError: false }),
-		);
-		assert.match(shown, /continuation unavailable: The catalogue is incomplete/);
-		assert.doesNotMatch(shown, /continuation available/);
-	});
-
-	it("rounds the host context percent to a whole number", () => {
-		const result = resultOf("x", {
-			outcome: "host_summary",
-			host: true,
-			context: { model: "provider/model", percent: 8.1392, state: "available" },
-			counts: { tool: 1, command: 0, skill: 0, prompt: 0 },
-		});
-		assert.match(
-			screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/context 8%/,
-		);
-	});
-
-	it("handles partial state, errors, empty details, and malformed details", () => {
-		assert.match(
-			screen(renderRegistryResult(resultOf("", {}), { expanded: false, isPartial: true }, theme, { isError: false })),
-			/Reading the registry\.\.\./,
-		);
-		const errored = screen(
-			renderRegistryResult(resultOf("registry failed", {}), { expanded: false, isPartial: false }, theme, {
-				isError: true,
-			}),
-		);
-		assert.match(errored, /registry failed/);
-		assert.match(
-			screen(
-				renderRegistryResult(resultOf("plain text", {}), { expanded: false, isPartial: false }, theme, {
-					isError: false,
-				}),
-			),
-			/plain text/,
-		);
-		assert.ok(
-			screen(
-				renderRegistryResult(
-					{ content: [], details: "broken" } as never,
-					{ expanded: false, isPartial: false },
-					theme,
-					{ isError: false },
-				),
-			).trim().length > 0,
-		);
-	});
-
-	it("escapes controls, expands the bounded text, and reuses the previous component", () => {
-		const hostile = screen(
-			renderRegistryResult(
-				resultOf("outcome=ok\x1b]52;c;d\x07\u202e", { outcome: "ok" }),
-				{ expanded: false, isPartial: false },
-				theme,
-				{ isError: false },
-			),
-		);
-		assert.doesNotMatch(hostile, /[\x1b\x07\u202e]/u);
-		const initial = renderRegistryCall({ name: "x" }, theme, { expanded: false, argsComplete: true });
-		const updated = renderRegistryCall({ name: "x" }, theme, {
-			expanded: true,
-			argsComplete: true,
-			lastComponent: initial,
-		});
-		assert.equal(initial, updated);
-		assert.match(screen(updated), /"name": "x"/);
-		const long = "line\n".repeat(9000);
-		const expanded = screen(
-			renderRegistryResult(resultOf(long, { outcome: "ok" }), { expanded: true, isPartial: false }, theme, {
-				isError: false,
-			}),
-			400,
-		);
-		assert.match(expanded, /Display limit; full text remains in native tool history/);
-		assert.ok(expanded.length < 90_000);
-	});
+		}),
+	);
+	assert.match(screen(model), /provider\/present · unavailable \(cached\) · auth configured · 250,000 context/);
+	assert.match(screen(model), /provider\/limited\n/);
+	assert.doesNotMatch(screen(model), /unknown|· 0 context|thinking/);
 });
 
-describe("registry card safety", () => {
-	const hostile = "safe\u009b\u202e\x1b[31m";
-	it("escapes C1 and bidi controls in values and expanded output", () => {
-		const result = resultOf(`outcome=ok\n${hostile}`, {
-			outcome: hostile,
+it("distinguishes settings coverage, context evidence, scan coverage, ambiguity, and producer bounds", async () => {
+	const tool = registeredTool();
+	for (const [kind, expected] of [
+		["setting", /Settings snapshot unavailable/],
+		["context_file", /Context paths not yet observed/],
+	] as const) {
+		const args = { kind };
+		const component = card(args);
+		settle(component, await tool.execute(kind, args, undefined, undefined, context));
+		assert.match(screen(component), expected);
+		assert.doesNotMatch(screen(component), /No matches/);
+	}
+	const contextFiles = card({ kind: "context_file" });
+	settle(
+		contextFiles,
+		resultOf("Prior context path evidence", {
+			outcome: "ok",
+			query: { kind: "context_file" },
+			observed: true,
 			total: 1,
 			returnedRecords: 1,
-			records: [{ kind: hostile, name: hostile }],
-		});
-		assert.doesNotMatch(
-			screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/[\x1b\u009b\u202e]/u,
-		);
-		assert.doesNotMatch(
-			screen(renderRegistryResult(result, { expanded: true, isPartial: false }, theme, { isError: false })),
-			/[\x1b\u009b\u202e]/u,
-		);
-		assert.doesNotMatch(
-			screen(renderRegistryCall({ name: hostile, kind: hostile }, theme, { expanded: true, argsComplete: true })),
-			/[\x1b\u009b\u202e]/u,
-		);
+			records: [{ kind: "context_file", path: `${homedir()}/fixtures/AGENTS.md` }],
+		}),
+	);
+	assert.match(screen(contextFiles), /Prior context path observation; no file content read\n~\/fixtures\/AGENTS.md/);
+
+	const scan = await lookup({
+		params: { kind: "skill", name: "example", contains: "needle" },
+		epoch: "fixture",
+		session: { cwd: "/fixtures", mode: "rpc" },
+		snapshot: {
+			tools: [],
+			activeTools: [],
+			observation: null,
+			at: 1000,
+			availability: { tools: true, activeTools: true, commands: true },
+			commands: [{ name: "example", source: "skill", sourceInfo: { ...sourceInfo, path: "/fixtures/SKILL.md" } }],
+		},
+		scan: async () => ({
+			outcome: "ok",
+			matches: [{ line: 4, text: "Needle line" }],
+			bytesRead: 100,
+			fileSize: 500,
+			truncated: true,
+			stamp: { path: "/fixtures/SKILL.md", dev: 1, ino: 2, size: 500, mtimeMs: 1, ctimeMs: 1, digest: "0".repeat(64) },
+		}),
 	});
-	it("labels configured snapshots and partial settings coverage on collapsed cards", () => {
-		const result = resultOf("Configuration snapshot.", {
+	const scanCard = card();
+	settle(scanCard, resultOf(scan.text, scan.details, lookupIsError(scan.outcome)));
+	assert.match(screen(scanCard), /Partial file scan: 1 of 1 known match in skill example; continuation unavailable/);
+	assert.match(screen(scanCard), /100 of 500 bytes read/);
+	assert.match(screen(scanCard), /Line 4: Needle line/);
+	assert.match(screen(scanCard), /\[Partial coverage: absence is not established\]/);
+
+	const partialSettings = card({ kind: "setting" });
+	settle(
+		partialSettings,
+		resultOf("Configured settings receipt", {
 			outcome: "partial",
 			total: 1,
 			returnedRecords: 1,
-			records: [{ kind: "setting", name: "example.count" }],
-			settingsCoverage: { respondingSlices: ["example"] },
-		});
-		const text = screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false }));
-		assert.match(text, /partial configuration/);
-		assert.match(text, /configured snapshot/);
-		assert.match(text, /responding publishers only/);
+			records: [{ name: "example.status", kind: "setting", status: "valid", origin: "file" }],
+			settingsCoverage: { respondingSlices: ["example"], collection: { malformed: 1 } },
+		}),
+	);
+	assert.match(screen(partialSettings), /Configuration snapshot; responding publishers only · example/);
+	assert.match(screen(partialSettings), /1 publication malformed/);
+	assert.match(screen(partialSettings), /example\.status · valid · file/);
+
+	const ambiguous = card({ name: "example", contains: "needle" });
+	settle(
+		ambiguous,
+		resultOf("Narrow the query", {
+			outcome: "ambiguous",
+			candidates: 2,
+			returnedRecords: 1,
+			continuationStatus: "available",
+			cursor: "candidate-page",
+			records: [{ kind: "skill", name: "example" }],
+		}),
+	);
+	assert.match(screen(ambiguous), /The query needs one resource: 1 of 2 candidates; continuation available/);
+
+	const blocked = boundResult({
+		header: ["registry outcome=ok"],
+		footer: [],
+		details: { outcome: "ok", total: 1 },
+		blocks: [{ lines: ["x".repeat(60_000)], detail: { kind: "tool", name: "large" } }],
+		page: { total: 1, offset: 0 },
 	});
-	it("tolerates null and undefined arguments", () => {
-		assert.doesNotThrow(() => renderRegistryCall(null, theme, { expanded: false, argsComplete: false }));
-		assert.doesNotThrow(() => renderRegistryCall(undefined, theme, { expanded: false, argsComplete: false }));
-	});
+	const blockedCard = card();
+	settle(blockedCard, resultOf(blocked.text, blocked.details));
+	assert.match(screen(blockedCard), /page cannot advance/);
+	assert.match(screen(blockedCard), /first record exceeds the result bound/);
+	assert.doesNotMatch(screen(blockedCard), /No matches|\[Partial coverage/);
+});
+
+it("uses Pi's error context for validation, stale cursors and thrown diagnostics, and names structured cancellation", async (t) => {
+	const tool = registeredTool();
+	const colours = t.mock.method(Theme.prototype, "fg");
+	const invalid = card({ name: "" });
+	settle(invalid, await tool.execute("invalid", { name: "" }, undefined, undefined, context));
+	assert.match(screen(invalid), /name must be 1-256 characters/);
+	assert.ok(
+		colours.mock.calls.some(({ arguments: [role, text] }) => role === "error" && text.includes("name must be")),
+	);
+
+	const readError = card({ kind: "skill", contains: "x" });
+	settle(readError, await tool.execute("read", { kind: "skill", contains: "x" }, undefined, undefined, context));
+	assert.match(screen(readError), /ENOENT/);
+
+	const first = await tool.execute("first", { kind: "tool", limit: 1 }, undefined, undefined, context);
+	const cursor = first.details?.cursor as string;
+	const stale = card({ cursor });
+	settle(stale, await registeredTool().execute("stale", { cursor }, undefined, undefined, context));
+	assert.match(screen(stale), /Stale cursor: the session changed/);
+
+	const cancelled = card({ kind: "tool" });
+	settle(cancelled, await tool.execute("cancel", { kind: "tool" }, AbortSignal.abort(), undefined, context));
+	assert.match(screen(cancelled), /\nCancelled\n/);
+
+	const thrown = card();
+	settle(thrown, resultOf("AbortError: wait cancelled by transport", {}, true));
+	assert.match(screen(thrown), /AbortError: wait cancelled by transport/);
+	assert.doesNotMatch(screen(thrown), /\nCancelled\n|to expand/);
+});
+
+it("discloses bare multiline errors only when the card hides diagnostic text", (t) => {
+	key(t, ["ctrl+o"]);
+	const component = card();
+	const lead = "Read error";
+	const detail = `Details: ${"x".repeat(190)}`;
+	settle(component, resultOf(`${lead}\n${detail}`, {}, true));
+	assert.deepEqual(rows(component, 220).filter(Boolean), ["registry session overview", lead, detail]);
+
+	const narrow = rows(component, 40).filter(Boolean);
+	assert.equal(narrow.filter((row) => row.includes("to expand")).length, 1);
+	assert.match(narrow.at(-1) ?? "", /more line[s]?, ctrl\+o to expand/);
+
+	component.setExpanded(true);
+	assert.deepEqual(rows(component, 220).filter(Boolean), ["registry session overview", lead, detail]);
+});
+
+it("does not repeat a structured error lead in evidence", () => {
+	const lead = "The file is unreadable";
+	const details = { outcome: "io_error", ioError: lead };
+	const component = card();
+	settle(component, resultOf(lead, details, true));
+	assert.deepEqual(rows(component).filter(Boolean), ["registry session overview", lead]);
+	settle(component, resultOf(`${lead}\nFile evidence was not read.`, details, true));
+	assert.match(screen(component), /to expand/);
+	component.setExpanded(true);
+	assert.deepEqual(rows(component).filter(Boolean), ["registry session overview", lead, "File evidence was not read."]);
+});
+
+it("caps wrapped content, shows exact display bounds, and contains terminal controls", (t) => {
+	key(t, ["ctrl+o"]);
+	const diagnostic = `Failure:\x1b[31m\u202e ${"x".repeat(240)}`;
+	const compact = card();
+	settle(compact, resultOf(`${diagnostic}\n${"Y".repeat(400)}`, { malformed: true }, true));
+	const collapsed = rows(compact, 40).filter(Boolean);
+	assert.equal(collapsed.length, 8, "call, outcome, five wrapped body lines, and hint");
+	assert.match(collapsed[1], /^Failure: x+…$/);
+	assert.match(collapsed.at(-1) ?? "", /more lines, ctrl\+o to expand/);
+	assert.doesNotMatch(collapsed.join("\n"), /[\x1b\u202e]/u);
+	compact.setExpanded(true);
+	assert.ok(screen(compact, 500).includes("Y".repeat(400)));
+
+	const bounded = card();
+	settle(bounded, resultOf(`Plain report\n${"z".repeat(34_000)}`, { outcome: "ok" }));
+	bounded.setExpanded(true);
+	assert.match(screen(bounded, 480), /\[Truncated: showing 32000 of 34013 characters\]/);
 });

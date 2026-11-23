@@ -1,412 +1,553 @@
-/**
- * Terminal cards for the registry tool.
- *
- * The registry tool returns a human-readable text block plus structured
- * details. A collapsed card shows the request on its heading row and at most
- * one qualifier row, then one or two outcome rows built from those details
- * (outcome, counts, continuation, bounds). The expansion hints appear only when
- * the collapsed view hides or clips content, and each rides the row it belongs
- * to. An expanded card shows the full arguments or the bounded result text.
- * Counts never read as a complete inventory: the result text carries the
- * evidence boundaries.
- */
+import { type Theme, type ToolDefinition, truncateToVisualLines } from "@earendil-works/pi-coding-agent";
+import { type Component, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { homedir } from "node:os";
 
-import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { type Component, Text } from "@earendil-works/pi-tui";
-
+const EXPAND = "app.tools.expand";
 const DISPLAY_LIMIT = 32_000;
+const PREVIEW_ROWS = 5;
+type Fields = Record<string, unknown>;
+type CardState = { hasResult?: boolean; hidesArguments?: (width: number) => boolean };
+type CardContext = Omit<Parameters<NonNullable<ToolDefinition["renderCall"]>>[2], "state"> & { state: CardState };
 
-/** Controls render as text, never as terminal commands; newlines keep structure. */
-function escapeControls(value: string): string {
-	return value.replace(/[\p{Cc}\p{Cf}]/gu, (char) => {
-		if (char === "\n") return char;
-		if (char === "\t") return "\\t";
-		if (char === "\r") return "\\r";
-		return `\\u{${(char.codePointAt(0) ?? 0).toString(16)}}`;
+function record(value: unknown): Fields {
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Fields) : {};
+}
+
+function safeText(value: string): string {
+	return stripTerminalSequences(value.replace(/\r\n/g, "\n"))
+		.replace(/[\p{Cc}\p{Cf}]/gu, (char) => (char === "\n" || char === "\t" ? char : ""))
+		.replaceAll("\t", "   ");
+}
+
+function field(value: unknown): string {
+	return typeof value === "string" ? safeText(value).replace(/\s+/gu, " ").trim() : "";
+}
+
+function pathField(value: unknown): string {
+	const path = field(value);
+	const home = homedir();
+	return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
+function recordName(entry: Fields): string {
+	return entry.kind === "context_file" ? pathField(entry.path ?? entry.name) : field(entry.name);
+}
+
+function number(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function count(value: number, noun: string, plural = `${noun}s`): string {
+	return `${value} ${value === 1 ? noun : plural}`;
+}
+
+function boolean(value: unknown, yes: string, no: string): string {
+	return value === true ? yes : value === false ? no : "";
+}
+
+function join(...parts: string[]): string {
+	return parts.filter(Boolean).join(" · ");
+}
+
+function clipLine(value: string, width: number): string {
+	return stripTerminalSequences(truncateToWidth(value, width, "…"));
+}
+
+function wrapped(value: string, width: number): readonly string[] {
+	return truncateToVisualLines(value, Infinity, width, 0, "start").visualLines;
+}
+
+function bounded(value: string): { text: string; limit?: string } {
+	if (value.length <= DISPLAY_LIMIT) return { text: value };
+	const chars = Array.from(value);
+	if (chars.length <= DISPLAY_LIMIT) return { text: value };
+	return {
+		text: chars.slice(0, DISPLAY_LIMIT).join(""),
+		limit: `[Truncated: showing ${DISPLAY_LIMIT} of ${chars.length} characters]`,
+	};
+}
+
+function component(draw: (width: number) => string[]): Component {
+	let cache: { width: number; rows: string[] } | undefined;
+	return {
+		render(width) {
+			if (width < 1) return [];
+			if (cache?.width !== width) cache = { width, rows: draw(width) };
+			return cache.rows;
+		},
+		invalidate() {
+			cache = undefined;
+		},
+	};
+}
+
+function hint(theme: Theme, context: CardContext, width: number, hidden = 0): string {
+	const prefix = hidden > 0 ? `... (${count(hidden, "more line")}, ` : "... (";
+	const key = context.keyText(EXPAND);
+	const plain = `${prefix}${key ? `${key} to expand` : "click to expand"})`;
+	if (!key || visibleWidth(plain) > width) return theme.fg("muted", clipLine(plain, width));
+	return theme.fg("muted", prefix) + context.keyHint(EXPAND, "to expand") + theme.fg("muted", ")");
+}
+
+function hiddenSelector(key: string, value: unknown, labels: Record<string, string>): boolean {
+	if (Object.hasOwn(labels, key)) return value !== labels[key] || !labels[key];
+	switch (key) {
+		case "match":
+			return value !== "substring" && value !== "exact";
+		case "available":
+		case "detail":
+		case "health":
+			return typeof value !== "boolean";
+		case "limit":
+			return number(value) === undefined;
+		default:
+			return true;
+	}
+}
+
+function matchMode(value: unknown): string {
+	if (value === "substring") return "substring";
+	return value === "exact" ? "exact match" : "";
+}
+
+function callFacts(args: Fields): { subject: string; facts: string; unshown: boolean } {
+	const name = args.kind === "context_file" ? pathField(args.name) : field(args.name);
+	const search = field(args.search);
+	const contains = field(args.contains);
+	const kind = field(args.kind);
+	const cursor = field(args.cursor);
+	const provider = field(args.provider);
+	const limit = number(args.limit);
+	const subject =
+		name ||
+		(search && `search ${JSON.stringify(search)}`) ||
+		(contains && `contains ${JSON.stringify(contains)}`) ||
+		kind ||
+		(cursor ? "continuation" : "session overview");
+	return {
+		subject,
+		facts: join(
+			kind !== subject ? kind : "",
+			name && search ? `search ${JSON.stringify(search)}` : "",
+			(name || search) && contains ? `contains ${JSON.stringify(contains)}` : "",
+			matchMode(args.match),
+			boolean(args.detail, "tool details", "no tool details"),
+			provider ? `provider ${provider}` : "",
+			boolean(args.available, "cached available only", "cached unavailable only"),
+			boolean(args.health, "local catalog review", "standard catalog lookup"),
+			limit === undefined ? "" : `limit ${limit}`,
+		),
+		unshown: Object.entries(args).some(([key, value]) =>
+			hiddenSelector(key, value, { name, kind, search, contains, provider }),
+		),
+	};
+}
+
+export const renderRegistryCall: NonNullable<ToolDefinition["renderCall"]> = (value, theme, context: CardContext) => {
+	const args = record(value);
+	const { subject, facts, unshown } = callFacts(args);
+	const headingWidth = visibleWidth(`registry ${subject}`);
+	const factsWidth = visibleWidth(facts);
+	const argumentsText = context.expanded
+		? bounded(
+				Object.entries(args)
+					.map(([key, value]) => {
+						const text = typeof value === "string" ? safeText(value) : safeText(JSON.stringify(value, null, 2) ?? "");
+						return `  ${field(key)}: ${text.replaceAll("\n", "\n    ")}`;
+					})
+					.join("\n"),
+			)
+		: undefined;
+	context.state.hidesArguments = (width) =>
+		Object.keys(args).length > 0 && (unshown || headingWidth > width || factsWidth > width);
+	// Pi constructs the call first. Defer the hint until both renderers have seen the card state.
+	context.state.hasResult = false;
+	return component((width) => {
+		const room = width - "registry ".length;
+		const title = (text: string) => theme.fg("toolTitle", theme.bold(text));
+		const rows = [
+			room > 0
+				? `${title("registry")} ${theme.fg("accent", clipLine(subject, room))}`
+				: title(clipLine("registry", width)),
+		];
+		if (facts) rows.push(theme.fg("muted", clipLine(facts, width)));
+		if (argumentsText?.text) rows.push(...wrapped(argumentsText.text, width).map((line) => theme.fg("muted", line)));
+		if (argumentsText?.limit) rows.push(theme.fg("warning", clipLine(argumentsText.limit, width)));
+		if (
+			!context.expanded &&
+			context.state.hidesArguments?.(width) &&
+			!context.state.hasResult &&
+			context.keyText(EXPAND)
+		) {
+			rows.push(hint(theme, context, width));
+		}
+		return rows;
 	});
-}
-
-/** Final card-row text: escape every value and keep the row on one line. */
-function rowSafe(value: string): string {
-	return escapeControls(value).replace(/\s+/gu, " ").trim();
-}
-
-/** Longest prefix that never splits a surrogate pair. */
-function clip(value: string, limit: number): string {
-	const end = Math.min(value.length, limit);
-	return value.slice(0, /[\uD800-\uDBFF]/u.test(value[end - 1] ?? "") ? end - 1 : end);
-}
-
-/** Single-line preview plus whether content was dropped. */
-function previewMark(value: string, limit: number): { text: string; clipped: boolean } {
-	const prefix = clip(value, limit);
-	const flat = escapeControls(prefix).replace(/\s+/gu, " ").trim();
-	const clipped = value.length > prefix.length;
-	return { text: clipped ? `${flat}…` : flat, clipped };
-}
-
-/** Escaped body with a display bound; the full text stays in native tool history. */
-function boundedBody(value: string): string {
-	const prefix = clip(value, DISPLAY_LIMIT);
-	return `${escapeControls(prefix)}${value.length > prefix.length ? "\n[Display limit; full text remains in native tool history.]" : ""}`;
-}
-
-function textContent(result: AgentToolResult<unknown>): string {
-	return result.content
-		.filter((block) => block.type === "text")
-		.map((block) => block.text)
-		.join("\n");
-}
-
-/** The host injects keyText with the operator's configured bindings; without it the hint names no key. */
-function expandHint(subject: string, keys: Partial<KeybindingHints>): string {
-	const key = keys.keyText?.("app.tools.expand");
-	return key ? `${key} to expand ${subject}` : `Expand for ${subject}`;
-}
-
-function record(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
-
-function textComponent(text: string, previous?: Component): Text {
-	const component = previous instanceof Text ? previous : new Text("", 0, 0);
-	component.setText(text);
-	return component;
-}
-
-export interface CallContext extends Partial<KeybindingHints> {
-	expanded?: boolean;
-	argsComplete?: boolean;
-	lastComponent?: Component;
-}
-
-export interface ResultContext extends Partial<KeybindingHints> {
-	isError: boolean;
-	lastComponent?: Component;
-}
-
-type OutcomeColor = "success" | "muted" | "warning" | "error";
-
-/** Heading row plus one qualifier row; the hint rides the qualifier row. */
-function callCard(
-	name: string,
-	subject: string,
-	qualifiers: string[],
-	hint: boolean,
-	args: unknown,
-	theme: Theme,
-	context: CallContext,
-): Text {
-	const heading =
-		theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${rowSafe(subject)}`) : "");
-	if (context.expanded) {
-		return textComponent(
-			[heading, theme.fg("toolOutput", boundedBody(JSON.stringify(args ?? {}, null, 2)))].join("\n"),
-			context.lastComponent,
-		);
-	}
-	const detail = qualifiers.join(" · ");
-	const line = detail
-		? theme.fg("muted", rowSafe(detail)) + (hint ? theme.fg("dim", ` · ${expandHint("arguments", context)}`) : "")
-		: hint
-			? theme.fg("dim", expandHint("arguments", context))
-			: "";
-	return textComponent(line ? `${heading}\n${line}` : heading, context.lastComponent);
-}
-
-/** Outcome row plus at most one summary row; the hint rides the last row. */
-function resultCard(
-	outcome: { color: OutcomeColor; line: string },
-	second: string,
-	hint: boolean,
-	body: string,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Text {
-	const lines = [`\n${theme.fg(context.isError ? "error" : outcome.color, rowSafe(outcome.line))}`];
-	if (options.expanded) {
-		if (body) lines.push(theme.fg("toolOutput", boundedBody(body)));
-	} else {
-		const hintSuffix = hint ? theme.fg("dim", `${second ? " · " : ""}${expandHint("result", context)}`) : "";
-		const row = second ? theme.fg("muted", rowSafe(second)) + hintSuffix : hintSuffix;
-		if (row) lines.push(row);
-	}
-	return textComponent(lines.join("\n"), context.lastComponent);
-}
-
-function partialCard(line: string, theme: Theme, context: ResultContext): Text {
-	return textComponent(`\n${theme.fg("warning", line)}`, context.lastComponent);
-}
-
-const OUTCOME_WORD: Record<string, string> = {
-	ok: "ok",
-	host_summary: "session overview",
-	missing: "no match",
-	ambiguous: "ambiguous",
-	unavailable: "unavailable",
-	partial: "partial scan",
-	cancelled: "cancelled",
-	stale_cursor: "stale cursor",
-	io_error: "read error",
-	invalid_arguments: "invalid arguments",
 };
 
-const OUTCOME_COLOR: Record<string, OutcomeColor> = {
-	ok: "success",
-	host_summary: "success",
-	missing: "muted",
-	ambiguous: "warning",
-	unavailable: "warning",
-	partial: "warning",
-	cancelled: "warning",
-	stale_cursor: "warning",
-	io_error: "error",
-	invalid_arguments: "error",
-};
-
-function outcomeWord(details: Record<string, unknown>): string {
-	const outcome = typeof details.outcome === "string" ? details.outcome : "unknown";
-	if (outcome === "partial" && details.settingsCoverage !== undefined) return "partial configuration";
-	return OUTCOME_WORD[outcome] ?? outcome;
-}
-
-function outcomeColor(details: Record<string, unknown>, isError: boolean): OutcomeColor {
-	if (isError) return "error";
-	const outcome = typeof details.outcome === "string" ? details.outcome : "";
-	return OUTCOME_COLOR[outcome] ?? "muted";
-}
-
-function numberField(value: unknown, fallback: number): number {
-	return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-/** Count the resource kinds the returned records already carry. */
-function kindTally(records: unknown[]): string {
-	const counts = new Map<string, number>();
-	for (const entry of records) {
-		const kind = record(entry).kind;
-		if (typeof kind === "string") counts.set(kind, (counts.get(kind) ?? 0) + 1);
-	}
-	const entries = [...counts.entries()];
-	const shown = entries
-		.slice(0, 6)
-		.map(([kind, count]) => `${kind} ${count}`)
-		.join(", ");
-	const omitted = entries.length - 6;
-	if (omitted > 0) return `${shown}, +${omitted} more`;
-	return shown;
-}
-
-function continuationOf(details: Record<string, unknown>): string {
-	if (details.continuationStatus === "available") return "continuation available";
-	if (details.continuationStatus === "complete") return "no further known match (no reported gap)";
-	if (details.continuationStatus !== "unavailable" && details.continuationStatus !== "blocked") return "";
-	const reason =
-		typeof details.continuationReason === "string" ? `: ${previewMark(details.continuationReason, 140).text}` : "";
-	return `continuation ${details.continuationStatus}${reason}`;
-}
-
-/** Compact count: 128K, 1M. */
-function compactCount(value: number): string {
-	if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
-	if (value >= 1000) return `${Math.round(value / 1000)}K`;
-	return String(value);
-}
-
-function modelFacts(entry: Record<string, unknown>): string {
-	const parts: string[] = [];
-	if (entry.metadataAvailable === false) parts.push("metadata unknown");
-	if (entry.available === true) parts.push("available (cached)");
-	else if (entry.available === false) parts.push("unavailable (cached)");
-	else parts.push("availability unknown");
-	if (entry.configuredAuth === true) parts.push("auth configured");
-	else if (entry.configuredAuth === false) parts.push("no configured auth");
-	if (typeof entry.contextWindow === "number" && entry.contextWindow > 0)
-		parts.push(`${compactCount(entry.contextWindow)} context`);
-	if (Array.isArray(entry.supportedThinkingLevels) && entry.supportedThinkingLevels.length > 0) {
-		const levels = entry.supportedThinkingLevels.filter((level) => typeof level === "string");
-		if (levels.length > 0) parts.push(`thinking ${levels.join(", ")}`);
-	}
-	return parts.join(" · ");
-}
-
-function toolFacts(entry: Record<string, unknown>): string {
-	const configured =
-		entry.configured === true ? "configured" : entry.configured === false ? "not configured" : "configured unknown";
-	const active = entry.active === true ? "active" : entry.active === false ? "inactive" : "active unknown";
-	return `${configured} · ${active}`;
-}
-
-/** A one-record page shows that record's key facts instead of a tally of one. */
-function singleRecordFacts(records: unknown[]): string {
-	if (records.length !== 1) return "";
-	const entry = record(records[0]);
-	if (entry.kind === "model") return modelFacts(entry);
-	if (entry.kind === "tool") return toolFacts(entry);
-	return "";
-}
-
-function boundsOf(details: Record<string, unknown>): string {
-	const omitted = numberField(details.omittedRecordBlocks, 0);
-	if (details.resultBounded === true) return `${omitted} omitted from this page`;
-	return "";
-}
-
-function joined(parts: string[]): string {
-	return parts.filter((part) => part !== "").join(" · ");
-}
-
-interface Summary {
-	line: string;
-	second: string;
-	hint: boolean;
-}
-
-function hostSummary(details: Record<string, unknown>): Summary {
-	const context = record(details.context);
-	const parts: string[] = [];
-	const model = typeof context.model === "string" ? context.model : "";
-	if (model) parts.push(`model ${previewMark(model, 90).text}`);
-	if (typeof context.percent === "number") parts.push(`context ${Math.round(context.percent)}%`);
-	else if (typeof context.state === "string" && context.state !== "available") parts.push(`context ${context.state}`);
-	const counts = record(details.counts);
-	const tally = (["tool", "command", "skill", "prompt"] as const)
-		.map((kind) => `${kind} ${numberField(counts[kind], 0)}`)
-		.join(" · ");
-	return { line: joined(["session overview", ...parts]), second: tally, hint: true };
-}
-
-function listingSummary(details: Record<string, unknown>): Summary {
-	const records = Array.isArray(details.records) ? details.records : [];
-	const total = numberField(details.total, records.length);
-	const shown = numberField(details.returnedRecords, records.length);
-	const chatOnly = typeof details.catalogBoundary === "string";
-	const tally = singleRecordFacts(records) || kindTally(records);
-	return {
-		line: `${outcomeWord(details)} · ${shown} shown of ${total}${chatOnly ? " · chat models only" : ""}`,
-		second: joined([
-			tally,
-			chatOnly && total === 0 ? "Classifier/image discovery: codemode models.*" : "",
-			details.settingsCoverage !== undefined ? "configured snapshot · responding publishers only" : "",
-			boundsOf(details),
-			continuationOf(details),
-		]),
-		hint: total > 0 || chatOnly || details.settingsCoverage !== undefined,
-	};
-}
-
-function scannedSummary(details: Record<string, unknown>): Summary {
-	const resolved = record(details.resolved);
-	const kind = typeof resolved.kind === "string" ? resolved.kind : "";
-	const name = typeof resolved.name === "string" ? previewMark(resolved.name, 80).text : "";
-	const target = [kind, name].filter(Boolean).join(" ");
-	const total = numberField(details.total, 0);
-	const shown = numberField(details.returnedRecords, total);
-	const scan = details.partialScan === true ? "scan partial · absence not established" : "whole file scanned";
-	return {
-		line: joined([outcomeWord(details), `${shown} of ${total} matches`, target ? `in ${target}` : ""]),
-		second: joined([scan, boundsOf(details), continuationOf(details)]),
-		hint: total > 0,
-	};
-}
-
-function simpleSummary(details: Record<string, unknown>): Summary {
-	const raw =
-		typeof details.reason === "string" ? details.reason : typeof details.ioError === "string" ? details.ioError : "";
-	const reason = raw && raw !== details.outcome ? previewMark(raw, 140).text : "";
-	const records = Array.isArray(details.records) ? details.records : [];
-	return {
-		line: joined([outcomeWord(details), reason]),
-		second: joined([boundsOf(details), continuationOf(details)]),
-		hint: records.length > 0,
-	};
-}
-
-/** The subject names the primary lookup argument. */
-function subjectOf(args: Record<string, unknown>): { subject: string; hint: boolean } {
-	if (typeof args?.name === "string" && args.name) {
-		const name = previewMark(args.name, 80);
-		return { subject: name.text, hint: name.clipped };
-	}
-	if (typeof args?.search === "string" && args.search) {
-		const search = previewMark(args.search, 64);
-		return { subject: `search "${search.text}"`, hint: search.clipped };
-	}
-	if (typeof args?.contains === "string" && args.contains) {
-		const contains = previewMark(args.contains, 64);
-		return { subject: `contains "${contains.text}"`, hint: contains.clipped };
-	}
-	if (typeof args?.kind === "string" && args.kind) return { subject: args.kind, hint: false };
-	if (typeof args?.cursor === "string" && args.cursor) return { subject: "continuation", hint: false };
-	return { subject: "session overview", hint: false };
-}
-
-function modeQualifiers(args: Record<string, unknown>): string[] {
-	const qualifiers: string[] = [];
-	if (args?.match === "substring") qualifiers.push("substring");
-	if (args?.detail === true) qualifiers.push("detail");
-	if (typeof args?.provider === "string" && args.provider)
-		qualifiers.push(`provider ${previewMark(args.provider, 48).text}`);
-	if (args?.available === true) qualifiers.push("available only");
-	if (args?.health === true) qualifiers.push("catalog health");
-	if (typeof args?.limit === "number") qualifiers.push(`limit ${args.limit}`);
-	return qualifiers;
-}
-
-function queryQualifiers(args: Record<string, unknown>, subject: string): string[] {
-	const qualifiers: string[] = [];
-	if (typeof args?.kind === "string" && args.kind && subject !== args.kind) qualifiers.push(args.kind);
-	if (typeof args?.contains === "string" && args.contains && !subject.startsWith("contains ")) {
-		qualifiers.push(`contains "${previewMark(args.contains, 48).text}"`);
-	}
-	if (typeof args?.cursor === "string" && args.cursor) qualifiers.push("continuation");
-	return qualifiers;
-}
-
-/** The subject names the lookup; the qualifier row carries the mode switches. */
-export function renderRegistryCall(args: unknown, theme: Theme, context: CallContext): Component {
-	const displayArgs = record(args);
-	const { subject, hint } = subjectOf(displayArgs);
-	const qualifiers = [...queryQualifiers(displayArgs, subject), ...modeQualifiers(displayArgs)];
-	return callCard("registry", subject, qualifiers, hint, args, theme, context);
-}
-
-/** A collapsed result states the outcome and one summary row of counts or bounds. */
-export function renderRegistryResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Component {
-	if (options.isPartial) return partialCard("Reading the registry...", theme, context);
-	const details = record(result.details);
-	if (Object.keys(details).length === 0) {
-		return resultCard(
-			{ color: context.isError ? "error" : "muted", line: previewMark(textContent(result), 200).text || "registry" },
-			"",
-			false,
-			textContent(result),
-			options,
-			theme,
-			context,
-		);
-	}
-	const summary =
-		details.host === true
-			? hostSummary(details)
-			: details.scanned === true
-				? scannedSummary(details)
-				: Array.isArray(details.records)
-					? listingSummary(details)
-					: simpleSummary(details);
-	return resultCard(
-		{ color: outcomeColor(details, context.isError), line: summary.line },
-		summary.second,
-		summary.hint,
-		textContent(result),
-		options,
-		theme,
-		context,
+function modelFacts(entry: Fields): string {
+	const context = number(entry.contextWindow);
+	const levels = Array.isArray(entry.supportedThinkingLevels)
+		? entry.supportedThinkingLevels.map(field).filter(Boolean).join(", ")
+		: "";
+	return join(
+		entry.selected === true ? "selected" : "",
+		boolean(entry.available, "available (cached)", "unavailable (cached)"),
+		boolean(entry.configuredAuth, "auth configured", "no configured auth"),
+		context === undefined ? "" : `${context.toLocaleString("en-US")} context`,
+		levels ? `thinking ${levels}` : "",
 	);
 }
+
+function recordLine(entry: Fields): string {
+	const line = number(entry.line);
+	if (line !== undefined) return `Line ${line}: ${field(entry.text)}`;
+	const name = recordName(entry);
+	if (!name) return "";
+	switch (entry.kind) {
+		case "tool":
+			return join(
+				`Tool ${name}`,
+				boolean(entry.configured, "configured", "not configured"),
+				boolean(entry.active, "active", "inactive"),
+				boolean(entry.callable, "callable in this host", "not callable in this host"),
+				field(entry.exposure),
+			);
+		case "model": {
+			const findings = Array.isArray(entry.findings)
+				? entry.findings.map((finding) => field(record(finding).reason)).filter(Boolean)
+				: [];
+			return join(name, field(entry.currentThinkingLevel), ...findings, modelFacts(entry));
+		}
+		case "context_file":
+			return name;
+		case "setting":
+			return join(name, field(entry.status), field(entry.origin), field(entry.secretState));
+		case "command":
+			return join(`Command ${name}`, field(entry.invocation));
+		case "skill":
+			return join(
+				`Skill ${name}`,
+				boolean(record(entry.modelInvocable).value, "model-invocable", "not model-invocable"),
+			);
+		case "prompt":
+			return `Prompt ${name}`;
+		default:
+			return name;
+	}
+}
+
+function hostFacts(details: Fields): string[] {
+	const context = record(details.context);
+	const model = join(field(context.model), field(context.thinkingLevel));
+	const percent = number(context.percent);
+	const counts = record(details.counts);
+	const availability = record(details.availability);
+	const inventory = (key: string) => {
+		const value = number(counts[key]);
+		return value === undefined ? "" : count(value, key);
+	};
+	const active = number(details.activeToolCount);
+	return [
+		join(model, percent === undefined ? "" : `context ${Math.round(percent)}%`),
+		availability.tools === false
+			? "Tool registry unavailable"
+			: join(inventory("tool"), active === undefined ? "" : `${active} active`),
+		availability.activeTools === false ? "Active tool registry unavailable" : "",
+		availability.commands === false
+			? "Command registry unavailable"
+			: join(inventory("command"), inventory("skill"), inventory("prompt")),
+		boolean(details.observed, "Prior resource observation recorded", "No resource observation recorded"),
+	].filter(Boolean);
+}
+
+function continuation(details: Fields): string {
+	if (details.pageBlocked === true || details.continuationStatus === "blocked") return "page cannot advance";
+	if (details.continuationStatus === "available" && typeof details.cursor === "string") return "continuation available";
+	if (details.continuationStatus === "unavailable") return "continuation unavailable";
+	if (details.continuationStatus === "complete") return "no further known matches";
+	return "";
+}
+
+const OUTCOMES = new Set([
+	"ok",
+	"host_summary",
+	"missing",
+	"ambiguous",
+	"unavailable",
+	"partial",
+	"cancelled",
+	"stale_cursor",
+	"io_error",
+	"invalid_arguments",
+]);
+
+function isOutcome(value: unknown): value is string {
+	return typeof value === "string" && OUTCOMES.has(value);
+}
+
+function diagnostic(details: Fields): string {
+	if (details.outcome === "stale_cursor") {
+		const reason = field(details.reason);
+		if (reason) return `Stale cursor: ${reason}`;
+		// Discovery and settings report staleness from their source fingerprints.
+		if (details.settingsCoverage) return "The configured settings or publication coverage changed; start a new query.";
+		if (details.catalogBoundary || record(details.query).kind === "context_file") {
+			return "The source snapshot changed. Reissue the original query.";
+		}
+		return "Stale cursor. Reissue the original query.";
+	}
+	return field(details.message) || field(details.ioError);
+}
+
+function isChatCatalog(details: Fields): boolean {
+	return typeof details.catalogBoundary === "string";
+}
+
+function isContextPathQuery(details: Fields): boolean {
+	return record(details.query).kind === "context_file";
+}
+
+function isHealthReview(details: Fields): boolean {
+	return record(details.health).evidence === "local_catalog_review";
+}
+
+function unavailableLead(details: Fields): string {
+	if (details.settingsCoverage !== undefined) return "Settings snapshot unavailable";
+	if (isContextPathQuery(details) && details.observed === false) return "Context paths not yet observed";
+	if (isChatCatalog(details)) {
+		if (details.catalogAvailable === false) return "Chat model catalog unavailable";
+		if (details.availableSnapshot === false) return "Cached model availability unavailable";
+	}
+	if (details.scanned === true) return "File metadata unavailable";
+	return "Source unavailable";
+}
+
+function pageLead(details: Fields, scope: string): string {
+	switch (details.outcome) {
+		case "missing":
+			return isContextPathQuery(details) ? "No observed context paths match" : "No matches";
+		case "ambiguous":
+			return "The query needs one resource";
+		case "unavailable":
+			return unavailableLead(details);
+		case "partial":
+			if (details.scanned === true) return "Partial file scan";
+			if (details.settingsCoverage !== undefined) return "Partial configuration snapshot";
+			return "Source coverage is partial";
+		default:
+			if (scope) return "Returned";
+			if (isHealthReview(details) && details.total === 0) return "No flagged records in the local catalog review";
+			return "Registry read completed";
+	}
+}
+
+function pageScope(details: Fields): string {
+	const total = number(details.total) ?? number(details.candidates);
+	const shown = number(details.returnedRecords);
+	const incomplete = details.outcome === "partial" || details.outcome === "unavailable";
+	if (shown === undefined || total === undefined || (!incomplete && total === 0)) return "";
+	const noun = isHealthReview(details) ? "flagged record" : details.candidates === undefined ? "match" : "candidate";
+	const plural = noun === "match" ? "matches" : `${noun}s`;
+	const qualifier = incomplete ? "known " : "";
+	return `${shown} of ${count(total, qualifier + noun, qualifier + plural)}`;
+}
+
+function pageOutcome(details: Fields): string {
+	const scope = pageScope(details);
+	const lead = pageLead(details, scope);
+	const resolved = record(details.resolved);
+	const target = [field(resolved.kind), field(resolved.name)].filter(Boolean).join(" ");
+	const offset = number(details.offset);
+	const page = [
+		scope && lead === "Returned" ? `Returned ${scope}` : scope ? `${lead}: ${scope}` : lead,
+		target && `in ${target}`,
+		offset !== undefined && offset > 0 ? `(offset ${offset})` : "",
+	]
+		.filter(Boolean)
+		.join(" ");
+	const next = continuation(details);
+	return next ? `${page}; ${next}` : page;
+}
+
+function catalogCoverage(details: Fields): string[] {
+	if (!isChatCatalog(details)) return [];
+	const boundary =
+		details.outcome === "missing"
+			? "Chat models only; find classifier and image models via codemode models.*"
+			: "Chat models only";
+	if (!isHealthReview(details)) return [boundary];
+	const health = record(details.health);
+	const matched = number(health.matchedRecords);
+	const unflagged = number(health.unflaggedRecords);
+	return [
+		boundary,
+		join(
+			"Local catalog review",
+			matched === undefined ? "" : count(matched, "matched record"),
+			unflagged === undefined ? "" : `${unflagged} unflagged`,
+			"remote health not checked",
+		),
+	];
+}
+
+function publicationCoverage(value: unknown): string[] {
+	if (value === undefined) return [];
+	const settings = record(value);
+	const collection = record(settings.collection);
+	const publishers = Array.isArray(settings.respondingSlices)
+		? settings.respondingSlices.map(field).filter(Boolean)
+		: [];
+	return [
+		join("Configuration snapshot; responding publishers only", publishers.join(", ")),
+		...(["malformed", "omitted"] as const).flatMap((key) => {
+			const value = number(collection[key]);
+			return value ? [`${count(value, "publication")} ${key}`] : [];
+		}),
+	];
+}
+
+function bytesRead(details: Fields): string {
+	const bytes = number(details.bytesRead);
+	const size = number(details.fileSize);
+	if (bytes === undefined || size === undefined) return "";
+	return `${bytes} of ${size} bytes read${details.partialScan === false ? "; whole file scanned" : ""}`;
+}
+
+function coverage(details: Fields): string[] {
+	if (details.outcome === "host_summary") return hostFacts(details);
+	const surfaces = Array.isArray(details.unavailableSurfaces)
+		? details.unavailableSurfaces.map(field).filter(Boolean)
+		: [];
+	const omitted = number(details.omittedRecordBlocks);
+	return [
+		...catalogCoverage(details),
+		isContextPathQuery(details) && details.observed === true
+			? "Prior context path observation; no file content read"
+			: "",
+		...publicationCoverage(details.settingsCoverage),
+		...surfaces.map((surface) => `Unavailable: ${surface}`),
+		field(details.reason),
+		bytesRead(details),
+		field(details.continuationReason),
+		omitted && details.resultBounded === true ? `${count(omitted, "record")} omitted from this page` : "",
+		details.omittedDetails === true ? "Result metadata exceeds the producer bound" : "",
+	].filter(Boolean);
+}
+
+function coverageWarning(details: Fields): string | undefined {
+	if (
+		details.partialScan === true ||
+		details.observationPartial === true ||
+		details.outcome === "partial" ||
+		details.incompleteInventory === true
+	) {
+		return "[Partial coverage: absence is not established]";
+	}
+}
+
+function sourceRows(details: Fields, entries: Fields[]): string[] {
+	const rows = entries.flatMap((entry) => {
+		const path = pathField(record(entry.sourceInfo).path);
+		return path ? [`Source for ${recordName(entry)}: ${path}`] : [];
+	});
+	const scanPath = pathField(record(record(details.resolved).sourceInfo).path);
+	if (scanPath) rows.push(`Scanned source: ${scanPath}`);
+	return rows;
+}
+
+function isPage(details: Fields): boolean {
+	return ["host_summary", "ok", "missing", "ambiguous", "unavailable", "partial"].includes(String(details.outcome));
+}
+
+type View = {
+	outcome: ReturnType<typeof bounded>;
+	preview: ReturnType<typeof bounded>;
+	evidence: ReturnType<typeof bounded>;
+	warning?: string;
+};
+
+function pageView(details: Fields, raw: string): View {
+	const outcome = bounded(details.outcome === "host_summary" ? "Session overview" : pageOutcome(details));
+	const entries = Array.isArray(details.records) ? details.records.map(record) : [];
+	const preview = [...coverage(details), ...entries.map(recordLine)].filter(Boolean).join("\n");
+	const cursor = details.continuationStatus === "available" ? details.cursor : undefined;
+	const evidence = [
+		typeof cursor === "string" ? safeText(`Next call: registry ${JSON.stringify({ cursor })}`) : "",
+		preview,
+		sourceRows(details, entries).join("\n"),
+		raw !== outcome.text && raw !== preview ? raw : "",
+	]
+		.filter(Boolean)
+		.join("\n\n");
+	return { outcome, preview: bounded(preview), evidence: bounded(evidence), warning: coverageWarning(details) };
+}
+
+function resultView(result: Parameters<NonNullable<ToolDefinition["renderResult"]>>[0], isError: boolean): View {
+	const raw = safeText(
+		result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n"),
+	).trim();
+	const details = record(result.details);
+	if (!isError && isPage(details)) return pageView(details, raw);
+	const structured = isOutcome(details.outcome);
+	const cancelled = details.outcome === "cancelled" && details.cancelled === true;
+	const [first, ...tail] = raw.split("\n");
+	const lead = cancelled ? "Cancelled" : structured ? diagnostic(details) : "";
+	const firstLine = field(first);
+	const heading =
+		lead || firstLine || (isError ? "Registry returned no diagnostic." : "Registry returned no result text.");
+	const remainder = heading === firstLine ? tail.join("\n") : raw;
+	const evidence = bounded(remainder);
+	return {
+		outcome: bounded(heading),
+		preview: !structured && isError ? evidence : { text: "" },
+		evidence,
+	};
+}
+
+function hidesReadback(view: View, width: number): boolean {
+	return (
+		view.evidence.text !== view.preview.text ||
+		view.evidence.limit !== view.preview.limit ||
+		visibleWidth(view.outcome.text) > width
+	);
+}
+
+export const renderRegistryResult: NonNullable<ToolDefinition["renderResult"]> = (
+	result,
+	options,
+	theme,
+	context: CardContext,
+) => {
+	context.state.hasResult = true;
+	if (options.isPartial) {
+		return component((width) => [
+			"",
+			theme.fg("muted", clipLine("Reading the registry…", width)),
+			...(!options.expanded && context.state.hidesArguments?.(width) ? [hint(theme, context, width)] : []),
+		]);
+	}
+	const view = resultView(result, context.isError);
+	const color = context.isError ? "error" : "toolOutput";
+	const body = options.expanded ? view.evidence : view.preview;
+	const warning = view.outcome.limit ?? body.limit ?? view.warning;
+	return component((width) => {
+		const outcomeRows = options.expanded ? wrapped(view.outcome.text, width) : [clipLine(view.outcome.text, width)];
+		const drawn = options.expanded
+			? { visualLines: wrapped(body.text, width), skippedCount: 0 }
+			: truncateToVisualLines(body.text, PREVIEW_ROWS, width, 0, "start");
+		const rows = [
+			"",
+			...outcomeRows.map((line) => theme.fg(color, line)),
+			...drawn.visualLines.map((line) => theme.fg(color, line)),
+		];
+		if (warning) rows.push(theme.fg("warning", clipLine(warning, width)));
+		if (
+			!options.expanded &&
+			(drawn.skippedCount || hidesReadback(view, width) || context.state.hidesArguments?.(width))
+		) {
+			rows.push(hint(theme, context, width, drawn.skippedCount));
+		}
+		return rows;
+	});
+};
