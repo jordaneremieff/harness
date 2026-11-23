@@ -82,17 +82,34 @@ it("names collaboration selectors before routing malformed identities", async (t
 		rmSync(root, { recursive: true, force: true });
 	});
 	const caller = { id: randomUUID(), cwd: root };
-	await assert.rejects(manager.collaborate({ action: "create", sessionId: "bad" }, caller), /sessionId.*canonical/u);
+	const create = {
+		action: "create",
+		title: "Review",
+		purpose: "Test",
+		authority: "Task",
+		source: "Test",
+		restrictions: "Local",
+		acceptance: "Verified",
+	};
+	await assert.rejects(manager.collaborate({ ...create, sessionId: "bad" }, caller), /sessionId.*canonical/u);
 	await assert.rejects(
-		manager.collaborate({ action: "create", sessionId: randomUUID(), integrator: "bad" }, caller),
+		manager.collaborate({ ...create, sessionId: randomUUID(), integrator: "bad" }, caller),
 		/integrator.*canonical/u,
 	);
 	await assert.rejects(
-		manager.collaborate({ action: "post", sessionId: randomUUID(), notify: [randomUUID(), "bad"] }, caller),
+		manager.collaborate(
+			{
+				action: "post",
+				threadId: `${randomUUID()}/${"a".repeat(32)}`,
+				message: "Update",
+				notify: [randomUUID(), "bad"],
+			},
+			caller,
+		),
 		/notify\[1\].*canonical/u,
 	);
 	await assert.rejects(
-		manager.collaborate({ action: "create", sessionId: randomUUID(), integrator: "@missing" }, caller),
+		manager.collaborate({ ...create, sessionId: randomUUID(), integrator: "@missing" }, caller),
 		/integrator: handle resolution failed/u,
 	);
 });

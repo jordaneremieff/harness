@@ -754,8 +754,8 @@ export async function createDurableRuntime(
 	): Promise<unknown> => {
 		if (method === "report")
 			return request("report", { ...params, ownerId: params.sessionId }, controlRequestId(params));
-		if (["collaboration-list", "collaboration-read"].includes(method)) return collaborationObservation(method, params);
-		if (typeof params.threadId === "string") params.sessionId = collaborationStorage(params.threadId);
+		if (method === "collaboration-mutate" && typeof params.threadId === "string")
+			params.sessionId = collaborationStorage(params.threadId);
 		const sessionId = typeof params.sessionId === "string" ? params.sessionId : metadata.storageId;
 		if (storageIdOf(sessionId) !== metadata.storageId) return dispatchForeign(method, params, sessionId, context);
 		if (method !== "abort" && method !== "release")
@@ -777,7 +777,9 @@ export async function createDurableRuntime(
 			}
 		}
 		if (method === "status" && input.view === "storage-page") return readStoragePage(input, context);
-		const params = await resolveSelectors(input, method.startsWith("collaboration-"));
+		if (method === "collaboration-list" || method === "collaboration-read")
+			return collaborationObservation(method, input);
+		const params = await resolveSelectors(input, method === "collaboration-mutate");
 		return dispatchResolved(method, params, context);
 	};
 	const restoreDispatch = publishAgentControlDispatch(dispatch);

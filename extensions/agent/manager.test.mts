@@ -3028,10 +3028,25 @@ it("names a Durable target recovery when collaboration targets an ordinary prima
 	t.after(() => manager.close());
 	const id = randomUUID();
 	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send() {} });
-	await assert.rejects(manager.collaborate({ action: "create", sessionId: id }, { id: randomUUID(), cwd: root }), {
-		message:
-			"A registered primary accepts messages, not Durable session controls; call agent_list, then repeat agent_collaborate with sessionId set to a discovered Durable agent identity, not this primary",
-	});
+	await assert.rejects(
+		manager.collaborate(
+			{
+				action: "create",
+				sessionId: id,
+				title: "Review",
+				purpose: "Test",
+				authority: "Task",
+				source: "Test",
+				restrictions: "Local",
+				acceptance: "Verified",
+			},
+			{ id: randomUUID(), cwd: root },
+		),
+		{
+			message:
+				"A registered primary accepts messages, not Durable session controls; call agent_list, then repeat agent_collaborate with sessionId set to a discovered Durable agent identity, not this primary",
+		},
+	);
 });
 
 it("returns a compact status snapshot from a mutation instead of the full status", async (t) => {

@@ -175,20 +175,21 @@ const actionFields: Record<string, readonly string[]> = {
 	revise: ["threadId", ...Object.keys(frameFields), "notify"],
 	close: ["threadId", "message", "source", "notify"],
 };
-/** Internal routing adds caller facts, not public action fields. */
-export function validateCollaborationAction(input: Record<string, unknown>): void {
+/** The host envelope includes a resolved sessionId even for a thread-addressed action. */
+export function validateCollaborationAction(input: Record<string, unknown>, stage: "caller" | "host" = "caller"): void {
 	const fields =
 		typeof input.action === "string" && Object.hasOwn(actionFields, input.action)
 			? actionFields[input.action]
 			: undefined;
 	if (!fields) throw new CollaborationReadError("invalid_request", "Unknown collaboration action");
+	validateCollaborationTextLimits(input);
 	const allowed = new Set([
 		"action",
 		"senderIdentity",
 		"origin",
 		"requestId",
 		"ownerId",
-		"sessionId",
+		...(stage === "host" ? ["sessionId"] : []),
 		"cwd",
 		...fields,
 	]);
@@ -196,8 +197,16 @@ export function validateCollaborationAction(input: Record<string, unknown>): voi
 		if (!allowed.has(key))
 			throw new CollaborationReadError(
 				"invalid_request",
-				`${key} is not valid for action ${input.action}; ${input.action} accepts ${fields.join(", ")}`,
+				key === "sessionId"
+					? `Omit sessionId for action ${input.action}; threadId selects its storage`
+					: `${key} is not valid for action ${input.action}; ${input.action} accepts ${fields.join(", ")}`,
 			);
+	if (input.action === "read") {
+		if (input.after !== undefined && input.before !== undefined)
+			throw new CollaborationReadError("invalid_request", "after and before are exclusive");
+		if (input.knownFrameRevision !== undefined && input.after === undefined)
+			throw new CollaborationReadError("invalid_request", "knownFrameRevision requires after");
+	}
 	validateActionText(input);
 	const publicInput = Object.fromEntries(
 		Object.entries(input).filter(([key]) => key === "action" || fields.includes(key)),
@@ -209,7 +218,6 @@ export function validateCollaborationAction(input: Record<string, unknown>): voi
 		);
 }
 function validateActionText(input: Record<string, unknown>): void {
-	validateCollaborationTextLimits(input);
 	if (input.action === "create" || input.action === "revise") {
 		for (const [key, max] of [
 			["title", 160],

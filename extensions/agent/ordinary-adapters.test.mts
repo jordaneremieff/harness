@@ -201,7 +201,7 @@ it("keeps successful report sender receipts free of recipient bodies", async (t)
 	assert.equal(JSON.stringify(output).includes("RECIPIENT_BODY"), false);
 	assert.equal((output.details as { acknowledged: boolean }).acknowledged, true);
 });
-it("registers object-root thread inputs and validates mutation fields before dispatch", async (t) => {
+it("registers object-root thread inputs and forwards participation and read cursors", async (t) => {
 	const f = fixture(t),
 		dispatched: Record<string, unknown>[] = [];
 	t.mock.method(AgentManager.prototype, "collaborate", async (input: Record<string, unknown>) => {
@@ -220,12 +220,6 @@ it("registers object-root thread inputs and validates mutation fields before dis
 	await f.execute("agent_collaborate", { action: "read", threadId, after: 0, knownFrameRevision: 1 });
 	assert.equal(dispatched[1].after, 0);
 	assert.equal(dispatched[1].knownFrameRevision, 1);
-	for (const input of [
-		{ action: "join", threadId, contribution: "retired" },
-		{ action: "join", threadId, message: "discussion" },
-		{ action: "post", threadId, message: "discussion", participation: "declaration" },
-	])
-		await assert.rejects(f.execute("agent_collaborate", input));
 	assert.equal(dispatched.length, 2);
 });
 it("loads the ordinary entry without resolving the Durable runtime", () => {

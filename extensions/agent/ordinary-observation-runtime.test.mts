@@ -265,6 +265,14 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		restrictions: "No external changes",
 		acceptance: "Retained peer evidence identifies the parser error",
 	};
+	await t.test("native reads and joins refuse a caller storage selector on a foreign thread", async () => {
+		const threadId = `${randomUUID()}/${"a".repeat(32)}`;
+		for (const action of ["read", "join"]) {
+			const result = await invoke("agent_collaborate", { action, sessionId: record.storageId, threadId });
+			assert.equal(result.isError, true);
+			assert.match(JSON.stringify(result.structuredOutput), /omit sessionId.*threadId/i);
+		}
+	});
 	const invalidIdentities: { field: string; fields: JsonObject }[] = [
 		{ field: "sessionId", fields: { sessionId: "not-an-identity" } },
 		{ field: "integrator", fields: { integrator: "not-an-identity" } },

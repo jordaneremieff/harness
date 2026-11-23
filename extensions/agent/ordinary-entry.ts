@@ -29,7 +29,7 @@ import {
 import { ordinaryReportedUsage } from "./agent-usage.ts";
 import { appendProviderBlockReceipt, ProviderBlockNotes, renderProviderBlockSection } from "./provider-block-notes.ts";
 import { checkInMinutes } from "./check-in-options.ts";
-import { CollaborationParams, validateCollaborationAction } from "./collaboration-contract.ts";
+import { CollaborationParams } from "./collaboration-contract.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { THINKING_LEVELS, isThinkingLevel, parseConfigurationArguments } from "./configuration.ts";
 import {
@@ -627,13 +627,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		"agent_collaborate",
 		"Discover and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator in an existing participant storage (sessionId). Create and join accept participation (at most 256 characters); omission preserves an existing declaration and an empty string clears it. Join does not accept message. Use post.message for discussion. Forward reads accept after and optional knownFrameRevision; before is exclusive with after. Follow the returned next call unchanged. Passive facts do not wake a recipient or release its wait; explicit notify stays active. Read the frame and paged exchange without starting a host.",
 		CollaborationParams,
-		(input, ctx, callId) => {
-			if (input.action !== "read") validateCollaborationAction(input);
-			return getManager().collaborate(
+		(input, ctx, callId) =>
+			getManager().collaborate(
 				{ ...input, origin: "model", requestId: `collaboration:${ctx.sessionManager.getSessionId()}:${callId}` },
 				caller(ctx, pi),
-			);
-		},
+			),
 	);
 	registerOrdinaryWork(pi, yieldCard, { waiting: (sessionId) => continuity.open(sessionId) });
 	register(

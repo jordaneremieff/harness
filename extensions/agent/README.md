@@ -2526,7 +2526,9 @@ find purpose across storages. Global discovery reads published hints, not hosts.
 It visits a bounded catalog batch and returns `nextCursor`, explicit coverage,
 and omitted or unavailable source storages. Follow the cursor even after an
 empty page and repeat the same query. Use `sessionId` for a storage's retained
-thread list. Catalog changes follow the filename continuation rules in
+thread list. For `read`, `join`, `leave`, `post`, `revise`, and `close`, supply only
+`threadId` as the storage address. These actions refuse `sessionId` even when
+it names the same storage. Catalog changes follow the filename continuation rules in
 [Controls](#controls). A continuation within one storage's published thread
 hints refuses if that storage's thread publication changed:
 `Thread discovery changed; restart the query`. There is no background relevance

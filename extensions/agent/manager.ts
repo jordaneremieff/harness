@@ -89,7 +89,7 @@ import {
 	operationContractMismatch,
 	type RuntimeContract,
 } from "./version-contract.ts";
-import { collaborationStorage, validateCollaborationTextLimits } from "./collaboration-contract.ts";
+import { collaborationStorage, validateCollaborationAction } from "./collaboration-contract.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 
 import {
@@ -1754,6 +1754,7 @@ export class AgentManager {
 	}
 
 	async collaborationTargets(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+		validateCollaborationAction(input);
 		const { collaborationIdentity } = await loadCollaboration();
 		const params = { ...input };
 		const resolveIdentity = async (value: unknown, field: string): Promise<string> => {
@@ -1778,12 +1779,15 @@ export class AgentManager {
 
 	/** Discovery uses published hints; scoped reads never acquire a storage writer. */
 	async collaborate(input: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
-		validateCollaborationTextLimits(input);
 		input = await this.collaborationTargets(input);
 		const action = String(input.action ?? "");
 		const threadId = typeof input.threadId === "string" ? input.threadId : undefined;
 		const sessionId =
-			typeof input.sessionId === "string" ? input.sessionId : threadId ? collaborationStorage(threadId) : undefined;
+			threadId !== undefined
+				? collaborationStorage(threadId)
+				: typeof input.sessionId === "string"
+					? input.sessionId
+					: undefined;
 		if (action === "list" && !sessionId) return discoverCollaboration(this.catalog, input);
 		if (!sessionId) throw new Error("Create requires an agent sessionId; discover an agent or create one first.");
 		if (action === "list" || action === "read")

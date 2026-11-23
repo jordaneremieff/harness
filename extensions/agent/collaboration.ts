@@ -290,7 +290,7 @@ export async function mutateCollaboration(
 	validateCollaborationTextLimits(input);
 	const actor = collaborationIdentity(input.senderIdentity, "senderIdentity");
 	recipients(input, actor);
-	validateCollaborationAction(input);
+	validateCollaborationAction(input, "host");
 	const origin = input.origin;
 	if (origin !== "operator" && origin !== "model") throw new Error("Collaboration requires an explicit caller origin");
 	const requestId = text(input, "requestId", 512);
@@ -554,10 +554,6 @@ async function readPending(session: Session, id: string, context: Context): Prom
 	return pending;
 }
 function validateReadCursors(input: Record<string, unknown>): void {
-	if (input.after !== undefined && input.before !== undefined)
-		throw new CollaborationReadError("invalid_request", "after and before are exclusive");
-	if (input.knownFrameRevision !== undefined && input.after === undefined)
-		throw new CollaborationReadError("invalid_request", "knownFrameRevision requires after");
 	for (const [field, minimum] of [
 		["after", 0],
 		["before", 1],
@@ -598,7 +594,7 @@ export async function readCollaboration(
 	validateReadCursors(input);
 	if (input.action !== undefined && input.action !== "read")
 		throw new CollaborationReadError("invalid_request", "Thread read requires action read");
-	validateCollaborationAction({ ...input, action: "read" });
+	validateCollaborationAction({ ...input, action: "read" }, "host");
 	const thread = readThread(await session.snapshot(CollaborationThreads, id, context), id);
 	const pending = await readPending(session, id, context);
 	if (typeof input.after === "number") return readForward(session, input, thread, pending, limit, context);

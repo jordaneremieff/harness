@@ -135,6 +135,25 @@ async function liveShapes(t: TestContext): Promise<void> {
 		JSON.stringify(created.details),
 	)?.[0];
 	assert.ok(threadId);
+	for (const action of ["read", "join", "leave", "post", "revise", "close"]) {
+		await assert.rejects(
+			tools.execute("agent_collaborate", { action, sessionId, threadId }),
+			/omit sessionId.*threadId/i,
+		);
+	}
+	for (const input of [
+		{ action: "join", threadId, contribution: "retired" },
+		{ action: "join", threadId, message: "discussion" },
+		{ action: "post", threadId, message: "discussion", participation: "declaration" },
+	])
+		await assert.rejects(tools.execute("agent_collaborate", input), /not valid for action/u);
+	const postId = randomUUID();
+	const post = { action: "post", threadId, message: "Retained update" };
+	await tools.execute("agent_collaborate", post, postId);
+	const replay = await tools.execute("agent_collaborate", post, postId);
+	assert.equal((replay.details as { deduped: boolean }).deduped, true);
+	const read = await tools.execute("agent_collaborate", { action: "read", threadId });
+	assert.equal((read.details as { thread: { sequence: number } }).thread.sequence, 2);
 	await assert.rejects(
 		tools.execute("agent_collaborate", { action: "read", threadId, before: 2, after: 0 }),
 		/after and before are exclusive/u,
