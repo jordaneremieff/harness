@@ -11,8 +11,6 @@ export interface ToolCardGrammarContext
 	extends Pick<KeybindingHints, "keyText">,
 		Partial<Pick<KeybindingHints, "keyHint">> {
 	readonly expanded: boolean;
-	readonly argsComplete?: boolean;
-	readonly executionStarted?: boolean;
 	readonly isError?: boolean;
 	readonly hideExpansionHint?: boolean;
 	readonly state?: {
@@ -203,8 +201,7 @@ export function toolCallCard(call: ToolCallPresentation, theme: Theme, context: 
 			if (!owned) return lines;
 			const hidden = disclosure(width);
 			lines.push(...limitRows(theme, width, expanded, [hidden.limit]));
-			if (!expanded && context.argsComplete !== false && !context.executionStarted)
-				lines.push(...hint(theme, context, hidden, width, false));
+			if (!expanded) lines.push(...hint(theme, context, hidden, width, false));
 			return lines;
 		},
 		invalidate() {},
@@ -245,12 +242,14 @@ export function toolResultCard(
 					: (presentation.outcome ?? fallback ?? "No result text"),
 		),
 	);
-	const body = bounded(partial || error ? "" : (presentation.body ?? ""));
-	const extra = bounded(partial ? "" : (presentation.expanded ?? ""));
 	const source = bounded(presentation.source ?? content);
-	const extraSource = [outcome.text, extra.text].filter(Boolean).join("\n");
-	const projected = new Set(["", outcome.text, body.text.trim(), extraSource]);
-	const showSource = !projected.has(source.text.trim());
+	const [first, ...following] = source.text.trimStart().split("\n");
+	const hasOutcome = oneLine(first ?? "") === outcome.text;
+	const remainder = hasOutcome ? following.join("\n") : source.text;
+	const body = bounded(partial ? "" : error ? remainder : (presentation.body ?? ""));
+	const extra = bounded(partial ? "" : (presentation.expanded ?? ""));
+	const extraText = extra.text !== outcome.text && extra.text.trim() !== body.text.trim() ? extra.text : "";
+	const showSource = !["", body.text, extraText].some((part) => part.trim() === remainder.trim());
 	const sourceRole = error ? "error" : "toolOutput";
 	return component((width) => {
 		const expanded = options.expanded;
@@ -272,20 +271,20 @@ export function toolResultCard(
 		if (expanded)
 			return [
 				...lines,
-				...bodyRows.map((line) => theme.fg("toolOutput", line)),
-				...paint(theme, sourceRole, extra.text, width, true),
-				...paint(theme, sourceRole, showSource ? source.text : "", width, true),
+				...bodyRows.map((line) => theme.fg(sourceRole, line)),
+				...paint(theme, sourceRole, extraText, width, true),
+				...paint(theme, sourceRole, showSource ? remainder : "", width, true),
 				...bounds,
 			];
 		const disclosure = resultDisclosure(
 			call,
 			view.hidden,
 			Boolean(body.limit),
-			showSource || extra.text !== "" || visibleWidth(outcome.text) > width,
+			showSource || extraText !== "" || visibleWidth(outcome.text) > width,
 		);
 		return [
 			...lines,
-			...view.shown.map((line) => theme.fg("toolOutput", line)),
+			...view.shown.map((line) => theme.fg(sourceRole, line)),
 			...bounds,
 			...hint(theme, context, disclosure, width, true),
 		];

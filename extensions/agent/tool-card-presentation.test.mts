@@ -68,7 +68,7 @@ for (const [name, fixture] of Object.entries(fixtures))
 			".",
 		);
 		component.updateArgs({ ...fixture.args, message: "Review" });
-		assert.equal(hints(screen(component)).length, 0, "incomplete streamed arguments show no hint");
+		assert.ok(hints(screen(component)).length <= 1, "streamed arguments have at most one disclosure");
 		component.updateArgs(fixture.args);
 		component.setArgsComplete();
 		assert.ok(hints(screen(component)).length <= 1);
@@ -78,7 +78,7 @@ for (const [name, fixture] of Object.entries(fixtures))
 		assert.ok(calls.length > beforeStart, "execution start redraws the call");
 		assert.equal(calls.at(-1)?.executionStarted, true);
 		assert.equal(calls.at(-1)?.state, sharedState);
-		assert.equal(hints(screen(component)).length, 0);
+		assert.ok(hints(screen(component)).length <= 1, "the call owns disclosure before the first result");
 		const result = { ...fixtureResult(fixture.details), isError: false };
 		const before = structuredClone({ args: fixture.args, result });
 		component.updateResult(result, true);
@@ -109,6 +109,7 @@ function nativeRow(
 	args: Record<string, unknown>,
 	details: unknown,
 	lookupRows = rows,
+	argsComplete = true,
 ): ToolExecutionComponent {
 	const card = createAgentToolCards(() => lookupRows)[name];
 	const tool = defineTool({
@@ -130,7 +131,7 @@ function nativeRow(
 		{ requestRender() {} } as unknown as TUI,
 		".",
 	);
-	component.setArgsComplete();
+	if (argsComplete) component.setArgsComplete();
 	if (details !== undefined) {
 		component.markExecutionStarted();
 		component.updateResult({ ...fixtureResult(details), isError: false });
@@ -160,7 +161,7 @@ it("send hands off its measured call hint without a collapsed Dispatch result bo
 		sessionId: targetId,
 		message: `${"alpha ".repeat(12).trim()}\nrow 3\nrow 4\nrow 5\n\x1b]52;c;private\x07row 6\nrow 7`,
 	};
-	const card = nativeRow("agent_send", args, undefined);
+	const card = nativeRow("agent_send", args, undefined, rows, false);
 	const width = 52;
 	const pending = screen(card, width);
 	assert.match(pending, /^agent_send Parser review\nprovider\/model · high/u);
@@ -242,6 +243,19 @@ it("status presents the actual flagged diagnostic and adds no hint to an empty c
 		isError: true,
 	});
 	assert.equal(screen(card), "agent_status\noverview\nLocal storage is unavailable");
+});
+
+it("shows the diagnostic cause on the error card without repeating its heading in expansion", () => {
+	const card = nativeRow("agent_status", { view: null }, undefined);
+	const heading = 'Validation failed for tool "agent_status":';
+	const cause = '  - view: expected "fleet"';
+	card.updateResult({ content: [{ type: "text", text: `${heading}\n${cause}` }], details: undefined, isError: true });
+	for (const expanded of [false, true]) {
+		card.setExpanded(expanded);
+		const output = screen(card, 60);
+		assert.equal(output.split(heading).length - 1, 1);
+		assert.ok(output.includes(cause.trim()));
+	}
 });
 
 it("place receipts omit labels and models already shown in the card", () => {
