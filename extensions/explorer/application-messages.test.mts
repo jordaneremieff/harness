@@ -48,7 +48,8 @@ test("Explorer delivers the root, thread and exact body, and routes a shared ans
 		extension: "explorer",
 		application: "Explorer",
 		id: first.requestId,
-		subject: first.root,
+		subject: "engine",
+		place: "root /project/engine",
 		reply: "final",
 		text: first.text,
 	});
@@ -69,8 +70,9 @@ test("Explorer delivers the root, thread and exact body, and routes a shared ans
 	]);
 	const another = { ...ask(), root: `/parent/${"🥝".repeat(150)}/name\n\u200B\u2028end` };
 	await route.submit(another);
-	const label = String(messages[2].subject);
-	assert.ok(label.length <= 200 && label.endsWith("/name end"));
+	assert.equal(messages[2].subject, "name end");
+	const label = String(messages[2].place);
+	assert.ok(label.length <= 200 && label.startsWith("root …") && label.endsWith("/name end"));
 	assert.doesNotMatch(label, /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\uD800-\uDFFF]/u);
 	report(another.requestId, "unanswered", "The conversation closed.");
 	assert.deepEqual(updates.at(-1), ["error", "The conversation closed.", another.requestId]);

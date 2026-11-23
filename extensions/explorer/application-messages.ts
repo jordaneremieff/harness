@@ -9,6 +9,7 @@ interface ApplicationMessage {
 	application: "Explorer";
 	id: string;
 	subject: string;
+	place: string;
 	follows?: string;
 	reply: "final";
 	guidance: string;
@@ -21,14 +22,24 @@ interface ApplicationReceiver {
 	): { status: "requested"; reference: string } | { status: "rejected"; message: string };
 }
 const guidance =
-	'File paths are relative to the Explorer root. Lines and quotes refer to the cited commit or working tree. To read a cited note and its thread, use explorer_notes with op "read", its id and the root.';
+	'File paths are relative to the Explorer root that the header names. Lines and quotes refer to the cited commit or working tree. To read a cited note and its thread, use explorer_notes with op "read", its id and that root.';
 
 function isReceiver(value: unknown): value is ApplicationReceiver {
 	return isRecord(value) && value.version === 1 && typeof value.deliver === "function";
 }
+function line(value: string): string {
+	return value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trim();
+}
+/** The end of a long path says more than its start. */
+function tail(value: string, limit: number): string {
+	return value.length <= limit ? value : `…${value.slice(1 - limit).replace(/^[\uDC00-\uDFFF]/u, "")}`;
+}
+/** The folder's name titles the request; the place keeps the whole root that explorer_notes takes. */
 function subject(root: string): string {
-	const label = root.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ").trimEnd();
-	return label.length <= 200 ? label : `…${label.slice(-199).replace(/^[\uDC00-\uDFFF]/u, "")}`;
+	return tail(line(root.replace(/\/+$/u, "").split("/").at(-1) ?? "") || line(root) || "/", 200);
+}
+function place(root: string): string {
+	return `root ${tail(line(root), 195)}`;
 }
 
 function answerText(id: string, text: string, shared: unknown): string {
@@ -75,6 +86,7 @@ export function explorerApplicationRoutes(events: ExtensionAPI["events"]) {
 					application: "Explorer",
 					id: requestId,
 					subject: subject(root),
+					place: place(root),
 					...(threadId.toLowerCase() === requestId.toLowerCase() ? {} : { follows: threadId }),
 					reply: "final",
 					guidance,
