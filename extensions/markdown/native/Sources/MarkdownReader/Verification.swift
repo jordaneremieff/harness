@@ -840,6 +840,16 @@ struct Context {
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
+    /// File-only checks do not provide a stored document or a conversation for private review data.
+    private func fileReviewReply(_ message: [String: Any]) -> [String: Any] {
+        guard message["type"] as? String == "query" else { return [:] }
+        switch message["kind"] as? String {
+        case "reviewDraft": return ["available": false, "version": 0]
+        case "reviewComments": return ["available": false, "revision": 0, "comments": []]
+        default: return [:]
+        }
+    }
+
     /// Sends a question and a follow-up through the page's prompt route and answers both through
     /// the native prompt-state messages; the newest answer must be fully visible above the
     /// card's actions and composer.
@@ -855,7 +865,7 @@ struct Context {
                     prompts.append((request, thread))
                     return ["accepted": true]
                 }
-                return [:]
+                return self.fileReviewReply(message)
             }
             keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
             await model.open(origin: nil)
@@ -925,10 +935,10 @@ struct Context {
             let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: ReadingStateStore(directory: nil))
             var prompts: [[String: Any]] = []
             model.page.onMessage = { message in
-                guard message["type"] as? String == "prompt" else { return [:] }
+                guard message["type"] as? String == "prompt" else { return self.fileReviewReply(message) }
                 prompts.append(message)
                 if prompts.count == 2 { return ["accepted": false, "uncertain": true, "retryable": true] }
-                if prompts.count == 3 { return ["accepted": false, "detail": "The conversation refused the request."] }
+                if prompts.count == 3 { return ["accepted": false, "fresh": true, "detail": "The conversation refused the request."] }
                 return ["accepted": true]
             }
             keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
@@ -1053,9 +1063,9 @@ struct Context {
             let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: ReadingStateStore(directory: nil))
             var prompts: [[String: Any]] = []
             model.page.onMessage = { message in
-                guard message["type"] as? String == "prompt" else { return [:] }
+                guard message["type"] as? String == "prompt" else { return self.fileReviewReply(message) }
                 prompts.append(message)
-                if message["text"] as? String == "Refuse this." { return ["accepted": false, "detail": "Refused."] }
+                if message["text"] as? String == "Refuse this." { return ["accepted": false, "fresh": true, "detail": "Refused."] }
                 return ["accepted": true]
             }
             let window = CheckRunner.offscreenWindow(page: model.page, width: 760, height: 700, focused: true)
