@@ -215,12 +215,16 @@ function listReadout(d: Record<string, unknown>, summary: string): Readout {
 		...notes.map(noteLocation),
 		...tours.map((tour) => [line(tour.id), line(tour.title)].filter(Boolean).join(" · ")),
 	].join("\n");
-	const totals = `${count(notes.length, "note")} and ${count(tours.length, "walkthrough")} returned`;
+	const totals = [notes.length && count(notes.length, "note"), tours.length && count(tours.length, "walkthrough")]
+		.filter(Boolean)
+		.join(" and ");
 	const unreadable =
 		typeof d.unreadable === "number" && d.unreadable > 0 ? ` · ${count(d.unreadable, "unreadable record")}` : "";
 	const limited = d.limited === true;
+	const listing = totals ? `Returned ${totals}` : "No notes or walkthroughs were returned";
+	const partialListing = totals ? `The partial list contains ${totals}` : "The partial list is empty";
 	return {
-		outcome: limited ? `Partial list: ${totals}${unreadable}; no continuation cursor.` : `${totals}${unreadable}.`,
+		outcome: limited ? `${partialListing}${unreadable}; no continuation cursor.` : `${listing}${unreadable}.`,
 		warning: limited || Boolean(unreadable),
 		body,
 		replacesBody: true,

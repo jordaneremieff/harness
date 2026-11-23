@@ -22,8 +22,8 @@ function sheetLine(value: unknown): string {
 		title,
 		id === undefined ? "" : `sheet ${id}`,
 		index === undefined ? "" : `tab ${index + 1}`,
-		rows === undefined ? "" : count(rows, "row"),
-		columns === undefined ? "" : count(columns, "column"),
+		rows ? count(rows, "row") : "",
+		columns ? count(columns, "column") : "",
 	]
 		.filter(Boolean)
 		.join(" · ");
@@ -63,8 +63,8 @@ function writeQuantities(data: Data) {
 	const columns = integer(data.updatedColumns);
 	const cells = integer(data.updatedCells);
 	const quantities = [
-		cells !== undefined && rows !== undefined ? count(rows, "row") : "",
-		columns === undefined ? "" : count(columns, "column"),
+		cells !== undefined && rows ? count(rows, "row") : "",
+		columns ? count(columns, "column") : "",
 	].filter(Boolean);
 	const quantity = cells !== undefined ? count(cells, "cell") : rows !== undefined ? count(rows, "row") : "";
 	return { quantity, quantities };
@@ -86,7 +86,7 @@ function writeValues(action: "Updated" | "Appended"): Presenter {
 			const id = field(data.spreadsheetId);
 			return {
 				outcome: quantity ? `${action} ${quantity}.` : "No cell or row count was returned for the write.",
-				body: [target ? `Written range: ${target}` : "", ...quantities].filter(Boolean),
+				body: [target ? `Write range ${target}` : "", ...quantities].filter(Boolean),
 				details: id && id !== field(args.spreadsheetId) ? [`Spreadsheet: ${id}`] : [],
 			};
 		},
@@ -116,11 +116,9 @@ export const sheetsPresenters: Record<string, Presenter> = {
 			const options = pick(args, "valueRenderOption");
 			return {
 				...range,
-				facts: [
-					...range.facts,
-					offset === undefined ? "" : `offset ${offset}`,
-					limit === undefined ? "" : `limit ${limit}`,
-				].filter(Boolean),
+				facts: [...range.facts, offset ? `offset ${offset}` : "", limit === undefined ? "" : `limit ${limit}`].filter(
+					Boolean,
+				),
 				...(Object.keys(options).length ? { args: options } : {}),
 			};
 		},
@@ -138,10 +136,11 @@ export const sheetsPresenters: Record<string, Presenter> = {
 			const clipped = integer(page.truncatedCells);
 			const body = rows.map((value, i) => {
 				const cells = list(value).map(cellText).join(", ");
-				return cells ? `Row ${offset + i + 1}: ${cells}` : `Row ${offset + i + 1}`;
+				return cells ? `Row ${offset + i + 1} · ${cells}` : `Row ${offset + i + 1}`;
 			});
+			const scope = offset ? `at range offset ${offset}` : "on the first page";
 			return {
-				outcome: `Returned ${count(rows.length, "row")} at range offset ${offset}. ${next ? "More rows are available." : "No next page was returned."}`,
+				outcome: `Returned ${count(rows.length, "row")} ${scope}. ${next ? "More rows are available." : "No next page was returned."}`,
 				body,
 				details: [
 					range && range !== field(args.range) ? `Returned range: ${range}` : "",

@@ -194,14 +194,14 @@ function modelFacts(entry: Fields): string {
 		entry.selected === true ? "selected" : "",
 		boolean(entry.available, "available (cached)", "unavailable (cached)"),
 		boolean(entry.configuredAuth, "auth configured", "no configured auth"),
-		context === undefined ? "" : `${context.toLocaleString("en-US")} context`,
+		context && context > 0 ? `${context.toLocaleString("en-US")} context` : "",
 		levels ? `thinking ${levels}` : "",
 	);
 }
 
 function recordLine(entry: Fields): string {
 	const line = number(entry.line);
-	if (line !== undefined) return `Line ${line}: ${field(entry.text)}`;
+	if (line !== undefined) return join(`Line ${line}`, field(entry.text));
 	const name = recordName(entry);
 	if (!name) return "";
 	switch (entry.kind) {
@@ -245,14 +245,14 @@ function hostFacts(details: Fields): string[] {
 	const availability = record(details.availability);
 	const inventory = (key: string) => {
 		const value = number(counts[key]);
-		return value === undefined ? "" : count(value, key);
+		return value ? count(value, key) : "";
 	};
+	const tools = inventory("tool");
 	const active = number(details.activeToolCount);
+	const activeFact = active ? `${active} active` : active === 0 && tools ? "no active tools" : "";
 	return [
 		join(model, percent === undefined ? "" : `context ${Math.round(percent)}%`),
-		availability.tools === false
-			? "Tool registry unavailable"
-			: join(inventory("tool"), active === undefined ? "" : `${active} active`),
+		availability.tools === false ? "Tool registry unavailable" : join(tools, activeFact),
 		availability.activeTools === false ? "Active tool registry unavailable" : "",
 		availability.commands === false
 			? "Command registry unavailable"
@@ -289,7 +289,7 @@ function isOutcome(value: unknown): value is string {
 function diagnostic(details: Fields): string {
 	if (details.outcome === "stale_cursor") {
 		const reason = field(details.reason);
-		if (reason) return `Stale cursor: ${reason}`;
+		if (reason) return `The cursor is stale because ${reason}`;
 		// Discovery and settings report staleness from their source fingerprints.
 		if (details.settingsCoverage) return "The configured settings or publication coverage changed; start a new query.";
 		if (details.catalogBoundary || record(details.query).kind === "context_file") {
@@ -346,7 +346,7 @@ function pageScope(details: Fields): string {
 	const total = number(details.total) ?? number(details.candidates);
 	const shown = number(details.returnedRecords);
 	const incomplete = details.outcome === "partial" || details.outcome === "unavailable";
-	if (shown === undefined || total === undefined || (!incomplete && total === 0)) return "";
+	if (shown === undefined || total === undefined || total === 0) return "";
 	const noun = isHealthReview(details) ? "flagged record" : details.candidates === undefined ? "match" : "candidate";
 	const plural = noun === "match" ? "matches" : `${noun}s`;
 	const qualifier = incomplete ? "known " : "";
@@ -360,7 +360,7 @@ function pageOutcome(details: Fields): string {
 	const target = [field(resolved.kind), field(resolved.name)].filter(Boolean).join(" ");
 	const offset = number(details.offset);
 	const page = [
-		scope && lead === "Returned" ? `Returned ${scope}` : scope ? `${lead}: ${scope}` : lead,
+		scope && lead === "Returned" ? `Returned ${scope}` : scope ? `${lead}; ${scope}` : lead,
 		target && `in ${target}`,
 		offset !== undefined && offset > 0 ? `(offset ${offset})` : "",
 	]
@@ -372,10 +372,7 @@ function pageOutcome(details: Fields): string {
 
 function catalogCoverage(details: Fields): string[] {
 	if (!isChatCatalog(details)) return [];
-	const boundary =
-		details.outcome === "missing"
-			? "Chat models only; find classifier and image models via codemode models.*"
-			: "Chat models only";
+	const boundary = "Chat models only";
 	if (!isHealthReview(details)) return [boundary];
 	const health = record(details.health);
 	const matched = number(health.matchedRecords);
@@ -384,8 +381,8 @@ function catalogCoverage(details: Fields): string[] {
 		boundary,
 		join(
 			"Local catalog review",
-			matched === undefined ? "" : count(matched, "matched record"),
-			unflagged === undefined ? "" : `${unflagged} unflagged`,
+			matched ? count(matched, "matched record") : "",
+			unflagged ? `${unflagged} unflagged` : "",
 			"remote health not checked",
 		),
 	];
@@ -411,6 +408,7 @@ function bytesRead(details: Fields): string {
 	const bytes = number(details.bytesRead);
 	const size = number(details.fileSize);
 	if (bytes === undefined || size === undefined) return "";
+	if (bytes === 0 && size === 0 && details.partialScan === false) return "Empty file scanned";
 	return `${bytes} of ${size} bytes read${details.partialScan === false ? "; whole file scanned" : ""}`;
 }
 
@@ -426,7 +424,7 @@ function coverage(details: Fields): string[] {
 			? "Prior context path observation; no file content read"
 			: "",
 		...publicationCoverage(details.settingsCoverage),
-		...surfaces.map((surface) => `Unavailable: ${surface}`),
+		...surfaces.map((surface) => `${surface} unavailable`),
 		field(details.reason),
 		bytesRead(details),
 		field(details.continuationReason),
@@ -442,7 +440,7 @@ function coverageWarning(details: Fields): string | undefined {
 		details.outcome === "partial" ||
 		details.incompleteInventory === true
 	) {
-		return "[Partial coverage: absence is not established]";
+		return "[Coverage is partial; absence is not established]";
 	}
 }
 

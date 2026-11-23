@@ -143,8 +143,8 @@ it("renders a real registered overview and tool detail, with full identifiers on
 	const overview = card();
 	settle(overview, await tool.execute("host", {}, undefined, undefined, context));
 	assert.match(screen(overview), /Session overview\nprovider\/model · high · context 75%\n2 tools · 1 active/);
-	assert.match(screen(overview), /0 commands · 1 skill · 0 prompts/);
-	assert.doesNotMatch(screen(overview), /unknown|unavailable \(/);
+	assert.match(screen(overview), /\n1 skill\n/);
+	assert.doesNotMatch(screen(overview), /unknown|unavailable \(|0 commands|0 prompts/);
 
 	const args = { kind: "tool", name: toolName, detail: true };
 	const component = card(args);
@@ -195,7 +195,8 @@ it("shows a missing chat model and a local catalog review without implying remot
 	const missing = card(args);
 	settle(missing, await tool.execute("model", args, undefined, undefined, modelContext));
 	assert.match(screen(missing), /No matches; no further known matches/);
-	assert.match(screen(missing), /Chat models only; find classifier and image models via codemode models\.\*/);
+	assert.match(screen(missing), /\nChat models only\n/);
+	assert.doesNotMatch(screen(missing), /classifier|codemode models/);
 	missing.setExpanded(true);
 	assert.match(screen(missing), /models\.getModelsOfType\("classifier"\)/);
 
@@ -204,6 +205,7 @@ it("shows a missing chat model and a local catalog review without implying remot
 	settle(health, await tool.execute("health", healthArgs, undefined, undefined, modelContext));
 	assert.match(screen(health), /No flagged records in the local catalog review/);
 	assert.match(screen(health), /remote health not checked/);
+	assert.doesNotMatch(screen(health), /0 matched records|0 unflagged/);
 });
 
 it("omits absent model facts and distinguishes cached availability from configured auth", () => {
@@ -236,7 +238,7 @@ it("distinguishes settings coverage, context evidence, scan coverage, ambiguity,
 		const component = card(args);
 		settle(component, await tool.execute(kind, args, undefined, undefined, context));
 		assert.match(screen(component), expected);
-		assert.doesNotMatch(screen(component), /No matches/);
+		assert.doesNotMatch(screen(component), /No matches|0 of 0/);
 	}
 	const contextFiles = card({ kind: "context_file" });
 	settle(
@@ -266,7 +268,7 @@ it("distinguishes settings coverage, context evidence, scan coverage, ambiguity,
 		},
 		scan: async () => ({
 			outcome: "ok",
-			matches: [{ line: 4, text: "Needle line" }],
+			matches: [{ line: 4, text: "Needle: sample source text" }],
 			bytesRead: 100,
 			fileSize: 500,
 			truncated: true,
@@ -275,10 +277,10 @@ it("distinguishes settings coverage, context evidence, scan coverage, ambiguity,
 	});
 	const scanCard = card();
 	settle(scanCard, resultOf(scan.text, scan.details, lookupIsError(scan.outcome)));
-	assert.match(screen(scanCard), /Partial file scan: 1 of 1 known match in skill example; continuation unavailable/);
+	assert.match(screen(scanCard), /Partial file scan; 1 of 1 known match in skill example; continuation unavailable/);
 	assert.match(screen(scanCard), /100 of 500 bytes read/);
-	assert.match(screen(scanCard), /Line 4: Needle line/);
-	assert.match(screen(scanCard), /\[Partial coverage: absence is not established\]/);
+	assert.match(screen(scanCard), /Line 4 · Needle: sample source text/);
+	assert.match(screen(scanCard), /\[Coverage is partial; absence is not established\]/);
 
 	const partialSettings = card({ kind: "setting" });
 	settle(
@@ -307,7 +309,7 @@ it("distinguishes settings coverage, context evidence, scan coverage, ambiguity,
 			records: [{ kind: "skill", name: "example" }],
 		}),
 	);
-	assert.match(screen(ambiguous), /The query needs one resource: 1 of 2 candidates; continuation available/);
+	assert.match(screen(ambiguous), /The query needs one resource; 1 of 2 candidates; continuation available/);
 
 	const blocked = boundResult({
 		header: ["registry outcome=ok"],
@@ -318,9 +320,9 @@ it("distinguishes settings coverage, context evidence, scan coverage, ambiguity,
 	});
 	const blockedCard = card();
 	settle(blockedCard, resultOf(blocked.text, blocked.details));
-	assert.match(screen(blockedCard), /page cannot advance/);
+	assert.match(screen(blockedCard), /Returned 0 of 1 match; page cannot advance/);
 	assert.match(screen(blockedCard), /first record exceeds the result bound/);
-	assert.doesNotMatch(screen(blockedCard), /No matches|\[Partial coverage/);
+	assert.doesNotMatch(screen(blockedCard), /No matches|\[Coverage is partial/);
 });
 
 it("uses Pi's error context for validation, stale cursors and thrown diagnostics, and names structured cancellation", async (t) => {
@@ -341,7 +343,7 @@ it("uses Pi's error context for validation, stale cursors and thrown diagnostics
 	const cursor = first.details?.cursor as string;
 	const stale = card({ cursor });
 	settle(stale, await registeredTool().execute("stale", { cursor }, undefined, undefined, context));
-	assert.match(screen(stale), /Stale cursor: the session changed/);
+	assert.match(screen(stale), /The cursor is stale because the session changed/);
 
 	const cancelled = card({ kind: "tool" });
 	settle(cancelled, await tool.execute("cancel", { kind: "tool" }, AbortSignal.abort(), undefined, context));

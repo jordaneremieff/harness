@@ -117,9 +117,8 @@ function callFacts(name: Name, args: Fields): string {
 		line(args.origin),
 		path(args.savePath),
 		typeof args.value === "string" ? `${qty(args.value.length, "character")} of input` : undefined,
-		...(["offset", "limit", "index"] as const).map((key) =>
-			num(args[key]) === undefined ? "" : `${key} ${args[key]}`,
-		),
+		num(args.offset) ? `offset ${args.offset}` : undefined,
+		...(["limit", "index"] as const).map((key) => (num(args[key]) === undefined ? "" : `${key} ${args[key]}`)),
 	);
 }
 
@@ -243,12 +242,20 @@ function availabilityRow(item: Fields): string {
 	);
 }
 
-function tabs(report: Fields): Receipt {
+function tabOutcome(count: number, omitted: number, matching: boolean): string {
+	if (!count) return matching ? "No tabs matched." : "No tabs found.";
+	const unit = matching ? "matching tab" : "tab";
+	return omitted ? `Returned ${count - omitted} of ${qty(count, unit)}.` : `Found ${qty(count, unit)}.`;
+}
+
+function tabs(report: Fields, args: Fields): Receipt {
 	const n = num(report.tabCount);
 	if (n === undefined) {
 		const browsers = records(report.browsers);
 		return {
-			outcome: `Checked availability for ${qty(browsers.length, "browser")}.`,
+			outcome: browsers.length
+				? `Checked availability for ${qty(browsers.length, "browser")}.`
+				: "No browser availability was reported.",
 			body: browsers.map(availabilityRow).join("\n"),
 		};
 	}
@@ -268,7 +275,7 @@ function tabs(report: Fields): Receipt {
 		)
 		.join("\n");
 	return {
-		outcome: omitted ? `Returned ${n - omitted} of ${qty(n, "matching tab")}.` : `Found ${qty(n, "tab")}.`,
+		outcome: tabOutcome(n, omitted, Boolean(line(args.match))),
 		body,
 		evidence: [path(report.userDataDir) && `User data directory: ${path(report.userDataDir)}`, line(report.profile)]
 			.filter(Boolean)
@@ -301,15 +308,18 @@ function pageFacts(page: Fields): string {
 	return join(line(page.title), line(page.url));
 }
 
+function networkOutcome(count: number, total: number | undefined): string {
+	if (!count) return "No resources returned.";
+	if (total !== undefined && total > count) return `Read the last ${count} of ${qty(total, "resource")}.`;
+	return `Read ${qty(count, "resource")}.`;
+}
+
 function networkView(data: Fields, page: Fields): Receipt {
 	const resources = records(data.resources);
 	const total = num(data.total);
 	const navigation = responseRows(records(data.navigation ? [data.navigation] : []));
 	return {
-		outcome:
-			total !== undefined && total > resources.length
-				? `Read the last ${resources.length} of ${qty(total, "resource")}.`
-				: `Read ${qty(resources.length, "resource")}.`,
+		outcome: networkOutcome(resources.length, total),
 		body: responseRows(resources),
 		evidence: [pageFacts(page), navigation && `Navigation: ${navigation}`].filter(Boolean).join("\n"),
 	};
@@ -320,7 +330,8 @@ function pagedView(window: Fields, size: number, elements: boolean, args: Fields
 	const offset = num(window.offset);
 	const next = num(window.nextOffset);
 	const unit = elements ? "element" : "character";
-	const scope = `Read ${qty(size, unit)}${offset ? ` from offset ${offset}` : ""}${total !== undefined ? ` (${total} total)` : ""}`;
+	const read = size ? `Read ${qty(size, unit)}` : elements ? "No elements returned" : "No text returned";
+	const scope = `${read}${offset ? ` from offset ${offset}` : ""}${total ? ` (${total} total)` : ""}`;
 	const continuation =
 		next !== undefined && args.browser && args.pid && args.tab
 			? safe(`browser_inspect ${JSON.stringify({ ...args, offset: next })}`)
@@ -413,7 +424,7 @@ function act(report: Fields, status: string): Receipt {
 	const delivery = line(object(report.dispatchReply).note);
 	return {
 		outcome: `${dispatchCopy}${condition ? `; ${condition}` : ""}.${diagnostic ? ` ${diagnostic}` : ""}`,
-		body: [page && `Observed page: ${page}`, responseRows(records(application.responses))].filter(Boolean).join("\n"),
+		body: [page, responseRows(records(application.responses))].filter(Boolean).join("\n"),
 		evidence: [
 			line(dispatch.note),
 			line(post.note),
@@ -451,7 +462,7 @@ function evaluate(report: Fields, status: string): Receipt {
 			outcome = "The value exceeds the return budget; only a prefix arrived.";
 			break;
 		case "syntax-error":
-			outcome = "Expression was not sent: invalid syntax.";
+			outcome = "The expression has invalid syntax and was not sent.";
 			break;
 		case "cancelled":
 			outcome = "Cancelled.";
@@ -492,7 +503,7 @@ function capture(report: Fields): Receipt {
 	const saveError = line(report.saveError);
 	return {
 		outcome: `Captured the window${size ? ` (${size.widthPx} × ${size.heightPx})` : ""}.`,
-		body: saveError ? `Optional save failed: ${saveError}` : saved ? `Saved to ${saved}` : undefined,
+		body: saveError ? `Optional save failed. ${saveError}` : saved ? `Saved to ${saved}` : undefined,
 		evidence: [line(object(report.target).url), line(object(report.identity).assurance), line(report.limits)]
 			.filter(Boolean)
 			.join("\n"),
@@ -538,7 +549,7 @@ function fallback(name: Name, status: string, text: string, isError: boolean): R
 function blockedReceipt(blocked: Fields): Receipt {
 	const { message, reason, instances, ...facts } = blocked;
 	return {
-		outcome: `Blocked: ${line(message)}`,
+		outcome: line(message),
 		body: records(instances)
 			.map((item) => join(`pid ${item.pid}`, path(item.userDataDir)))
 			.join("\n"),
@@ -554,7 +565,9 @@ function failureReceipt(status: string, report: Fields): Receipt | undefined {
 		const delivery =
 			transport.delivery === "none" ? "Not delivered to the browser." : "Delivery to the browser was not confirmed.";
 		return {
-			outcome: `${status === "cancelled" ? "Cancelled" : "Transport failed"}: ${line(transport.message)}`,
+			outcome: [status === "cancelled" ? "Cancelled." : "Transport failed.", line(transport.message)]
+				.filter(Boolean)
+				.join(" "),
 			evidence: delivery,
 		};
 	}
@@ -563,7 +576,7 @@ function failureReceipt(status: string, report: Fields): Receipt | undefined {
 function receipt(name: Name, status: string, report: Fields, args: Fields, text: string, isError: boolean): Receipt {
 	const failure = failureReceipt(status, report);
 	if (failure) return failure;
-	if (name === "browser_tabs" && status === "ok") return tabs(report);
+	if (name === "browser_tabs" && status === "ok") return tabs(report, args);
 	if (name === "browser_inspect" && status === "ok") return inspectPage(report, args, text);
 	if (name === "browser_act" && report.dispatch) return act(report, status);
 	if (name === "browser_evaluate" && report.execution) return evaluate(report, status);

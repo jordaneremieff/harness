@@ -29,7 +29,7 @@ function readCall(args: Data, resourceKey: ResourceKey): CardCall {
 	const offset = nonnegativeInteger(args.offset);
 	const facts = [
 		...(resourceKey === "documentId" ? [tab ? `tab ${tab}` : "first tab"] : []),
-		...(offset === undefined ? [] : [`offset ${offset}`]),
+		...(offset ? [`offset ${offset}`] : []),
 		...(limit === undefined ? [] : [`limit ${limit}`]),
 	];
 	const source = field(args.sourceId);
@@ -101,8 +101,10 @@ function pageOutcome(
 	body: string,
 ): string {
 	let outcome: string;
-	if (next) outcome = `Read the ${target} from offset ${offset}; more text is available.`;
-	else if (truncated || nextOffset !== undefined)
+	if (next) {
+		const page = offset ? `the ${target} from offset ${offset}` : `the first page of the ${target}`;
+		outcome = `Read ${page}; more text is available.`;
+	} else if (truncated || nextOffset !== undefined)
 		outcome = `Read part of the ${target}; no usable continuation was returned.`;
 	else if (offset > 0 && !body) outcome = `No ${target} text remains from offset ${offset}.`;
 	else if (offset > 0) outcome = `Read the rest of the ${target} from offset ${offset}.`;
@@ -189,7 +191,7 @@ function writeResult(context: ResultContext, replace: boolean): CardResult | und
 				? "Replaced no occurrences."
 				: `Replaced ${count(changed, "occurrence")}.`
 			: "Appended text to the tab.";
-	return { outcome, ...(revision ? { body: [`Revision: ${revision}`] } : {}) };
+	return { outcome, ...(revision ? { body: [`Revision ${revision}`] } : {}) };
 }
 
 export const documentsPresenters: Record<string, Presenter> = {

@@ -16,7 +16,7 @@ test("Docs presents the retained Markdown page and continues in the resolved tab
 	const page = retained.join("\n");
 	const limit = [...page].length;
 	const args = { documentId: "doc-1", offset: 0, limit };
-	assert.deepEqual(docs.call(args), { subject: "doc-1", facts: ["first tab", "offset 0", `limit ${limit}`] });
+	assert.deepEqual(docs.call(args), { subject: "doc-1", facts: ["first tab", `limit ${limit}`] });
 	const card = docs.result(
 		result(args, {
 			documentId: "doc-1",
@@ -42,7 +42,7 @@ test("Docs presents the retained Markdown page and continues in the resolved tab
 			},
 		}),
 	);
-	assert.match(card?.outcome ?? "", /tab.*offset 0.*more text/);
+	assert.match(card?.outcome ?? "", /first page of the tab.*more text/);
 	assert.deepEqual(card?.body, retained);
 	assert.deepEqual(card?.next, { args: { documentId: "doc-1", tabId: "tab-first", offset: limit, sourceId, limit } });
 	assert.match(card?.details?.join("\n") ?? "", /Meeting notes[\s\S]*Revision: revision-opaque-001/);
@@ -155,11 +155,11 @@ test("Docs distinguishes append, replacement counts, missing evidence and a revi
 	const data = { documentId: "doc-1", revisionId };
 	const appendCard = append.result(result(args, data));
 	assert.match(appendCard?.outcome ?? "", /^Appended text/);
-	assert.deepEqual(appendCard?.body, [`Revision: ${revisionId}`]);
+	assert.deepEqual(appendCard?.body, [`Revision ${revisionId}`]);
 
 	const replaced = replace.result(result(args, { ...data, occurrencesChanged: 2 }));
 	assert.match(replaced?.outcome ?? "", /^Replaced 2 occurrences/);
-	assert.deepEqual(replaced?.body, [`Revision: ${revisionId}`]);
+	assert.deepEqual(replaced?.body, [`Revision ${revisionId}`]);
 	assert.match(replace.result(result(args, { ...data, occurrencesChanged: 0 }))?.outcome ?? "", /no occurrences/);
 	assert.match(replace.result(result(args, data))?.outcome ?? "", /does not confirm/);
 	assert.match(append.result(result(args, {}))?.outcome ?? "", /does not confirm/);

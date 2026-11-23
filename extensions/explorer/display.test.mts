@@ -189,7 +189,7 @@ test("bounded note listings distinguish returned scope from display limits", () 
 	const collapsed = screen(component);
 	assert.ok(
 		collapsed.includes(
-			"Partial list: 1 note and 1 walkthrough returned · 1 unreadable record; no continuation cursor.",
+			"The partial list contains 1 note and 1 walkthrough · 1 unreadable record; no continuation cursor.",
 		),
 	);
 	assert.ok(collapsed.includes(`${noteId} · file.ts:1-5 · open`));
@@ -199,6 +199,22 @@ test("bounded note listings distinguish returned scope from display limits", () 
 	const expanded = screen(component).join("\n");
 	assert.match(expanded, /preview: A retained preview/u);
 	assert.match(expanded, /stopCount: 2/u);
+});
+
+test("note listings omit empty groups and distinguish complete from partial empty lists", () => {
+	const component = card("explorer_notes", { op: "list" });
+	const receipt = { ok: true, op: "list", summary: "0 notes match in fixture.", notes: [], tours: [], unreadable: 0 };
+	for (const [fields, expected] of [
+		[{ notes: [{ id: noteId }] }, "Returned 1 note."],
+		[{ tours: [{ id: tourId }] }, "Returned 1 walkthrough."],
+		[{}, "No notes or walkthroughs were returned."],
+		[{ limited: true }, "The partial list is empty; no continuation cursor."],
+	] as const) {
+		settle(component, { ...receipt, ...fields });
+		const rows = screen(component);
+		assert.ok(rows.includes(expected));
+		assert.doesNotMatch(rows.join("\n"), /\b0 (notes|walkthroughs|unreadable records)\b/u);
+	}
 });
 
 test("main call body and expanded arguments have independent display bounds", () => {
@@ -275,5 +291,5 @@ test("ordinary registration and publication use the same display and keep the ac
 	const listing = await notes.execute("notes", { op: "list" }, undefined, undefined, ctx);
 	const listCard = card(notes.name, { op: "list" }, notes);
 	listCard.updateResult({ ...listing, isError: false });
-	assert.ok(screen(listCard).includes("0 notes and 0 walkthroughs returned."));
+	assert.ok(screen(listCard).includes("No notes or walkthroughs were returned."));
 });

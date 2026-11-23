@@ -190,7 +190,7 @@ export const drivePresenters: Record<string, Presenter> = {
 	drive_file_rename: drive(
 		(args) => ({
 			subject: field(args.fileId),
-			facts: [field(args.name) && `new name: ${field(args.name)}`].filter(Boolean),
+			facts: [field(args.name) && `rename to ${field(args.name)}`].filter(Boolean),
 		}),
 		(context) => {
 			const { args, data } = context;
@@ -236,11 +236,12 @@ export const drivePresenters: Record<string, Presenter> = {
 				(added.length > 0 || removed.length > 0) &&
 				added.every((id) => parents.includes(id)) &&
 				removed.every((id) => !parents.includes(id));
+			const knownParents = parents.map(field).filter(Boolean);
 			return {
 				outcome: confirmed
 					? "Drive confirmed the requested folder changes."
 					: "The returned metadata does not confirm the requested folder changes.",
-				body: [fileLine(data), ...parentDetail(data)],
+				body: [fileLine(data), ...knownParents.map((id) => `Parent folder ${id}`)],
 			};
 		},
 	),
@@ -269,7 +270,7 @@ export const drivePresenters: Record<string, Presenter> = {
 			if (!fileReceipt(context) || !permissionId) return { outcome: "The sharing permission is not confirmed." };
 			return {
 				outcome: "Created a Drive sharing permission.",
-				body: [`Permission: ${permissionId}`],
+				body: [`Permission ${permissionId}`],
 				details:
 					data.notificationSent === true
 						? ["An email notification was requested."]
@@ -291,7 +292,7 @@ export const drivePresenters: Record<string, Presenter> = {
 				permissionId &&
 				data.deleted === true &&
 				(args.permissionId === undefined || data.permissionId === args.permissionId)
-				? { outcome: "Removed the Drive sharing permission.", body: [`Permission: ${permissionId}`] }
+				? { outcome: "Removed the Drive sharing permission.", body: [`Permission ${permissionId}`] }
 				: { outcome: "Removal of the sharing permission is not confirmed." };
 		},
 	),

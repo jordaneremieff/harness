@@ -34,7 +34,7 @@ test("values page preserves row boundaries, empty cells and the exact continuati
 	};
 	const presenter = sheetsPresenters.sheets_values_get;
 	assert.ok(presenter);
-	assert.ok(presenter.call(args).facts?.includes("offset 0"));
+	assert.deepEqual(presenter.call(args).facts, ["grid-42", "limit 2"]);
 	const page = result(
 		"sheets_values_get",
 		{
@@ -50,8 +50,8 @@ test("values page preserves row boundaries, empty cells and the exact continuati
 		},
 		args,
 	);
-	assert.match(page.outcome, /2 rows at range offset 0.*More rows/);
-	assert.deepEqual(page.body, ['Row 1: =1+1, "", "north, west"', 'Row 2: 0, false, "first\nsecond"']);
+	assert.match(page.outcome, /2 rows on the first page.*More rows/);
+	assert.deepEqual(page.body, ['Row 1 · =1+1, "", "north, west"', 'Row 2 · 0, false, "first\nsecond"']);
 	assert.match(page.details?.join(" ") ?? "", /truncated 1 cell/);
 	assert.deepEqual(page.next, { args: { ...args, cursor: "2" } });
 	const last = result("sheets_values_get", { externalData: { values: [] } }, page.next?.args);
@@ -76,8 +76,10 @@ test("values writes hide submitted cells and describe the returned write receipt
 		args,
 	);
 	assert.match(updated.outcome, /Updated 3 cells/);
-	assert.deepEqual(updated.body, ["Written range: Intake!A4:B5", "2 rows", "2 columns"]);
-	assert.match(result("sheets_values_append", { updatedCells: "0" }).outcome, /0 cells/);
+	assert.deepEqual(updated.body, ["Write range Intake!A4:B5", "2 rows", "2 columns"]);
+	const emptyWrite = result("sheets_values_append", { updatedRows: 0, updatedColumns: 0, updatedCells: 0 });
+	assert.deepEqual(emptyWrite.body, []);
+	assert.match(emptyWrite.outcome, /0 cells/);
 	assert.doesNotMatch(result("sheets_values_append", { spreadsheetId: "grid-42" }).outcome, /^Appended/);
 	assert.equal(
 		sheetsPresenters.sheets_values_append?.result({

@@ -175,6 +175,21 @@ it("shows summary text, usable element references, and the scope of recent resou
 	assert.match(screen(component), /Read the last 1 of 4 resources\.\n .*resource · HTTP 404/);
 });
 
+it("states empty results without redundant zero counts", (t) => {
+	keys(t);
+	const tabs = card("browser_tabs", { browser: "brave", match: "missing" });
+	tabs.updateResult(result("browser_tabs", "ok", { tabCount: 0, windows: [] }));
+	assert.match(screen(tabs), /No tabs matched\./);
+	assert.doesNotMatch(screen(tabs), /0 tabs/);
+	const inspect = card("browser_inspect", { ...target, view: "elements", offset: 0 });
+	inspect.updateResult(result("browser_inspect", "ok", { view: "elements", result: { elements: [], total: 0 } }));
+	assert.match(screen(inspect), /No elements returned\./);
+	assert.doesNotMatch(screen(inspect), /offset 0|0 total|0 elements/);
+	inspect.updateResult(result("browser_inspect", "ok", { view: "network", result: { resources: [], total: 0 } }));
+	assert.match(screen(inspect), /No resources returned\./);
+	assert.doesNotMatch(screen(inspect), /0 resources/);
+});
+
 it("uses click disclosure only after a result without an expand key, and omits empty disclosure", (t) => {
 	keys(t, []);
 	const short = card("browser_evaluate", { ...target, expression: "2 + 2" });
@@ -260,8 +275,11 @@ it("shows navigation dispatch separately from observation, refusals and an opera
 		value: "sensitive-example",
 		waitFor: { selector: "#ok" },
 	});
-	element.updateResult(result("browser_act", "blocked", { blocked: { message: "Origin did not match." } }, "", true));
-	assert.match(screen(element), /Blocked: Origin did not match/);
+	element.updateResult(
+		result("browser_act", "blocked", { blocked: { message: "Origin did not match: the tab moved." } }, "", true),
+	);
+	assert.match(screen(element), /\n Origin did not match: the tab moved\./);
+	assert.doesNotMatch(screen(element), /Blocked:/);
 	element.updateResult({
 		content: [{ type: "text", text: "An external exception named cancellation" }],
 		isError: true,
@@ -360,7 +378,7 @@ it("reports structured cancellation without losing dispatch evidence", (t) => {
 			{
 				action: { type: "navigate" },
 				dispatch: { status: "dispatched" },
-				application: { documentReplaced: true },
+				application: { documentReplaced: true, page: { title: "Page title", url: "https://example.test" } },
 				postcondition: { status: "unknown", condition: { selector: "#ready" }, note: "Page-side work may continue." },
 			},
 			"",
@@ -371,9 +389,11 @@ it("reports structured cancellation without losing dispatch evidence", (t) => {
 		screen(component, 175),
 		/Navigation sent; document replacement observed; observation cancelled; condition not observed/,
 	);
+	assert.match(screen(component), /\n Page title · https:\/\/example.test/);
+	assert.doesNotMatch(screen(component), /Observed page:/);
 	const tabs = card("browser_tabs");
 	tabs.updateResult(result("browser_tabs", "cancelled", { transport }, "", true));
-	assert.match(screen(tabs), /Cancelled: Request stopped before delivery/);
+	assert.match(screen(tabs), /Cancelled\. Request stopped before delivery/);
 });
 
 it("separates the optional save error from the capture and keeps the native inline image channel", (t) => {
@@ -387,7 +407,7 @@ it("separates the optional save error from the capture and keeps the native inli
 	});
 	const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 	component.updateResult({ ...run, content: [...run.content, { type: "image", mimeType: "image/png", data }] });
-	assert.match(screen(component), /Captured the window \(1 × 1\)\.\n Optional save failed: The file exists/);
+	assert.match(screen(component), /Captured the window \(1 × 1\)\.\n Optional save failed\. The file exists/);
 	assert.doesNotMatch(screen(component), /\[image/i);
 	assert.ok(
 		component.render(100).some((row) => row.includes("\x1b_G")),
