@@ -1,6 +1,6 @@
 # Explorer
 
-Explorer opens a repository, folder or file in a native window over a Rex pane. Browse files, compare changes, and leave notes on the code.
+Explorer opens a repository, folder or file in a native window over a Rex pane. Browse files, compare changes, and leave notes on the code. Workers report paths and line numbers instead of opening Explorer unless the operator explicitly requests display.
 
 ## Open Explorer
 
@@ -52,7 +52,7 @@ Quick Open (cmd+P) and the Files filter search a path index that Explorer builds
 |---|---|---|---|---|---|---|
 | app | `PI_EXPLORER_APP` | path | &lt;agentDir&gt;/explorer-app/Explorer.app | reload | none | Installed native Explorer application. |
 | dir | `PI_EXPLORER_DIR` | path | &lt;agentDir&gt;/explorer | reload | none | Private directory for Explorer notes and review state. |
-| agentPane | `PI_EXPLORER_AGENT_PANE` | enum | "split" | reload | split, float | Pane in which an ordinary session shows an Explorer location. split names a split on the right of the session's own pane; float names a floating pane over its window. Agents without a pane of their own, such as Durable workers, always use a floating pane on the tab of the ordinary session that started them. An operator's request for another pane still applies, and /explorer always opens a split. A new or reloaded session applies a change. |
+| agentPane | `PI_EXPLORER_AGENT_PANE` | enum | "split" | reload | split, float | Pane in which an ordinary session shows an Explorer location. split names a split on the right of the session's own pane; float names a floating pane over its window. The session reuses its own Explorer pane. Workers report locations without opening a pane unless the operator explicitly requests display. An operator's request for another pane still applies, and /explorer always opens a split. A new or reloaded session applies a change. |
 | showIgnored | `PI_EXPLORER_SHOW_IGNORED` | boolean | true | next use | none | Show Git-ignored files and folders in the Files list of a newly opened pane. Direct file access, Quick Open and content search are unchanged. Open panes keep their launch value. |
 <!-- harness:settings:end -->
 
@@ -60,9 +60,9 @@ Relative paths for settings resolve against the agent directory. See the [extens
 
 ## Tools
 
-`explorer_show` accepts `path`, `line`, `endLine`, `review`, `tour` and an optional `note: {title?,text}`. A review specifies one of `scope`, `commit` or `range`. A note is saved before the pane is moved or a launch command is returned. A result with `moved:true` confirms the live pane accepted the new location. Otherwise `show` supplies argv to run in a pane, `paneInput` supplies navigation text for an existing pane you own when the build supports it, or `showUnavailable` explains why a launch is not offered. The tool does not create or focus a pane. An unconfirmed live navigation does not produce replacement argv.
+`explorer_show` accepts `path`, `line`, `endLine`, `review`, `tour` and an optional `note: {title?,text}`. A native agent, headless session or worker reports paths and line ranges instead of calling this tool unless the operator explicitly requests display. A review specifies one of `scope`, `commit` or `range`. A note is saved before the pane is moved or a launch command is returned. A result with `moved:true` confirms the live pane accepted the new location. Otherwise `show` supplies argv to run in a pane, `paneInput` supplies navigation text for an existing pane you own when the build supports it, or `showUnavailable` explains why a launch is not offered. The tool does not create or focus a pane. An unconfirmed live navigation does not produce replacement argv. Honour a placement the operator requests; otherwise a native agent uses a split on the right of its inherited pane, while an ordinary session uses its configured pane and reuses its own Explorer pane.
 
-`explorer_notes` accepts a `root` or uses the working directory. Use `list` with optional `path` and `state`, `read` with `id`, `reply` with `id` and `text`, `resolve` or `reopen` with `ids`, `note` with `path`, `start`, `end`, `text` and optional `title`, or `tour` with `title`, optional `review` and ordered `stops` (`path`, `start`, `end`, `title`, `text`). Pass the returned `tourId` to `explorer_show`. Tool lists return bounded previews; read a single note for the quote and recent replies. The ordinary Pi and Durable tools return structured results. Durable does not automatically replay interrupted tool calls because a call can write a note, reply or walkthrough, or move a live pane.
+`explorer_notes` accepts a `root` or uses the working directory. Use `list` with optional `path` and `state`, `read` with `id`, `reply` with `id` and `text`, `resolve` or `reopen` with `ids`, `note` with `path`, `start`, `end`, `text` and optional `title`, or `tour` with `title`, optional `review` and ordered `stops` (`path`, `start`, `end`, `title`, `text`). Pass the returned `tourId` to `explorer_show` to show the walkthrough, or name it in a report when you open no pane. This tool opens no pane. Tool lists return bounded previews; read a single note for the quote and recent replies. The ordinary Pi and Durable tools return structured results. Durable does not automatically replay interrupted tool calls because a call can write a note, reply or walkthrough, or move a live pane.
 
 ## Edit and create files
 

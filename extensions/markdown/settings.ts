@@ -113,7 +113,7 @@ export const settings = {
 			choices: ["split", "float"],
 			default: "split",
 			description:
-				"Pane in which the markdown_publish guidance of an ordinary session shows a publication. split names a split on the right of the session's own pane; float names a floating pane over its window. Agents without a pane of their own, such as Durable workers, always use a floating pane on the tab of the ordinary session that started them. An operator's request for another pane still applies, and /markdown always opens a split. A new or reloaded session applies a change.",
+				"Pane in which the markdown_publish guidance of an ordinary session shows a publication. split names a split on the right of the session's own pane; float names a floating pane over its window. Workers report documents without opening a pane unless the operator explicitly requests display. An operator's request for another pane still applies, and /markdown always opens a split. A new or reloaded session applies a change.",
 		},
 	},
 } as const;

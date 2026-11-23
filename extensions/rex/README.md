@@ -323,17 +323,17 @@ holds no store: floating panes created before a reload get no decision. Each dec
 runs bounded CLI calls; a session change or shutdown aborts them and forgets the
 waiting panes. Durable, RPC, JSON and print sessions do not move panes.
 
-For content that the operator reads for a while, such as a document, create a floating
-pane with `keepFloating: true`. It stays where it is until the operator moves or closes
-it. To show new content in an earlier pane of yours, send that pane's program the input
-that it accepts for this instead of opening another pane.
+When the operator needs a floating pane to stay in place, create it with
+`keepFloating: true`. It stays where it is until the operator moves or closes it. To
+show new content in an earlier pane of yours, send that pane's program the input that
+it accepts for this instead of opening another pane.
 
 ## Agents inherit their session's pane
 
 An agent without a pane of its own, such as a native Durable conversation, opens its panes on
 the tab of the ordinary session that started its chain of agents. A request without a target,
-such as a floating reader pane, then appears beside the conversation that the work belongs to,
-not on whatever tab the operator looks at.
+such as a reader pane that the operator asked for, then appears beside the conversation that the
+work belongs to, not on whatever tab the operator looks at.
 
 Ordinary interactive Pi records its pane when a session starts and its inherited `REX_SESSION`
 and `REX_BLOCK` name a full session and block ID. RPC, JSON and print sessions record nothing.

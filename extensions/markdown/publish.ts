@@ -203,26 +203,18 @@ const INSPECTION_TEXT: Record<InspectionFailure, string> = {
 const ASK_REPLY =
 	"For a question from a live Markdown Ask card, give the substantive answer in your final message. The existing card shows that text; do not publish or open another pane just to answer it.";
 const READER_MATERIAL =
-	"a reply with headings, a table, three or more explained points, or more than about ten lines; a document, comparison, or diagram; or a worker's findings and progress";
-const PEER_REPORT =
-	"Agents that work for other agents follow this rule too. A report to another agent stays complete, because agents do not see panes. Reuse your own pane for updates.";
-/**
- * Where the guidance shows a publication. markdown.agentPane selects it for ordinary sessions; agents
- * without a pane of their own always float it on the tab of the ordinary session that started them.
- */
-const SHOW: Record<AgentPane, { description: string; guideline: string }> = {
-	split: {
-		description:
-			"run the result's show command as the program of a new split on the right of your own pane that closes when its program ends, and give it no target, so that it opens beside your conversation.",
-		guideline: "run its show command in a new split on the right of your own pane, with no target",
-	},
-	float: {
-		description:
-			"run the result's show command as the program of a new floating pane that stays where it is and closes when its program ends, and give it no target: the pane then opens on the tab where your work belongs, over your own pane's window or, for an agent without a pane of its own such as a worker, over the window of the ordinary session that started its chain of agents.",
-		guideline:
-			"run its show command in a floating pane that stays in place, with no target so that it opens on your own tab",
-	},
+	"a reply with headings, a table, three or more explained points, or more than about ten lines; or a document, comparison, or diagram";
+const REPORT =
+	"Give the coordinating session a complete report. If you publish a document, include its ID and title so the coordinator can show it without copying it.";
+const PLACEMENT: Record<AgentPane, string> = {
+	split: "a split on the right of your pane",
+	float: "a floating pane that stays in place",
 };
+const USE_PANE =
+	"Use the exact show command as the program of the new pane, with no target, and close the pane when its program ends. Respect the operator's requested placement. Do not take focus unless the operator asked to see it now.";
+export const NATIVE_PUBLISH_GUIDANCE = `Publish silently when a document helps the recipient. ${REPORT} Do not open or navigate a reader pane unless the operator explicitly asks you to show the material. For that request, reuse the reader pane you already opened. If you need a new pane, use a split on the right of the inherited pane. ${USE_PANE} ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
+export const publishGuideline = (pane: AgentPane): string =>
+	`If you work for another agent or run without an interactive conversation, publish silently and do not open or navigate a reader pane unless the operator explicitly asks you to show the material. ${REPORT} In the interactive session with the operator, show material that is hard to read in a terminal without waiting to be asked: ${READER_MATERIAL}. Choose which findings from other agents to show. Publish your synthesis or use markdown_read with the reported document ID. Reuse your reader pane across reports. For a new pane, use ${PLACEMENT[pane]}. ${USE_PANE} Say what the pane holds and give the answer and any needed decision in chat. A plain answer of a few sentences stays in chat. ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
 /**
  * How an agent learns that the operator closed a reader pane. Ordinary conversations also receive
  * a notice when a pane closes; native conversations learn it from the update result only.
@@ -231,10 +223,12 @@ const PANE_CLOSURE = {
 	notice:
 		"The operator can close a reader pane at any time. When a reader pane connected to this conversation closes, a notice in the conversation says so and how many panes remain connected; the result of an update gives the same count. With no pane connected, nothing that you save reaches the operator by itself: show the document in a new pane if the operator should read it now, or answer in chat and say that it is saved, and never tell the operator that a pane shows it.",
 	result:
-		"The operator can close a reader pane at any time. The result of an update says how many reader panes are still connected to this conversation; when none is, no pane of yours shows the update, so do not tell the operator that a pane shows it: show it in a new pane if the operator should read it now, or say that it is saved.",
+		"The operator can close a reader pane at any time. The result of an update says how many reader panes are still connected to this conversation; when none is, no pane of yours shows the update, so do not tell the operator that a pane shows it.",
 };
+const describePublication = (guidance: string, paneNotices: boolean) =>
+	`Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Configured writing checks return findings and can refuse new source; repair the sentence rather than swapping forms. ${guidance} Use markdown_live to change a connected pane's actual buffer; reserve document/expectedRevision updates for stored publications rather than live collaboration. ${PANE_CLOSURE[paneNotices ? "notice" : "result"]} When the result offers paneInput, use it to show the current revision in a reader pane that you opened instead of opening another pane. The pane keeps its place and saves the earlier document's reading position. Use a pinned show command in a new pane for an exact replay revision. Type into or close only reader panes that you opened yourself, never the operator's or another session's panes. To show a stored document again later, run the same command with that document's ID: the reader returns to the saved reading position. To show an earlier answer exactly, use response "previous" instead of retyping it. To explain something visually, write an SVG or PNG diagram beside a Markdown file, reference it with a relative image link, and publish the file: the revision keeps the image. Before you update a document whose current text you do not hold, read it with markdown_read; after a conflict, read the current revision that the conflict names. The operator can also open a published document from the Markdown view under Published, or with the result's open command in an ordinary Pi session.`;
 export const publishDescription = (pane: AgentPane, paneNotices = false): string =>
-	`Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Configured writing checks return findings and can refuse new source; repair the sentence rather than swapping forms. ${BRIEF_GUIDANCE} Publish material that is hard to read in a terminal without waiting to be asked: ${READER_MATERIAL}. A plain answer of a few sentences stays in chat. To show a publication now, ${SHOW[pane].description} The native reader window then sits over that pane, with real selection, copying, find, links and scrolling. Do not take focus unless the operator asked to see it now. Then answer in chat in a few sentences and say what the pane holds; do not copy the pane into the chat. ${PEER_REPORT} Use markdown_live to change a connected pane's actual buffer; reserve document/expectedRevision updates for stored publications rather than live collaboration. ${PANE_CLOSURE[paneNotices ? "notice" : "result"]} When the result offers paneInput, use it to show the current revision in a reader pane that you opened instead of opening another pane. The pane keeps its place and saves the earlier document's reading position. Use a pinned show command in a new pane for an exact replay revision. Type into or close only reader panes that you opened yourself, never the operator's or another session's panes. To show a stored document again later, run the same command with that document's ID: the reader returns to the saved reading position. To show an earlier answer exactly, use response "previous" instead of retyping it. To explain something visually, write an SVG or PNG diagram beside a Markdown file, reference it with a relative image link, and publish the file: the revision keeps the image. Before you update a document whose current text you do not hold, read it with markdown_read; after a conflict, read the current revision that the conflict names. The operator can also open a published document from the Markdown view under Published, or with the result's open command in an ordinary Pi session. ${ASK_REPLY}`;
+	describePublication(publishGuideline(pane), paneNotices);
 export { captureReferences, inspectReferences } from "./reference-capture.ts";
 export type {
 	ReferenceRunner,
@@ -667,11 +661,6 @@ function failureText(error: Extract<PublishOutcome, { ok: false }>["error"]): st
 		return `${text} This reuseKey already names other input; use a new reuseKey for new input.`;
 	return text;
 }
-/** The ordinary rule that makes publication part of the reply decision, not only of document work. */
-export const publishGuideline = (pane: AgentPane): string =>
-	`Use markdown_publish without waiting to be asked for material that is hard to read in a terminal: ${READER_MATERIAL}. To show it, ${SHOW[pane].guideline}. Do not take focus unless the operator asked to see it now. Then give the answer and any needed decision in a few sentences of chat and say what the pane holds; do not repeat the pane. A plain answer of a few sentences stays in chat. ${PEER_REPORT} ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
-/** Native hosts carry no per-tool guidelines, so the same decision travels as one section. */
-export const NATIVE_PUBLISH_GUIDANCE = `Use markdown_publish without waiting to be asked for material that is hard to read in a terminal: ${READER_MATERIAL}. ${BRIEF_GUIDANCE} Publication saves silently. To show it to the operator, run its show command in a floating pane that stays in place, with no target: it opens on the tab of the ordinary session that started your chain of agents. Do not take focus unless the operator asked to see it now. Then give the answer and any needed decision in a few sentences of chat and say what the pane holds; do not repeat the pane. A plain answer of a few sentences stays in chat. ${PEER_REPORT} The operator can close a reader pane at any time: before you say that a pane shows an update, read the update result, which says whether a reader pane is still connected to your conversation. Use markdown_read to find a stored document and read an exact revision before you correct it. ${ASK_REPLY}`;
 /**
  * Counts the reader panes connected to this conversation, when the show command carries the live
  * connection through which a pane reports itself. A pane leaves the count when it closes.
@@ -748,7 +737,7 @@ export function createNativePublishTool(
 ): Durable.ToolRegistration<typeof PublishParameters, Durable.JsonObject> {
 	return host.durable.defineTool({
 		name: "markdown_publish",
-		description: publishDescription("float"),
+		description: describePublication(NATIVE_PUBLISH_GUIDANCE, false),
 		parameters: PublishParameters,
 		structuredOutputSchema: PublishOutcomeSchema,
 		replay: "safe",

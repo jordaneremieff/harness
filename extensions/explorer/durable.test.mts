@@ -50,6 +50,9 @@ test("Durable registers both Explorer tools and does not replay writes or naviga
 				["explorer_notes", "unsafe"],
 			],
 		);
+		const description = extension.tools?.find((tool) => tool.name === "explorer_show")?.description ?? "";
+		assert.match(description, /unless the operator explicitly asks you to show code/u);
+		assert.match(description, /split on the right of the inherited pane/u);
 		registry.install(extension);
 		const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 		faux.setResponses([

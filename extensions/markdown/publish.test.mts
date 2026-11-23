@@ -606,52 +606,38 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 		);
 		assert.ok(tool.outputSchema);
 		const guideline = tool.promptGuidelines?.join("\n") ?? "";
-		assert.match(
-			guideline,
-			/^Use markdown_publish without waiting to be asked/u,
-			"the reply decision itself carries the publication rule",
-		);
-		assert.match(guideline, /run its show command in a new split on the right of your own pane, with no target/u);
-		assert.match(
-			tool.description,
-			/new split on the right of your own pane that closes when its program ends, and give it no target/u,
-		);
-		assert.doesNotMatch(tool.description + guideline, /float/u);
+		for (const guidance of [guideline, tool.description]) {
+			assert.match(guidance, /a split on the right of your pane/u);
+			assert.match(guidance, /use markdown_read with the reported document ID/u);
+			assert.match(guidance, /Reuse your reader pane across reports/u);
+			assert.match(guidance, /without an interactive conversation/u);
+		}
+		assert.match(publishDescription("float"), /a floating pane that stays in place/u);
 		const floating = createPublishTool({ store, cwd: root, pane: "float" });
-		for (const guidance of [
+		const interactive = [
+			guideline,
+			tool.description,
 			floating.description,
 			floating.promptGuidelines?.join("\n") ?? "",
-			publishDescription("float"),
-			NATIVE_PUBLISH_GUIDANCE,
-		])
+		];
+		for (const guidance of interactive) {
 			assert.match(
 				guidance,
-				/floating pane that stays (?:where it is|in place)/u,
-				"agents without a pane of their own always float",
+				/In the interactive session with the operator, show material that is hard to read in a terminal without waiting to be asked/u,
+				"the coordinating session decides to show material, not only when asked",
 			);
-		for (const guidance of [
-			tool.description,
-			guideline,
-			floating.description,
-			floating.promptGuidelines?.join("\n") ?? "",
-			NATIVE_PUBLISH_GUIDANCE,
-		]) {
-			assert.match(guidance, /without waiting to be asked/u);
 			assert.match(
 				guidance,
 				/a reply with headings, a table, three or more explained points, or more than about ten lines/u,
 			);
-			assert.match(guidance, /a document, comparison, or diagram; or a worker's findings and progress/u);
-			assert.match(guidance, /Agents that work for other agents follow this rule too/u);
-			assert.match(guidance, /A report to another agent stays complete/u);
-			assert.match(guidance, /Ask card, give the substantive answer in your final message/u);
-			assert.match(
-				guidance,
-				/no target/u,
-				"the pane opens on the tab where the work belongs, not wherever the operator looks",
-			);
-			assert.match(guidance, /Do not take focus unless the operator asked to see it now/u);
 			assert.match(guidance, /A plain answer of a few sentences stays in chat/u);
+		}
+		for (const guidance of [...interactive, NATIVE_PUBLISH_GUIDANCE]) {
+			assert.match(guidance, /unless the operator explicitly asks you to show/u);
+			assert.match(guidance, /complete report/u);
+			assert.match(guidance, /include its ID and title/u);
+			assert.match(guidance, /Ask card, give the substantive answer in your final message/u);
+			assert.match(guidance, /Do not take focus unless the operator asked to see it now/u);
 			assert.doesNotMatch(
 				guidance,
 				/operator's (?:focus|tab)|default|setting|agentPane/u,
@@ -659,7 +645,11 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 			);
 			assert.doesNotMatch(guidance, /not every reply|do not publish every reply|explicitly requested document/u);
 		}
-		assert.match(NATIVE_PUBLISH_GUIDANCE, /tab of the ordinary session that started your chain of agents/u);
+		assert.doesNotMatch(
+			NATIVE_PUBLISH_GUIDANCE,
+			/without waiting to be asked|floating/u,
+			"a native agent reports to its coordinator and shows nothing unprompted",
+		);
 		const first = success(result.details);
 		assert.equal(first.show, undefined);
 		assert.ok(

@@ -42,19 +42,23 @@ the harness already holds the answer:
 
 ## Keep the operator informed
 
-Use the Markdown reader for material that is hard to read in a terminal,
-without waiting to be asked: a reply with headings, a table, or three or more
-explained points, a reply longer than about ten lines, a document, a
-comparison, a diagram, or a worker's findings and progress. Open it in a
-pane on the tab where the work belongs: your own tab, or for an agent
-without a pane of its own, the tab of the ordinary session that started its
-work. Leave the operator's focus where it is unless they asked to
-see it now. Then give the answer and any decision you need in a few sentences
-of chat, and say what the pane holds; do not repeat the pane. A plain answer
-of a few sentences stays in the chat. Agents that work for other agents do
-this too, so the operator can follow their work, but their report to the other
-agent stays complete, because agents do not see panes. Reuse your own pane for
-updates.
+In the interactive session with the operator, use your own Markdown reader
+pane for material that is hard to read in a terminal, without waiting to be
+asked: a reply with headings, a table, or three or more explained points, a
+reply longer than about ten lines, a document, a comparison, or a diagram.
+You decide which findings of the agents you coordinate reach the operator:
+show your synthesis, or open an agent's published document by its ID. Reuse
+your pane across reports. Leave the operator's focus where it is unless they
+asked to see it now. Then give the answer and any decision you need in a few
+sentences of chat, and say what the pane holds; do not repeat the pane. A
+plain answer of a few sentences stays in the chat.
+
+If you are a Durable agent, work for another agent, or run without an
+interactive conversation, do not open or navigate a reader or Explorer pane
+unless the operator explicitly asks you to show the material. Publish silently
+when a document helps the recipient. Give the coordinating session a complete
+report, including the ID and title of each publication and the paths and line
+ranges for relevant code.
 
 ## Reporting
 

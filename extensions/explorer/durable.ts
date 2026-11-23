@@ -32,7 +32,7 @@ export function explorerContribution(source: string, bus: SettingsBus, stopFacto
 			const { bridges } = nativeLive(host);
 			const show = host.durable.defineTool({
 				name: "explorer_show",
-				description: showDescription("float"),
+				description: showDescription("native"),
 				parameters: ShowParameters,
 				structuredOutputSchema: ToolOutcomeSchema,
 				replay: "unsafe",
@@ -79,7 +79,7 @@ export function explorerContribution(source: string, bus: SettingsBus, stopFacto
 			return host.durable.defineExtension({
 				name: "explorer",
 				tools: [show, notes],
-				sections: [host.durable.section("explorer", () => showGuidance("float"))],
+				sections: [host.durable.section("explorer", () => showGuidance("native"))],
 			});
 		},
 	};

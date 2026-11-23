@@ -71,12 +71,21 @@ export const ToolOutcomeSchema = obj(
 );
 export type Outcome = Static<typeof ToolOutcomeSchema> & Record<string, unknown>;
 export const NOTES_DESCRIPTION =
-	"List and read a repository's Explorer notes, add an agent note or reply, resolve or reopen notes, or create an ordered walkthrough. root selects the repository; path is relative to its root. note requires path, start, end and text; tour requires title and stops. Pass the returned tour ID to explorer_show. This tool opens no pane.";
-export function showGuidance(pane: AgentPane): string {
-	const placement = pane === "split" ? "split to the right of your own pane" : "floating pane that stays in place";
-	return `If the operator needs to see the code now and you receive show, use its exact argv as the program of a new ${placement}, with no target, without taking focus, and with the pane set to close when its program ends. An agent without its own terminal pane uses a floating pane on the ordinary session's tab. Respect a different placement requested by the operator. Reuse one Explorer pane: moved confirms a live pane navigated, and paneInput is for a pane you already opened. Type into or close only your own pane. The operator can close it at any time. If navigation is unconfirmed, do not open a replacement automatically.`;
+	"List and read a repository's Explorer notes, add an agent note or reply, resolve or reopen notes, or create an ordered walkthrough. root selects the repository; path is relative to its root. note requires path, start, end and text; tour requires title and stops. Pass the returned tour ID to explorer_show to show the walkthrough, or name the ID in your report. This tool opens no pane.";
+type ShowAudience = AgentPane | "native";
+export function showGuidance(pane: ShowAudience): string {
+	const placement =
+		pane === "native"
+			? "split on the right of the inherited pane"
+			: pane === "split"
+				? "split to the right of your own pane"
+				: "floating pane that stays in place";
+	const audience =
+		pane === "native" ? "Do" : "If you work for another agent or run without an interactive conversation, do";
+	const report = `${audience} not call explorer_show unless the operator explicitly asks you to show code. Otherwise, report the file paths and line ranges to the coordinator without opening or navigating a pane.`;
+	return `${report} ${pane === "native" ? "For a requested display" : "In the interactive session with the operator, when the operator needs to see the code"}, if you receive show, use its exact argv as the program of a new ${placement}, with no target, without taking focus, and with the pane set to close when its program ends. Respect a different placement requested by the operator. Reuse one Explorer pane: moved confirms a live pane navigated, and paneInput is for a pane you already opened. Type into or close only your own pane. The operator can close it at any time. If navigation is unconfirmed, do not open a replacement automatically.`;
 }
-export const showDescription = (pane: AgentPane) =>
+export const showDescription = (pane: ShowAudience) =>
 	`Show a file, line range, review or walkthrough in Explorer. For a supplied note, save an open agent note first. If a live pane from this conversation is connected, navigate it instead of creating another. No window opens by itself. ${showGuidance(pane)}`;
 
 export function reviewInput(input: Static<typeof review>): ReviewScope {
