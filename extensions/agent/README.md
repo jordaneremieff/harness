@@ -1813,8 +1813,16 @@ its place operation. `readState` reports the malformed binding as corruption.
 A proposed book must fit the reader's serialized UTF-8
 byte cap before publication. Creating a place reserves those exact binding
 fields under the lock before catalogue publication or host launch. Capacity
-refusal preserves the original readable bytes and starts no host. Reads use
-nonblocking, no-follow open, regular-file validation and one growth sentinel.
+refusal preserves the original readable bytes and starts no host. Once the host
+is reachable and supports the requested admission, place creation publishes the
+binding before submitting the first task. If the admission reply is lost, the
+binding still points to the same owner and a retry with the same request ID
+reaches that owner. A failed binding write admits no task. An area must be an
+existing directory. Place resolves relative paths against the caller's cwd and
+follows directory aliases by real path. Unbind accepts the exact retained path,
+even after removal, or a current alias for it.
+Reads use nonblocking, no-follow open, regular-file validation and one growth
+sentinel.
 
 Agent controls reach native conversations whose effective selection includes
 them, so an agent can run its own agents. Placement without a handle is

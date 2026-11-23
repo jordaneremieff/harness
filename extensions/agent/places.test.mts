@@ -177,10 +177,14 @@ describe("place bindings", () => {
 		const root = base();
 		try {
 			const book = new PlaceBook(root);
-			const first = await book.withArea("/work/area", async (current) => {
+			const first = await book.withArea("/work/area", async (current, reserve) => {
 				assert.equal(current, undefined, "no retained owner");
 				assert.throws(() => book.bind("/work/nested", "nested"), PlaceLockedError, "the lock is held");
-				return { value: "spawned", sessionId: "session-one", topic: "the area" };
+				const publish = reserve("session-one", "the area");
+				assert.equal(book.exact("/work/area"), undefined);
+				publish();
+				assert.equal(book.exact("/work/area")?.sessionId, "session-one");
+				return "spawned";
 			});
 			assert.equal(first.created, true);
 			assert.equal(first.binding.sessionId, "session-one");
@@ -188,7 +192,7 @@ describe("place bindings", () => {
 			assert.equal(first.value, "spawned");
 			const second = await book.withArea("/work/area", async (current) => {
 				assert.equal(current?.sessionId, "session-one", "the retained owner is visible");
-				return { value: "reused", sessionId: current.sessionId, topic: current.topic };
+				return "reused";
 			});
 			assert.equal(second.created, false);
 			assert.equal(second.value, "reused");
@@ -214,7 +218,7 @@ describe("place bindings", () => {
 			book.bind("/work/project", "session-parent", "parent");
 			const transaction = await book.withArea("/work/project/extensions", async (current) => {
 				assert.equal(current?.sessionId, "session-parent", "the parent binding is current");
-				return { value: "reused", sessionId: current.sessionId, topic: current.topic };
+				return "reused";
 			});
 			assert.equal(transaction.created, false);
 			assert.equal(transaction.binding.sessionId, "session-parent");

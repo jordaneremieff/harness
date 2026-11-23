@@ -2596,7 +2596,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				return errorResult(`Place replay failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
 			const agent = await api.agent(context);
-			const resolved = resolvePlaceArea(args.area ?? agent.cwd ?? host.cwd);
+			const resolved = resolvePlaceArea(resolve(agent.cwd ?? host.cwd, args.area ?? "."));
 			if (resolved.kind === "error") return errorResult(resolved.message);
 			const outcome = await dispatchPlace(api, resolved.area, args, context);
 			if (outcome.kind === "error") return errorResult(outcome.message);

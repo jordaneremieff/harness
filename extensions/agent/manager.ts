@@ -27,7 +27,7 @@ import {
 import { stopColdStorage } from "./cold-stop.ts";
 import { unconfirmedStopText } from "./control-result.ts";
 import { checkInMinutes } from "./check-in-options.ts";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
 	AgentCatalog,
@@ -705,12 +705,13 @@ export class AgentManager {
 		input: AgentSpawnInput,
 		caller: AgentCaller,
 		record: CatalogRecord,
+		sessionId = record.storageId,
 	): Promise<AgentSpawnInput & { selection: ExecutionSelection }> {
 		if (input.selection !== undefined) return this.executionInput(input, caller);
 		let fields: ExecutionFields = {};
 		let unavailable: string | undefined;
 		try {
-			const profile = (await this.observe(record, "profile-read", { sessionId: record.storageId })) as AgentProfile;
+			const profile = (await this.observe(record, "profile-read", { sessionId })) as AgentProfile;
 			fields = {
 				model: profile.model ? `${profile.model.provider}/${profile.model.modelId}` : undefined,
 				thinkingLevel: profile.thinkingLevel ?? undefined,
@@ -863,17 +864,16 @@ export class AgentManager {
 		input: AgentSpawnInput,
 		caller: AgentCaller,
 		onCreated?: (row: AgentConversationSummary) => void,
-		beforeCreate?: (storageId: string) => void,
 	): Promise<unknown> {
 		if (input.handle !== undefined) return this.spawnHandled({ ...input, handle: input.handle }, caller, onCreated);
-		return this.spawnIndependent(input, caller, onCreated, beforeCreate);
+		return this.spawnIndependent(input, caller, onCreated);
 	}
 
 	private async spawnIndependent(
 		input: AgentSpawnInput,
 		caller: AgentCaller,
 		onCreated?: (row: AgentConversationSummary) => void,
-		beforeCreate?: (storageId: string) => void,
+		reserveBinding?: (storageId: string) => () => void,
 	): Promise<unknown> {
 		if (input.role !== undefined) profileText(input.role, "role");
 		const previous = input.requestId === undefined ? undefined : this.catalog.readRequest(caller.id, input.requestId);
@@ -892,10 +892,14 @@ export class AgentManager {
 			: effectiveExecutionSelection(selected.selection, thinkingLevel);
 		input = { ...selected, selection };
 		await caller.retainExecutionSelection?.(selection);
-		if (previous) beforeCreate?.(previous.storageId);
+		let publishBinding: (() => void) | undefined;
+		const reserve = (storageId: string) => {
+			publishBinding = reserveBinding?.(storageId);
+		};
+		if (previous) reserve(previous.storageId);
 		const { record, created } = previous
 			? { record: previous, created: false }
-			: this.catalog.createTracked(metadata, input.requestId, beforeCreate);
+			: this.catalog.createTracked(metadata, input.requestId, reserve);
 		const row: AgentConversationSummary = {
 			id: record.storageId,
 			storageId: record.storageId,
@@ -909,7 +913,7 @@ export class AgentManager {
 			cost: 0,
 			partial: false,
 		};
-		return this.startSpawn(record, created, row, input, caller, onCreated);
+		return this.performSpawn(record, created, row, input, caller, onCreated, publishBinding);
 	}
 
 	private spawnThinking(
@@ -918,17 +922,6 @@ export class AgentManager {
 	): { thinking?: { requested: string; effective: string } } {
 		const requested = input.thinkingLevel ?? "off";
 		return requested === record.thinkingLevel ? {} : { thinking: { requested, effective: record.thinkingLevel } };
-	}
-
-	private startSpawn(
-		record: CatalogRecord,
-		created: boolean,
-		row: AgentConversationSummary,
-		input: AgentSpawnInput,
-		caller: AgentCaller,
-		onCreated?: (row: AgentConversationSummary) => void,
-	): Promise<unknown> {
-		return this.performSpawn(record, created, row, input, caller, onCreated);
 	}
 
 	private async saveSpawnRole(
@@ -986,6 +979,7 @@ export class AgentManager {
 		input: AgentSpawnInput,
 		caller: AgentCaller,
 		onCreated?: (row: AgentConversationSummary) => void,
+		publishBinding?: () => void,
 	): Promise<unknown> {
 		this.launchRows.set(record.storageId, row);
 		try {
@@ -1004,6 +998,7 @@ export class AgentManager {
 				input.prompt === undefined ? undefined : hostRequestVersionError("task-submit", client.runtimeContract);
 			if (versionError) throw versionError;
 			await this.saveSpawnRole(client, record.storageId, created, input.role, requestId, caller.id);
+			publishBinding?.();
 			const admission = await this.submitSpawnPrompt(client, record.storageId, caller, input, requestId);
 			const outcome = {
 				sessionId: record.storageId,
@@ -1392,31 +1387,32 @@ export class AgentManager {
 	async place(input: AgentSpawnInput & { area?: string; topic?: string }, caller: AgentCaller): Promise<unknown> {
 		if (input.prompt === "") input = { ...input, prompt: undefined };
 		const area = realpathSync(resolve(caller.cwd, input.area ?? "."));
-		const result = await this.places.withArea(area, async (existing, admit) => {
+		if (!statSync(area).isDirectory()) throw new Error("Place area must be a directory");
+		const result = await this.places.withArea(area, async (existing, reserve) => {
 			if (existing) {
-				const selected = await this.reuseExecutionInput(input, caller, this.catalog.read(existing.sessionId));
-				input = { ...input, ...selected };
+				const { sessionId } = existing;
+				const selected = await this.reuseExecutionInput(input, caller, this.catalog.read(sessionId), sessionId);
 				await caller.retainExecutionSelection?.(selected.selection);
-				const response = input.prompt
+				const response = selected.prompt
 					? await this.control(
 							"submit",
 							{
-								sessionId: existing.sessionId,
-								message: input.prompt,
-								checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir),
-								...(input.requestId === undefined ? {} : { requestId: input.requestId }),
-								...originParams(input.origin),
+								sessionId,
+								message: selected.prompt,
+								checkInMinutes: checkInMinutes(
+									selected.checkInMinutes,
+									selected.origin ?? "operator",
+									this.options.agentDir,
+								),
+								...(selected.requestId === undefined ? {} : { requestId: selected.requestId }),
+								...originParams(selected.origin),
 							},
 							caller,
 						)
-					: await this.control("attach", { sessionId: existing.sessionId }, caller);
-				return {
-					value: { ...(response as object), sessionId: existing.sessionId, selection: input.selection },
-					sessionId: existing.sessionId,
-					topic: existing.topic,
-				};
+					: await this.control("attach", { sessionId }, caller);
+				return { ...(response as object), sessionId, selection: selected.selection };
 			}
-			const created = (await this.spawn(
+			const created = (await this.spawnIndependent(
 				{
 					preset: input.preset,
 					selection: input.selection,
@@ -1433,9 +1429,10 @@ export class AgentManager {
 				},
 				caller,
 				undefined,
-				(storageId) => admit(storageId, input.topic),
-			)) as { sessionId: string };
-			return { value: created, sessionId: created.sessionId, topic: input.topic };
+				(storageId) => reserve(storageId, input.topic),
+			)) as { sessionId: string; admission?: object };
+			// First use and reuse expose the same top-level admission facts to native place replay.
+			return { ...created.admission, ...created };
 		});
 		return result.value;
 	}

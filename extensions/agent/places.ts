@@ -26,6 +26,7 @@ import {
 	mkdirSync,
 	openSync,
 	readSync,
+	realpathSync,
 	renameSync,
 	unlinkSync,
 	writeSync,
@@ -43,14 +44,6 @@ export interface PlaceBinding {
 	/** Operator description of the concern; absent when none was given. */
 	topic?: string;
 	boundAt: string;
-}
-
-/** The result one `withArea` operation returns for the transaction to commit. */
-export interface PlaceOperation<T> {
-	readonly value: T;
-	/** Session that owns the area after the operation. */
-	readonly sessionId: string;
-	readonly topic?: string;
 }
 
 /** Committed transaction: the retained binding, the caller value, and whether the operation bound a session. */
@@ -275,53 +268,60 @@ export class PlaceBook {
 		try {
 			const target = resolve(area);
 			const current = this.readForMutation();
-			const removed = current.find((binding) => binding.area === target);
-			if (removed) this.write(current.filter((binding) => binding.area !== target));
+			// An exact retained path remains removable even after the directory moves or vanishes.
+			const removed = current.find((binding) => binding.area === target) ?? this.aliasBinding(current, target);
+			if (removed) this.write(current.filter((binding) => binding.area !== removed.area));
 			return removed;
 		} finally {
 			release();
 		}
 	}
 
+	private aliasBinding(bindings: PlaceBinding[], area: string): PlaceBinding | undefined {
+		let canonical: string;
+		try {
+			canonical = realpathSync(area);
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+			throw error;
+		}
+		return bindings.find((binding) => binding.area === canonical);
+	}
+
 	/**
-	 * Hold the mutation lock across one asynchronous place operation. The
-	 * callback receives the retained binding whose area contains the requested
-	 * path, longest area first. When a binding exists, that binding wins and the
-	 * transaction writes nothing, so an owner bound to a parent directory also
-	 * answers for its subdirectories. When no binding exists, the transaction
-	 * commits the callback's session for the exact area. The lock refuses a live
-	 * or unverifiable holder; it never waits.
+	 * Hold the lock across one place operation. Reuse the longest binding if
+	 * present. Otherwise reserve a bounded binding before creation, then publish
+	 * it before any task dispatch. A dispatch failure does not undo ownership.
 	 */
 	async withArea<T>(
 		area: string,
 		operation: (
 			current: PlaceBinding | undefined,
-			admit: (sessionId: string, topic?: string) => void,
-		) => Promise<PlaceOperation<T>>,
+			reserve: (sessionId: string, topic?: string) => () => void,
+		) => Promise<T>,
 	): Promise<PlaceTransaction<T>> {
 		const release = this.lock();
 		try {
 			const target = resolve(area);
 			const bindings = this.readForMutation();
 			const current = longestBinding(bindings, target);
-			let admitted: PlaceBinding | undefined;
-			const outcome = await operation(current, (sessionId, topic) => {
-				if (current) return;
+			let reserved = false;
+			let published: PlaceBinding | undefined;
+			const value = await operation(current, (sessionId, topic) => {
+				if (current || reserved) throw new Error("The place operation already has a binding");
 				const candidate = { area: target, sessionId, ...(topic ? { topic } : {}), boundAt: new Date().toISOString() };
-				this.serialize([...bindings, candidate]);
-				admitted = candidate;
+				const serialized = this.serialize([...bindings, candidate]);
+				reserved = true;
+				return () => {
+					if (published) throw new Error("The place operation already published its binding");
+					this.publish(serialized);
+					published = candidate;
+				};
 			});
-			if (current !== undefined) return { binding: current, value: outcome.value, created: false };
-			if (admitted && (admitted.sessionId !== outcome.sessionId || admitted.topic !== (outcome.topic || undefined)))
-				throw new Error("Place operation differs from its admitted binding");
-			const binding: PlaceBinding = admitted ?? {
-				area: target,
-				sessionId: outcome.sessionId,
-				...(outcome.topic ? { topic: outcome.topic } : {}),
-				boundAt: new Date().toISOString(),
-			};
-			this.write([...bindings, binding]);
-			return { binding, value: outcome.value, created: true };
+			const binding = current ?? published;
+			if (!binding) throw new Error("The place operation did not publish a binding");
+			return { binding, value, created: current === undefined };
 		} finally {
 			release();
 		}
@@ -429,7 +429,10 @@ export class PlaceBook {
 	}
 
 	private write(places: PlaceBinding[]): void {
-		const serialized = this.serialize(places);
+		this.publish(this.serialize(places));
+	}
+
+	private publish(serialized: string): void {
 		mkdirSync(dirname(this.file), { recursive: true });
 		const temporary = `${this.file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
 		const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow(), 0o600);

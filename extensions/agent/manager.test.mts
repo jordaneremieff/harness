@@ -42,6 +42,7 @@ import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
 import type { ContinuityFact } from "./continuity-facts.ts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
 import { PLACE_FILE_MAX_BYTES } from "./places.ts";
+import { dispatchFacts } from "./result-reference.ts";
 import type { ExecutionSelection } from "./agent-preferences.ts";
 import {
 	connectPrimaryChannel,
@@ -840,11 +841,108 @@ for (const prompt of [undefined, "", "  keep this prompt  "])
 			if (prompt) {
 				assert.equal(receipt.result?.sessionId, receipt.sessionId);
 				assert.equal(receipt.result?.requestId, requestId);
+				assert.equal(dispatchFacts("place", { requestId }, receipt).submissionId, submits.length);
 				assert.equal(submits.at(-1)?.message, prompt);
 			} else assert.equal(receipt.result, undefined);
 		}
 		assert.equal(submits.length, prompt ? 2 : 0);
 	});
+
+it("preserves the place owner when the first task admission reply is lost", async (t) => {
+	const root = realpathSync(fixtureRoot(t));
+	const admitted = new Map<string, Record<string, unknown>>();
+	const options = managerOptions(root, {
+		validateModel: () => {},
+		acquire: async (metadata) =>
+			fakeConnection(metadata, async (method, params) => {
+				if (method !== "task-submit") return { busy: false };
+				const receipt = nativeAdmission(params);
+				const key = JSON.stringify([receipt.identity, receipt.requestId]);
+				if (admitted.has(key)) return admitted.get(key);
+				admitted.set(key, receipt);
+				throw new Error("admission reply lost");
+			}),
+	});
+	const first = new AgentManager(options);
+	const retry = new AgentManager(options);
+	t.after(async () => {
+		await first.close();
+		await retry.close();
+	});
+	const caller = { id: "owner-1", cwd: root };
+	const input = { prompt: "One task", requestId: "place-retry" };
+	await assert.rejects(first.place(input, caller), /admission reply lost/u);
+	await first.close();
+	const binding = retry.places.exact(root);
+	assert.equal(binding?.sessionId, admitted.values().next().value?.identity);
+	assert.ok(binding);
+	const other = (await retry.place({}, { ...caller, id: "other-caller" })) as { sessionId: string };
+	assert.equal(other.sessionId, binding.sessionId, "another caller finds the same owner before the retry");
+	const receipt = await retry.place(input, caller);
+	assert.deepEqual(dispatchFacts("place", input, receipt).result, admitted.values().next().value?.result);
+	assert.equal(admitted.size, 1);
+});
+
+it("admits no place task if the binding cannot be published", async (t) => {
+	const root = realpathSync(fixtureRoot(t));
+	const caller = { id: "owner-1", cwd: root };
+	let submits = 0;
+	const manager = new AgentManager(
+		managerOptions(root, {
+			validateModel: () => {},
+			acquire: async (metadata) => {
+				mkdirSync(join(root, "durable", "places.json"));
+				return fakeConnection(metadata, async (method, params) => {
+					if (method !== "task-submit") return { busy: false };
+					submits += 1;
+					return nativeAdmission(params);
+				});
+			},
+		}),
+	);
+	t.after(() => manager.close());
+	await assert.rejects(manager.place({ prompt: "No task", requestId: "place-write-failure" }, caller), {
+		code: "EISDIR",
+	});
+	assert.equal(submits, 0);
+});
+
+it("uses the exact bound conversation for place evidence and task dispatch through an area alias", async (t) => {
+	const root = realpathSync(fixtureRoot(t));
+	const area = join(root, "area");
+	mkdirSync(join(area, "nested"), { recursive: true });
+	writeFileSync(join(area, "not-a-directory"), "file");
+	symlinkSync(area, join(root, "alias"));
+	const seen: Array<{ method: string; sessionId: unknown }> = [];
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method, params) => {
+					seen.push({ method, sessionId: (params as Record<string, unknown>).sessionId });
+					return method === "profile-read"
+						? { model: { provider: "acme", modelId: "child-model" }, thinkingLevel: "low" }
+						: nativeAdmission(params);
+				}),
+		}),
+	);
+	t.after(() => manager.close());
+	const record = createRecord(manager, area);
+	const sessionId = `${record.storageId}:7`;
+	manager.places.bind(area, sessionId);
+	// Establish a connection so reuse's read-only evidence comes from the host.
+	await manager.connectNative(sessionId);
+	const caller = { id: "owner-1", cwd: root };
+	await assert.rejects(manager.place({ area: "alias/not-a-directory", prompt: "No task" }, caller), /directory/u);
+	assert.deepEqual(seen, []);
+	const input = { area: "alias/nested", prompt: "Task", requestId: "place-child" };
+	const receipt = await manager.place(input, caller);
+	assert.equal(dispatchFacts("place", input, receipt).sessionId, sessionId);
+	assert.deepEqual(seen, [
+		{ method: "profile-read", sessionId },
+		{ method: "task-submit", sessionId },
+	]);
+	assert.equal(manager.places.unbind(join(root, "alias"))?.sessionId, sessionId);
+});
 
 it("retains exact prompted handle references across creation and reuse", async (t) => {
 	const root = fixtureRoot(t);

@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import type { ExecutionSelection } from "./agent-preferences.ts";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { after, beforeEach, it } from "node:test";
 
 const preferenceOverride = process.env.PI_HARNESS_FILE;
@@ -2635,7 +2635,8 @@ for (const minutes of [undefined, 0, 2.5])
 		const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 		holder.harness = harness;
 		holder.placeSessionId = "place-storage:7";
-		const area = realpathSync(mkdtempSync(join(tmpdir(), "durable-agents-place-")));
+		const area = realpathSync(mkdtempSync(join(testCwd, "place-")));
+		await root.configure({ cwd: testCwd }, context);
 		t.after(async () => {
 			await harness.close(context);
 			rmSync(area, { recursive: true, force: true });
@@ -2643,7 +2644,7 @@ for (const minutes of [undefined, 0, 2.5])
 		route.script.push({
 			tool: "agent_place",
 			args: {
-				area: `${area}/.`,
+				area: minutes === undefined ? basename(area) : `${area}/.`,
 				topic: "far",
 				prompt: "CONTRACT: reply FAR",
 				...(minutes === undefined ? {} : { checkInMinutes: minutes }),

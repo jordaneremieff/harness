@@ -52,20 +52,20 @@ it("refuses cumulative ordinary rows before the admitted effect and keeps the lo
 		writeFileSync(book.file, last);
 		let effects = 0;
 		await assert.rejects(
-			book.withArea("/work/new", async (_existing, admit) => {
-				admit("b".repeat(36), "界".repeat(256));
+			book.withArea("/work/new", async (_existing, reserve) => {
+				const publish = reserve("b".repeat(36), "界".repeat(256));
 				effects += 1;
-				return { sessionId: "b".repeat(36), topic: "界".repeat(256), value: null };
+				publish();
 			}),
 			/exceeds/u,
 		);
 		assert.equal(effects, 0);
 		assert.equal(readFileSync(book.file, "utf8"), last);
 		assert.equal(book.read().length, rows.length);
-		await book.withArea("/short", async (_existing, admit) => {
-			admit("s");
+		await book.withArea("/short", async (_existing, reserve) => {
+			const publish = reserve("s");
+			publish();
 			assert.throws(() => book.bind("/other", "o"), /locked/u);
-			return { sessionId: "s", value: null };
 		});
 		assert.equal(book.readState().kind, "ok");
 	} finally {
