@@ -594,6 +594,7 @@ is left out:
 | Message type | First line | Second line |
 | --- | --- | --- |
 | `agent.peer` | `[agent] result · Parser review`, `[agent] report · …`, `[agent] thread post · Parser contract` | `from Reviewer · provider/model · high · #12` and other known facts |
+| `agent.application` | `[agent] Notebook · Release notes` | The request reference, any earlier reference and place, and whether the application expects a reply |
 | `agent.compaction` | `[agent] Compaction not applied` | none |
 | `agent.planning-budget` | `[agent] Planning budget reached` | `210000 of 200000 tokens · openai-codex/gpt-6.1-sol` |
 
@@ -605,6 +606,28 @@ and the dashboard's compact communication cards) has terminal control and
 escape sequences and other control or format characters removed; newlines and
 tabs stay. The renderers
 change neither the content nor the details of a message.
+
+### Application messages
+
+In ordinary Pi sessions, Agent publishes the receiver for the
+[application message contract](../../docs/conventions/application-messages.md).
+An application sends the operator's request to its bound session. The model
+sees the application, a short reference, the subject, the place when supplied,
+and the reply expectation on one line. The receiver includes its explanation
+and the application's guidance only when absent from the current context and
+pending messages. The collapsed card previews the request, not those instructions.
+
+Pi starts a run when idle or takes the request as a follow-up when busy.
+If Pi clears a follow-up, the receiver restores it at an empty queue boundary
+without starting another run. A final answer goes to every application that
+requested one since the previous answer. Each application learns how many
+other inputs that answer covered. A change of branch or the end of the
+session closes outstanding reply routes. Reload does not reconnect them.
+
+The receiver tracks up to 64 pending requests or unrecorded request IDs in
+memory. It refuses a new request at capacity instead of evicting an existing
+one. Once Pi records a message, its entry identifies repeated deliveries even
+after compaction. Agent does not keep a second on-disk inbox for applications.
 
 ### Continuity tool declarations
 

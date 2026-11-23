@@ -7,14 +7,18 @@ import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	getAgentDir,
 	getPackageDir,
+	type AgentBeforeSettleEvent,
 	type AgentToolResult,
 	type ContextEvent,
+	type TurnEndEvent,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { bool, int, map, num, obj, opt, str, unknown, type Schema, type Static } from "@earendil-works/pi-schema";
 import { storageStatusPageInput, validateStatusSelectors } from "./storage-status.ts";
 import { createAgentObservationSource } from "./agent-observation.ts";
+import { APPLICATION_MESSAGE_TYPE } from "./application-message-content.ts";
+import { registerApplicationMessages } from "./application-messages.ts";
 import {
 	PresetParameter,
 	parseExecutionSelection,
@@ -103,6 +107,7 @@ import { publishSettings } from "./settings.ts";
 import {
 	createAgentToolCards,
 	ordinaryWorkCard,
+	renderAgentApplicationMessage,
 	renderAgentCompactionMessage,
 	renderAgentPeerMessage,
 	renderAgentPlanningBudgetMessage,
@@ -420,6 +425,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	const settingsAgentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
 	const disposeFactorySettings = publishSettings(pi.events, { agentDir: settingsAgentDir });
 	const toolDisplay = collectToolDisplay(pi.events);
+	const applicationBoundary = registerApplicationMessages(pi);
 	const configureSettings = (host: AgentContributionHost) => {
 		disposeFactorySettings();
 		const disposeNativeSettings = publishSettings(pi.events, { agentDir: host.agentDir });
@@ -1276,6 +1282,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	pi.registerCommand("restart", createRestartCommand({ hosts: agentRestartHosts, managedChild: () => false }));
 	pi.registerMessageRenderer("agent.peer", renderAgentPeerMessage);
+	pi.registerMessageRenderer(APPLICATION_MESSAGE_TYPE, renderAgentApplicationMessage);
 	pi.registerMessageRenderer(SELF_COMPACTION_NOTICE, renderAgentCompactionMessage);
 	pi.registerMessageRenderer(PLANNING_BUDGET_NOTICE, renderAgentPlanningBudgetMessage);
 	pi.on("session_start", async (_event, ctx) => {
@@ -1403,8 +1410,15 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	pi.on("context", (event, ctx) => continuity.context(event, ctx));
 	pi.on("turn_end", (event, ctx) => continuity.turnEnd(event, ctx, selfCompaction.requested));
-	const inboxBoundary = (_event: unknown, ctx: ExtensionContext) =>
-		primaryDeliveries.get(ctx.sessionManager.getSessionId())?.inbox.boundary();
+	const inboxBoundary = (event: TurnEndEvent | AgentBeforeSettleEvent, ctx: ExtensionContext) => {
+		const application = applicationBoundary(event);
+		const inbox = primaryDeliveries.get(ctx.sessionManager.getSessionId())?.inbox.boundary();
+		if (!inbox) return application;
+		return {
+			entries: [...(application?.entries ?? event.entries), ...inbox.entries],
+			continue: event.continue || inbox.continue,
+		};
+	};
 	pi.on("turn_end", inboxBoundary);
 	pi.on("agent_before_settle", inboxBoundary);
 	pi.on("tool_execution_end", (_event, ctx) => {

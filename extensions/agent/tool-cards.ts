@@ -2,9 +2,9 @@
  * Agent cards render tool call arguments and retained results from native
  * Durable observation values, plus the `agent.peer` message notices the
  * manager returns to the primary and the ordinary session's own
- * `agent.compaction` and `agent.planning-budget` notices. Target labels use roster facts already
- * observed by the primary footer. Rendering opens no storage and changes
- * no execution behavior.
+ * `agent.compaction`, `agent.planning-budget`, and `agent.application` messages.
+ * Target labels use roster facts already observed by the primary footer.
+ * Rendering opens no storage and changes no execution behavior.
  */
 import { stripVTControlCharacters } from "node:util";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
@@ -142,6 +142,8 @@ interface CardSections {
 	readonly label?: string;
 	readonly metadata?: readonly string[];
 	readonly body?: readonly (string | Component)[];
+	/** A transcript card can replace its preview body with the complete source on expansion. */
+	readonly expandedBody?: () => readonly (string | Component)[];
 	/** Peer cards build and show these lines only while expanded, globally or by a click on the card. */
 	readonly details?: () => readonly (string | Component)[];
 	readonly outcome?: readonly string[];
@@ -253,6 +255,7 @@ function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOpt
  */
 class PeerCardBody implements Component {
 	private expanded: boolean;
+	private fullBody?: readonly (string | Component)[];
 	private details?: readonly (string | Component)[];
 	private readonly header: readonly string[];
 	private readonly content: readonly (string | Component)[];
@@ -288,12 +291,14 @@ class PeerCardBody implements Component {
 	}
 	private hint(hidden: number): string {
 		if (this.sections.hint) return this.theme.fg("muted", this.sections.hint);
-		return !this.expanded && (hidden > 0 || this.sections.details !== undefined)
+		return !this.expanded &&
+			(hidden > 0 || this.sections.details !== undefined || this.sections.expandedBody !== undefined)
 			? peerHint(this.theme, this.options.keys, hidden)
 			: "";
 	}
 	render(width: number): string[] {
-		const lines = PeerCardBody.lines(this.content, width);
+		if (this.expanded) this.fullBody ??= this.sections.expandedBody?.();
+		const lines = PeerCardBody.lines((this.expanded && this.fullBody) || this.content, width);
 		const shown = this.expanded ? lines : previewWindow(lines, this.sections.previewLines ?? lines.length);
 		const hidden = Math.max(0, lines.length - shown.length);
 		const hint = this.hint(hidden);
@@ -315,6 +320,7 @@ class PeerCardBody implements Component {
 	}
 	invalidate(): void {
 		for (const part of this.content) if (typeof part !== "string") part.invalidate();
+		for (const part of this.fullBody ?? []) if (typeof part !== "string") part.invalidate();
 		for (const part of this.details ?? []) if (typeof part !== "string") part.invalidate();
 	}
 }
@@ -2630,6 +2636,41 @@ function messageText(content: Parameters<MessageRenderer>[0]["content"]): string
 		? content
 		: content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
+
+export const renderAgentApplicationMessage: MessageRenderer = (message, options, theme) => {
+	const details = record(message.details);
+	const content = messageText(message.content);
+	const offset = details.bodyOffset;
+	const body =
+		typeof offset === "number" &&
+		Number.isInteger(offset) &&
+		offset >= 2 &&
+		offset < content.length &&
+		content.slice(offset - 2, offset) === "\n\n"
+			? [noticeBody(content.slice(offset), theme)]
+			: [];
+	return cardLayout(
+		{
+			tag: "[agent]",
+			title: displayText(text(details.application)).replace(/\s+/gu, " ").trim() || "Application message",
+			label: text(details.subject),
+			metadata: [text(details.reference), text(details.follow), text(details.place), text(details.replyExpectation)],
+			body,
+			expandedBody: () => {
+				const headerEnd = content.indexOf("\n");
+				if (headerEnd < 0) return [new Text(displayText(content), 0, 0)];
+				return [
+					new Text(displayText(content.slice(0, headerEnd)), 0, 0),
+					new Spacer(1),
+					noticeBody(content.slice(headerEnd + 1), theme),
+				];
+			},
+			previewLines: NOTICE_PREVIEW_LINES,
+		},
+		theme,
+		{ expanded: options.expanded, peerPadding: options.outputPad, keys: options, message },
+	);
+};
 
 /** The self-compaction notice: a requested compaction that another boundary handler preempted. */
 export const renderAgentCompactionMessage: MessageRenderer = (message, options, theme) =>
