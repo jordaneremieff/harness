@@ -231,23 +231,15 @@ export class TerminalController {
 	private async loadModules(id: string): Promise<{ display: DisplayModules; panels: PanelModules }> {
 		try {
 			const status = (await this.manager.control("status", { sessionId: id }, this.caller)) as { inventory?: unknown };
-			if (status?.inventory === undefined)
-				return { display: { lookup: noDisplayModules.lookup, diagnostics: [] }, panels: noPanelModules };
+			if (status?.inventory === undefined) return { display: noDisplayModules, panels: noPanelModules };
 			const [display, panels] = await Promise.all([
 				loadDisplayModules(status.inventory, this.importModule),
 				loadPanelModules(status.inventory, this.importModule),
 			]);
 			return { display, panels };
-		} catch (error) {
-			return {
-				display: {
-					lookup: noDisplayModules.lookup,
-					diagnostics: [
-						`Owner cards unavailable (${String(error instanceof Error ? error.message : error).slice(0, 120)}); standard tool cards are used.`,
-					],
-				},
-				panels: noPanelModules,
-			};
+		} catch {
+			// No inventory was obtained. Only an advertised module can fail to load.
+			return { display: noDisplayModules, panels: noPanelModules };
 		}
 	}
 
@@ -594,6 +586,8 @@ export class TerminalScreen implements Component {
 	private readonly programStatus?: TerminalProgramStatus;
 	private readonly off: () => void;
 	private readonly controller: TerminalController;
+	private reportedDisplay = noDisplayModules;
+	private dismissDisplayNotice?: () => void;
 	private readonly drafts = new Map<string, ProfileDraft>();
 	private creationId = randomUUID();
 	private disposed = false;
@@ -747,6 +741,15 @@ export class TerminalScreen implements Component {
 		if (this.disposed) return;
 		this.view.invalidate();
 		this.view.setToolDisplay(this.controller.toolDisplay);
+		const display = this.controller.display;
+		if (display !== this.reportedDisplay) {
+			this.reportedDisplay = display;
+			this.dismissDisplayNotice?.();
+			const { length, 0: first } = display.diagnostics;
+			this.dismissDisplayNotice = first
+				? this.view.notify(length > 1 ? `${length} owner card issues. ${first}` : first, "warning")
+				: undefined;
+		}
 		this.projectStatus(this.view.selectedRow);
 	}
 

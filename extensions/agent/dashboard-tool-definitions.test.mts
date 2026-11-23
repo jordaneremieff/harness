@@ -27,7 +27,7 @@ import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { createAgentToolCards } from "./tool-cards.ts";
 
 initTheme("dark");
-setKeybindings(new KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+o" } }));
+setKeybindings(new KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+g" } }));
 const tui = { requestRender() {} } as TUI;
 const cwd = "/work";
 const background = /\x1b\[48;/u;
@@ -50,7 +50,7 @@ function nativeCodemode(): ToolDefinition {
 function rendered(
 	definition: { name: string },
 	args: unknown,
-	result: { content: Array<{ type: string; text?: string }>; isError: boolean } | undefined,
+	result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError: boolean } | undefined,
 	expanded: boolean,
 	width = 80,
 	partial = false,
@@ -93,6 +93,7 @@ it("keeps transcript tool definitions inert without loadout hooks", async () => 
 		"powershell",
 		"codemode",
 		...Object.keys(createAgentToolCards()),
+		"agent_yield",
 		"unregistered_tool",
 		"toString",
 	]) {
@@ -162,6 +163,7 @@ it("uses Pi's generic fallback for unknown calls, missing calls and every result
 	for (const [name, known] of [
 		["unregistered_tool", true],
 		["read", false],
+		["codemode", false],
 	] as const) {
 		const display = define(name, known);
 		assert.equal(display.renderCall, undefined);
@@ -197,7 +199,36 @@ it("preserves custom presentation and renderer identity across retained calls", 
 	assert.match(text(rendered(display, {}, { content: [], isError: false }, false)), /custom call[\s\S]*custom result/u);
 });
 
-it("suppresses the expansion hint under a self-rendered agent card", () => {
+it("a published built-in override supplies its fields and receives only Pi's call and result fallbacks", () => {
+	const builtin = createEditToolDefinition(cwd);
+	const renderCall = () => new Text("owner call", 0, 0);
+	const renderResult = () => new Text("owner result", 0, 0);
+	const args = { path: "file.txt" };
+	const result = { content: [{ type: "text", text: "retained text" }], isError: false };
+	for (const published of [
+		{ renderCall },
+		{ renderResult },
+		{ renderShell: "self" },
+		{ renderShell: "default" },
+	] satisfies ToolRenderers[]) {
+		const define = createDashboardToolDefinitions(cwd, (name) => (name === "edit" ? published : undefined));
+		const replay = define("edit");
+		const expected = {
+			...builtin,
+			renderCall: published.renderCall ?? builtin.renderCall,
+			renderResult: published.renderResult ?? builtin.renderResult,
+			renderShell: published.renderShell,
+		};
+		assert.equal(replay.renderCall, expected.renderCall);
+		assert.equal(replay.renderResult, expected.renderResult);
+		assert.equal(replay.renderShell, expected.renderShell);
+		assert.deepEqual(rendered(replay, args, result, true), rendered(expected, args, result, true));
+		if (published.renderCall) assert.match(text(rendered(replay, args, result, true)), /owner call/u);
+		if (published.renderResult) assert.match(text(rendered(replay, args, result, true)), /owner result/u);
+	}
+});
+
+it("uses the ordinary Agent shell and one configured hint before and after the result", () => {
 	const identity = "01a106df-0000-4000-8000-000000000001";
 	const rows: AgentConversationSummary[] = [
 		{
@@ -215,11 +246,40 @@ it("suppresses the expansion hint under a self-rendered agent card", () => {
 	];
 	const define = createDashboardToolDefinitions(cwd, undefined, () => rows);
 	const definition = define("agent_send");
-	assert.equal(definition.renderShell, "self");
+	const owner = { name: "agent_send", ...createAgentToolCards(() => rows).agent_send };
+	assert.equal(definition.renderShell, owner.renderShell);
 	assert.equal(define("agent_send").renderCall, definition.renderCall);
-	const lines = rendered(definition, { sessionId: identity, message: "Task text" }, undefined, false);
-	assert.match(text(lines), /agent_send/u);
-	assert.doesNotMatch(text(lines), /to expand|click/u);
+	const args = { sessionId: identity, message: `${"Task text\n".repeat(6)}Final task line` };
+	const receipt = { content: [{ type: "text", text: "retained receipt" }], isError: false };
+	for (const result of [undefined, receipt]) {
+		const lines = rendered(definition, args, result, false, 45);
+		assert.deepEqual(lines, rendered(owner, args, result, false, 45));
+		assert.match(lines.join("\n"), background);
+		assert.match(text(lines), /agent_send Named target/u);
+		assert.equal(text(lines).match(/ctrl\+g to expand/gu)?.length, 1);
+		assert.ok(lines.every((line) => visibleWidth(line) <= 45));
+		const open = text(rendered(definition, args, result, true, 45));
+		assert.match(open, /Final task line/u);
+		assert.doesNotMatch(open, /to expand/u);
+	}
+});
+
+it("replays the self-shelled state note once, including when only its result was retained", () => {
+	const define = createDashboardToolDefinitions(cwd);
+	const note = "Review and verification continue.";
+	const result = {
+		content: [{ type: "text", text: "model-only continuation" }],
+		details: { note, at: 1 },
+		isError: false,
+	};
+	for (const known of [true, false]) {
+		const definition = define("agent_yield", known);
+		assert.equal(definition.renderShell, "self");
+		const shown = text(rendered(definition, known ? { note } : undefined, result, false));
+		assert.equal(shown.match(/agent_yield/gu)?.length, 1);
+		assert.equal(shown.match(/Review and verification continue\./gu)?.length, 1);
+		assert.doesNotMatch(shown, /model-only continuation/u);
+	}
 });
 
 it("keeps native codemode collapsed previews and expanded details at every width", () => {

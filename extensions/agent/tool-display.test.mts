@@ -212,18 +212,19 @@ it("copies only checked renderer fields, rejects malformed publications and neve
 		assert.equal(lookup(name), undefined);
 });
 
-it("native builtin, codemode and agent cards take precedence over published names", () => {
+it("checked publications override known built-ins but do not replace local Agent or Pi codemode presentation", () => {
 	const bus = new FakeBus();
 	const { events } = bus.scope();
 	const lookup = collectToolDisplay(events);
 	for (const name of ["read", "codemode", "agent_send"]) fakePublisher(events, name);
 	const define = createDashboardToolDefinitions("/work", lookup);
-	for (const name of ["read", "codemode", "agent_send"]) {
-		if (name !== "agent_send")
-			assert.doesNotMatch(expandedText(define(name)), /Published call/u, `${name} keeps its own card`);
+	assert.equal(define("read").renderCall, renderCall);
+	assert.match(expandedText(define("read")), /Published call/u);
+	for (const name of ["codemode", "agent_send"]) {
 		assert.equal(typeof define(name).renderCall, "function");
 		assert.notEqual(define(name).renderCall, renderCall);
 	}
+	assert.doesNotMatch(expandedText(define("codemode")), /Published call/u);
 	assert.doesNotMatch(expandedText(define("read", false)), /Published call/u);
 	const unpublished = define("unpublished");
 	assert.equal(unpublished.renderShell, undefined, "unpublished tools use Pi's default shell");

@@ -125,7 +125,7 @@ it("a malformed inventory yields standard cards and one diagnostic", async () =>
 	assert.equal(result.diagnostics.length, 1);
 });
 
-it("display definitions keep builtin precedence and can never execute", async (t) => {
+it("display definitions apply a loaded built-in override and can never execute", async (t) => {
 	const root = directory(t);
 	mkdirSync(join(root, "good"));
 	writeFileSync(join(root, "good", "index.ts"), "");
@@ -137,11 +137,11 @@ it("display definitions keep builtin precedence and can never execute", async (t
 	const owner = definitions("fixture_tool");
 	assert.equal(typeof owner.renderCall, "function");
 	await assert.rejects(() => owner.execute("id", {}, undefined, undefined, {} as never), /cannot execute/);
-	assert.notEqual(
-		definitions("read").renderCall,
-		lookup("read")?.renderCall,
-		"the builtin read presentation wins over a published read",
-	);
+	const read = definitions("read");
+	assert.equal(typeof lookup("read")?.renderCall, "function");
+	assert.equal(read.renderCall, lookup("read")?.renderCall);
+	assert.equal(typeof read.renderResult, "function", "the built-in supplies the omitted result renderer");
+	await assert.rejects(() => read.execute("id", {}, undefined, undefined, {} as never), /cannot execute/);
 });
 
 const EMIT = (descriptor: string) => `import { fileURLToPath } from "node:url";

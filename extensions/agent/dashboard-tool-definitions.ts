@@ -13,7 +13,7 @@ import {
 	type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import { obj } from "@earendil-works/pi-schema";
-import { createAgentToolCards, type AgentCardLookup } from "./tool-cards.ts";
+import { createAgentToolCards, ordinaryWorkCard, type AgentCardLookup } from "./tool-cards.ts";
 import type { ToolDisplayLookup } from "./tool-display.ts";
 
 /** Capture presentation only. Unexpected factory API access fails closed. */
@@ -71,77 +71,9 @@ async function cannotExecute(): Promise<never> {
 	throw new Error("Transcript tools cannot execute");
 }
 
-/** Dashboard tools draw no outer colour block; the transcript owns the reading margin. */
-function presentationFields(presentation: ToolRenderers | undefined): ToolRenderers {
-	return {
-		...(presentation?.renderCall === undefined ? {} : { renderCall: presentation.renderCall }),
-		...(presentation?.renderResult === undefined ? {} : { renderResult: presentation.renderResult }),
-		renderShell: "self",
-	};
-}
-
 /**
- * Tools other than agent tools keep the presentation of the main session: Pi's own card, its
- * coloured block and its collapsed preview, which shows the command and the newest output.
- */
-function nativeRenderers(presentation: ToolRenderers | undefined): ToolRenderers {
-	return {
-		...(presentation?.renderCall === undefined ? {} : { renderCall: presentation.renderCall }),
-		...(presentation?.renderResult === undefined ? {} : { renderResult: presentation.renderResult }),
-		...(presentation?.renderShell === undefined ? {} : { renderShell: presentation.renderShell }),
-	};
-}
-
-/** Dashboard agent cards keep their two-line header and lose the expansion hint under the card. */
-const agentWrappers = new WeakMap<object, ToolRenderers>();
-function dashboardAgentRenderers(presentation: ToolRenderers | undefined): ToolRenderers {
-	if (!presentation) return presentationFields(undefined);
-	const cached = agentWrappers.get(presentation);
-	if (cached) return cached;
-	const call = presentation.renderCall;
-	const result = presentation.renderResult;
-	const wrapped: ToolRenderers = {
-		renderShell: "self",
-		...(call
-			? {
-					renderCall: (args, theme, context) => {
-						const enriched = { ...context, hideExpansionHint: true };
-						return call(args, theme, enriched);
-					},
-				}
-			: {}),
-		...(result
-			? {
-					renderResult: (value, options, theme, context) => {
-						const enriched = { ...context, hideExpansionHint: true };
-						return result(value, options, theme, enriched);
-					},
-				}
-			: {}),
-	};
-	agentWrappers.set(presentation, wrapped);
-	return wrapped;
-}
-
-/** The shared presentation for one tool, before the dashboard shell is applied. */
-function toolPresentation(
-	name: string,
-	knownCall: boolean,
-	native: ReadonlyMap<string, unknown>,
-	agents: Record<string, ToolRenderers>,
-	renderers: ToolRenderers | undefined,
-	toolDisplay?: ToolDisplayLookup,
-): ToolRenderers | undefined {
-	if (native.has(name)) return knownCall ? (native.get(name) as ToolDefinition | undefined) : undefined;
-	if (name === "codemode") return renderers;
-	if (Object.hasOwn(agents, name)) return agents[name];
-	return toolDisplay?.(name);
-}
-
-/**
- * Native and shared presentation with no execution or loadout hooks. `rows` supplies the already-observed
- * roster facts (names, applied configuration) that agent cards show for their targets; it reads no store.
- * Agent cards use their own shell; other tools keep Pi's native presentation.
+ * Native and owner presentation with no execution or loadout hooks. `rows` supplies already-observed
+ * roster facts, such as target names and applied configuration. It reads no store.
  */
 export function createDashboardToolDefinitions(
 	cwd: string,
@@ -160,17 +92,26 @@ export function createDashboardToolDefinitions(
 			createPowerShellToolDefinition(cwd),
 		].map((definition) => [definition.name, definition]),
 	);
-	const agents = createAgentToolCards(rows) as Record<string, ToolRenderers>;
-	const renderers = codemodeRenderers();
+	const agents = new Map(Object.entries(createAgentToolCards(rows)));
+	agents.set("agent_yield", ordinaryWorkCard("agent_yield", rows));
+	const resolve = (name: string, knownCall: boolean): ToolRenderers | undefined => {
+		const builtin = native.get(name);
+		if (builtin) return knownCall ? (toolDisplay?.(name) ?? builtin) : undefined;
+		if (name === "codemode") return knownCall ? codemodeRenderers() : undefined;
+		return agents.get(name) ?? toolDisplay?.(name);
+	};
 	return (name, knownCall = true) => {
 		const builtin = knownCall ? native.get(name) : undefined;
-		const presentation = toolPresentation(name, knownCall, native, agents, renderers, toolDisplay);
+		const presentation = resolve(name, knownCall);
 		return {
 			name,
 			label: builtin?.label ?? name,
 			description: builtin?.description ?? "Retained tool display",
 			parameters: builtin?.parameters ?? obj({}, { open: true }),
-			...(Object.hasOwn(agents, name) ? dashboardAgentRenderers(presentation) : nativeRenderers(presentation)),
+			// Pi's built-in fallback fills the renderers, not the registered tool's shell.
+			renderCall: presentation?.renderCall ?? builtin?.renderCall,
+			renderResult: presentation?.renderResult ?? builtin?.renderResult,
+			renderShell: presentation?.renderShell,
 			execute: cannotExecute,
 		};
 	};

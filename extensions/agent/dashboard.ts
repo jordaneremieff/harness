@@ -912,9 +912,15 @@ export class AgentDashboard implements Component, Focusable {
 		return { region: this.region, surface: this.surface, ...(inspector === undefined ? {} : { inspector }) };
 	}
 
-	/** Show a one-line notice in the target header. */
-	notify(text: string, kind: Notice["kind"] = "info"): void {
+	/** Show a header notice and return a way to dismiss only that notice. */
+	notify(text: string, kind: Notice["kind"] = "info"): () => void {
 		this.show(text, kind);
+		const notice = this.notice;
+		return () => {
+			if (this.notice !== notice) return;
+			this.notice = undefined;
+			this.redraw();
+		};
 	}
 
 	private async readSelected(row: AgentConversationSummary, generation: number): Promise<void> {

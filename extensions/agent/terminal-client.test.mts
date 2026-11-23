@@ -391,6 +391,52 @@ it("a late owner-card inventory keeps the transcript and its reading position", 
 	}
 });
 
+it("the attached screen shows one owner module warning per failed selection load and none for cold reads", async (t) => {
+	const f = fixture();
+	const control = f.manager.control;
+	f.manager.control = async (method, input, caller) =>
+		method === "status" && input.sessionId === "b"
+			? {
+					inventory: {
+						contributions: [
+							{
+								name: "missing",
+								source: "/nowhere/index.ts",
+								commands: [],
+								display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
+							},
+						],
+						ordinaryOnly: [],
+					},
+				}
+			: control(method, input, caller);
+	const s = screenFixture(f.controller, 80, 24);
+	const notices = t.mock.method(s.screen.view, "notify");
+	try {
+		await settle(() => f.controller.selected === "a", "the cold selection");
+		await f.controller.displaySettled();
+		assert.equal(notices.mock.callCount(), 0, "no inventory is a normal cold read");
+		s.screen.view.selectIdentity("b");
+		await f.controller.displaySettled();
+		assert.match(s.text(), /missing: display module unavailable/u);
+		assert.equal(s.text().match(/display module unavailable/gu)?.length, 1);
+		assert.equal(notices.mock.callCount(), 1, "repainting does not announce the warning again");
+		s.screen.view.selectIdentity("a");
+		await f.controller.displaySettled();
+		assert.doesNotMatch(s.text(), /display module unavailable/u, "a cold target does not keep the earlier warning");
+		assert.equal(notices.mock.callCount(), 1);
+		s.screen.view.selectIdentity("b");
+		await f.controller.displaySettled();
+		assert.match(s.text(), /missing: display module unavailable/u);
+		s.screen.handleInput("\x1b[5~");
+		assert.doesNotMatch(s.text(), /display module unavailable/u);
+		assert.equal(notices.mock.callCount(), 2, "paging does not announce the new warning again");
+	} finally {
+		s.screen.dispose();
+		await f.controller.close();
+	}
+});
+
 it("model metadata comes from the selected host's model list, read once per selection", async () => {
 	const f = fixture();
 	f.responses.set("models", {

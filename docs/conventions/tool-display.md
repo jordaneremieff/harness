@@ -98,21 +98,24 @@ passes that lookup through `createAgentCommand`, dashboard operations,
 `ConversationView`, and `AgentConversation` to `createDashboardToolDefinitions`.
 The lookup contains no sibling names or sibling-specific result logic.
 
-Resolution order is:
+For a retained call under a Pi built-in name, use the checked owner publication
+if present. As in Pi's ordinary tool registry, fill each absent `renderCall` and
+`renderResult` from the built-in. The publication controls `renderShell`: if it
+omits the field, Pi uses its default shell. Without a publication, use the
+built-in's own renderers and shell.
 
-1. Pi builtin definitions for known calls.
-2. Pi's public codemode factory presentation and local agent cards.
-3. A checked publication for other tool names.
-4. Pi's standard card when no renderer is available.
+For `codemode`, use the renderers captured from Pi's public factory without
+registering a tool with a session. If capture fails, use the standard card.
+Codemode details pass through unchanged, including the producer's nested statuses.
+When a built-in or codemode result has no retained call in view, use the standard
+card without assuming a call schema or renderer. If the call arrives, use the
+resolved renderers.
 
-A missing builtin call still uses Pi's missing-tool semantics. Published
-renderers do not replace native builtin, codemode, or agent presentation. If Pi's
-codemode factory capture is unavailable, codemode uses the standard card rather
-than a publication. Dashboard definitions remain inert at every resolution step.
-Codemode details pass through without record reconstruction. For nonpartial
-codemode results only, the dashboard applies Pi's terminal rule: existing nested
-calls with status `running` display as `cancelled`. Partial results, other fields,
-and stored details stay unchanged; no legacy-record normalizer exists.
+For local Agent tools, use the same Agent card functions with the transcript's
+observed roster. Keep the owner's shell and configured disclosure hint, including
+the self-rendered `agent_yield` state note. For other tools, use a checked owner
+publication when available and Pi's standard card otherwise. Definitions stay
+inert: the client does not register them or use them to execute tools.
 
 ## Presentation modules for the attached terminal
 
@@ -171,17 +174,17 @@ resolver. It calls the export and keeps only fields that
 `presentationRecords` accepts: a tool name plus `renderCall`, `renderResult`,
 and `renderShell`. A module that is missing, throws, exports no function,
 publishes another version, or repeats a name already supplied costs only its own
-cards. The client shows one bounded diagnostic and uses Pi's standard card for
-those tools. The attach does not wait for the modules. The lookup replaces the
+cards. The client reports the first bounded diagnostic in the target header
+once per selection load, with the issue count if there is more than one. No
+inventory means no display-module diagnostic. The attach does not wait for the modules. The lookup replaces the
 previous source's lookup as a unit and the transcript rebuilds its cards, so no
 renderer closure from an earlier source stays attached. Passive roster or
 retained-transcript reads never start a host to obtain presentation.
 
-Resolution order is unchanged: builtin, codemode and local Agent cards come
-first, then the lookup, then the standard card. The standalone main
-conversation and its embedded dashboard use the same lookup. Definitions stay
-inert: `execute` always throws and no loadout hook exists. Renderers are trusted
-local code, not a sandbox.
+The standalone conversation and the Agent dashboard use the same
+[resolution rules](#agent-dashboard-resolution). A cold read without inventory
+uses the local Pi and Agent renderers where applicable and the standard card for
+other tools. Renderers are trusted local code, not a sandbox.
 
 ## Verification
 
