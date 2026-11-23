@@ -43,6 +43,7 @@ import ReaderFeature
           const chunks = [];
           for await (const chunk of request) chunks.push(chunk);
           let body = Buffer.concat(chunks).toString();
+          if (request.url === '/starting' && mode === 'reset-start') { response.destroy(); return; }
           if (request.url === '/connect') {
             const connect = JSON.parse(body);
             // Behind this proxy, an unscoped-activity fixture presents the still-running live-2 contract.
@@ -78,6 +79,7 @@ import ReaderFeature
           const command = JSON.parse(line);
           if (command.op === 'release') { release(); write({ ok: true }); }
           else if (command.op === 'state') write({ document: bridge.list()[0]?.document, prompts, submissions, transport });
+          else if (command.op === 'closeEndpoint') { proxy.close(); proxy.closeAllConnections(); write({ok:true}); }
           else if (command.op === 'failPoll') { pollFailure = command.status; write({ok:true}); }
           else if (command.op === 'navigate') write(await bridge.execute(bridge.list()[0].handle, command));
           else if (command.op === 'publish') { bridge.publish(command.status, command.text, command.operationId); write({ ok: true }); }

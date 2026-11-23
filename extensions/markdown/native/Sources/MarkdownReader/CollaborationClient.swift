@@ -23,7 +23,11 @@ struct CollaborationConfiguration: Decodable, Sendable {
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["launchId": launchId, "pid": getpid()])
-        let (_, response) = try await session.data(for: request)
+        let response: URLResponse
+        do { (_, response) = try await session.data(for: request) }
+        catch let error as URLError where [.networkConnectionLost, .timedOut].contains(error.code) { return }
+        // The original listener can be between route owners. Connect consumes this same reservation after reclaim.
+        if (response as? HTTPURLResponse)?.statusCode == 503 { return }
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw StoreError.unreadable("The original conversation did not accept the pane launch.")
         }
@@ -101,11 +105,12 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         var text: String
         var comment: String
         var quote: String?
-        var attempted = false
         var retryable = true
         var status = "Request unconfirmed. Send again to retry the same request."
     }
     private var pendingPrompt: PendingPrompt?
+    private var preparing: [UUID: String] = [:]
+    private var posting: Set<String> = []
     private var retiring: Set<UUID> = []
     private var requestedActivity = false
     @ObservationIgnored var onPromptState: ((String, String, String, String?) -> Void)?
@@ -172,6 +177,10 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
 
     enum PromptSubmission: Equatable {
         case submitted, unknown(retryable: Bool), refused(String)
+    }
+
+    func isFreshPrompt(requestId: String) -> Bool {
+        origins[requestId] == nil && !preparing.values.contains(requestId)
     }
 
     func knowsPrompt(requestId: String, threadId: String) -> Bool {
@@ -249,7 +258,8 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     /// the document has changed since; the same request ID with other inputs is refused.
     private func submitPrepared(requestId: String, threadId: String, inputs: [PromptInput], overall: String? = nil, authoredRevision: Int? = nil, text: String,
                                 quote: String?, batch: Bool, carriesPassage: Bool, compose: () throws -> String) async -> PromptSubmission {
-        guard UUID(uuidString: requestId) != nil, UUID(uuidString: threadId) != nil, !closed else {
+        guard !closed else { return .refused(connectionStatus) }
+        guard UUID(uuidString: requestId) != nil, UUID(uuidString: threadId) != nil else {
             return .refused("The conversation connection is not available.")
         }
         let encoder = JSONEncoder()
@@ -265,7 +275,8 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
             return .refused("The request ID names different comment text.")
         }
         if bridgePromptResults[key] != nil { return promptSubmission(key, requestId: requestId) }
-        guard !sending, pendingPrompt == nil || pendingPrompt?.operation == requestId else {
+        guard !sending, preparing[document] == nil, !preparing.values.contains(requestId), !posting.contains(requestId),
+              pendingPrompt == nil || pendingPrompt?.operation == requestId else {
             return .refused("Another request still awaits confirmation.")
         }
         guard bridgePromptInputs[key] != nil || bridgePromptInputs.count < 1024 else {
@@ -279,6 +290,23 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
             catch let refusal as PromptRefusal { return .refused(refusal.detail) }
             catch { return .refused("The request could not be prepared.") }
         }
+        // Capture the author's message before waiting. Register it only when its exact buffer is connected.
+        if connectedDocument != document {
+            let selected = document, token = epoch
+            preparing[selected] = requestId
+            defer { preparing[selected] = nil }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+            while connectedDocument != selected, document == selected, epoch == token, !holdsNavigation, !closed,
+                  !Task.isCancelled, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+            if bridgePromptResults[key] != nil { return promptSubmission(key, requestId: requestId) }
+            guard connectedDocument == selected, epoch == token, document == selected, !closed, !Task.isCancelled else {
+                if !composed { return promptSubmission(key, requestId: requestId) }
+                return .refused(closed ? connectionStatus : "The selected document did not connect. Your comment was not sent.")
+            }
+        }
+        if !canRetryPrompt { return promptSubmission(key, requestId: requestId) }
         bridgePromptInputs[key] = (input, message)
         if pendingPrompt == nil {
             prompt = text; annotationQuote = quote
@@ -286,8 +314,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         }
         registerThread(request: requestId, thread: threadId, quote: quote, batch: batch, overall: overall != nil)
         if composed, carriesPassage { threads[threadKey(threadId)]?.carriers.append(requestId) }
-        activePromptID = requestId
-        await sendPrompt()
+        if let pending = pendingPrompt { await postPrompt(pending, logical: beginSend(pending)) }
         return promptSubmission(key, requestId: requestId)
     }
 
@@ -685,7 +712,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         switch error {
         case Failure.version: reason = "Incompatible reader connection"
         case Failure.refused: reason = "Conversation connection refused"
-        case let error as URLError where error.code == .cannotConnectToHost && (connectedOnce || configuration.hostPid.map { kill($0, 0) != 0 && errno == ESRCH } == true):
+        case let error as URLError where error.code == .cannotConnectToHost && (connectedOnce || configuration.live == 3):
             reason = "Conversation endpoint closed"
         default: return false
         }
@@ -697,7 +724,10 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     }
 
     func sendPrompt() async {
-        guard !sending, !closed, canRetryPrompt else { return }
+        guard !sending, !closed, canRetryPrompt, preparing[document] == nil else { return }
+        guard connectedDocument == document else {
+            promptIssue = "The selected document is not connected. Your comment was not sent."; return
+        }
         if pendingPrompt == nil {
             guard let text = Self.annotationMessage(comment: prompt, quote: annotationQuote) else {
                 promptIssue = "Shorten the comment or select a smaller passage."; return
@@ -708,26 +738,31 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
             pendingPrompt?.thread = operation
             registerThread(request: operation, thread: operation, quote: pendingPrompt?.quote)
         }
-        guard let pending = pendingPrompt else { return }
+        guard let pending = pendingPrompt, !posting.contains(pending.operation) else { return }
+        await postPrompt(pending, logical: beginSend(pending))
+    }
+
+    /// Reserve the send synchronously; after suspension only this immutable packet may go to its original binding.
+    private func beginSend(_ pending: PendingPrompt) -> UUID {
+        let logical = logicalDocument
+        posting.insert(pending.operation)
         activePromptID = pending.operation
         promptIssue = nil
         sending = true; requestedActivity = true
         emitPromptState("sending")
-        let selected = document, logical = logicalDocument, token = epoch
-        let key = threadKey(pending.operation)
-        defer { if logicalDocument == logical, activePromptID == pending.operation { sending = false } }
+        return logical
+    }
+
+    private func postPrompt(_ pending: PendingPrompt, logical: UUID) async {
+        let key = threadKey(pending.operation, document: logical)
+        defer {
+            posting.remove(pending.operation)
+            if logicalDocument == logical, activePromptID == pending.operation { sending = false }
+        }
         do {
-            // Do not send a newly authored question through the previous buffer's binding.
-            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-            while connectedDocument != selected, self.document == selected, token == epoch, !closed, !holdsNavigation, ContinuousClock.now < deadline {
-                try await Task.sleep(for: .milliseconds(30))
-            }
-            guard connectedDocument == selected, token == epoch, logicalDocument == logical, !closed,
-                  pending.binding == selected || pending.attempted else { throw Failure.stale }
-            pendingPrompt?.attempted = true
             var body = identity(pending.binding); body["operationId"] = pending.operation; body["text"] = pending.text
             let receipt: PromptReceipt = try await post("prompt", body: body)
-            guard bridgePromptResults[key] != true else { return }
+            guard bridgePromptResults[key] == nil, self.pending(for: logical)?.operation == pending.operation else { return }
             guard receipt.ok else { throw Failure.response }
             switch receipt.status {
             case "admitted", "requested":
@@ -741,7 +776,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
                 bridgePromptResults[key] = false
                 emitPromptState("failed", detail: issue, request: pending.operation, logical: logical)
             case "uncertain":
-                var unresolved = pending; unresolved.attempted = true; unresolved.retryable = receipt.retryable == true
+                var unresolved = pending; unresolved.retryable = receipt.retryable == true
                 unresolved.status = receipt.message ?? "Admission is unconfirmed. Check the conversation."
                 updatePending(unresolved, logical: logical)
                 if logicalDocument == logical { status = unresolved.status }
@@ -749,7 +784,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
             default: throw Failure.response
             }
         } catch {
-            guard bridgePromptResults[key] == nil, var unresolved = self.pending(for: logical) else { return }
+            guard bridgePromptResults[key] == nil, var unresolved = self.pending(for: logical), unresolved.operation == pending.operation else { return }
             if finishIfUnavailable(error) || closed { unresolved.retryable = false; unresolved.status = connectionStatus }
             else if case Failure.handoff = error { unresolved.status = "The conversation is reloading. Retry the same request." }
             else { unresolved.status = "Request unconfirmed. Send again to retry the same request." }

@@ -77,6 +77,44 @@ import Testing
         #expect(client.answer.isEmpty)
     }
 
+    @Test func unconnectedSubmissionRemainsFreshAfterTimeoutOrRebind() async throws {
+        let server = try LiveTestBridge(); defer { server.stop() }
+        let logical = UUID(), reopened = UUID(), request = UUID().uuidString
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID(),
+            documentKey: { logical }) { _ in LiveResult(status: "closed") }
+        defer { client.stop() }
+        func submit(_ text: String) async -> CollaborationClient.PromptSubmission {
+            await client.submitAnnotation(requestId: request, threadId: request, text: text, quote: nil)
+        }
+        let timedOut = await submit("Before connection")
+        guard case .refused = timedOut else { Issue.record("A request that never left the reader was not refused"); return }
+        #expect(client.isFreshPrompt(requestId: request) && !client.hasPendingPrompt)
+        let first = Task { await submit("Before switch") }
+        try await eventually { !client.isFreshPrompt(requestId: request) }
+        guard case .refused = await submit("Overlapping attempt") else { Issue.record("Duplicate preparation"); return }
+        #expect(!client.isFreshPrompt(requestId: request))
+        client.bind(document: reopened)
+        guard case .refused = await first.value else { Issue.record("A request crossed a buffer switch"); return }
+        #expect(client.isFreshPrompt(requestId: request) && !client.hasPendingPrompt)
+        #expect(await submit("After switch") == .submitted)
+        let prompts = try #require(try await server.request(["op": "state"])["prompts"] as? [[String: String]])
+        #expect(prompts.count == 1 && prompts.first?["text"] == "After switch" && prompts.first?["document"] == reopened.uuidString)
+        #expect(!client.isFreshPrompt(requestId: request))
+    }
+
+    @Test(arguments: [false, true]) func initialConnectDistinguishesStartupResetFromEndpointClosure(closed: Bool) async throws {
+        let server = try LiveTestBridge(mode: closed ? "normal" : "reset-start"); defer { server.stop() }
+        let config = try await server.configuration()
+        try await config.reportStarting()
+        if closed { _ = try await server.request(["op": "closeEndpoint"]) }
+        let client = CollaborationClient(configuration: config, workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }
+        client.start(); defer { client.stop() }
+        if closed {
+            try await eventually { client.isClosed }
+            #expect(client.connectionStatus.contains(config.target) && client.connectionStatus.contains("Reopen"))
+        } else { try await eventually { client.status == "Agent connected" } }
+    }
+
     @Test func stalePollReconnectsSameBindingAndVersionRefusalKeepsDraft() async throws {
         let server = try LiveTestBridge(mode: "transport"); defer { server.stop() }
         let config = try await server.configuration(), document = UUID()
