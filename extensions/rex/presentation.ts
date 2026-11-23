@@ -297,12 +297,12 @@ function callHeading(request: Fields, op: string, kind: string, target: string[]
 		kind,
 		view,
 		words(condition),
+		requestedAllowance(request.timeoutMs),
 		...target,
 		query !== subject && qualified("query", query),
 		qualified("phase", phase),
 		qualified("state", state),
 		statusId,
-		requestedAllowance(request.timeoutMs),
 		...numbers,
 	];
 	return { subject, facts: [...new Set(qualifiers.filter((part) => part && part !== subject))].join(" · ") };
@@ -315,7 +315,7 @@ function requestedAllowance(value: unknown): string {
 	const whole = Math.floor(seconds);
 	const duration =
 		seconds < 60 ? `${seconds.toFixed(1).replace(/\.0$/, "")}s` : `${Math.floor(whole / 60)}m ${whole % 60}s`;
-	return `requested allowance ${duration}`;
+	return `requested ${duration}`;
 }
 function qualified(label: string, value: string): string {
 	return value ? `${label} ${value}` : "";

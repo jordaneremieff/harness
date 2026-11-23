@@ -66,7 +66,17 @@ it("formats requested allowances without confusing them with elapsed time", (t) 
 			"15s",
 			receipt("cleanup_unknown", { ok: false }),
 		],
-		["rex_wait", { op: "wait", condition: "child_exit", timeoutMs: 4_219 }, "4.2s", receipt("child_completed")],
+		[
+			"rex_wait",
+			{
+				op: "wait",
+				condition: "child_exit",
+				target: { block, session: "session:44444444-4444-4444-8444-444444444444", source: "explicit" },
+				timeoutMs: 4_219,
+			},
+			"4.2s",
+			receipt("child_completed"),
+		],
 		[
 			"rex_wait",
 			{ op: "wait", condition: "text", text: "PRIVATE-PREDICATE", timeoutMs: 90_007 },
@@ -77,8 +87,8 @@ it("formats requested allowances without confusing them with elapsed time", (t) 
 	for (const [name, args, allowance, result] of cases) {
 		const component = card(name, args);
 		const verifyFacts = () => {
-			const text = screen(component);
-			assert.ok(text.includes(`requested allowance ${allowance}`));
+			const text = screen(component, 60);
+			assert.ok(text.includes(`requested ${allowance}`));
 			assert.doesNotMatch(text, /\bms\b|timeoutMs|Elapsed|Took|PRIVATE-PREDICATE/);
 			assert.equal(text.match(/to expand/g)?.length, 1);
 		};
