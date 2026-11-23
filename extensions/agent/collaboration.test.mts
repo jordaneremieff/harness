@@ -1603,7 +1603,8 @@ it("omits only the create-frame copy, preserves retained source text, and derive
 	assert.equal(page.thread.purpose, frame.purpose);
 	assert.equal(page.events[1].message, "Retained post");
 	assert.deepEqual(stored, await f.host.harness.snapshot(CollaborationEvents, `${threadId}:1`, context));
-	assert.ok(stored?.event?.message.includes(frame.purpose));
+	assert.ok(stored?.event);
+	assert.ok(stored.event.message.includes(frame.purpose));
 	for (const event of page.events) assert.equal(event.atUtc, utcTime(event.at));
 	await f.host.harness.commit(async (tx) => {
 		const row = await tx.doc(CollaborationEvents, `${threadId}:2`, null);
@@ -1613,6 +1614,24 @@ it("omits only the create-frame copy, preserves retained source text, and derive
 	const unavailable = await readCollaboration(f.host.harness, { threadId, before: 3, limit: 1 }, context);
 	assert.equal(unavailable.events[0].at, Number.MAX_SAFE_INTEGER);
 	assert.equal(unavailable.events[0].atUtc, null);
+	const withoutFrame = await readCollaboration(
+		f.host.harness,
+		{ threadId, after: 0, knownFrameRevision: 1, limit: 1 },
+		context,
+	);
+	assert.equal(withoutFrame.thread, undefined);
+	assert.equal(withoutFrame.events[0].message, stored.event.message);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("revise", "revise", { ...frame, threadId, purpose: "Revised purpose" }),
+		context,
+	);
+	const { tool: _tool, ...call } = threadReadCall(threadId, 1);
+	const recovered = await readCollaboration(f.host.harness, call, context);
+	assert.equal(recovered.thread?.purpose, "Revised purpose");
+	assert.equal(recovered.events[0].message, stored.event.message);
+	assert.equal(recovered.events[0].frameOmitted, undefined);
 });
 it("fits byte-bounded forward and backward pages and recovers complete active text by the emitted event call", async (t) => {
 	const f = await fixture(t);

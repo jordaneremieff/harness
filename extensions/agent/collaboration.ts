@@ -532,11 +532,13 @@ function readEvent(snapshot: unknown, thread: CollaborationThread, sequence: num
 	return event as CollaborationEvent;
 }
 
-function eventView(event: CollaborationEvent): CollaborationEventView {
+function eventView(event: CollaborationEvent, returnedFrameRevision: number | undefined): CollaborationEventView {
 	return {
 		...event,
 		atUtc: utcTime(event.at),
-		...(event.kind === "create" ? { message: "", frameOmitted: "current-frame-returned-separately" as const } : {}),
+		...(event.kind === "create" && event.revision === returnedFrameRevision
+			? { message: "", frameOmitted: "current-frame-returned-separately" as const }
+			: {}),
 	};
 }
 function pageBytes<T extends { coverage: { bytes: number } }>(page: T): number {
@@ -623,6 +625,7 @@ async function readBackward(
 	for (let sequence = before - 1; sequence > 0 && page.events.length < limit; sequence--) {
 		const event = eventView(
 			readEvent(await session.snapshot(CollaborationEvents, `${id}:${sequence}`, context), thread, sequence),
+			thread.revision,
 		);
 		const candidate: CollaborationPage = {
 			...page,
@@ -676,6 +679,7 @@ async function readForward(
 	for (let sequence = after + 1; sequence <= thread.sequence && page.events.length < limit; sequence++) {
 		const event = eventView(
 			readEvent(await session.snapshot(CollaborationEvents, `${thread.id}:${sequence}`, context), thread, sequence),
+			page.thread?.revision,
 		);
 		const candidate: CollaborationForwardPage = {
 			...page,

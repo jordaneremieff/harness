@@ -2585,9 +2585,10 @@ sequence or a `knownFrameRevision` above the retained revision refuses.
 
 Each returned event carries its epoch `at` and a derived ISO UTC `atUtc`. The
 epoch stays authoritative; `atUtc` is `null` when the epoch is outside the
-date conversion range. A returned `create` event has an empty `message` and
-`frameOmitted: "current-frame-returned-separately"`. The retained event keeps
-its original frame text. Reads do not start a host or model, and a read
+date conversion range. When the page includes the original frame, the `create`
+event has an empty `message` and `frameOmitted: "current-frame-returned-separately"`.
+If the frame has changed or the page omits it, the `create` event includes the
+original frame text. Reads do not start a host or model, and a read
 acknowledges no notice. Events record their sender, origin, frame revision,
 and reply reference.
 
