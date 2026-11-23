@@ -1241,11 +1241,14 @@ export async function createDurableRuntime(
 			}
 		}
 	}
-	const closeHost = async (): Promise<"process-exit" | undefined> => {
+	async function requiredExit(): Promise<"process-exit" | "failed-process-exit" | undefined> {
+		if (reloadFailed || sessionFailed || host.sessionEnded) return "failed-process-exit";
+		return (await host.refreshIdle()) ? undefined : "process-exit";
+	}
+	const closeHost = async (): Promise<"process-exit" | "failed-process-exit" | undefined> => {
 		if (closed) return;
 		closed = true;
-		// A failed reload no longer provides a reliable native work or delivery snapshot.
-		const processExit = reloadFailed || host.sessionEnded || !(await host.refreshIdle());
+		const processExit = await requiredExit();
 		restoreDispatch();
 		activityListeners.clear();
 		quiescentListeners.clear();
@@ -1280,7 +1283,7 @@ export async function createDurableRuntime(
 			} catch (error) {
 				process.stderr.write(`Service close: ${String(error)}\n`);
 			}
-			return "process-exit";
+			return processExit;
 		}
 		await closeIdleRuntime();
 		return undefined;

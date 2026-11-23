@@ -548,6 +548,66 @@ it("publishes live observation deltas without a catalog change", { timeout: 1500
 	assert.equal(listeners.size, 0, "closing the host releases the native observation listener");
 });
 
+for (const failure of ["runtime stopped", "announcement failed"] as const)
+	it(`withdraws its endpoint after startup fails: ${failure}`, { timeout: 3000 }, async (t) => {
+		const config = metadata(fixtureRoot(t));
+		let closed = 0;
+		await assert.rejects(
+			runHost(
+				() => ({
+					...echoRuntime(),
+					shutdownRequired: failure === "runtime stopped",
+					close: async () => {
+						closed++;
+					},
+				}),
+				{
+					metadata: config,
+					idleMs: 0,
+					announceReady: () => {
+						assert.equal(failure, "announcement failed", "a stopped runtime never announces readiness");
+						throw new Error("announcement failed");
+					},
+				},
+			),
+			failure === "runtime stopped" ? /stopped before host readiness/u : /announcement failed/u,
+		);
+		assert.equal(closed, 1);
+		assert.equal(lstatSync(hostPaths(config).socket, { throwIfNoEntry: false }), undefined);
+		assert.equal(writerAvailable(config), true);
+	});
+
+it("finishes sealed retirement when observation cleanup rejects", { timeout: 3000 }, async (t) => {
+	const config = metadata(fixtureRoot(t));
+	let release = () => {};
+	const host = await runHost(
+		() => ({
+			...echoRuntime(),
+			onReleaseRequested: (listener) => {
+				release = () => listener(true);
+				return noop;
+			},
+			request: async (method) => {
+				if (method === "observe-open") return { token: randomUUID() };
+				if (method === "observe-close") {
+					await new Promise<void>(setImmediate);
+					throw new Error("observation already ended");
+				}
+				release();
+				return { retiring: true };
+			},
+		}),
+		{ metadata: config, idleMs: 0, announceReady: noop },
+	);
+	t.after(() => host.close());
+	const client = await connectClient(config);
+	t.after(() => client.dispose());
+	await call(client, config, "observe-open");
+	await call(client, config, "release");
+	await host.done;
+	assert.equal(writerAvailable(config), true);
+});
+
 it("excludes a contender throughout held construction and native close", { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t),
 		config = metadata(root);

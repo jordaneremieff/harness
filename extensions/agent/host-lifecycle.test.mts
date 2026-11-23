@@ -207,7 +207,8 @@ for (const ownedExit of [false, true])
 	it(`preserves the busy writer claim with ${ownedExit ? "an explicit" : "no"} process exit owner`, async (t) => {
 		const metadata = fixtureMetadata(root(t));
 		let exits = 0;
-		const exit = (): never => {
+		const exit = (status: number): never => {
+			assert.equal(status, 0, "an intentional busy close is not crash evidence");
 			exits++;
 			assert.equal(existsSync(hostPaths(metadata).claim), true);
 			throw new Error("fixture process exit");

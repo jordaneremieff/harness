@@ -54,12 +54,13 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 		else process.exit(0);
 		return;
 	}
-	const host = await runHost(() => createDurableRuntime(metadata), { metadata, exit: () => process.exit(0) }).catch(
-		(error: unknown) => {
-			if (!(error instanceof HostClaimRefusedError) || error.observation !== "busy") throw error;
-			return undefined;
-		},
-	);
+	const host = await runHost(() => createDurableRuntime(metadata), {
+		metadata,
+		exit: (status) => process.exit(status),
+	}).catch((error: unknown) => {
+		if (!(error instanceof HostClaimRefusedError) || error.observation !== "busy") throw error;
+		return undefined;
+	});
 	if (!host) return;
 	let grace: NodeJS.Timeout | undefined;
 	const stop = () => {

@@ -28,5 +28,9 @@ AgentCatalog.prototype.markRecoveryDue = function (identity, due) {
 	}
 	return mark.call(this, identity, due);
 };
-const host = await runHost(() => createDurableRuntime(metadata), { metadata, idleMs: 0, exit: () => process.exit(0) });
+const host = await runHost(() => createDurableRuntime(metadata), {
+	metadata,
+	idleMs: 0,
+	exit: (status) => process.exit(status),
+});
 await host.done;

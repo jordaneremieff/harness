@@ -52,7 +52,7 @@ export interface HostRuntime {
 	 */
 	request(method: string, params: unknown, requestId: string, signal?: AbortSignal): Promise<unknown>;
 	/** Pending native work or a failed runtime requires process death rather than an unbounded task join. */
-	close(): Promise<void> | Promise<"process-exit" | undefined>;
+	close(): Promise<void> | Promise<"process-exit" | "failed-process-exit" | undefined>;
 	isIdle(): boolean;
 	/** Revalidate native work, delivery, and local controls, then synchronously seal both admission boundaries. */
 	tryRetire?(seal: () => boolean): Promise<boolean>;
@@ -94,7 +94,7 @@ export interface RunHostOptions {
 	/** Losing contenders announce exclusion before they leave without a runtime. */
 	readonly announceBusy?: (target: HostBusy) => void;
 	/** Dedicated process owner's terminal exit; embedded hosts must not supply it. */
-	readonly exit?: () => never;
+	readonly exit?: (status: 0 | 1) => never;
 	/** Schedule one idle check and return its cancellation function. Defaults to a wall-clock timer. */
 	readonly scheduleIdleCheck?: (check: () => void, delayMs: number) => () => void;
 	/** Waiting used by the observation scheduler. Defaults to a wall-clock timer. */
@@ -232,7 +232,7 @@ class HostProcessServer implements HostProcess {
 	private unsubscribeActivity: (() => void) | undefined;
 	private unsubscribeQuiescent: (() => void) | undefined;
 
-	private readonly exit: (() => never) | undefined;
+	private readonly exit: RunHostOptions["exit"];
 	private readonly writerId: string;
 	private readonly record: ClaimRecord;
 	private readonly writeEndRecord: NonNullable<RunHostOptions["writeEndRecord"]>;
@@ -245,7 +245,7 @@ class HostProcessServer implements HostProcess {
 		idleMs: number,
 		scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"],
 		observationClock?: ObservationClock,
-		exit?: () => never,
+		exit?: RunHostOptions["exit"],
 		writeEndRecord = writeEndClaim,
 	) {
 		this.exit = exit;
@@ -351,6 +351,7 @@ class HostProcessServer implements HostProcess {
 			this.releasePending = true;
 			this.scheduleRelease();
 		}
+		if (this.runtime.shutdownRequired) throw new Error("Durable runtime stopped before host readiness");
 		announce({ pid: this.pid, socketPath: this.paths.socket, writerId: this.writerId, contract: HOST_CONTRACT });
 		this.scheduleRetirement();
 	}
@@ -730,7 +731,9 @@ class HostProcessServer implements HostProcess {
 			const retired = this.runtime.tryRetire ? await this.runtime.tryRetire(seal) : this.runtime.isIdle() && seal();
 			if (retired) {
 				if (releasing)
-					await Promise.all([...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]));
+					await Promise.allSettled(
+						[...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]),
+					);
 				await this.shutdown();
 			}
 		} catch {
@@ -755,6 +758,7 @@ class HostProcessServer implements HostProcess {
 
 	/** Remove only our published endpoint before another writer receives the claim. */
 	private unpublishSocket(): void {
+		if (!this.socketIdentity) return;
 		const socket = lstatSync(this.paths.socket, { throwIfNoEntry: false });
 		if (socket === undefined) return;
 		if (!socket.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino)
@@ -806,10 +810,11 @@ class HostProcessServer implements HostProcess {
 }
 
 /** Keep the live claim until process death when native close cannot join pending work. */
-async function closeRuntime(runtime: HostRuntime, exit?: () => never): Promise<void> {
-	if ((await runtime.close()) !== "process-exit") return;
+async function closeRuntime(runtime: HostRuntime, exit?: RunHostOptions["exit"]): Promise<void> {
+	const outcome = await runtime.close();
+	if (!outcome) return;
 	if (!exit) throw new Error("Busy native shutdown requires its dedicated process owner");
-	exit();
+	exit(outcome === "failed-process-exit" ? 1 : 0);
 }
 
 function claimRecord(identity: HostPaths["identity"], token: string): ClaimRecord {
@@ -832,14 +837,6 @@ function writeEndClaim(descriptor: number, bytes: Buffer): void {
 		offset += count;
 	}
 	ftruncateSync(descriptor, bytes.length);
-}
-
-function cleanupClaim(claim: NativeWriterLease): void {
-	try {
-		claim.release();
-	} catch {
-		// A failed close leaves exclusion with this process until its actual exit.
-	}
 }
 
 /**
@@ -867,33 +864,24 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 		}
 		throw error;
 	}
-	let runtime: HostRuntime | undefined;
+	// Without a complete runtime there is no safe close handle: keep the lease until process exit.
+	const runtime = await createRuntime();
+	const host = new HostProcessServer(
+		runtime,
+		paths,
+		claim,
+		record,
+		idleMs,
+		options.scheduleIdleCheck,
+		options.observationClock,
+		options.exit,
+		options.writeEndRecord,
+	);
 	try {
-		runtime = await createRuntime();
-		const host = new HostProcessServer(
-			runtime,
-			paths,
-			claim,
-			record,
-			idleMs,
-			options.scheduleIdleCheck,
-			options.observationClock,
-			options.exit,
-			options.writeEndRecord,
-		);
 		await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
 		return host;
 	} catch (error) {
-		let releasedRuntime = false;
-		if (runtime) {
-			try {
-				await closeRuntime(runtime, options.exit);
-				releasedRuntime = true;
-			} catch {
-				releasedRuntime = false;
-			}
-		}
-		if (releasedRuntime) cleanupClaim(claim);
+		await host.close();
 		throw error;
 	}
 }

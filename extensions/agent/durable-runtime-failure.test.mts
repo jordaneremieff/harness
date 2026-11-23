@@ -61,5 +61,5 @@ for (const reloaded of [false, true])
 			runtime.request("submit", { message: "unadmitted", requestId: "after-failure" }, "after-failure"),
 			(error) => error instanceof SessionFailed && error.cause === cause,
 		);
-		assert.equal(await runtime.close(), "process-exit");
+		assert.equal(await runtime.close(), "failed-process-exit");
 	});

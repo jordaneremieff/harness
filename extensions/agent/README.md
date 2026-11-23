@@ -3497,8 +3497,9 @@ a token request after close.
   receives the failure without a circular wait. The writer lease remains held;
   a failed close never announces writer release or replaces its generation.
   If reload fails after runtime teardown starts,
-  the host returns the reload error and takes the same process shutdown path. It
-  retains the recovery marker and writer lease until process death.
+  the host returns the reload error and exits with a failure status. A fatal native
+  session failure also produces a failed exit. Both retain the recovery marker
+  and writer lease until process death. An intentional busy close exits successfully.
 - The runtime's `requestRelease()` returns `{ retiring, blockers }` without a
   model turn. Native work in any conversation, a waiting timer or check-in task,
   an active delivery recipient, or another active request blocks release. Open

@@ -47,6 +47,6 @@ const host = await runHost(
 		};
 		return runtime;
 	},
-	{ metadata, exit: () => process.exit(0) },
+	{ metadata, exit: (status) => process.exit(status) },
 );
 await host.done;

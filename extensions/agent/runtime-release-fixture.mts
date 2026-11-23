@@ -24,6 +24,6 @@ const processHost = await runHost(
 			},
 		};
 	},
-	{ metadata, idleMs: 3600000, exit: () => process.exit(0) },
+	{ metadata, idleMs: 3600000, exit: (status) => process.exit(status) },
 );
 await processHost.done;

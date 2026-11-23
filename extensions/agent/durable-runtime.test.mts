@@ -953,7 +953,7 @@ for (const pendingDelivery of [false, true])
 				true,
 				"the failed runtime requires process shutdown instead of retaining its live claim",
 			);
-			await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+			assert.deepEqual(await first.ownedExit, { code: 1, signal: null, failed: true });
 			assert.equal(
 				observeClaim(paths.claim, paths.identity).kind,
 				"dead",
