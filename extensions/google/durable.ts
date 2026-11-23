@@ -30,6 +30,7 @@ export function googleContribution(source: string, bus: SettingsBus, stopFactory
 	return {
 		name: "google",
 		source,
+		display: { version: 1, entry: "./display.ts", export: "toolDisplay" } as const,
 		create(host: DurableContributionHost): Durable.Extension {
 			stopFactoryPublisher();
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));

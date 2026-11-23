@@ -55,6 +55,17 @@ inside an `externalData` object with a fixed notice that it is untrusted data.
 Terminal control characters in that content are neutralised. The marking
 records provenance; it does not detect or prevent prompt injection.
 
+## Tool cards
+
+The `google_status` card distinguishes a successful status check that reports
+Google Workspace access is not ready from an error that prevents the check.
+It shows the reported account or readiness diagnostic and the required backend
+version when the result supplies them. Expand the card for the complete status
+envelope, including granted scopes and capabilities. The same renderer serves
+the main session, agent dashboard, and attached transcript. See the
+[emission grammar](../../docs/conventions/emissions.md). The model still receives
+one compact JSON envelope.
+
 ## Documents and presentations
 
 `docs_get` and `slides_get` return text inline, so a read needs no export file.
