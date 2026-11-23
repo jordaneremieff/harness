@@ -101,7 +101,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_yield` | In an ordinary session, end the turn with one state note for the operator while work that the session sent to agents is still open; an agent result, a message or the operator's input starts the next turn. See [state note of an ordinary session](#state-note-of-an-ordinary-session). |
 | `agent_send` | Admit a task or correction. Omitted `mode` means `followUp`, new work, on every path. `mode: "steer"` corrects current work; both reach the same tool-round boundary. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. A busy Durable recipient receives each active input at its next tool boundary, for `steer` and for `followUp`; no input waits for the end of the run. These inputs do not promise separate answers. See [input placement](#input-placement-and-unplaced-notices). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
-| `agent_abort` | Abort the selected conversation without deleting its retained evidence. A live stop waits up to 15 seconds for settlement. `settled: false` names pending tasks whose abort stays committed. The stopped conversations stay quiet until explicit input (see [Stopping work](#stopping-work)). A cold stop marks retained work without starting a serving host. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. Aborting the tool call withdraws only the caller's wait. |
+| `agent_abort` | Abort the selected conversation without deleting its retained evidence. A live stop waits up to 15 seconds for settlement. `settled: false` names pending tasks whose abort stays committed. The stopped conversations stay quiet until explicit input (see [Stopping work](#stopping-work)). A cold stop marks retained work without starting a serving host. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a serving host. On cold storage it uses the same stop writer as abort. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. Aborting the tool call withdraws only the caller's wait. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
 | `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
 | `agent_configure` | Change the name, model, preset or reasoning of an idle conversation. |
@@ -2057,9 +2057,10 @@ inputs, marks the scope's tasks and closes its captured work. It exits without
 starting a serving host, running task phases or sending deliveries. The result
 has `cold: true`; any listed tasks run their abort handlers and any retained
 results enter delivery on the next normal recovery. This preserves unrelated
-work and queued writes. If a serving writer wins the lease, the caller uses
-that live endpoint instead and does not request its retirement. Release or an
-attach-only control never starts a cold writer. Caller cancellation does not
+work and queued writes. A cold release uses the same stop writer and leaves
+no serving host. If a competing writer wins the lease, the caller attempts the
+requested operation at that endpoint instead. An attach-only control never
+starts a cold writer. Caller cancellation does not
 interrupt an already started writer. A cold writer has its own two-minute
 process limit for setup, storage operations and teardown. An unsuccessful exit
 leaves the outcome unconfirmed; do not send the stop again automatically.
@@ -3447,11 +3448,11 @@ a token request after close.
   normal idle interval.
   The transport exposes no per-response flush signal; the grace bounds the wait
   for a client that stays connected. Release never deletes delivery rows or
-  cancels timers. The manager attaches for release without launching a host.
-  An unavailable endpoint preserves the attachment error. Permanent metadata
-  and an ended previous generation do not prove that no replacement holds the
-  lease; clients do not probe it. Release does not return a not-running result
-  from that evidence. Unrelated `live: false` results for cold reads retain
+  cancels timers. The manager tries the endpoint first. If no endpoint is
+  available, an acquiring release tries a cold stop under the writer lease;
+  an attach-only release preserves the attachment error. Neither starts a
+  serving host. Permanent metadata and an ended previous generation do not
+  prove that no replacement holds the lease. Unrelated `live: false` results for cold reads retain
   their read-only meaning.
 - Reload requires an idle storage and no live observation tokens. The runtime
   refuses reload before teardown while any observer remains, including native
