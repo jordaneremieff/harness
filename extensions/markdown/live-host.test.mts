@@ -393,9 +393,9 @@ test("an ordinary conversation reads a pane closure before its next response, wi
 		assert.equal(during.at(-1)?.role, "user");
 		assert.match(
 			messageText(during.at(-1) as Message),
-			/^\[markdown\] A reader pane connected to this conversation closed/u,
+			/^\[markdown\] A reader pane disconnected from this conversation/u,
 		);
-		assert.match(messageText(during.at(-1) as Message), /No reader pane is connected to this conversation now/u);
+		assert.match(messageText(during.at(-1) as Message), /No reader pane remained connected at that time/u);
 
 		const stored = new Promise<void>((resolve) => {
 			const stop = session?.subscribe((event) => {
@@ -418,7 +418,7 @@ test("an ordinary conversation reads a pane closure before its next response, wi
 		await session.prompt("Add the totals.");
 		await session.waitForIdle();
 		const next = requests[2];
-		assert.match(messageText(next.at(-2) as Message), /^\[markdown\] A reader pane connected/u);
+		assert.match(messageText(next.at(-2) as Message), /^\[markdown\] A reader pane disconnected/u);
 		assert.equal(messageText(next.at(-1) as Message), "Add the totals.");
 		assert.equal(requests.length, 3);
 		const notices = session.messages.filter((message) => message.role === "custom");
@@ -449,13 +449,21 @@ test("a pane closure notice names the closed and still connected panes", () => {
 		},
 	};
 	const single = paneClosedNotice({ closed: 1, connected: 0, panes: [gone] });
-	assert.match(single, /departed-handle last showed published "Draft" \(md-123 revision 2\)/u);
-	assert.match(single, /No reader pane is connected/u);
+	assert.match(single, /departed-handle last reported published "Draft" \(md-123 revision 2\): reading/u);
+	assert.match(single, /No reader pane remained connected at that time/u);
 	assert.match(single, /needs no reply\.$/u);
-	const several = paneClosedNotice({ closed: 2, connected: 1, panes: [gone, { ...gone, handle: "second" }] });
-	assert.match(several, /2 reader panes connected to this conversation closed/u);
-	assert.match(several, /second last showed/u);
-	assert.match(several, /1 reader pane is still connected/u);
+	const dirty = {
+		...gone,
+		handle: "second",
+		view: { ...gone.view, mode: "writing" as const, dirty: true, conflict: true },
+	};
+	const several = paneClosedNotice({ closed: 2, connected: 1, panes: [gone, dirty] });
+	assert.match(several, /2 reader panes disconnected from this conversation/u);
+	assert.match(
+		several,
+		/second last reported published "Draft" \(md-123 base revision 2\): writing, unsaved, autosave conflict/u,
+	);
+	assert.match(several, /1 reader pane remained connected at that time/u);
 });
 test("the real Durable contribution reconciles lost admission and edits only its exact live native buffer", {
 	timeout: 15000,

@@ -113,20 +113,24 @@ function ordinaryReplies(pi: ExtensionAPI, active: () => boolean, replies: Reply
 	};
 }
 export const PANE_NOTICE_TYPE = "markdown-pane-closed";
-/** Tells the conversation's agent that a report it showed is no longer in front of the operator. */
+/** A departed connection supplies its last view, not proof of process exit or of a later save reaching a reader. */
 export function paneClosedNotice({ closed, connected, panes }: PaneClosure): string {
 	const event =
 		closed === 1
-			? "A reader pane connected to this conversation closed; the operator may have closed it."
-			: `${closed} reader panes connected to this conversation closed; the operator may have closed them.`;
+			? "A reader pane disconnected from this conversation."
+			: `${closed} reader panes disconnected from this conversation.`;
 	const state =
 		connected === 0
-			? "No reader pane is connected to this conversation now, so a document update that you save reaches no pane."
-			: `${connected} reader ${connected === 1 ? "pane is" : "panes are"} still connected to this conversation; a document update reaches a pane only while that pane shows the document.`;
+			? "No reader pane remained connected at that time."
+			: `${connected} reader ${connected === 1 ? "pane" : "panes"} remained connected at that time.`;
 	const departed = panes.map(({ handle, view }) => {
 		const title = JSON.stringify(view.title.replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 180));
-		const revision = view.revision === undefined ? "" : ` revision ${view.revision}`;
-		return `${handle} last showed ${view.kind} ${title}${view.documentId ? ` (${view.documentId}${revision})` : ""}.`;
+		const revision =
+			view.revision === undefined
+				? ""
+				: ` ${view.dirty || view.conflict ? "base revision" : "revision"} ${view.revision}`;
+		const state = [view.mode, ...(view.dirty ? ["unsaved"] : []), ...(view.conflict ? ["autosave conflict"] : [])];
+		return `${handle} last reported ${view.kind} ${title}${view.documentId ? ` (${view.documentId}${revision})` : ""}: ${state.join(", ")}.`;
 	});
 	return `[markdown] ${event} ${departed.join(" ")} ${state} This notice needs no reply.`;
 }
