@@ -1,38 +1,42 @@
 # Pillar armory
 
-The corpus is the governing source of what correct agent behavior looks like and the primary armory; the tables below are the skill's own mapping and binding account. They are an index, not the whole taxonomy: a failure mode absent from both tables still fires the derivation-candidate rule in SKILL.md, and the confirmation names the frame's actual provenance. All corpus paths in this file resolve relative to the skill directory `skills/troll/`: `../../pillars/` from there reaches the sibling package corpus, the base the SKILL.md compatibility note states. Check once whether the corpus is present. If `../../pillars/README.md` exists, read it and `../../pillars/GOVERNANCE.md` first, then load only the few documents whose recognition conditions match; apply the match or name the fact that defeats it. If it does not exist, argue from these tables and first principles, and never load corpus paths. Name the governing pillar in the confirmation.
+Use the supplied record to name the failure mode. Use a row to frame the challenge, not to establish facts beyond the supplied record, investigate the target's claims yourself, or grant permission for any next step.
 
-| Failure mode in the target | Governing pillar | Why it binds |
-|---|---|---|
-| Lets interpretations or declarations in mixed communication displace the requested work or lend authority to unchecked assertions | `../../pillars/pattern-message-role-mapping.md` | The operator's actual request governs the work; each statement role retains its own evidence and authority boundary. |
-| Applies an inherited default without checking its origin-context preconditions | `../../pillars/pattern-context-calibration.md` | The default was correct elsewhere; the target's context does not supply its conditions. |
-| Applies a collaboration convention whose multi-party precondition is absent | `../../pillars/heuristic-coordination-phantom.md` | The convention's value is conditional on consumers and coordination that do not exist here. |
-| Acts on shared work or capacity without resolving relevant unknown concurrent activity before a consequential step | `../../pillars/heuristic-concurrent-work-discovery.md` | Bounded current discovery informs the dependent action; it neither requires contact with every agent nor grants control over another effort. |
-| Defends pattern caliber by label ("best practice") without a concrete failure account | `../../pillars/heuristic-failure-cost-calibration.md` | Protection caliber must match consequence; the target never priced the failure. |
-| Attaches an unattainable, disproportionate, or waived proof condition to a proposed change | `../../pillars/heuristic-proof-burden.md` | The evidence prerequisite has its own cost and authority; uncertainty alone does not justify it. |
-| Repeats, retains or removes verification by habit rather than useful evidence, meaningful protection and lifecycle cost | `../../pillars/pattern-verification-selection.md` | Verification's purpose and validity govern its scope and lifetime; current binding requirements remain until authorised changes replace them. |
-| Justifies a design by the implementation that embodies it | `../../pillars/heuristic-circular-grounding.md` | Description of what exists is not prescription of what the domain requires. |
-| Chooses local elegance that externalizes cost across the whole system | `../../pillars/principle-compositional-simplicity.md` | Simplicity is counted where the whole system pays it. |
-| Accepts a menu whose every option shares an unstated premise | `../../pillars/heuristic-framed-menu.md` | The bound is inherited, not binding; the option outside the menu dissolves the choice. |
-| Cites converging evaluators as independent confirmation | `../../pillars/heuristic-redundant-corroboration.md` | Same briefing and substrate make convergence one posterior, not independent facets. |
-| Judges prose quality as an authorship verdict ("this is AI slop") or presses a slop claim at token level | `../../pillars/principle-unearned-prose.md` | The three bins keep quality, provenance, and integrity separate: the press targets the text and its position tests, never the author, and never the detector debate. |
-| Repairs a flagged tell by substituting inside the same rhetorical family | `../../pillars/heuristic-tell-laundering.md` | The letter of the check is satisfied while the move survives; the press names the move and demands repair above the form. |
-| Proposes new agent infrastructure without a grounded need, exploratory question, or binding requirement | `../../pillars/heuristic-harness-over-architecture.md` | Construction needs a grounded purpose at the lowest sufficient layer; a bounded probe does not silently justify continuing infrastructure. |
-| Compares options where every weighed axis favors one preselected winner | `../../pillars/heuristic-loaded-comparison.md` | The axes were selected after the winner; the discriminating axes come from the target's own justifier list. |
-| Leaves promising possibilities undeveloped solely because they were not prescribed, or treats anticipated approval as their measure | `../../pillars/principle-creative-emergence.md` | Agents imagine and develop possibilities, build on what the work and others offer, and judge what this opens for the work's purpose within actual authority. |
-| Uses a safety or compliance gate as evasion: the gate has no earned basis in the supplied record (clearance or the data's operational purpose is documented there), and primary evidence sits within the target's reach unopened | `../../pillars/heuristic-proof-burden.md` | The gate is an unearned burden whose function is to protect speculation from falsification; the check in reach is the refutation lane. Without the earned-basis facts, treat the gate as a genuine boundary and press elsewhere. |
-| Bundles a reversible local step with an irreversible external write and refuses both under the external risk | `../../pillars/heuristic-failure-cost-calibration.md` | Each action is priced by its own consequence; separating the risks is the burden, and the local step still needs its own named restriction if one exists. The row shows where to press, not what the target may do. |
-| Treats the same channel as authoritative enough to bind it, yet too unverified to update it, without naming the difference between the two messages | `../../pillars/principle-epistemological-grounding.md` | The target must name the provenance difference that makes one message binding and the other unverified. The asymmetry is the question, not an answer; a named difference such as an opening instruction versus labeled peer data settles it. |
-| Answers a scoped question, task, or review with conditions of the larger goal, such as pending approvals, release steps, or decisions made elsewhere, as its blockers, or holds the answer until they clear | `../../pillars/heuristic-borrowed-blockers.md` | The question asked governs the answer. A condition enters it only when one of its outcomes would change that answer, as a requirement, an open fork, or a needed input; the rest belong to the question about the larger goal. |
+## Resolve the source
 
-Secondary armory, when the recognition conditions match:
+At intake, check the corpus once by trying to read `../../pillars/README.md` from the directory containing this skill's `SKILL.md`, not from `references/` or the session's working directory. Resolve the entry filenames below under that same `../../pillars/` directory.
 
-| Failure mode in the target | Governing pillar |
+- **Readable inventory:** Read `../../pillars/GOVERNANCE.md` and follow its Consultation Procedure. Use the table and inventory as shortlists. A table miss does not end the lookup. Read the few relevant entry bodies, then apply each match or identify what defeats it. The entry body governs, not the row. Attribute the argument to the corpus only if you read and applied a matching entry. If required text is unreadable, leave it unverified and name the limit.
+- **Unavailable inventory:** Do not follow corpus paths. Use a matching row as local guidance and report it as an armory match with the corpus unavailable. Never attribute a row or recalled wording to an unread entry.
+- **No applicable match:** If the available route yields no applicable frame, reason from the supplied facts and first principles. Name that basis and any corpus access limit in the confirmation. Flag a clear unmapped failure as a possible derivation candidate, not as proof of a gap in the doctrine.
+
+## Recognition table
+
+| Cue and local response | Corpus filename |
 |---|---|
-| Discards the evaluation frame after decomposition, or leaves an interdependent effort without the governing frame or changed commitment its next decision needs | `../../pillars/heuristic-governing-context.md` |
-| Revises inside a frame the operator already rejected | `../../pillars/heuristic-frame-abandonment.md` |
-| Commits to an option set or proposal frame without naming or testing it | `../../pillars/pattern-frame-inspection.md` |
-| Treats a claim's authority as equal to its source's authority | `../../pillars/principle-epistemological-grounding.md` |
-| Treats what survived a transition as automatically trustworthy | `../../pillars/heuristic-survival-selection.md` |
-| Acknowledges a correction but keeps the old assumption downstream | `../../pillars/heuristic-corrected-assumption-leakage.md` |
-| Cites tool output as evidence beyond what the tool observed | `../../pillars/heuristic-verification-reach.md` |
+| Lets interpretations, peer reports or unchecked assertions displace the actual request. Separate the work requested from claims about facts and authority. | `pattern-message-role-mapping.md` |
+| Applies an inherited default without testing the conditions that justified it. Name the origin-context precondition and ask whether it holds here. | `pattern-context-calibration.md` |
+| Preserves a coordination convention without evidence of the parties or coordination it needs. Ask who depends on it; distinguish an unknown consumer from an absent one, and preserve any independent requirement. | `heuristic-coordination-phantom.md` |
+| Acts on shared work or capacity despite uncertainty about concurrent activity that affects the decision. Resolve that dependency with bounded discovery, not indiscriminate contact or control. | `heuristic-concurrent-work-discovery.md` |
+| Defends a protection as best practice without identifying the failure it prevents. Compare the concrete harm with the cost of protection. | `heuristic-failure-cost-calibration.md` |
+| Blocks a change on a discretionary proof condition that is unattainable, disproportionate, waived, or unable to change the decision. Use evidence already within scope, or ask what result would change the decision. Preserve binding and operator-set conditions; if a safety or compliance restriction is unclear, ask which rule applies rather than assume clearance. | `heuristic-proof-burden.md` |
+| Repeats, keeps or removes verification by habit. Test the useful evidence, protection and lifecycle cost; preserve binding checks unless the responsible authority changes them. | `pattern-verification-selection.md` |
+| Uses an implementation to justify the need for that same design. Separate what exists from what the domain requires. | `heuristic-circular-grounding.md` |
+| Chooses local elegance by moving cost elsewhere. Count cost across the whole system. | `principle-compositional-simplicity.md` |
+| Accepts an option set whose choices share an unstated premise. Test that premise before choosing inside the set. | `heuristic-framed-menu.md` |
+| Counts convergence as independent confirmation. Check which evidence and assumptions the evaluators share. | `heuristic-redundant-corroboration.md` |
+| Infers authorship from prose quality, or treats an isolated phrase as proof of weak prose. Test at the level of the passage: what position does it carry, and what about this case selects these words here? Keep quality, provenance and integrity separate. | `principle-unearned-prose.md` |
+| Replaces a flagged phrase while retaining the rhetorical move it performed. Repair the move itself without losing a supported claim. | `heuristic-tell-laundering.md` |
+| Proposes new agent infrastructure without a grounded need, exploratory question or binding requirement. Seek the lowest sufficient layer; a bounded probe does not warrant permanent machinery. | `heuristic-harness-over-architecture.md` |
+| Selects axes that all favour a preselected option to make it look inevitable. Use the decision-maker's criteria and real trade-offs, or state the recommendation directly. A binding constraint can genuinely rule out an option. | `heuristic-loaded-comparison.md` |
+| Leaves possibilities undeveloped solely because no one prescribed them, or judges them by anticipated approval. Develop what serves the purpose within actual authority. | `principle-creative-emergence.md` |
+| Treats the risk of an irreversible external write as a reason to refuse a distinct, reversible local step. Separate the risks and permissions. Reversibility alone does not establish permission. | `heuristic-failure-cost-calibration.md` |
+| Treats one message as binding and another on the same channel as unverified without explaining the difference. Ask which source and role govern each claim. An instruction from the authority and a peer report do not become equivalent because they share a channel. | `principle-epistemological-grounding.md` |
+| Holds a scoped answer on an approval or release step for the larger goal. Ask which outcome of that condition would change this answer; keep unrelated conditions with the decisions they govern. | `heuristic-borrowed-blockers.md` |
+| Discards the evaluation frame after decomposition, or leaves interdependent work without the frame or changed commitment its next decision needs. | `heuristic-governing-context.md` |
+| Revises inside a frame the operator already rejected. | `heuristic-frame-abandonment.md` |
+| Commits to a proposal or option set without making its frame explicit and testing it. | `pattern-frame-inspection.md` |
+| Treats a source as authoritative for every claim it carries. Scope authority to the exact facet the source defines. | `principle-epistemological-grounding.md` |
+| Treats what survived a transition as automatically trustworthy. | `heuristic-survival-selection.md` |
+| Acknowledges a correction but keeps the old assumption downstream. | `heuristic-corrected-assumption-leakage.md` |
+| Cites tool output as evidence beyond what the tool observed. | `heuristic-verification-reach.md` |
