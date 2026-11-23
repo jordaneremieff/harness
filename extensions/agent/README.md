@@ -2304,13 +2304,21 @@ instead. These calls select an ordinary result, never a raw entry or a state
 note in place of its final report. In a shared answer group, the body
 continuation selects a request without declared work, if the group has one.
 
-A result notice names at most 16 references. When the recipient's receipt group
-continues, the notice text adds `Receipt references continue:` and one
-exact `agent_inspect` call with `receiptCursor`; ordinary primary details carry
-the same call as `receiptContinuation`. The communication value carries it in
-`metadata.receiptContinuation` whenever the group is incomplete.
-`omittedReferences` counts only the references cut from the supplied chunk. It
-does not count references on later pages.
+A result communication shows the first nonempty page of references for this
+recipient in retained order, up to 16. Fewer are shown if their encoded
+metadata would exceed the 24 KiB communication limit. Every reference has its
+exact submission ID. A request ID that does not fit the communication's text
+rules is omitted, not shortened. The first page can include earlier delivered
+submissions. `omittedReferences` counts submissions in the pending chunk that
+do not appear on this page. It is not a count of later pages.
+
+When the displayed request states differ from the first page, the notice also
+lists that page's submission IDs. If the group continues, `Receipt references
+continue:` gives the exact `agent_inspect` call for the next page. Ordinary
+primary details supply the first page in `receiptAssociation.results` on a
+normal delivery and the call in `receiptContinuation`. The native
+communication supplies the same call in `metadata.receiptContinuation`.
+The displayed page does not change which requests the delivery settles.
 
 #### Result pages
 

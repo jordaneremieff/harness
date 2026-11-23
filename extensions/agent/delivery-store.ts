@@ -722,8 +722,21 @@ function validateAnswerPage(page: Page, answerEntryId: number): void {
 		throw new Error("Receipt cursor page is absent or invalid");
 }
 
-/** One answer-list page, filtered to the selected recipient, with a frozen append-only tail. */
-function receiptReference(storageId: string, receipt: DeliveryReceipt) {
+/** Stable identity fields copied from a receipt before its transaction closes. */
+export type ReceiptPageMember = Pick<
+	DeliveryReceipt,
+	"conversationId" | "submissionId" | "requestId" | "entryId" | "answerEntryId"
+>;
+function receiptPageMember({
+	conversationId,
+	submissionId,
+	requestId,
+	entryId,
+	answerEntryId,
+}: ReceiptPageMember): ReceiptPageMember {
+	return { conversationId, submissionId, requestId, entryId, answerEntryId };
+}
+function receiptReference(storageId: string, receipt: ReceiptPageMember) {
 	return {
 		sessionId: canonicalIdentity(storageId, receipt.conversationId),
 		submissionId: receipt.submissionId,
@@ -790,11 +803,11 @@ async function receiptRange(
 	};
 }
 async function readReceiptRange(tx: Tx, range: ReceiptRange) {
-	const results: ReceiptReferencePage["results"] = [];
+	const members: ReceiptPageMember[] = [];
 	const positions: number[] = [];
 	const { position, page, limit } = range;
 	let offset = position.offset;
-	while (offset < limit && results.length < 16) {
+	while (offset < limit && members.length < 16) {
 		const key = page.refs[offset++];
 		const stored = await tx.doc(DeliveryRowDoc, key, "receipt");
 		const receipt = stored.value as DeliveryReceipt | null;
@@ -806,11 +819,11 @@ async function readReceiptRange(tx: Tx, range: ReceiptRange) {
 		)
 			throw new Error("Receipt group reference is invalid");
 		if (receipt.ownerId === position.recipient) {
-			results.push(receiptReference(position.storageId, receipt));
+			members.push(receiptPageMember(receipt));
 			positions.push(offset - 1);
 		}
 	}
-	return { results, offset, positions };
+	return { members, offset, positions };
 }
 function receiptNext(range: ReceiptRange, offset: number): string | null {
 	const { position, page } = range;
@@ -819,24 +832,29 @@ function receiptNext(range: ReceiptRange, offset: number): string | null {
 	if (nextPage === null) throw new Error("Receipt group ended before its captured tail");
 	return encodeReceiptCursor({ ...position, pageId: nextPage, offset: nextPage === position.pageId ? offset : 0 });
 }
-export async function receiptReferencePage(
+/** One recipient-filtered answer-list page. The selected references and their source fields share one cursor. */
+export async function receiptReferenceSlice(
 	tx: Tx,
 	storageId: string,
 	selected: DeliveryReceipt,
 	cursor?: string,
-	fits?: (page: ReceiptReferencePage) => boolean,
-): Promise<ReceiptReferencePage> {
+	fits?: (page: ReceiptReferencePage, members: readonly ReceiptPageMember[]) => boolean,
+): Promise<{ page: ReceiptReferencePage; members: ReceiptPageMember[] }> {
 	if (selected.answerEntryId === null) {
 		if (cursor !== undefined) throw new Error("An unanswered input has no receipt cursor");
 		return {
-			recipient: selected.ownerId,
-			results: [receiptReference(storageId, selected)],
-			complete: true,
-			next: null,
+			page: {
+				recipient: selected.ownerId,
+				results: [receiptReference(storageId, selected)],
+				complete: true,
+				next: null,
+			},
+			members: [receiptPageMember(selected)],
 		};
 	}
 	const range = await receiptRange(tx, storageId, selected, selected.answerEntryId, cursor);
-	const { results, offset, positions } = await readReceiptRange(tx, range);
+	const { members, offset, positions } = await readReceiptRange(tx, range);
+	const results = members.map((member) => receiptReference(storageId, member));
 	const pageAtOffset = (end: number): ReceiptReferencePage => {
 		const next = receiptNext(range, end);
 		return { recipient: selected.ownerId, results, complete: next === null, next };
@@ -844,11 +862,22 @@ export async function receiptReferencePage(
 	let page = pageAtOffset(offset);
 	// Resume at the first excluded match without reading the list again or changing its captured tail.
 	// Leave a singleton (or an empty scan with progress) for the caller to enforce its hard response limit.
-	while (fits !== undefined && results.length > 1 && !fits(page)) {
+	while (fits !== undefined && results.length > 1 && !fits(page, members)) {
+		members.pop();
 		results.pop();
 		page = pageAtOffset(positions[results.length]);
 	}
-	return page;
+	return { page, members };
+}
+
+export async function receiptReferencePage(
+	tx: Tx,
+	storageId: string,
+	selected: DeliveryReceipt,
+	cursor?: string,
+	fits?: (page: ReceiptReferencePage) => boolean,
+): Promise<ReceiptReferencePage> {
+	return (await receiptReferenceSlice(tx, storageId, selected, cursor, fits)).page;
 }
 
 export async function operationReceipts(

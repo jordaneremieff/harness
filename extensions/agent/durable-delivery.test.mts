@@ -1,5 +1,7 @@
 import { onStoredCommit } from "./commit-observation.ts";
 import { parseCommunication, parseCommunicationPassive } from "./communication.ts";
+import { AwaitDoc } from "./awaited-results.ts";
+import type { ReceiptContinuation } from "./result-schema.ts";
 import {
 	receiptSourceIdentity,
 	deliveryState as readRetainedDelivery,
@@ -1518,6 +1520,116 @@ for (const route of ["catalog", "same-storage"] as const)
 		assert.match(String(call.params.message), /Task is active/u);
 		assert.match(String(call.params.message), /Assess.*report progress.*let.*run.*steer.*abort/u);
 	});
+
+it("delivers the first fitting captured receipt references before their exact cursor", {
+	timeout: 15000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	const catalog = new AgentCatalog(root);
+	const owner = catalog.create({
+		cwd: root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
+		model: { provider: fixtureProvider, modelId: fixtureModelId },
+		thinkingLevel: "off",
+		ownerId: "owner",
+	});
+	const path = join(root, "source.sqlite");
+	const source = await openHost(path, randomUUID(), root);
+	const target = await openHost(owner.storagePath, owner.storageId, root);
+	t.after(() => source.close());
+	t.after(() => target.close());
+	const selected = await source
+		.root()
+		.submit({ type: "input", content: "answer", requestId: "selected" }, BACKGROUND_CONTEXT);
+	const settled = await selected.wait(BACKGROUND_CONTEXT);
+	assert.ok(settled.type === "input" && settled.status === "done");
+	const base = {
+		conversationId: settled.conversationId,
+		ownerId: owner.storageId,
+		status: "done" as const,
+		origin: "model" as const,
+		operationId: null,
+		answerEntryId: settled.answer,
+		reason: null,
+		answer: "answer",
+		answerTruncated: false,
+		answerLength: 6,
+	};
+	// Earlier pages have no match; pending submission order differs from captured answer-list order.
+	const receipts = Array.from({ length: 84 }, (_, i) => ({
+		...base,
+		ownerId: i < 64 ? "another-owner" : base.ownerId,
+		entryId: (400 + i) as EntryId,
+		submissionId: (200 - i) as SubmissionId,
+		requestId: i === 64 ? "not\u0000displayable" : `${String(i).padStart(2, "0")}${'"'.repeat(1022)}`,
+		acknowledged: i < 66,
+	}));
+	receipts.push({
+		...base,
+		entryId: settled.entry,
+		submissionId: settled.id,
+		requestId: "selected",
+		acknowledged: false,
+	});
+	const expected: number[] = receipts.filter((row) => row.ownerId === base.ownerId).map((row) => row.submissionId);
+	const pending = receipts.filter((row) => !row.acknowledged).map((row) => row.submissionId);
+	await source.harness.commit(async (tx) => {
+		for (const receipt of receipts) await storeDeliveryRow(tx, "receipt", receipt, true);
+	}, BACKGROUND_CONTEXT);
+	const calls = eventLog<SubmitRecord>();
+	const watcher = startDurableDelivery({
+		host: source,
+		metadata: sourceMetadata(root, source.storageId, path),
+		catalog,
+		signal: new AbortController().signal,
+		acquire: async () => fakeTarget(target, calls),
+	});
+	t.after(() => watcher.close());
+	await calls.waitForCount(1);
+	const params = calls[0].params;
+	await waitForDelivery(
+		source,
+		async () => (await deliveryState(source))?.receipts[String(settled.id)]?.acknowledged === true,
+	);
+	const admission = await target.harness.snapshot(AwaitDoc, BACKGROUND_CONTEXT);
+	const value = parseCommunication(
+		admission?.provenance.find((item) => item.requestId === params.requestId)?.communicationIntent?.value,
+	);
+	assert.ok(value?.kind === "result", "the recipient must retain a valid first page after timestamp assignment");
+	assert.ok(
+		parseCommunication({ ...value, recordedAt: Number.MAX_SAFE_INTEGER }),
+		"the receiver's timestamp still fits",
+	);
+	const refs = value.metadata.references;
+	assert.ok(refs.length > 0 && refs.length < 16, "large legal request IDs shorten the page without dropping identity");
+	assert.equal(refs[0].requestId, undefined);
+	assert.equal(refs[0].entryId, "464");
+	assert.equal(refs[1].requestId, `65${'"'.repeat(1022)}`);
+	const ids = refs.map((ref) => ref.submissionId);
+	assert.deepEqual(ids, expected.slice(0, ids.length));
+	assert.ok(
+		String(params.message).includes(
+			`First receipt page (submission IDs): ${ids.join(", ")}\n\nReceipt references continue: ${JSON.stringify(value.metadata.receiptContinuation)}`,
+		),
+	);
+	assert.equal(value.metadata.omittedReferences, pending.filter((id) => !ids.includes(id)).length);
+	assert.deepEqual(
+		(params.deliveredResults as { submissionId: number }[]).map((ref) => ref.submissionId).sort((a, b) => a - b),
+		pending.toSorted((a, b) => a - b),
+	);
+	let call = value.metadata.receiptContinuation;
+	assert.equal(call?.submissionId, settled.id);
+	while (call) {
+		const { tool: _tool, ...args } = call;
+		const page = (await source.request("inspect", args)) as {
+			receiptGroup: { results: { submissionId: number }[]; next: ReceiptContinuation | null };
+		};
+		ids.push(...page.receiptGroup.results.map((ref) => ref.submissionId));
+		call = page.receiptGroup.next ?? undefined;
+	}
+	assert.deepEqual(ids, expected);
+});
 
 it("routes a receipt and a report only after the target admits them", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);

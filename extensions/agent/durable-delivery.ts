@@ -27,6 +27,7 @@ import {
 	COMMUNICATION_BODY_BYTES,
 	COMMUNICATION_VALUE_BYTES,
 	communicationSerializedBytes,
+	communicationRequestId,
 	parseCommunication,
 	parseCommunicationPassive,
 	type Communication,
@@ -72,6 +73,8 @@ import {
 	receiptSourceIdentity,
 	receiptDeliveryRequestId,
 	receiptReferencePage,
+	receiptReferenceSlice,
+	type ReceiptPageMember,
 	snapshotReceipt,
 	checkInFallback,
 	currentCheckInReport,
@@ -215,7 +218,7 @@ type ReceiptRow = {
 	readonly kind: "receipt";
 	readonly receipt: DeliveryReceipt;
 	readonly receipts: DeliveryReceipt[];
-	receiptGroup?: ReceiptReferencePage;
+	receiptGroup?: ReceiptReferencePage & { members: ReceiptPageMember[] };
 	groupDecision?: { wake: boolean; onlyNotes: boolean; result?: ResultReference };
 	displayReason?: string;
 	readonly deliveredTo: Set<string>;
@@ -226,12 +229,17 @@ type DeliveryRow =
 	| { readonly kind: "report"; readonly report: DeliveryReport; readonly deliveredTo: Set<string> };
 
 /** Structured source facts are captured independently of transport prose. */
-function receiptCommunication(row: ReceiptRow, host: DurableHost): Communication {
+function receiptCommunication(
+	row: ReceiptRow,
+	storageId: string,
+	group: ReceiptReferencePage,
+	members: readonly ReceiptPageMember[],
+): Communication {
 	const receipt = row.receipt;
 	return {
 		format: "agent.communication/1",
 		kind: "result",
-		sender: { identity: host.identity(receipt.conversationId) },
+		sender: { identity: canonicalIdentity(storageId, receipt.conversationId) },
 		body: {
 			text: inlineAnswer(receipt) ?? row.displayReason ?? receipt.reason ?? "",
 			complete: receipt.answerTruncated === false,
@@ -240,15 +248,17 @@ function receiptCommunication(row: ReceiptRow, host: DurableHost): Communication
 		recordedAt: 0,
 		metadata: {
 			status: receipt.status,
-			references: row.receipts.slice(0, 16).map((member) => ({
+			references: members.map((member) => ({
 				submissionId: member.submissionId,
-				requestId: member.requestId,
+				...(communicationRequestId(member.requestId) ? { requestId: member.requestId } : {}),
 				...(member.entryId === null ? {} : { entryId: String(member.entryId) }),
 				...(member.answerEntryId === null ? {} : { answerEntryId: String(member.answerEntryId) }),
 			})),
-			omittedReferences: Math.max(0, row.receipts.length - 16),
+			omittedReferences: row.receipts.filter(
+				(item) => !members.some((member) => member.submissionId === item.submissionId),
+			).length,
 			...(receipt.reason === null ? {} : { reason: row.displayReason ?? receipt.reason }),
-			...receiptGroupContinuation(row, host.storageId),
+			...receiptGroupContinuation(row, storageId, group.next),
 		},
 	};
 }
@@ -301,7 +311,11 @@ function reportCommunication(report: DeliveryReport): Communication | undefined 
 function deliveryCommunication(row: DeliveryRow, host: DurableHost): Communication | undefined {
 	try {
 		let value: Communication | undefined =
-			row.kind === "receipt" ? receiptCommunication(row, host) : reportCommunication(row.report);
+			row.kind === "report"
+				? reportCommunication(row.report)
+				: row.receiptGroup
+					? receiptCommunication(row, host.storageId, row.receiptGroup, row.receiptGroup.members)
+					: undefined;
 		if (value === undefined) return undefined;
 		let text = "";
 		let bytes = 0;
@@ -315,7 +329,7 @@ function deliveryCommunication(row: DeliveryRow, host: DurableHost): Communicati
 			...value,
 			body: { ...value.body, text, complete: value.body.complete && !value.body.redacted && text === value.body.text },
 		};
-		while (communicationSerializedBytes(value) > COMMUNICATION_VALUE_BYTES && value.body.text.length > 0) {
+		while (!communicationFits(value) && value.body.text.length > 0) {
 			const points: string[] = Array.from(value.body.text);
 			value = {
 				...value,
@@ -328,6 +342,13 @@ function deliveryCommunication(row: DeliveryRow, host: DurableHost): Communicati
 	}
 }
 
+/** Receipt admission replaces the producer's zero timestamp with the receiver's clock. */
+function communicationFits(value: Communication) {
+	return (
+		communicationSerializedBytes(value.kind === "result" ? { ...value, recordedAt: Number.MAX_SAFE_INTEGER } : value) <=
+		COMMUNICATION_VALUE_BYTES
+	);
+}
 function deliveryCommunicationParams(row: DeliveryRow, host: DurableHost): { communication?: Communication } {
 	const communication = deliveryCommunication(row, host);
 	return communication === undefined ? {} : { communication };
@@ -523,8 +544,7 @@ function rowSourceId(metadata: HostMetadata, row: DeliveryRow, informationalReci
 		? source
 		: `${source}:informational:${createHash("sha256").update(informationalRecipient).digest("hex")}`;
 }
-function receiptGroupContinuation(row: ReceiptRow, storageId: string) {
-	const next = row.receiptGroup?.next;
+function receiptGroupContinuation(row: ReceiptRow, storageId: string, next = row.receiptGroup?.next) {
 	return next == null
 		? {}
 		: {
@@ -538,8 +558,16 @@ function receiptGroupContinuation(row: ReceiptRow, storageId: string) {
 			};
 }
 function receiptGroupContinuationText(row: ReceiptRow, storageId: string): string {
+	const page = row.receiptGroup;
+	if (!page) return "";
+	const shown = row.receipts.slice(0, RECEIPT_STATE_LINES);
+	const ids = page.results.map((member) => member.submissionId);
+	const same = ids.length === shown.length && ids.every((id, index) => id === shown[index].submissionId);
+	const prefix = same ? "" : `\n\nFirst receipt page (submission IDs): ${ids.join(", ")}`;
 	const continuation = receiptGroupContinuation(row, storageId).receiptContinuation;
-	return continuation === undefined ? "" : `\n\nReceipt references continue: ${JSON.stringify(continuation)}`;
+	return continuation === undefined
+		? prefix
+		: `${prefix}\n\nReceipt references continue: ${JSON.stringify(continuation)}`;
 }
 function receiptAssociation(metadata: HostMetadata, row: ReceiptRow): ReceiptAssociation {
 	return {
@@ -1979,11 +2007,25 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		else parked.set(identity, item.recipientRevision);
 		parkedRows[identity] = (parkedRows[identity] ?? 0) + 1;
 	}
+	const firstReceiptGroup = async (row: ReceiptRow) => {
+		// Empty physical pages can precede the first receipt for this recipient. The cursor pins the original tail.
+		let cursor: string | undefined;
+		for (;;) {
+			const { page, members } = await host.harness.commit(
+				(tx) =>
+					receiptReferenceSlice(tx, metadata.storageId, row.receipt, cursor, (candidate, receipts) => {
+						const value = receiptCommunication(row, metadata.storageId, candidate, receipts);
+						return communicationFits({ ...value, body: { ...value.body, text: "", complete: false } });
+					}),
+				BACKGROUND_CONTEXT,
+			);
+			if (members.length > 0) return { ...page, members };
+			if (page.next === null) throw new Error("Selected receipt is absent from its retained answer group");
+			cursor = page.next;
+		}
+	};
 	const prepareReceiptRow = async (row: ReceiptRow): Promise<void> => {
-		row.receiptGroup = await host.harness.commit(
-			(tx) => receiptReferencePage(tx, metadata.storageId, row.receipt),
-			BACKGROUND_CONTEXT,
-		);
+		row.receiptGroup = await firstReceiptGroup(row);
 		if (
 			!row.receiptGroup.complete ||
 			row.receiptGroup.results.some((ref) => !row.receipts.some((member) => member.submissionId === ref.submissionId))

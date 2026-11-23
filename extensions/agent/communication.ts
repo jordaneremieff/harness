@@ -144,6 +144,10 @@ function textFits(value: string, maximum: number, body = false): boolean {
 	}
 	return true;
 }
+/** A submission ID identifies the request even when its optional text ID cannot enter a communication. */
+export function communicationRequestId(value: string): boolean {
+	return value.length > 0 && textFits(value, 1024);
+}
 function validValue(value: Communication): boolean {
 	if (
 		(value.body.redacted && value.body.complete) ||
@@ -172,7 +176,7 @@ function validValue(value: Communication): boolean {
 				(value.metadata.reason === undefined || textFits(value.metadata.reason, 1_024)) &&
 				value.metadata.references.every(
 					(reference) =>
-						(reference.requestId === undefined || textFits(reference.requestId, 1_024)) &&
+						(reference.requestId === undefined || communicationRequestId(reference.requestId)) &&
 						(reference.entryId === undefined || canonicalEntry(reference.entryId)) &&
 						(reference.answerEntryId === undefined || canonicalEntry(reference.answerEntryId)),
 				)

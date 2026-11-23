@@ -2686,10 +2686,9 @@ function communicationKind(value: Communication): string {
 }
 
 function communicationResultSubject(value: Extract<Communication, { kind: "result" }>): string {
-	const count = value.metadata.references.length + value.metadata.omittedReferences;
-	return record(value.metadata).receiptContinuation === undefined
-		? `${count} referenced submissions`
-		: `${count} reference${count === 1 ? "" : "s"} in this delivery chunk · more reference pages`;
+	const count = value.metadata.references.length;
+	const page = `${count} reference${count === 1 ? "" : "s"} shown`;
+	return value.metadata.receiptContinuation === undefined ? page : `${page} · more reference pages`;
 }
 
 /** Which thread or work the communication belongs to, in one bounded line. */

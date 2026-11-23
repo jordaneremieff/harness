@@ -282,7 +282,7 @@ describe("compact observation cards", () => {
 			const full = screen(renderCommunicationCard(value, theme, { expanded: true, ...cardKeys }));
 			assert.ok(full.includes(`Receipt continuation: ${receiptCall}`));
 			assert.ok(full.includes(`Answer continuation: ${answerCall}`));
-			assert.match(full, /references? in this delivery chunk · more reference pages/u);
+			assert.match(full, /1 reference shown · more reference pages/u);
 			assert.match(full, /further group pages have unknown size/u);
 			const renderer = compactCommunicationRenderer();
 			const component = renderer(
