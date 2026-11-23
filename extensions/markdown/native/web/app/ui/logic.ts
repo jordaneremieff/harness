@@ -304,6 +304,47 @@
 			side,
 		};
 	}
+	function uniqueStart(source: string, text: string) {
+		const start = source.indexOf(text);
+		return start >= 0 && source.indexOf(text, start + 1) < 0 ? start : undefined;
+	}
+	function capturePassage(source: string, range?: ReaderRange): ReaderPassageAnchor | undefined {
+		if (!range) return undefined;
+		const { start, end } = range;
+		if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > source.length || start >= end)
+			return undefined;
+		const text = source.slice(start, end);
+		const contexts: ReaderPassageAnchor["contexts"] = [];
+		function remember(before: string, after: string) {
+			if (contexts.some((c) => c.before === before && c.after === after)) return;
+			if (uniqueStart(source, before + text + after) !== undefined) contexts.push({ before, after });
+		}
+		remember("", "");
+		// Keep the line's own wording when adjacent lines change. Wider context also distinguishes
+		// identical lines under different headings without retaining a whole document per mark.
+		const before = source.slice(Math.max(0, start - 64), start);
+		const after = source.slice(end, end + 64);
+		const neighbourhood = (left: string, right: string) => {
+			if (left) remember(left, "");
+			if (right) remember("", right);
+			if (left && right) remember(left, right);
+		};
+		neighbourhood(before.slice(before.lastIndexOf("\n") + 1), after.split("\n", 1)[0]);
+		neighbourhood(before, after);
+		return { text, contexts };
+	}
+	function reanchorPassage(source: string, anchor?: ReaderPassageAnchor): ReaderRange | undefined {
+		if (!anchor) return undefined;
+		let start: number | undefined;
+		for (const { before, after } of anchor.contexts) {
+			const at = uniqueStart(source, before + anchor.text + after);
+			if (at === undefined) continue;
+			const candidate = at + before.length;
+			if (start !== undefined && start !== candidate) return undefined;
+			start = candidate;
+		}
+		return start === undefined ? undefined : { start, end: start + anchor.text.length };
+	}
 	api.uiLogic = {
 		stripPlacement,
 		contextMenuItems,
@@ -323,12 +364,8 @@
 			}
 			return index;
 		},
-		reanchorPassage(source, anchor, range) {
-			if (!anchor) return undefined;
-			if (range && source.slice(range.start, range.end) === anchor) return range;
-			const start = source.indexOf(anchor);
-			return start < 0 || source.indexOf(anchor, start + 1) >= 0 ? undefined : { start, end: start + anchor.length };
-		},
+		capturePassage,
+		reanchorPassage,
 		promptLabel: (state) =>
 			({
 				draft: "Ask about this passage",

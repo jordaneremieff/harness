@@ -37,15 +37,21 @@ declare global {
 		detail?: string;
 		retryable?: boolean;
 	}
+	interface ReaderPassageAnchor {
+		text: string;
+		/** Each context identified only this occurrence when the passage was selected. */
+		contexts: { before: string; after: string }[];
+	}
 	interface ReaderComment {
 		text: string;
 		quote?: string;
-		sourceAnchor?: string;
+		sourceAnchor?: ReaderPassageAnchor;
 		range?: ReaderRange;
 	}
 	interface ReaderThread {
 		threadId: string;
 		quote?: string;
+		sourceAnchor?: ReaderPassageAnchor;
 		range?: ReaderRange;
 		pendingComment?: ReaderComment;
 		comments?: ReaderComment[];
@@ -120,7 +126,8 @@ declare global {
 		currentHeading(rows: { start: number; top: number }[], threshold: number): number;
 		promptTransition(old: ReaderAskState, next: ReaderAskState): ReaderAskState;
 		promptLabel(state: ReaderAskState): string;
-		reanchorPassage(source: string, anchor?: string, range?: ReaderRange): ReaderRange | undefined;
+		capturePassage(source: string, range?: ReaderRange): ReaderPassageAnchor | undefined;
+		reanchorPassage(source: string, anchor?: ReaderPassageAnchor): ReaderRange | undefined;
 		diffWords(oldText: string, newText: string): ReaderDiffPart[] | null;
 		changeContext(
 			source: string,

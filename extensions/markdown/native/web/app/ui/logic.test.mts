@@ -10,27 +10,61 @@ const logic = reader.uiLogic;
 const key = (key: string, writing = false, extra: Partial<ReaderKey> = {}, input = false) =>
 	logic.keyCommand({ key, metaKey: true, ...extra }, { writing, input });
 
-test("pending comments preserve an exact range or recover a single occurrence", () => {
-	const exact = { start: 4, end: 7 };
-	assert.equal(logic.reanchorPassage("one one", "one", exact), exact);
-	const recovered = logic.reanchorPassage("😀 then one", "one", exact);
-	assert.equal(recovered?.start, 8);
-	assert.equal(recovered?.end, 11);
-	assert.equal(logic.reanchorPassage("one one", "one", { start: 2, end: 5 }), undefined);
-	assert.equal(logic.reanchorPassage("aaa", "aa"), undefined);
-	assert.equal(logic.reanchorPassage("changed", "one", exact), undefined);
-	assert.equal(logic.reanchorPassage("whole document", undefined, exact), undefined);
+function passage(source: string, text: string, start: number) {
+	const anchor = logic.capturePassage(source, { start, end: start + text.length });
+	assert.equal(anchor?.text, text);
+	return anchor;
+}
+
+test("a repeated selection follows its local source, not a different occurrence at its old offset", () => {
+	const source = "A: OK\nB: OK\nC: OK";
+	const anchor = passage(source, "OK", source.indexOf("B: ") + 3);
+	const revised = `X: OK\n${source}`;
+	const start = revised.indexOf("B: ") + 3;
+	assert.deepEqual({ ...logic.reanchorPassage(revised, anchor) }, { start, end: start + 2 });
 });
 
-test("a formatted passage re-anchors with its source rather than its rendered quote", () => {
-	const source = "Start **bold** and `code`.\n\nNext block.";
-	const old = { start: 0, end: source.length };
-	const anchor = source.slice(old.start, old.end);
-	const prefix = "# Heading\n\n";
-	assert.equal(logic.reanchorPassage(source, anchor, old), old);
-	const moved = logic.reanchorPassage(prefix + source, anchor, old);
-	assert.equal(moved?.start, prefix.length);
-	assert.equal(moved?.end, prefix.length + source.length);
+test("a selected line retains its identity when both adjacent paragraphs change", () => {
+	const source = "Stage one: wait\nStage two: wait\nStage three: wait";
+	const revised = "🎈 Prep: wait\nStage two: wait\nFinish: wait";
+	const anchor = passage(source, "wait", source.indexOf("two: ") + 5);
+	const start = revised.indexOf("two: ") + 5;
+	assert.deepEqual({ ...logic.reanchorPassage(revised, anchor) }, { start, end: start + 4 });
+});
+
+test("deleting one repeat never relocates its mark to the sole surviving quote", () => {
+	const source = "left\nstatus: OK\nright\nstatus: OK";
+	const anchor = passage(source, "OK", source.lastIndexOf("OK"));
+	assert.equal(logic.reanchorPassage(source.slice(0, source.indexOf("right")), anchor), undefined);
+});
+
+test("indistinguishable copies, overlapping occurrences and conflicting neighbours leave no mark", () => {
+	const source = "left word right";
+	const anchor = passage(source, "word", 5);
+	assert.equal(logic.reanchorPassage(`${source}\n${source}`, anchor), undefined);
+	assert.equal(logic.reanchorPassage("left word west\neast word right", anchor), undefined);
+	assert.equal(logic.reanchorPassage("aaa", passage("aa", "aa", 0)), undefined);
+});
+
+test("a rendered quote need not equal the exact Markdown in the UTF-16 range", () => {
+	const text = "**bold** and `🎈`";
+	const anchor = passage(`Start: ${text}`, text, 7);
+	const prefix = "😀 new start: ";
+	const moved = logic.reanchorPassage(prefix + text, anchor);
+	assert.deepEqual({ ...moved }, { start: prefix.length, end: prefix.length + text.length });
+	assert.equal(logic.reanchorPassage(`${prefix}bold and 🎈`, anchor), undefined);
+});
+
+test("only a nonempty in-bounds source range creates a passage anchor", () => {
+	for (const range of [
+		undefined,
+		{ start: -1, end: 2 },
+		{ start: 0, end: 9 },
+		{ start: 1.5, end: 2 },
+		{ start: 1, end: 1 },
+	])
+		assert.equal(logic.capturePassage("test", range), undefined);
+	assert.equal(logic.reanchorPassage("test", undefined), undefined);
 });
 
 test("the mirrored Mac keys select one command for each context", () => {
