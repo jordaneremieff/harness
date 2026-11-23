@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { toolDisplay } from "./display.ts";
 import configExtension from "./index.ts";
 
 type Tool = {
@@ -25,9 +26,11 @@ test("ordinary tools run the shared backend with the session's own controls", { 
 	const commands: string[] = [];
 	const handlers = new Map<string, ((event: unknown, ctx: unknown) => unknown)[]>();
 	const contributions: unknown[] = [];
+	const displays: unknown[] = [];
 	let active = ["read", "bash"];
 	const events = createEventBus();
 	events.on("durable:contribution", (value) => contributions.push(value));
+	events.on("harness:tool-display:publish", (value) => displays.push(value));
 	const pi = {
 		events,
 		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
@@ -62,6 +65,16 @@ test("ordinary tools run the shared backend with the session's own controls", { 
 		assert.deepEqual([...tools.keys()], ["config_find", "config_get", "config_edit", "config_tools"]);
 		assert.deepEqual(commands, ["config"]);
 		assert.equal(contributions.length, 1);
+		assert.deepEqual(displays, [toolDisplay()]);
+		const [presentation] = toolDisplay().tools;
+		const { renderCall, renderResult } = tools.get("config_edit") as Tool & typeof presentation;
+		assert.equal(renderCall, presentation.renderCall);
+		assert.equal(renderResult, presentation.renderResult);
+		for (const name of ["config_find", "config_get", "config_tools"])
+			assert.equal(Object.hasOwn(tools.get(name) as object, "renderCall"), false);
+		events.emit("harness:tool-display:request", { version: 2 });
+		events.emit("harness:tool-display:request", { version: 1 });
+		assert.deepEqual(displays, [toolDisplay(), toolDisplay()]);
 		for (const handler of handlers.get("session_start") ?? []) await handler({ reason: "startup" }, ctx);
 
 		const get = await call("config_get", { ids: ["pi:/theme"] });
@@ -95,6 +108,9 @@ test("ordinary tools run the shared backend with the session's own controls", { 
 		assert.deepEqual(bad.value.missing, ["nonsense"]);
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) await handler({ reason: "quit" }, ctx);
+		const displayCount = displays.length;
+		events.emit("harness:tool-display:request", { version: 1 });
+		assert.equal(displays.length, displayCount);
 		for (const [key, value] of Object.entries(saved)) {
 			if (value === undefined) delete process.env[key];
 			else process.env[key] = value;

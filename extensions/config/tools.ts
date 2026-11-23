@@ -12,8 +12,9 @@ import {
 	union,
 	unknown,
 } from "@earendil-works/pi-schema";
+import { EDIT_TOOL_NAME, type EditDisplayDetails } from "./display.ts";
 import type { ConfigBackend } from "./operations.ts";
-import type { Change, EditRequest, Entry } from "./protocol.ts";
+import type { Change, ChangeResult, DocumentResult, EditRequest, EditResult, Entry } from "./protocol.ts";
 
 const id = str({
 	minLength: 3,
@@ -121,11 +122,64 @@ function boundedEntry(entry: Entry & { applyState?: unknown }) {
 	if (copy.session?.value !== undefined) copy.session.value = trim(copy.session.value) as never;
 	return copy;
 }
-export function text(value: unknown) {
-	let body = JSON.stringify(value);
-	if (Buffer.byteLength(body) > OUTPUT_BYTES)
-		body = JSON.stringify({ error: `The result exceeds ${OUTPUT_BYTES} bytes; request fewer ids or a smaller page.` });
-	return [{ type: "text" as const, text: body }];
+function changeReadback(change: ChangeResult, saved: boolean): string[] {
+	const lines = change.problems.map((problem) => `${change.id}: ${problem}`);
+	if (saved && change.status === "ok") {
+		const application =
+			change.apply?.state === "applied"
+				? "The loaded session value matches the resolved value. Some Pi settings take effect only in a new process."
+				: change.apply?.text;
+		lines.push(`${change.id}: ${application ?? "The session effect was not verified."}`);
+	}
+	return lines;
+}
+
+function documentReadback(document: DocumentResult, committed: boolean): string[] {
+	const written = committed && document.outcome === "committed";
+	return [
+		...(written && document.error ? [document.error] : []),
+		...document.changes.flatMap((change) => changeReadback(change, written && !document.error)),
+	];
+}
+
+export function describeConfigEdit(result: EditResult): NonNullable<EditDisplayDetails["edit"]> {
+	const lines = result.documents.flatMap((document) => documentReadback(document, result.mode === "commit"));
+	if (result.summary) lines.unshift(result.summary);
+	return { mode: result.mode, outcome: result.outcome, lines: [...new Set(lines)] };
+}
+
+export async function executeConfigTool<T>(
+	name: string,
+	run: () => T | Promise<T>,
+	describe?: (result: T) => NonNullable<EditDisplayDetails["edit"]>,
+) {
+	const details: { summary: string } & EditDisplayDetails = { summary: name };
+	try {
+		const result = await run();
+		const serialized = JSON.stringify(result);
+		const limited = Buffer.byteLength(serialized) > OUTPUT_BYTES;
+		const body = limited
+			? JSON.stringify({ error: `The result exceeds ${OUTPUT_BYTES} bytes; request fewer ids or a smaller page.` })
+			: serialized;
+		if (describe) {
+			details.edit = describe(result);
+			if (limited) details.outputLimited = true;
+		}
+		return { content: [{ type: "text" as const, text: body }], details };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		const serialized = JSON.stringify({ error: message });
+		const limited = Buffer.byteLength(serialized) > OUTPUT_BYTES;
+		const diagnostic = limited
+			? `The result exceeds ${OUTPUT_BYTES} bytes; request fewer ids or a smaller page.`
+			: message;
+		if (name === EDIT_TOOL_NAME) details.diagnostic = diagnostic;
+		return {
+			content: [{ type: "text" as const, text: JSON.stringify({ error: diagnostic }) }],
+			details,
+			isError: true,
+		};
+	}
 }
 
 export function runFind(backend: ConfigBackend, input: FindInput) {

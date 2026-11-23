@@ -9,6 +9,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createEventBus, SettingsManager } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
+import { toolDisplay } from "./display.ts";
 import { configContribution } from "./durable.ts";
 
 test("Durable config tools use the shared backend and never replay an edit", { timeout: 20000 }, async () => {
@@ -29,11 +30,15 @@ test("Durable config tools use the shared backend and never replay an edit", { t
 	const close: (() => void | Promise<void>)[] = [];
 	try {
 		const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
-		const extension = configContribution(
+		const contribution = configContribution(
 			fileURLToPath(new URL("./index.ts", import.meta.url)),
 			createEventBus(),
 			() => {},
-		).create({
+		);
+		assert.deepEqual(contribution.display, { version: 1, entry: "./display.ts", export: "toolDisplay" });
+		const presentation = await import(new URL(contribution.display.entry, import.meta.url).href);
+		assert.deepEqual(presentation[contribution.display.export](), toolDisplay());
+		const extension = contribution.create({
 			durable: Durable,
 			agentDir,
 			cwd,
@@ -82,7 +87,7 @@ test("Durable config tools use the shared backend and never replay an edit", { t
 				assert.equal(block?.role, "toolResult");
 				const part = block.content[0];
 				assert.equal(part.type, "text");
-				return { error: block.isError, value: JSON.parse(part.text) };
+				return { error: block.isError, value: JSON.parse(part.text), details: block.details };
 			});
 		const [find, get, edit, tools] = results;
 		assert.equal(find.value.rows[0].id, "pi:/hideThinkingBlock");
@@ -90,6 +95,20 @@ test("Durable config tools use the shared backend and never replay an edit", { t
 		assert.equal(get.value.context.host.kind, "durable");
 		assert.equal(edit.error, false);
 		assert.equal(edit.value.outcome, "committed", edit.value.summary);
+		assert.deepEqual(find.details, { summary: "config_find" });
+		assert.deepEqual(edit.details, {
+			summary: "config_edit",
+			edit: {
+				mode: "commit",
+				outcome: "committed",
+				lines: [
+					edit.value.summary,
+					...edit.value.documents.flatMap((document: (typeof edit.value.documents)[number]) =>
+						document.changes.map((change: (typeof document.changes)[number]) => `${change.id}: ${change.apply.text}`),
+					),
+				],
+			},
+		});
 		const pi = edit.value.documents.find((item: { document: string }) => item.document === "pi-global");
 		assert.equal(pi.changes[0].apply.state, "pending-restart");
 		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "settings.json"), "utf8")), {

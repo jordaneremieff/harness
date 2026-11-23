@@ -9,17 +9,20 @@ import {
 	SettingsManager,
 	VERSION,
 } from "@earendil-works/pi-coding-agent";
-import { readConfigBuild, ConfigUpdater } from "./app-update.ts";
+import { ConfigUpdater, readConfigBuild } from "./app-update.ts";
 import { ConfigBridge } from "./bridge.ts";
 import type { ConfigHost } from "./catalogue.ts";
 import { commandHelp, commandInput, completions, openConfig } from "./command.ts";
+import { EDIT_TOOL_NAME, toolDisplay } from "./display.ts";
 import { configContribution } from "./durable.ts";
 import { ConfigBackend } from "./operations.ts";
 import { publishSettings, readSettings } from "./settings.ts";
 import {
 	DESCRIPTIONS,
+	describeConfigEdit,
 	type EditInput,
 	EditParameters,
+	executeConfigTool,
 	type FindInput,
 	FindParameters,
 	type GetInput,
@@ -31,7 +34,6 @@ import {
 	runTools,
 	type ToolsInput,
 	ToolsParameters,
-	text,
 } from "./tools.ts";
 
 const singleLine = (value: string) => value.replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 1024);
@@ -39,7 +41,18 @@ const singleLine = (value: string) => value.replace(/[\p{Cc}\p{Cf}]/gu, " ").sli
 export default function configExtension(pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
 	const stopSettings = publishSettings(pi.events, { agentDir });
-	pi.events.emit("durable:contribution", configContribution(fileURLToPath(import.meta.url), pi.events, stopSettings));
+	const display = toolDisplay();
+	const [editRenderer] = display.tools;
+	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
+	const stopDisplay = pi.events.on("harness:tool-display:request", (request) => {
+		if (request && typeof request === "object" && "version" in request && request.version === 1) publishDisplay();
+	});
+	const stopPublishers = () => {
+		stopSettings();
+		stopDisplay();
+	};
+	publishDisplay();
+	pi.events.emit("durable:contribution", configContribution(fileURLToPath(import.meta.url), pi.events, stopPublishers));
 
 	let context: ExtensionContext | undefined;
 	const host = (): ConfigHost => {
@@ -91,7 +104,7 @@ export default function configExtension(pi: ExtensionAPI): void {
 		if (ctx.mode === "tui") ctx.ui.setStatus("config", undefined);
 		bridge?.close();
 		bridge = undefined;
-		stopSettings();
+		stopPublishers();
 	});
 
 	const openPane = async (ctx: ExtensionContext, app: string, query: string | undefined) => {
@@ -153,20 +166,23 @@ export default function configExtension(pi: ExtensionAPI): void {
 			parameters: parameters as never,
 			async execute(_id, input, _signal, _update, ctx) {
 				context = ctx;
-				try {
-					return { content: text(await run(input as T)), details: { summary: name } };
-				} catch (error) {
-					return {
-						content: text({ error: error instanceof Error ? error.message : String(error) }),
-						details: { summary: name },
-						isError: true,
-					};
-				}
+				return executeConfigTool(name, () => run(input as T));
 			},
 		});
 	register<FindInput>("config_find", "Config", DESCRIPTIONS.find, FindParameters, (input) => runFind(backend, input));
 	register<GetInput>("config_get", "Config", DESCRIPTIONS.get, GetParameters, (input) => runGet(backend, input));
-	register<EditInput>("config_edit", "Config", DESCRIPTIONS.edit, EditParameters, (input) => runEdit(backend, input));
+	pi.registerTool({
+		...editRenderer,
+		name: EDIT_TOOL_NAME,
+		label: "Config",
+		description: DESCRIPTIONS.edit,
+		promptGuidelines: [GUIDANCE],
+		parameters: EditParameters,
+		async execute(_id, input: EditInput, _signal, _update, ctx) {
+			context = ctx;
+			return executeConfigTool(EDIT_TOOL_NAME, () => runEdit(backend, input), describeConfigEdit);
+		},
+	});
 	register<ToolsInput>("config_tools", "Config", DESCRIPTIONS.tools, ToolsParameters, (input) =>
 		runTools(backend, input),
 	);
