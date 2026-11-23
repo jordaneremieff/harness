@@ -899,27 +899,33 @@ export function renderCommandCall(value: unknown, theme: Theme, context: AgentCa
 }
 
 function inspectQualifier(args: Record<string, unknown>): { qualifier: string; hidden: boolean } {
-	const parts = [`view ${text(args.view) || "history"}`];
-	let hidden = false;
-	const push = (label: string, key: string, limit: number) => {
-		const value = text(args[key]);
-		if (!value) return;
-		parts.push(`${label} ${key.endsWith("Id") ? displayIdentity(value) : displayPreview(value, limit)}`);
-		hidden ||= value.length > limit;
-	};
-	push("entry", "entryId", 120);
-	push("query", "query", 120);
-	push("submission", "submissionId", 120);
-	push("operation", "operationId", 120);
-	push("source", "source", 40);
-	push("from", "fromId", 120);
-	for (const key of ["offset", "cursor", "limit"] as const) {
+	const parts = [args.view ? `view ${text(args.view)}` : "default view"];
+	if (args.finalReport === true) parts.push("final report");
+	const receiptPage = Boolean(text(args.receiptCursor));
+	if (receiptPage) parts.push("receipt references page");
+	for (const [label, key] of [
+		["entry", "entryId"],
+		["submission", "submissionId"],
+		["from", "fromId"],
+		["offset", "offset"],
+		["limit", "limit"],
+	]) {
 		const value = count(args[key]);
-		if (value !== undefined) parts.push(`${key} ${value}`);
-		else if (key === "limit" && args.view === "activity" && args.limit === undefined) parts.push("limit 4 (default)");
+		if (value !== undefined) parts.push(`${label} ${value}`);
 	}
-	if (text(args.continuation)) parts.push("continuation");
-	if (text(args.receiptCursor)) parts.push("receipt references page");
+	let hidden = receiptPage || args.cursor !== undefined;
+	for (const [label, key] of [
+		["query", "query"],
+		["source", "source"],
+		["request", "requestId"],
+		["operation", "operationId"],
+	]) {
+		const value = text(args[key]);
+		if (!value) continue;
+		parts.push(`${label} ${displayPreview(value, 120)}`);
+		hidden ||= value.length > 120;
+	}
+	if (args.cursor !== undefined) parts.push("continuation page");
 	return { qualifier: parts.join(" · "), hidden };
 }
 

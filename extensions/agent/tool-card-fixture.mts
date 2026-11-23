@@ -133,7 +133,7 @@ export const fixtures: Record<string, CardFixture> = {
 		},
 	},
 	agent_inspect: {
-		args: { sessionId: targetId, view: "result", submissionId: "405" },
+		args: { sessionId: targetId, view: "result", submissionId: 405 },
 		details: { view: "result", submissionId: 405, status: "done", answer: "Source review finished." },
 	},
 	agent_compact: {

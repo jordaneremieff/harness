@@ -539,16 +539,34 @@ describe("agent call cards", () => {
 		assert.match(list, /cwd \/srv\/work · limit 5 · continuation page/);
 		const inspect = screen(
 			renderInspectCall(
-				{ sessionId: "s", view: "search", query: "needle", source: "assistant", continuation: "dGV4dA" },
+				{
+					sessionId: "s",
+					view: "search",
+					query: "needle",
+					source: "assistant",
+					cursor: { cursor: null, skip: 0, scannedBytes: 0 },
+				},
 				theme,
 				context(),
 			),
 		);
 		assert.match(inspect, /view search · query needle · source assistant · continuation/);
+		const activity = screen(renderInspectCall({ sessionId: "s", view: "activity" }, theme, context()));
+		assert.match(activity, /view activity/u);
+		assert.doesNotMatch(activity, /limit/u, "ordinary primary and Durable activity have different default limits");
+		const call = (args: Record<string, unknown>) =>
+			screen(renderInspectCall({ sessionId: "s", ...args }, theme, context()), 240);
+		assert.match(call({ view: "exact", entryId: 83, offset: 0 }), /view exact · entry 83 · offset 0/u);
+		assert.match(call({ view: "history", fromId: 64, limit: 2 }), /from 64 · limit 2/u);
 		assert.match(
-			screen(renderInspectCall({ sessionId: "s", view: "activity" }, theme, context())),
-			/view activity · limit 4 \(default\)/,
+			call({ view: "result", submissionId: 23, requestId: "ask", finalReport: true, offset: 64 }),
+			/view result · final report · submission 23 · offset 64 · request ask/u,
 		);
+		assert.match(
+			call({ view: "result", operationId: "op", receiptCursor: "opaque" }),
+			/receipt references page · operation op/u,
+		);
+		assert.doesNotMatch(call({}), /view history/u, "the target determines the default view");
 		assert.match(screen(renderAbortCall({ sessionId: "s" }, theme, context())), /agent_abort · s/);
 		assert.match(
 			screen(renderCommandCall({ sessionId: "s", name: "reload", args: "--force" }, theme, context())),
