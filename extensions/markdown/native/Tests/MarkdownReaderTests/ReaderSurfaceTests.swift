@@ -217,7 +217,7 @@ import Testing
     @Test func hiddenBatchWritesResolveOnlyTheirIssuedDocumentAndLaunchingConversation() async throws {
         try await withSurface { surface, model, drafts in
             let workspace = EditorWorkspace(directory: drafts, store: nil)
-            func bind(_ conversation: String) {
+            @MainActor func bind(_ conversation: String) {
                 workspace.collaboration = CollaborationClient(configuration: CollaborationConfiguration(version: 1,
                     endpoint: URL(string: "http://127.0.0.1:1")!, token: "test", live: 3, conversation: conversation),
                     workspace: UUID(), document: UUID()) { _ in LiveResult(status: "error") }
