@@ -90,7 +90,7 @@ export function createDashboardToolDefinitions(
 			createFindToolDefinition(cwd),
 			createLsToolDefinition(cwd),
 			createPowerShellToolDefinition(cwd),
-		].map((definition) => [definition.name, definition]),
+		].map((definition) => [definition.name, definition as ToolDefinition] as const),
 	);
 	const agents = new Map(Object.entries(createAgentToolCards(rows)));
 	agents.set("agent_yield", ordinaryWorkCard("agent_yield", rows));

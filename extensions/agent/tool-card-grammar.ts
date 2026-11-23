@@ -12,7 +12,6 @@ export interface ToolCardGrammarContext
 		Partial<Pick<KeybindingHints, "keyHint">> {
 	readonly expanded: boolean;
 	readonly isError?: boolean;
-	readonly hideExpansionHint?: boolean;
 	readonly state?: {
 		grammarCall?: (width: number) => Disclosure;
 		grammarHasResult?: boolean;
@@ -97,7 +96,7 @@ function hint(
 	width: number,
 	clickable: boolean,
 ): string[] {
-	if (context.hideExpansionHint || (!disclosure.extra && !disclosure.lines)) return [];
+	if (!disclosure.extra && !disclosure.lines) return [];
 	const key = context.keyText("app.tools.expand");
 	if (!key && !clickable) return [];
 	const n = disclosure.lines;
@@ -249,7 +248,7 @@ export function toolResultCard(
 	const [first, ...following] = source.text.trimStart().split("\n");
 	const hasOutcome = oneLine(first ?? "") === outcome.text;
 	const remainder = hasOutcome ? following.join("\n") : source.text;
-	const body = bounded(partial ? "" : error ? remainder : (presentation.body ?? ""));
+	const body = bounded(partial ? "" : error && hasOutcome ? remainder : (presentation.body ?? ""));
 	const extra = bounded(partial ? "" : (presentation.expanded ?? ""));
 	const extraText = extra.text !== outcome.text && extra.text.trim() !== body.text.trim() ? extra.text : "";
 	const showSource = !["", body.text, extraText].some((part) => part.trim() === remainder.trim());

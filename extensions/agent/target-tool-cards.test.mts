@@ -44,9 +44,9 @@ const theme = {
 	getBgAnsi: () => "",
 	bold: (value: string) => value,
 } as unknown as Theme;
-const screen = (component: { render(width: number): readonly string[] }) =>
+const screen = (component: { render(width: number): readonly string[] }, width = 240) =>
 	component
-		.render(240)
+		.render(width)
 		.map((line) => stripVTControlCharacters(line).trimEnd())
 		.join("\n");
 const context = (overrides: Partial<AgentCardContext> = {}): AgentCardContext => ({
@@ -575,7 +575,7 @@ describe("human-readable agent targets", () => {
 				action: "read",
 			};
 			const state = {};
-			assert.equal(hintCount(screen(card.renderCall(args, theme, context({ state, argsComplete: false })))), 0);
+			assert.equal(hintCount(screen(card.renderCall(args, theme, context({ state, argsComplete: false })))), 1, name);
 			assert.ok(hintCount(screen(card.renderCall(args, theme, context({ state })))) <= 1);
 			const phases = [
 				{ ...cardKeys, expanded: false, isPartial: true },

@@ -503,7 +503,8 @@ describe("the state note card", () => {
 			);
 		assert.match(call({}).join("\n"), /1 more line, ctrl\+o to expand/u);
 		assert.doesNotMatch(call({ keyText: () => "" }).join("\n"), /to expand/u);
-		assert.doesNotMatch(call({ argsComplete: false }).join("\n"), /to expand/u);
+		assert.match(call({ argsComplete: false }).join("\n"), /1 more line, ctrl\+o to expand/u);
+		assert.match(call({ executionStarted: true }).join("\n"), /1 more line, ctrl\+o to expand/u);
 		assert.equal(
 			plain(row({ keyText: () => "" }, { ...details, note: "Short note." }).result?.render(100)).at(-2),
 			" ... (click to expand)",

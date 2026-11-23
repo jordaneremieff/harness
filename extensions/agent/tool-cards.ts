@@ -53,11 +53,9 @@ export type AgentCardLookup = (() => readonly AgentConversationSummary[]) & {
 	readonly modelFor?: (identity: string) => AgentConversationSummary["model"] | undefined;
 };
 
-/** Bytes/units bounds for one expanded display block. */
+/** Maximum UTF-16 code units retained for a displayed message body. */
 export const SOURCE_DISPLAY_LIMIT = 32_000;
-const MESSAGE_DISPLAY_LIMIT = 32_000;
 const NOTICE_PREVIEW_LINES = 3;
-const PREVIEW_UNITS = 600;
 
 /**
  * Card context: the subset of `ToolRenderContext` these renderers read. Pi
@@ -67,9 +65,7 @@ export interface AgentCardContext extends ToolCardGrammarContext {
 	readonly args?: unknown;
 	readonly lookup?: AgentCardLookup;
 	readonly state?: NonNullable<ToolCardGrammarContext["state"]> & {
-		callHint?: boolean;
 		compaction?: Record<string, unknown>;
-		compactFactsShown?: boolean;
 		observation?: Record<string, unknown>;
 		resultSeen?: unknown;
 	};
@@ -79,8 +75,6 @@ export interface AgentCardContext extends ToolCardGrammarContext {
 	readonly argsComplete?: boolean;
 	readonly isError?: boolean;
 	readonly lastComponent?: Component;
-	/** The dashboard owns disclosure and shows no navigation words under a collapsed card. */
-	readonly hideExpansionHint?: boolean;
 }
 
 export interface AgentToolCard {
@@ -115,35 +109,12 @@ export function displayPreview(value: string, limit: number): string {
 	return displayText(prefix).replace(/\s+/gu, " ").trim() + (value.length > prefix.length ? "…" : "");
 }
 
-/** Escape the source prefix; the truncation notice sits outside the display bound. */
-function boundedSource(value: string, limit = SOURCE_DISPLAY_LIMIT): string {
-	const prefix = displayPrefix(value, limit);
-	return (
-		displayText(prefix) +
-		(value.length > prefix.length
-			? `\n[Display limit: ${value.length - prefix.length} more UTF-16 code units. Full text remains in native history.]`
-			: "")
-	);
-}
-
 /** Pi owns the row background; clipping must close text styles without ending it. */
 function clipCardLine(line: string, width: number): string {
 	return truncateToWidth(line, Math.max(0, width), "…").replace(
 		/\x1b\[0m…\x1b\[0m$/u,
 		"…\x1b[22;23;24;25;27;28;29;39m",
 	);
-}
-
-class CardText extends Text {
-	private source = "";
-	expanded = false;
-	override setText(value: string): void {
-		this.source = value;
-		super.setText(value);
-	}
-	override render(width: number): readonly string[] {
-		return this.expanded ? super.render(width) : this.source.split("\n").map((line) => clipCardLine(line, width));
-	}
 }
 
 interface CardSections {
@@ -158,15 +129,12 @@ interface CardSections {
 	/** Peer cards build and show these lines only while expanded, globally or by a click on the card. */
 	readonly details?: () => readonly (string | Component)[];
 	readonly limit?: string;
-	readonly outcome?: readonly string[];
-	readonly hint?: string;
 	readonly previewLines?: number;
 }
 
 interface CardLayoutOptions {
 	readonly expanded: boolean;
-	readonly previous?: Component;
-	readonly peerPadding?: number;
+	readonly peerPadding: number;
 	readonly peerTitleColor?: "customMessageText";
 	/** Peer cards draw their own expansion hint below hidden lines. */
 	readonly keys?: Pick<KeybindingHints, "keyText"> & Partial<Pick<KeybindingHints, "keyHint">>;
@@ -216,20 +184,15 @@ function disclosureFor(message: object | undefined): CardDisclosure {
 	return store;
 }
 
-/** Tool parts inherit Pi's Box(1,1); custom-message renderers must supply that inner vertical padding. */
 /** The title line and the muted facts line; message cards draw their bracket label in Pi's label colour. */
 function cardHeader(sections: CardSections, theme: Theme, options: CardLayoutOptions): string[] {
-	const peer = options.peerPadding !== undefined;
 	const header: string[] = [];
 	const tag = sections.tag ? `${theme.fg("customMessageLabel", theme.bold(sections.tag))} ` : "";
 	const label = sections.label
-		? theme.fg(
-				peer ? (options.peerTitleColor ?? "text") : "accent",
-				` · ${displayText(sections.label).replace(/\s+/gu, " ").trim()}`,
-			)
+		? theme.fg(options.peerTitleColor ?? "text", ` · ${displayText(sections.label).replace(/\s+/gu, " ").trim()}`)
 		: "";
 	if (sections.title) {
-		const titleColor = peer ? (options.peerTitleColor ?? "text") : "toolTitle";
+		const titleColor = options.peerTitleColor ?? "text";
 		header.push(tag + theme.fg(titleColor, theme.bold(sections.title)) + label);
 	}
 	const metadata = sections.metadata
@@ -241,22 +204,8 @@ function cardHeader(sections: CardSections, theme: Theme, options: CardLayoutOpt
 }
 
 function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOptions): Component {
-	const peer = options.peerPadding !== undefined;
 	const header = cardHeader(sections, theme, options);
 	const content = sections.body ?? [];
-	if (!peer) {
-		const component = options.previous instanceof CardText ? options.previous : new CardText("", 0, 0);
-		component.expanded = options.expanded;
-		component.setText(
-			[
-				...header,
-				...content.filter((line): line is string => typeof line === "string"),
-				...(sections.outcome ?? []),
-				...(sections.hint ? [theme.fg("muted", sections.hint)] : []),
-			].join("\n"),
-		);
-		return component;
-	}
 	const box = new Box(options.peerPadding, 1, (line) =>
 		theme.bg(
 			"customMessageBg",
@@ -348,11 +297,6 @@ class PeerCardBody implements Component {
 	}
 }
 
-function expansionHint(keys: Pick<KeybindingHints, "keyText"> | undefined): string {
-	const key = keys?.keyText("app.tools.expand");
-	return key ? `... (${key} to expand)` : "... (expand for full details)";
-}
-
 /** The first visual lines of a body, with a blank line between paragraphs counted and blank lines at the end dropped. */
 function previewWindow(lines: readonly string[], limit: number): string[] {
 	const window = lines.slice(0, limit);
@@ -373,19 +317,6 @@ function peerHint(theme: Theme, keys: CardLayoutOptions["keys"], hidden: number)
 			? keys.keyHint("app.tools.expand", "to expand")
 			: theme.fg("dim", key) + theme.fg("muted", " to expand");
 	return theme.fg("muted", `... (${more}`) + action + theme.fg("muted", ")");
-}
-
-/** Calls own the hint before execution; results own it after execution starts. */
-function cardHint(context: AgentCardContext, part: "call" | "result", _subject: string): string {
-	if (context.hideExpansionHint) return "";
-	if (context.expanded) return "";
-	if (part === "call") {
-		const shown = context.executionStarted !== true && context.argsComplete !== false;
-		if (context.state) context.state.callHint = shown;
-		return shown ? expansionHint(context) : "";
-	}
-	if (context.state?.callHint && context.executionStarted !== true) return "";
-	return expansionHint(context);
 }
 
 function displayIdentity(identity: string): string {
@@ -457,20 +388,6 @@ function resultText(result: AgentToolResult<unknown>): string {
 
 function resultDetails(result: AgentToolResult<unknown>): Record<string, unknown> {
 	return record(firstDefined(record(result.details).structuredContent, result.structuredContent, result.details));
-}
-
-function resultPreview(value: string, limit = PREVIEW_UNITS): string {
-	let output = value;
-	try {
-		const parsed = JSON.parse(value);
-		if (parsed !== null && typeof parsed === "object") {
-			const details = record(parsed);
-			output = text(record(details.error).message) || text(details.error) || text(details.reason) || "Result received";
-		}
-	} catch {
-		/* Plain output remains literal text. */
-	}
-	return displayText(displayPrefix(output, limit).split("\n").slice(0, 3).join("\n"));
 }
 
 function callIdentity(context: AgentCardContext): string {
@@ -931,32 +848,6 @@ export const renderSteerCall = bindCall("agent_steer");
 
 // --- Result cards ----------------------------------------------------------------
 
-function outcomeCard(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: AgentCardContext,
-	labels: { error: string; partial: string },
-	summarize: (details: Record<string, unknown>, theme: Theme, context: AgentCardContext) => string[] | undefined,
-	expandedLines: readonly string[] = [],
-): Component {
-	const details = resultDetails(result);
-	const output = resultText(result);
-	const lines: string[] = [];
-	if (context.isError === true) lines.push(theme.fg("error", labels.error));
-	else if (options.isPartial) lines.push(theme.fg("muted", labels.partial));
-	if (options.expanded) lines.push(...expandedLines, theme.fg("toolOutput", boundedSource(output)));
-	else {
-		const summary = summarize(details, theme, context);
-		if (summary) lines.push(...summary);
-		else lines.push(theme.fg(context.isError === true ? "error" : "toolOutput", resultPreview(output)));
-	}
-	return cardLayout({ body: lines, hint: options.expanded ? "" : cardHint(context, "result", "result") }, theme, {
-		expanded: options.expanded,
-		previous: context.lastComponent,
-	});
-}
-
 function muted(theme: Theme, value: string): string {
 	return theme.fg("muted", value);
 }
@@ -1285,16 +1176,6 @@ function runningSlots(live: Record<string, unknown>): Record<string, unknown>[] 
 		.filter((slot) => ["running", "pending", "sleeping", "waiting"].some((status) => status === slot.status));
 }
 
-function runningSlotLine(slot: Record<string, unknown>): string {
-	const label = slot.status === "sleeping" ? "Sleeping" : slot.status === "waiting" ? "Waiting" : "Running";
-	const name = text(slot.name);
-	const id = text(slot.callId);
-	const parts = [name ? `${label}: ${displayText(name)}` : label];
-	if (id) parts.push(`call ${displayIdentity(id)}`);
-	if (slot.status === "pending") parts.push("pending");
-	return parts.join(" · ");
-}
-
 function latestSavedResult(submissions: unknown, label = "Saved: "): string | undefined {
 	const rows = array(submissions)
 		.map(record)
@@ -1303,29 +1184,6 @@ function latestSavedResult(submissions: unknown, label = "Saved: "): string | un
 	if (!last) return undefined;
 	const id = count(last.id);
 	return `${label}${text(last.status)}${id === undefined ? "" : ` · submission ${id}`}`;
-}
-
-function retryLines(live: Record<string, unknown>, theme: Theme): string[] {
-	const lines: string[] = [];
-	const generation = record(record(live.generation).retry);
-	if (Object.keys(generation).length > 0)
-		lines.push(
-			theme.fg(
-				"warning",
-				`Provider retry${text(generation.error) ? `: ${displayPreview(text(generation.error), 200)}` : ""}`,
-			),
-		);
-	for (const value of array(live.compactions)) {
-		const retry = record(record(value).retry);
-		if (Object.keys(retry).length > 0)
-			lines.push(
-				theme.fg(
-					"warning",
-					`Compaction retry${text(retry.error) ? `: ${displayPreview(text(retry.error), 200)}` : ""}`,
-				),
-			);
-	}
-	return lines;
 }
 
 /** The newest text is named by its author: the agent's reply or the input it received. */
@@ -1340,76 +1198,6 @@ function providerBlockLines(block: unknown, theme: Theme, compact = false): stri
 		return [muted(theme, "Provider block unavailable: invalid native fact")];
 	const lines = compact ? providerBlockSummary(block) : [providerBlockText(block)];
 	return lines.map((line) => theme.fg("warning", displayText(line)));
-}
-function activityFacts(status: Record<string, unknown>, activity: string, current: string): string {
-	const inbox = record(status.inbox);
-	return [
-		activity ? `Activity: ${activity}` : "",
-		current ? `tool ${displayText(current)}` : "",
-		Array.isArray(inbox.items) ? `${inbox.items.length} pending` : "",
-		unplacedText(status),
-	]
-		.filter(Boolean)
-		.join(" · ");
-}
-
-function activityLines(status: Record<string, unknown>, readOnly: boolean, theme: Theme): string[] {
-	const lines = readOnly ? [muted(theme, "Read-only snapshot; live owner state unavailable")] : [];
-	if (status.providerBlock !== undefined) return [...lines, ...providerBlockLines(status.providerBlock, theme)];
-	const live = record(status.live);
-	const working = !readOnly && (status.busy === true || Object.keys(record(live.run)).length > 0);
-	const activity = working ? "working" : !readOnly && status.busy === false ? "idle" : "";
-	const running = readOnly ? [] : runningSlots(live);
-	const current = text(running.find((slot) => slot.status === "running")?.name);
-	const facts = activityFacts(status, activity, current);
-	if (facts) lines.push(muted(theme, facts));
-	for (const slot of running.slice(0, 4)) lines.push(muted(theme, runningSlotLine(slot)));
-	if (running.length > 4) lines.push(muted(theme, `${running.length - 4} more active tools`));
-	const lastText = text(status.lastText);
-	if (lastText)
-		lines.push(
-			theme.fg(
-				"toolOutput",
-				`${newestTextLabel(working, text(status.lastTextRole))}: ${displayPreview(lastText, 240)}`,
-			),
-		);
-	const saved = latestSavedResult(status.submissions);
-	if (saved) lines.push(muted(theme, saved));
-	if (!readOnly) lines.push(...retryLines(live, theme));
-	return lines;
-}
-
-/** Admitted inputs that are not yet in the conversation's context, with the age of the oldest one. */
-function unplacedText(status: Record<string, unknown>): string {
-	const unplaced = count(status.unplaced);
-	if (unplaced === undefined) return "";
-	const oldest = count(status.oldest);
-	if (unplaced === 0 || oldest === undefined) return `unplaced: ${unplaced}`;
-	const seconds = Math.floor(oldest / 1000),
-		minutes = Math.floor(seconds / 60);
-	const age =
-		seconds < 60
-			? `${seconds}s`
-			: minutes < 60
-				? `${minutes}m ${seconds % 60}s`
-				: `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-	return `unplaced: ${unplaced}, oldest: ${age}`;
-}
-
-function openWorkText(status: Record<string, unknown>): string {
-	const open = count(status.openWorkCount),
-		oldest = count(status.openWorkOldest);
-	if (open === undefined) return "";
-	if (open === 0 || oldest === undefined) return `work open: ${open}`;
-	const seconds = Math.floor(oldest / 1000),
-		minutes = Math.floor(seconds / 60);
-	const age =
-		seconds < 60
-			? `${seconds}s`
-			: minutes < 60
-				? `${minutes}m ${seconds % 60}s`
-				: `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-	return `work open: ${open}, oldest: ${age}`;
 }
 
 function snapshotLabel(identity: string, name: string, context: AgentCardContext): string {
@@ -1441,42 +1229,6 @@ function snapshotIdentityLines(
 	const configuration = resolvedModelLine(provider, modelId, thinking);
 	if (!hideModel && configuration) lines.push(muted(theme, configuration));
 	return lines;
-}
-
-function compactRecoveryLines(
-	status: Record<string, unknown>,
-	details: Record<string, unknown>,
-	theme: Theme,
-): string[] {
-	const lines: string[] = [];
-	const failure = record(status.runFailure);
-	if (typeof failure.reason === "string")
-		lines.push(
-			theme.fg(
-				"warning",
-				`Run failure: ${displayText(failure.reason)}${failure.reasonTruncated === true ? " [truncated]" : ""}${typeof failure.detail === "string" ? ` · ${displayText(failure.detail)}${failure.detailTruncated === true ? " [truncated]" : ""}` : ""}`,
-			),
-		);
-	if (typeof details.deliveryError === "string")
-		lines.push(
-			theme.fg(
-				"warning",
-				`Delivery error: ${displayText(details.deliveryError)}${details.deliveryErrorTruncated === true ? " [truncated]" : ""}`,
-			),
-		);
-	return lines;
-}
-
-function compactActivityFacts(status: Record<string, unknown>): string[] {
-	const queue = count(record(status.queue).inbox);
-	const timers = count(status.timers);
-	return [
-		liveActivity(status),
-		count(status.unplaced) === undefined && queue !== undefined ? cardinal(queue, "queued input") : "",
-		timers === undefined ? "" : cardinal(timers, "timer"),
-		unplacedText(status),
-		openWorkText(status),
-	].filter(Boolean);
 }
 
 function statusTimerFact(status: Record<string, unknown>): string {
@@ -1516,7 +1268,7 @@ function fullStatusActivityFacts(status: Record<string, unknown>, live: boolean,
 		statusUnplaced(status),
 		...running.map(statusToolFact),
 		lastText ? `${newestTextLabel(live && status.busy === true, text(status.lastTextRole))} · ${lastText}` : "",
-		latestSavedResult(status.submissions, "Saved result · "),
+		latestSavedResult(status.submissions, "Saved result · ") ?? "",
 		...(live ? statusRetryFacts(runtime) : []),
 	];
 }
@@ -1932,7 +1684,7 @@ function diagnosticPresentation(details: Record<string, unknown>): ToolResultPre
 	const error = record(details.error);
 	const diagnostic = text(error.message) || text(details.error) || text(details.reason);
 	const [outcome, ...rest] = displayText(diagnostic).trim().split("\n");
-	return { outcome: outcome || undefined, expanded: rest.join("\n") };
+	return { outcome: outcome || undefined, body: rest.join("\n") };
 }
 
 function sendPresentation(
@@ -2019,13 +1771,8 @@ function compactConfiguration(facts: Record<string, unknown>): string {
 	return resolvedModelLine(text(facts.provider), text(facts.modelId), text(facts.thinkingLevel));
 }
 
-function compactFactLines(facts: Record<string, unknown>, showTarget: boolean): string[] {
-	const lines: string[] = [];
-	if (showTarget) {
-		if (compactTarget(facts)) lines.push(compactTarget(facts));
-		const configuration = compactConfiguration(facts);
-		if (configuration) lines.push(configuration);
-	}
+function compactFactLines(facts: Record<string, unknown>): string[] {
+	const lines = [compactTarget(facts), compactConfiguration(facts)].filter(Boolean);
 	const before = record(facts.before);
 	const tokens = count(before.tokens),
 		window = count(before.contextWindow),
@@ -2086,11 +1833,11 @@ function compactPresentation(
 			compactPlacement(details),
 			entry === undefined ? "" : `summary entry ${entry}`,
 			text(details.summarySizeError) ? `Summary size read failed: ${details.summarySizeError}` : "",
-			...compactFactLines(facts, context.state?.compactFactsShown !== true),
+			diagnostic.body,
+			...compactFactLines(facts),
 		]
 			.filter(Boolean)
 			.join("\n"),
-		expanded: diagnostic.expanded,
 	};
 }
 
@@ -2194,59 +1941,6 @@ function listPresentation(details: Record<string, unknown>): ToolResultPresentat
 	};
 }
 
-function profileRouteLines(profile: Record<string, unknown>, theme: Theme): string[] {
-	const omitted = count(profile.requestsOmitted) ?? 0;
-	return [
-		muted(
-			theme,
-			`Expertise: ${text(profile.expertise) ? "saved" : "empty"} · ${array(profile.requests).length} ${omitted > 0 ? "shown" : "active"} request routes`,
-		),
-		...(omitted > 0 ? [theme.fg("warning", `Request routes omitted: ${omitted}`)] : []),
-	];
-}
-function profileIdentityLines(
-	details: Record<string, unknown>,
-	profile: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-): string[] {
-	const model = record(profile.model);
-	const identity = text(profile.identity);
-	const sameName = headerHasName(identity, text(profile.name), context);
-	const sameModel = headerHasModel(
-		identity,
-		text(model.provider),
-		text(model.modelId),
-		text(profile.thinkingLevel),
-		context,
-	);
-	const configuration = resolvedModelLine(text(model.provider), text(model.modelId), text(profile.thinkingLevel));
-	return [
-		...(!sameName || details.outcome
-			? [
-					theme.fg(
-						details.outcome === "conflict" ? "warning" : "accent",
-						`${details.outcome === "conflict" ? "Profile conflict; no change" : details.outcome === "applied" ? "Profile saved" : "Profile"} · ${text(profile.handle) || text(profile.name) ? displayPreview(text(profile.handle) || text(profile.name), 160) : displayIdentity(text(profile.identity))}`,
-					),
-				]
-			: []),
-		...(!sameModel && configuration ? [muted(theme, configuration)] : []),
-	];
-}
-
-function profileLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
-	const profile = typeof details.outcome === "string" ? record(details.profile) : details;
-	if (typeof profile.revision !== "string" || typeof profile.role !== "string") return undefined;
-	return [
-		...profileIdentityLines(details, profile, theme, context),
-		muted(theme, `Role: ${displayPreview(text(profile.role), 240) || "(empty)"}`),
-		muted(
-			theme,
-			`Revision: ${displayIdentity(text(profile.revision))} · ${profile.live === true ? "live host" : "retained"}`,
-		),
-		...profileRouteLines(profile, theme),
-	];
-}
 function profileModelFact(profile: Record<string, unknown>, context: AgentCardContext): string {
 	const model = record(profile.model);
 	const provider = text(model.provider),
@@ -2320,11 +2014,10 @@ function finalReportCall(value: unknown): string {
 	return matchesSchema(FinalReportReadSchema, value) ? nextCall("agent_inspect", value) : "";
 }
 
-function inspectProviderFacts(block: unknown): string[] {
+function inspectProviderFacts(block: unknown, expanded: boolean): string[] {
 	if (block === undefined) return [];
-	return matchesSchema(ProviderBlockFactSchema, block)
-		? providerBlockSummary(block)
-		: ["Provider block unavailable: invalid native fact"];
+	if (!matchesSchema(ProviderBlockFactSchema, block)) return ["Provider block unavailable: invalid native fact"];
+	return expanded ? [providerBlockText(block)] : providerBlockSummary(block);
 }
 
 function resultPageTitle(details: Record<string, unknown>, args: Record<string, unknown>): string {
@@ -2368,7 +2061,7 @@ function inspectResultPresentation(
 	return {
 		outcome: `${resultPageTitle(details, args)}${status && status !== "unavailable" ? ` · ${status}` : ""}${continuation.length ? "; continuation available" : ""}`,
 		body: factLines([
-			...inspectProviderFacts(details.providerBlock),
+			...inspectProviderFacts(details.providerBlock, context.expanded),
 			text(details.reason),
 			...resultAnswerFacts(details, typeof args.receiptCursor === "string", read),
 		]),
@@ -2827,7 +2520,7 @@ function ordinaryMessageCard(
 export const renderAgentPeerMessage: MessageRenderer = (message, options, theme) => {
 	const details = record(message.details);
 	const source = authoredPeerBody(details, messageText(message.content));
-	const prefix = displayPrefix(source, MESSAGE_DISPLAY_LIMIT);
+	const prefix = displayPrefix(source, SOURCE_DISPLAY_LIMIT);
 	const body: (Component | string)[] = [];
 	if (details.liveOwner === false) body.push(theme.fg("warning", "No live recipient; this is a retained copy"));
 	if (details.saved === false && details.kind === "receipt") body.push(theme.fg("warning", "Receipt not saved"));
@@ -3118,7 +2811,6 @@ function observeResult(result: AgentToolResult<unknown>, context: AgentCardConte
 		state.observation = snapshot;
 		const compaction = record(details.compaction);
 		if (Object.keys(compaction).length && !state.compaction) state.compaction = compaction;
-		if (state.compaction && state.callHint !== undefined) state.compactFactsShown = true;
 	}
 	return snapshotFacts(context, snapshot);
 }
@@ -3236,7 +2928,7 @@ class StateNoteCard implements Component {
 		const { error, at, settled } = this.facts;
 		const head = error !== undefined ? "Turn did not end" : at !== undefined ? "Turn ended" : settled ? "" : "End turn";
 		const title = theme.fg("toolTitle", theme.bold(this.name));
-		return head ? title + " " + theme.fg(error === undefined ? "toolOutput" : "error", head) : title;
+		return head ? `${title} ${theme.fg(error === undefined ? "toolOutput" : "error", head)}` : title;
 	}
 	private metadata(groups: ReturnType<typeof noteRequestGroups>): string {
 		const { at, waiting, waitingOmitted } = this.facts;
@@ -3294,8 +2986,7 @@ class StateNoteCard implements Component {
 	}
 	private hint(theme: Theme, width: number, hiddenLines: number, details: boolean): string[] {
 		const context = this.context;
-		if ((!hiddenLines && !details) || context?.hideExpansionHint) return [];
-		if (!this.facts.settled && (context?.argsComplete === false || context?.executionStarted)) return [];
+		if (!hiddenLines && !details) return [];
 		const key = context?.keyText("app.tools.expand") ?? "";
 		if (!key && !this.facts.settled) return [];
 		const action = !key

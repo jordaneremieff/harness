@@ -104,6 +104,7 @@ for (const themeName of ["dark", "light"] as const) {
 				content: "First body line\nSecond body line\nThird body line\nFinal body line",
 				details: {
 					kind: "report",
+					operatorMessage: "First body line\nSecond body line\nThird body line\nFinal body line",
 					threadId: "source/thread",
 					threadTitle: `Parser contract ${"界é🙂".repeat(24)}`,
 					name: "Parser review",
@@ -182,8 +183,7 @@ for (const themeName of ["dark", "light"] as const) {
 				const line = hints[0];
 				for (const text of ["...", "expand"])
 					assert.equal(foregroundAt(line, line.indexOf(text)), muted, `${name} hint uses muted at ${text}`);
-				const keyColour: string = name === "agent_send" || name === "agent_status" ? dim : muted;
-				assert.equal(foregroundAt(line, line.indexOf("ctrl+o")), keyColour, `${name} hint key colour`);
+				assert.equal(foregroundAt(line, line.indexOf("ctrl+o")), dim, `${name} hint key colour`);
 			}
 			component.setExpanded(true);
 			assert.doesNotMatch(component.render(240).map(plain).join("\n"), /to expand/u);

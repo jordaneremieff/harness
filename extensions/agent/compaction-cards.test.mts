@@ -138,7 +138,7 @@ it("shows only observed other-agent configuration, context facts and retained su
 	cards.agent_compact.renderResult(result, { ...cardKeys, expanded: false, isPartial: false }, theme, ctx);
 	const text = `${screen(cards.agent_compact.renderCall(args, theme, ctx))}\n${screen(cards.agent_compact.renderResult(result, { ...cardKeys, expanded: false, isPartial: false }, theme, ctx))}`;
 	assert.match(text, new RegExp(`agent_compact ${identity}`));
-	assert.match(text, /Target: Other parser/u);
+	assert.match(text, /^Other parser$/mu);
 	assert.match(text, /provider\/model.*off/u);
 	assert.match(text, /48000 window before compaction/u);
 	assert.match(text, /150 characters in summary/u);

@@ -1105,19 +1105,23 @@ it("an agent_collaborate card uses the observed thread title and its receipt num
 				arguments: { action: "post", threadId: "storage/thread-1", message: "Body of the post" },
 			},
 		]),
-		result("done", "collab", "agent_collaborate", "posted", false, { threadId: "storage/thread-1", sequence: 25 }),
+		result("done", "collab", "agent_collaborate", "posted", false, {
+			threadId: "storage/thread-1",
+			sequence: 25,
+			deduped: false,
+		}),
 	];
 	const lookup = observedLookup({ threadTitle: (id) => (id === "storage/thread-1" ? "Density round" : undefined) });
 	const named = screen(
 		new AgentConversation(entries, "/work", tui, false, false, undefined, undefined, undefined, lookup),
 		120,
 	);
-	assert.match(named, /agent_collaborate · post · Density round/u);
-	assert.match(named, /Posted · #25/u);
+	assert.match(named, /agent_collaborate Density round\s+post\s+Body of the post/u);
+	assert.match(named, /Posted to thread · #25/u);
 	assert.doesNotMatch(named, /thread storage/u);
 	const unnamed = screen(new AgentConversation(entries, "/work", tui, false, false), 120);
-	assert.match(unnamed, /agent_collaborate · post · thread storage\/thread-1/u);
-	assert.match(unnamed, /Posted · #25/u);
+	assert.match(unnamed, /agent_collaborate (?:thread )?storage\/thread-1\s+post\s+Body of the post/u);
+	assert.match(unnamed, /Posted to thread · #25/u);
 });
 
 it("native thinking clicks retain choices only on the actual assistant instance", () => {
