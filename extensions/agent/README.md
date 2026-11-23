@@ -4222,9 +4222,9 @@ One classification controls delivery, status and retirement:
   whose native submission is absent. The delivery document retains the reason
   beside the row. The watcher never retries a terminal row.
 
-An unlinked intent remains pending for admission replay. Current admissions
-leave no unlinked intent; scheduled inputs and intents retained by earlier
-releases can. A replay with an absent conversation becomes terminal; transient
+An unlinked intent retained by an earlier release remains pending for
+admission replay. Current admissions, including fired timers, commit their
+intent with the native submission. A replay with an absent conversation becomes terminal; transient
 replay failures leave it pending. An unlinked `whenBusy: "reject"` intent with
 no native submission becomes terminal without a replay, because a refusal or
 admission of that mode holds only at its original moment. A check-in task of
