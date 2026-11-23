@@ -6,14 +6,17 @@ description: >
   for challenge. They can ask to challenge a named session's latest answer with
   just the session name and an optional objection. This also covers a challenge
   here, a reply to take elsewhere, or an explicit exchange with a peer. An
-  instinct that something is off is enough; they need not supply an argument.
+  instinct that something is off with a particular answer is enough; they need
+  not supply an argument.
   Do not initiate a challenge yourself. Do not use for a neutral verdict,
   a source investigation, code review, a session status check, dispatching
   a checker, or relaying permission.
 compatibility: >
   Uses the sibling corpus at ../../pillars when present and a local reference
   otherwise. Clipboard handoffs use clipboard_copy; named-session intake,
-  delivery and readback use agent-session tools when available.
+  delivery and readback use agent-session tools when available. Automatic
+  reply checks use Node.js, local Rex and managed background jobs in ordinary
+  interactive Pi; a reply-ready cue works without them.
 ---
 
 # Troll
@@ -22,7 +25,7 @@ Make the strongest truthful case for the operator's objection. Give the recipien
 
 ## Find the point at issue
 
-If the operator asks for an assessment here, answer here. If they aim the challenge at a Pi session, its name and any angle are the brief. Read [Named sessions](references/sessions.md) for lookup, review and return of the reply. They do not need to fetch the answer or write the argument first.
+If the operator asks for an assessment here, answer here. For a named Pi exchange, `troll <session name>` is enough; an objection is optional. Read [Named sessions](references/sessions.md) for lookup and handoff. For an operator-submitted round between ordinary interactive Pi sessions, follow [Return the reply](references/reply-hint.md) before you offer the draft. The operator need not fetch the answer or construct the argument.
 
 Otherwise choose by the origin of the claim. If they bring an external reply here to challenge, prepare a clipboard handoff even if they do not ask for a copy. Naming its source is not a request to contact it. If the claim arose here, use the exchange in view and answer here.
 
