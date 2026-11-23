@@ -208,7 +208,7 @@ function noteReadout(note: Record<string, unknown>, outcome: string, reading: bo
 		: { outcome, expanded: fields({ text, ...retained }), limits };
 }
 
-function listReadout(d: Record<string, unknown>, summary: string): Readout {
+function listReadout(d: Record<string, unknown>): Readout {
 	const notes = array(d.notes).map(record);
 	const tours = array(d.tours).map(record);
 	const body = [
@@ -228,14 +228,14 @@ function listReadout(d: Record<string, unknown>, summary: string): Readout {
 		warning: limited || Boolean(unreadable),
 		body,
 		replacesBody: true,
-		expanded: [summary, ...notes.map(fields), ...tours.map(fields)].filter(Boolean).join("\n\n"),
+		expanded: [...notes.map(fields), ...tours.map(fields)].filter(Boolean).join("\n\n"),
 		limits: notes.length ? ["[Excerpt: each note preview retains up to 256 characters]"] : [],
 	};
 }
 
 function notesReadout(d: Record<string, unknown>): Readout {
+	if (d.op === "list" && d.ok === true) return listReadout(d);
 	const outcome = firstLine(bodyText(d.summary));
-	if (d.op === "list" && d.ok === true) return listReadout(d, outcome);
 	const note = record(d.note);
 	if (typeof note.text === "string") return noteReadout(note, outcome, d.op === "read");
 	if (d.ok === true && (d.op === "resolve" || d.op === "reopen")) {

@@ -217,6 +217,29 @@ test("note listings omit empty groups and distinguish complete from partial empt
 	}
 });
 
+test("expanded note listings render the count once and preserve author text verbatim", () => {
+	const component = card("explorer_notes", { op: "list" });
+	const receipt = {
+		ok: true,
+		op: "list",
+		summary: "1 notes match in field-guide.",
+		notes: [{ id: noteId, path: "guide.md", preview: "I wrote 1 notes match on purpose." }],
+		tours: [],
+		limited: false,
+		unreadable: 0,
+	};
+	const content = outcomeContent(receipt);
+	const retained = structuredClone(content);
+	component.updateResult({ content, details: { summary: receipt.summary }, isError: false });
+	assert.ok(screen(component).includes("Returned 1 note."));
+	component.setExpanded(true);
+	const expanded = screen(component);
+	assert.equal(expanded.filter((row) => row === "Returned 1 note.").length, 1);
+	assert.doesNotMatch(expanded.join("\n"), /1 notes match in field-guide/u);
+	assert.match(expanded.join("\n"), /I wrote 1 notes match on purpose\./u);
+	assert.deepEqual(content, retained);
+});
+
 test("main call body and expanded arguments have independent display bounds", () => {
 	const component = card("explorer_show", { path: "source.ts", note: { text: "x".repeat(700) } });
 	const pending = screen(component, 56);
