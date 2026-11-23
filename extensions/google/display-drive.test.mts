@@ -143,7 +143,7 @@ test("Sharing shows the permission receipt, not the email message or a claim of 
 	const shared = result("drive_share", args, permission);
 	assert.match(shared?.outcome ?? "", /^Created a Drive sharing permission/);
 	assert.deepEqual(shared?.body, ["Permission p-1"]);
-	assert.deepEqual(shared?.details, ["An email notification was requested."]);
+	assert.equal(shared?.details, undefined, "the call facts already state whether a notification was requested");
 	assert.match(result("drive_share", args, { notificationSent: true })?.outcome ?? "", /not confirmed/);
 	assert.match(result("drive_unshare", permission, { ...permission, deleted: true })?.outcome ?? "", /^Removed/);
 	assert.match(result("drive_unshare", permission, { ...permission, deleted: false })?.outcome ?? "", /not confirmed/);

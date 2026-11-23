@@ -275,12 +275,6 @@ export const drivePresenters: Record<string, Presenter> = {
 			return {
 				outcome: "Created a Drive sharing permission.",
 				body: [`Permission ${permissionId}`],
-				details:
-					data.notificationSent === true
-						? ["An email notification was requested."]
-						: data.notificationSent === false
-							? ["No email notification was requested."]
-							: [],
 			};
 		},
 	),
