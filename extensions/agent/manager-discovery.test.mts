@@ -545,7 +545,7 @@ it("returns the exact next call while storages are pending and refuses a changed
 	assert.equal(first.coverage.catalog.pending, 8);
 	assert.match(
 		first.coverage.basis,
-		/8 storage observations are still open, so a page without rows is not absence\. Call agent_list with the fields of coverage\.next\./u,
+		/^Remainder pass: .*8 storage scan steps are still open, so a page without rows is not absence\. Call agent_list with the fields of coverage\.next\./u,
 	);
 	assert.deepEqual(first.coverage.next, {
 		tool: "agent_list",
@@ -567,7 +567,8 @@ it("returns the exact next call while storages are pending and refuses a changed
 	assert.equal(last.coverage.complete, true);
 	assert.equal(last.coverage.next, null);
 	assert.equal(last.nextCursor, null);
-	assert.match(last.coverage.basis, /Every storage in scope was observed or settled/u);
+	assert.equal(last.coverage.catalog.settled, 0);
+	assert.match(last.coverage.basis, /Discovery reached the end of its scan\. 0 settled storages were not observed/u);
 });
 
 it("observes a storage that becomes a candidate behind the candidates pass", async (t) => {

@@ -926,7 +926,8 @@ function inspectQualifier(args: Record<string, unknown>): { qualifier: string; h
 	]) {
 		const value = text(args[key]);
 		if (!value) continue;
-		parts.push(`${label} ${displayPreview(value, 120)}`);
+		const identity = key === "requestId" || key === "operationId";
+		parts.push(`${label} ${identity ? displayIdentity(value) : displayPreview(value, 120)}`);
 		hidden ||= value.length > 120;
 	}
 	if (args.cursor !== undefined) parts.push("continuation page");
