@@ -79,6 +79,7 @@ interface SavedState {
 	states: [string, [string, LiveState][]][];
 	launches: SuspendedLaunch[];
 	sequence: number;
+	navigations: [string, NonNullable<Reader["navigation"]>][];
 }
 /** Listener identity and replay fences survive a reload even when the new code cannot use the pane snapshot. */
 export interface LiveBridgeHandoff {
@@ -87,8 +88,8 @@ export interface LiveBridgeHandoff {
 	endpoint: string;
 	token: string;
 	conversation: string;
-	readers: Reader[];
-	promptIds: string[];
+	readers: Omit<Reader, "navigation" | "lastContact">[];
+	promptHandles: [string, string][];
 	editIds: string[];
 	state: SavedState;
 }
@@ -158,8 +159,8 @@ export class LiveBridge {
 	private token = randomBytes(32).toString("hex");
 	private readonly bindings = new Map<string, LivePane>();
 	private readonly readers = new Map<string, Reader>();
-	private readonly launches = new LaunchLedger();
-	private readonly fencedPrompts = new Set<string>();
+	private launches = new LaunchLedger();
+	private readonly fencedPrompts = new Map<string, string>();
 	private readonly fencedEdits = new Set<string>();
 	private observer?: ReturnType<typeof setInterval>;
 	private readonly retired = new Set<string>();
@@ -255,7 +256,7 @@ export class LiveBridge {
 	}
 	publish(status: LiveState["status"], text: string, operationId: string): void {
 		if (this.closed) return;
-		const handle = this.prompts.get(operationId)?.handle;
+		const handle = this.prompts.get(operationId)?.handle ?? this.fencedPrompts.get(operationId);
 		if (!handle) return;
 		const [workspace, document] = handle.split(":");
 		const states = this.states.get(workspace) ?? new Map<string, LiveState>();
@@ -563,8 +564,17 @@ export class LiveBridge {
 			endpoint: this.config.endpoint,
 			token: this.token,
 			conversation: this.conversation,
-			readers: [...this.readers.values()].map((reader) => ({ ...reader })),
-			promptIds: [...this.fencedPrompts, ...this.prompts.keys()],
+			readers: [...this.readers.values()].map(({ workspace, pid, origin, launchId, serial }) => ({
+				workspace,
+				pid,
+				origin,
+				launchId,
+				serial,
+			})),
+			promptHandles: [
+				...this.fencedPrompts,
+				...Array.from(this.prompts, ([id, prompt]): [string, string] => [id, prompt.handle]),
+			],
 			editIds: [...this.fencedEdits, ...this.edits.keys()],
 			state: {
 				version: 1,
@@ -597,6 +607,9 @@ export class LiveBridge {
 				),
 				states: [...this.states].map(([key, states]) => [key, [...states]]),
 				launches: this.launches.suspend(),
+				navigations: [...this.readers].flatMap(([workspace, reader]) =>
+					reader.navigation ? [[workspace, reader.navigation]] : [],
+				),
 			},
 		};
 		this.server = undefined;
@@ -612,11 +625,28 @@ export class LiveBridge {
 	}
 	private restore(record: LiveBridgeHandoff): void {
 		for (const reader of record.readers) this.readers.set(reader.workspace, { ...reader, lastContact: Date.now() });
-		for (const id of record.promptIds) this.fencedPrompts.add(id);
+		for (const [id, handle] of record.promptHandles) this.fencedPrompts.set(id, handle);
 		for (const id of record.editIds) this.fencedEdits.add(id);
 		this.monitor();
 		const state = record.state;
 		if (state?.version !== 1) return;
+		try {
+			this.restoreSnapshot(state);
+		} catch {
+			// Keep the listener, trusted reader leases and replay fences. No partially restored view is authoritative.
+			this.sequence = 0;
+			for (const records of [this.bindings, this.retired, this.documents, this.states, this.prompts, this.edits])
+				records.clear();
+			for (const reader of this.readers.values()) delete reader.navigation;
+			this.launches.close();
+			this.launches = new LaunchLedger();
+			return;
+		}
+		for (const id of this.prompts.keys()) this.fencedPrompts.delete(id);
+		for (const id of this.edits.keys()) this.fencedEdits.delete(id);
+		this.prune();
+	}
+	private restoreSnapshot(state: SavedState): void {
 		this.sequence = state.sequence;
 		for (const pane of state.panes) this.bindings.set(pane.workspace, pane);
 		for (const id of state.documents) this.documents.add(id);
@@ -624,7 +654,6 @@ export class LiveBridge {
 		for (const [key, states] of state.states) this.states.set(key, new Map(states));
 		for (const [id, saved] of state.prompts) {
 			this.prompts.set(id, { ...saved, promise: Promise.resolve(saved.result) });
-			this.fencedPrompts.delete(id);
 		}
 		for (const [id, { fingerprint, anchor, command, delivered, result }] of state.edits) {
 			this.edits.set(id, {
@@ -632,10 +661,12 @@ export class LiveBridge {
 				anchor,
 				pending: { command, delivered, result, waiters: new Set(), cancelled: false },
 			});
-			this.fencedEdits.delete(id);
+		}
+		for (const [workspace, navigation] of state.navigations) {
+			const reader = this.readers.get(workspace);
+			if (reader) reader.navigation = navigation;
 		}
 		this.launches.resume(state.launches);
-		this.prune();
 	}
 	close(): void {
 		if (this.closed) return;

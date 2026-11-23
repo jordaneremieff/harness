@@ -100,7 +100,11 @@ test("a new loader keeps the listener but fences unknown receipts until its read
 		assert.equal(adopted.endpoint, config.endpoint);
 		assert.equal(adopted.token, config.token);
 		assert.deepEqual(current.list(), []);
+		current.publish("answer", "Reply received during reclaim", prompt.operationId);
 		assert.equal((await connect(config, pane)).status, 200);
+		const answer = (await post(config, "/poll", { ...pane, after: 0 })).data.state;
+		assert.equal(answer.document, pane.document);
+		assert.equal(answer.text, "Reply received during reclaim");
 		assert.equal((await post(config, "/prompt", prompt)).data.status, "uncertain");
 		assert.equal(submissions, 1);
 		assert.equal((await post(config, "/prompt", { ...prompt, operationId: randomUUID() })).data.status, "requested");
