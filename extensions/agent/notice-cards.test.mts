@@ -8,13 +8,14 @@ import {
 	keyHint,
 	keyText,
 	type ExtensionAPI,
+	type ExtensionContext,
+	type TurnEndEvent,
 	type MessageRenderer,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { planningBudgetSelfBody, planningBudgetSelfFacts } from "./continuity-budget.ts";
 import register from "./index.ts";
-import { PLANNING_BUDGET_NOTICE } from "./ordinary-continuity.ts";
-import { SELF_COMPACTION_NOTICE } from "./self-compaction.ts";
+import { OrdinaryContinuity, PLANNING_BUDGET_NOTICE } from "./ordinary-continuity.ts";
+import { SelfCompaction, SELF_COMPACTION_NOTICE } from "./self-compaction.ts";
 import {
 	renderAgentApplicationMessage,
 	renderAgentCompactionMessage,
@@ -175,6 +176,100 @@ it("Pi paints a report's authored Markdown, counts hidden rows and discloses its
 	assert.deepEqual(message, before);
 });
 
+it("Pi distinguishes settled inputs, state notes, progress and final reports by source facts", async (t) => {
+	expandKey(t);
+	const renderer = (await registeredRenderers()).get("agent.peer");
+	assert.ok(renderer);
+	const sessionId = "12345678-1234-4234-8234-123456789abc";
+	const read = { tool: "agent_inspect", view: "result", sessionId, submissionId: 9, finalReport: true, offset: 0 };
+	const cases = [
+		{ title: "Message received", details: { kind: "message" }, body: "Agent “Scout” said this directly." },
+		{
+			title: "Answer received",
+			details: { kind: "receipt", status: "done", operatorMessage: "Answer text" },
+			body: "Answer text",
+		},
+		{
+			title: "Input ended without an answer",
+			details: {
+				kind: "receipt",
+				status: "unanswered",
+				operatorMessage: "Provider rejected this input.",
+				work: "closed",
+				readFinalReport: read,
+			},
+			body: "Provider rejected this input.",
+		},
+		{
+			title: "State note received",
+			details: {
+				kind: "receipt",
+				status: "done",
+				work: "open",
+				workLabel: "State note",
+				operatorMessage: "The test still runs.",
+			},
+			body: "The test still runs.",
+		},
+		{
+			title: "Report received",
+			details: {
+				kind: "report",
+				operatorMessage: "Progress text",
+				deliveredResults: [{ sessionId, submissionId: 9, requestId: "request" }],
+			},
+			body: "Progress text",
+		},
+		{
+			title: "Final work report received",
+			details: {
+				kind: "report",
+				finalReport: { requestId: "request", status: "failed" },
+				operatorMessage: "Final excerpt",
+				operatorTextTruncated: true,
+				finalReportContinuation: { ...read, offset: 13 },
+			},
+			body: "Final excerpt",
+		},
+	];
+	for (const { title, details, body } of cases) {
+		const card = new CustomMessageComponent(
+			{
+				role: "custom",
+				customType: "agent.peer",
+				display: true,
+				timestamp: 0,
+				content: details.kind === "message" ? body : "Model-only envelope",
+				details: {
+					senderIdentity: sessionId,
+					handle: "Scout",
+					provider: "provider",
+					modelId: "model",
+					thinkingLevel: "high",
+					...details,
+				},
+			},
+			renderer,
+		);
+		for (const width of [54, 160]) {
+			const collapsed = card.render(width).map((row) => stripVTControlCharacters(row).trim());
+			assert.deepEqual(collapsed.slice(2, 6), [`[agent] ${title}`, collapsed[3], "", body]);
+			assert.match(collapsed[3] ?? "", /^from Scout · provider\/model · high/u);
+			assert.doesNotMatch(collapsed.join("\n"), /Model-only envelope|agent_inspect/u);
+		}
+		if ("finalReportContinuation" in details && details.finalReportContinuation) {
+			assert.match(
+				card.render(160).map(stripVTControlCharacters).join("\n"),
+				/\[Excerpt: first 13 UTF-16 code units retained\]/u,
+			);
+			card.setExpanded(true);
+			const { tool, ...args } = details.finalReportContinuation;
+			const expanded = card.render(200).map(stripVTControlCharacters).join("\n");
+			assert.ok(expanded.includes(`${tool}(${JSON.stringify(args)})`));
+		}
+	}
+});
+
 it("short reports omit placeholders and use a keyless hint only for undisclosed facts", async (t) => {
 	expandKey(t, []);
 	const renderer = (await registeredRenderers()).get("agent.peer");
@@ -205,7 +300,10 @@ it("short reports omit placeholders and use a keyless hint only for undisclosed 
 	);
 	long.setExpanded(true);
 	const shown = long.render(80).join("\n");
-	assert.match(stripVTControlCharacters(shown), /Start red[\s\S]*\[Display limit: 6 more UTF-16 code units\.\]/u);
+	assert.match(
+		stripVTControlCharacters(shown),
+		/Start red[\s\S]*\[Truncated: showing 31999 of 32005 UTF-16 code units\]/u,
+	);
 	assert.doesNotMatch(shown, /TAIL|\u202e|\x1b\[31m|[\uD800-\uDBFF]/u);
 });
 
@@ -267,20 +365,31 @@ it("shows a message without a reply, predecessor or place", () => {
 	assert.deepEqual(lines.slice(1, 5), [" [agent] Notebook · Notes", " #abcd1234 · no reply needed", "", " Saved."]);
 });
 
-it("a preempted self-compaction shows the [agent] label in Pi's label colour and the whole notice", (t) => {
+it("Pi displays a preempted self-compaction without repeating its model-facing lead", async (t) => {
 	expandKey(t);
-	colors.length = 0;
-	const content =
-		"Self-compaction was not applied because an earlier boundary handler already proposed compaction. Inspect the current context before another request.";
-	const lines = render(renderAgentCompactionMessage, SELF_COMPACTION_NOTICE, content);
-	assert.equal(lines[1], " [agent] Compaction not applied");
-	assert.equal(lines[2], "");
-	assert.match(lines.slice(3).join(" "), /Self-compaction was not applied .* another request\./u);
-	assert.doesNotMatch(lines.join("\n"), /to expand/u);
-	assert.deepEqual(
-		colors.filter(({ color }) => color === "customMessageLabel").map(({ value }) => value),
-		["[agent]"],
-	);
+	const compaction = new SelfCompaction(() => () => {});
+	compaction.request("owner", "compact", "Summary");
+	const event = {
+		outcome: "completed",
+		entries: [{ type: "compaction", summary: "other", firstKeptEntryId: null }],
+		toolResults: [{ toolCallId: "compact", isError: false }],
+	} as TurnEndEvent;
+	const ctx = { sessionManager: { getSessionId: () => "owner" } } as Pick<
+		ExtensionContext,
+		"sessionManager" | "signal"
+	>;
+	const draft = compaction.finish(event, ctx)?.entries?.at(-1);
+	assert.ok(draft?.type === "custom_message");
+	const renderer = (await registeredRenderers()).get(SELF_COMPACTION_NOTICE);
+	assert.ok(renderer);
+	const component = new CustomMessageComponent({ role: "custom", timestamp: 0, ...draft }, renderer);
+	const output = component
+		.render(80)
+		.map((row) => stripVTControlCharacters(row).trim())
+		.join("\n");
+	assert.match(output, /\[agent\] Self-compaction not applied\n\nAn earlier boundary handler/u);
+	assert.equal(output.match(/not applied/gu)?.length, 1);
+	assert.match(draft.content as string, /^Self-compaction was not applied/u);
 });
 
 it("a long notice collapses to three preview lines with the expansion hint and expands to the full text", (t) => {
@@ -293,23 +402,36 @@ it("a long notice collapses to three preview lines with the expansion hint and e
 	assert.doesNotMatch(expanded, /to expand/u);
 });
 
-it("a planning-budget notice names the crossing, the tokens and the model from its own text", (t) => {
+it("Pi displays a planning-budget crossing from the producer's model and token facts", async (t) => {
 	expandKey(t);
-	const content = planningBudgetSelfBody(210_000, 200_000, "provider/model-6.1", Date.UTC(2026, 10, 15));
-	assert.deepEqual(planningBudgetSelfFacts(content), { tokens: 210_000, budget: 200_000, model: "provider/model-6.1" });
-	const lines = render(renderAgentPlanningBudgetMessage, PLANNING_BUDGET_NOTICE, content);
-	assert.deepEqual(lines.slice(1, 4), [
-		" [agent] Planning budget reached",
-		" 210000 of 200000 tokens · provider/model-6.1",
+	const continuity = new OrdinaryContinuity({
+		append() {},
+		budget: () => 200_000,
+		diagnose() {},
+		now: () => Date.UTC(2026, 10, 15),
+	});
+	let tokens = 199_000;
+	const ctx = {
+		sessionManager: { getSessionId: () => "owner", buildContextEntries: () => [] },
+		model: { provider: "provider", id: "model-6.1" },
+		thinkingLevel: "high",
+		getContextUsage: () => ({ tokens, contextWindow: 250_000 }),
+	} as Pick<ExtensionContext, "sessionManager" | "model" | "getContextUsage" | "thinkingLevel">;
+	assert.equal(continuity.turnEnd({ entries: [] }, ctx), undefined);
+	tokens = 210_000;
+	const draft = continuity.turnEnd({ entries: [] }, ctx)?.entries?.[0];
+	assert.ok(draft?.type === "custom_message");
+	const renderer = (await registeredRenderers()).get(PLANNING_BUDGET_NOTICE);
+	assert.ok(renderer);
+	const component = new CustomMessageComponent({ role: "custom", timestamp: 0, ...draft }, renderer);
+	const output = component.render(80).map((row) => stripVTControlCharacters(row).trim());
+	assert.deepEqual(output.slice(2, 6), [
+		"[agent] Planning budget reached",
+		"provider/model-6.1 · high · 210000 of 200000 tokens",
 		"",
+		"The budget is a planning preference, not a limit.",
 	]);
-	assert.match(lines.slice(4).join(" "), /Context use reached 210000 tokens/u);
-	assert.equal(planningBudgetSelfFacts("Another text."), undefined);
-	assert.deepEqual(
-		render(renderAgentPlanningBudgetMessage, PLANNING_BUDGET_NOTICE, "Another text.").slice(1, 4),
-		[" [agent] Planning budget reached", "", " Another text."],
-		"unknown facts add no second header line",
-	);
+	assert.match(draft.content as string, /^Context use reached 210000 tokens/u);
 });
 
 it("terminal control sequences in a notice never reach the card", (t) => {

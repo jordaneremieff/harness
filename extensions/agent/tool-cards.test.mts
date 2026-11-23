@@ -36,10 +36,21 @@ import {
 	renderSteerCall,
 	renderSteerResult,
 	renderAgentPeerMessage,
-	operatorNoticeBody,
-	renderPeerNoticeCard,
 	type AgentCardContext,
 } from "./tool-cards.ts";
+
+function renderPeerNoticeCard(
+	input: { content: string; details?: unknown; timestamp?: number },
+	theme: Theme,
+	expanded: boolean,
+	keys: typeof cardKeys,
+) {
+	return renderAgentPeerMessage(
+		{ role: "custom", customType: "agent.peer", display: true, timestamp: 0, ...input },
+		{ expanded, outputPad: 0, ...keys },
+		theme,
+	);
+}
 
 initTheme("dark", false);
 setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
@@ -1556,12 +1567,14 @@ describe("agent result notice card", () => {
 					modelId: "model",
 					thinkingLevel: "high",
 				},
-				heading: "result · Catalog reader",
+				heading: "Answer received",
+				sender: "Catalog reader",
 			},
-			{ details: { identity: id, handle: "@reader", kind: "report" }, heading: "Report received" },
+			{ details: { identity: id, handle: "@reader", kind: "report" }, heading: "Report received", sender: "@reader" },
 			{
 				details: { senderIdentity: id, senderKind: "session", name: "Parser session", kind: "message" },
-				heading: "message from another session · Parser session",
+				heading: "Message received",
+				sender: "Parser session",
 			},
 			{
 				details: {
@@ -1571,11 +1584,13 @@ describe("agent result notice card", () => {
 					kind: "message",
 					provider: "provider",
 				},
-				heading: "message from another session · Review the parser",
+				heading: "Message received",
+				sender: "Review the parser",
 			},
 			{
 				details: { senderIdentity: id, senderKind: "session", kind: "message" },
-				heading: `message from another session · ${id}`,
+				heading: "Message received",
+				sender: id,
 			},
 			{
 				details: {
@@ -1587,7 +1602,8 @@ describe("agent result notice card", () => {
 					threadTitle: "Parser contract",
 					operatorMessage: "The sourced event body",
 				},
-				heading: "thread notice · Parser contract",
+				heading: "Thread notice · Parser contract",
+				sender: "Parser session",
 			},
 			{
 				details: {
@@ -1598,23 +1614,25 @@ describe("agent result notice card", () => {
 					liveOwner: false,
 					fallback: true,
 				},
-				heading: "result · Fallback reader",
+				heading: "Answer received",
+				sender: "Fallback reader",
 			},
-			{ details: {}, heading: "message from another session" },
+			{ details: {}, heading: "Message received", sender: undefined },
 		];
-		for (const { details, heading } of cases) {
+		for (const { details, heading, sender } of cases) {
 			const card = renderPeerNoticeCard({ content: "Stored model body", details }, theme, false, cardKeys);
 			assert.ok(card);
 			const lines = screen(card, 240)
 				.split("\n")
 				.filter((line) => line.trim());
 			assert.equal(lines[0]?.trim(), `[agent] ${heading}`);
+			if (sender) assert.ok(lines[1]?.includes(`from ${sender}`));
 			assert.doesNotMatch(lines[0] ?? "", /unknown|unavailable/u);
 			if ("threadId" in details) {
 				assert.match(lines.join("\n"), /The sourced event body/u);
 				assert.doesNotMatch(lines.join("\n"), /Stored model body/u);
 			}
-			if (details.liveOwner === false) assert.match(lines.join("\n"), /No live owner; retained result only/u);
+			if (details.liveOwner === false) assert.match(lines.join("\n"), /No live recipient; this is a retained copy/u);
 			const expanded = renderPeerNoticeCard({ content: "Stored model body", details }, theme, true, cardKeys);
 			assert.ok(expanded);
 			if (Object.keys(details).length) assert.ok(screen(expanded, 240).includes(id));
@@ -1636,7 +1654,7 @@ describe("agent result notice card", () => {
 				.split("\n")
 				.find((line) => line.trim())
 				?.trim(),
-			`[agent] message from another session · ${identity}`,
+			`[agent] Message received`,
 		);
 		assert.doesNotMatch(
 			screen(card, 240)
@@ -1644,11 +1662,12 @@ describe("agent result notice card", () => {
 				.find((line) => line.trim()) ?? "",
 			/…|unknown|unavailable/u,
 		);
+		assert.match(screen(card, 240), new RegExp(`from ${identity}`));
 		assert.ok(card.render(24).every((line) => visibleWidth(line) <= 24));
 	});
 
 	it("preserves full source identities in expanded details", () => {
-		const sourceId = `report:${"r".repeat(400)}`;
+		const sourceId = `report:${"r".repeat(700)}`;
 		const senderIdentity = "12345678-1234-4234-8234-123456789abc";
 		const card = renderPeerNoticeCard(
 			{ content: "Report body", details: { name: "Reader", kind: "report", senderIdentity, sourceId } },
@@ -1657,7 +1676,7 @@ describe("agent result notice card", () => {
 			cardKeys,
 		);
 		assert.ok(card);
-		const text = screen(card, 600);
+		const text = screen(card, 800);
 		assert.ok(text.includes(`Report source: ${sourceId}`));
 		assert.ok(text.includes(`Sender ID: ${senderIdentity}`));
 	});
@@ -1673,7 +1692,7 @@ describe("agent result notice card", () => {
 		const lines = screen(card, 160)
 			.split("\n")
 			.filter((line) => line.trim());
-		assert.equal(lines[0]?.trim(), "[agent] still working · Reader");
+		assert.equal(lines[0]?.trim(), "[agent] Check-in: Work continues");
 		assert.match(lines.join("\n"), /Current step: review/u);
 		assert.doesNotMatch(lines[0] ?? "", /unknown|unavailable|elapsed|conversation total/u);
 	});
@@ -1685,14 +1704,20 @@ describe("agent result notice card", () => {
 				display: true,
 				timestamp: 1,
 				content: "**Review:** fix the token.\n\nKeep the identifier.",
-				details: { submissionId: 9, identity: "storage-a", status: "done" },
+				details: {
+					kind: "receipt",
+					submissions: [{ submissionId: 9 }],
+					identity: "storage-a",
+					status: "done",
+					answer: "**Review:** fix the token.\n\nKeep the identifier.",
+				},
 			},
 			{ ...cardKeys, expanded: false, outputPad: 1 },
 			theme,
 		);
 		assert.ok(collapsed);
 		const text = screen(collapsed);
-		assert.match(text, /\[agent\] result · storage-a/);
+		assert.match(text, /\[agent\] Answer received\n\s*from storage-a/u);
 		assert.match(text, /\.\.\. \((?:\d+ more lines?, )?ctrl\+o to expand\)/u);
 		assert.doesNotMatch(text, /Source details:|submissionId:|\/agent opens/u);
 		assert.match(text, /Review: fix the token\./);
@@ -1705,7 +1730,13 @@ describe("agent result notice card", () => {
 				display: true,
 				timestamp: 1,
 				content: "Body",
-				details: { submissionId: 9, identity: "storage-a", status: "done" },
+				details: {
+					kind: "receipt",
+					submissions: [{ submissionId: 9 }],
+					identity: "storage-a",
+					status: "done",
+					answer: "**Review:** fix the token.\n\nKeep the identifier.",
+				},
 			},
 			{ ...cardKeys, expanded: true, outputPad: 1 },
 			theme,
@@ -1713,8 +1744,8 @@ describe("agent result notice card", () => {
 		assert.ok(expanded);
 		const expandedText = screen(expanded);
 		assert.match(expandedText, /Source details/);
-		assert.match(expandedText, /submissionId: 9/);
-		assert.match(expandedText, /not operator authority or task acceptance/);
+		assert.match(expandedText, /Submission 9/u);
+		assert.match(expandedText, /Sender ID: storage-a/u);
 	});
 
 	it("uses the resolved display label in place of the raw identity", () => {
@@ -1726,7 +1757,8 @@ describe("agent result notice card", () => {
 				timestamp: 1,
 				content: "Done",
 				details: {
-					submissionId: 9,
+					kind: "receipt",
+					answer: "Done",
 					identity: "6de48f73-1111-4111-8111-111111111111",
 					label: "poem task",
 					status: "done",
@@ -1737,7 +1769,7 @@ describe("agent result notice card", () => {
 		);
 		assert.ok(card);
 		const text = screen(card);
-		assert.match(text, /\[agent\] result · poem task/);
+		assert.match(text, /\[agent\] Answer received\n\s*from poem task/u);
 		assert.doesNotMatch(text, /6de48f73/);
 	});
 
@@ -1759,7 +1791,7 @@ describe("agent result notice card", () => {
 				const card = renderAgentPeerMessage(message, { ...cardKeys, expanded, outputPad: 1 }, theme);
 				assert.ok(card);
 				const text = screen(card, 180);
-				assert.match(text, /\[agent\] still working · reader\n\s*30m/u);
+				assert.match(text, /\[agent\] Check-in: Work continues\n\s*from reader · 30m/u);
 				if (cost === null) assert.doesNotMatch(text, /conversation total|unavailable/u);
 				else assert.match(text, new RegExp(`\\$${cost.toFixed(3).replace(".", "\\.")} conversation total`, "u"));
 				assert.match(text, /Tool calls: 4/u);
@@ -1785,7 +1817,7 @@ describe("agent result notice card", () => {
 		);
 		assert.ok(card);
 		const text = screen(card, 180);
-		assert.match(text, /Display limit/u);
+		assert.match(text, /Truncated: showing 32000 of 32007 UTF-16 code units/u);
 		assert.doesNotMatch(text, /OMITTED|not a finished answer/u);
 	});
 
@@ -1805,7 +1837,7 @@ describe("agent result notice card", () => {
 		);
 		assert.ok(card);
 		const text = screen(card, 180);
-		assert.match(text, /still working · reader\n\s*3h05m elapsed/u);
+		assert.match(text, /Check-in: Work continues\n\s*from reader · 3h05m elapsed/u);
 		assert.match(text, /Current tool: bash/u);
 		assert.doesNotMatch(text, /185m/u);
 	});
@@ -1818,7 +1850,7 @@ describe("agent result notice card", () => {
 				display: true,
 				timestamp: 1,
 				content: "Progress report",
-				details: { senderIdentity: "storage-b", sourceId: "report:1", acknowledged: false },
+				details: { kind: "report", senderIdentity: "storage-b", sourceId: "report:1", acknowledged: false },
 			},
 			{ ...cardKeys, expanded: false, outputPad: 1 },
 			theme,
@@ -1834,20 +1866,20 @@ describe("agent result notice card", () => {
 				display: true,
 				timestamp: 1,
 				content: "No answer",
-				details: { identity: "storage-a", status: "unanswered", reason: "aborted" },
+				details: { kind: "receipt", identity: "storage-a", status: "unanswered", reason: "aborted" },
 			},
 			{ ...cardKeys, expanded: false, outputPad: 1 },
 			theme,
 		);
 		assert.ok(unansweredCard);
 		const unanswered = screen(unansweredCard);
-		assert.match(unanswered, /\[agent\] result · storage-a/);
-		assert.match(unanswered, /Result unavailable or unanswered/);
+		assert.match(unanswered, /\[agent\] Input ended without an answer\n\s*from storage-a/u);
+		assert.doesNotMatch(unanswered, /result received|Answer received/u);
 		assert.match(unanswered, /aborted/);
 	});
 
 	it("shows source name, model, reasoning, warnings, exact IDs, and the full escaped body", () => {
-		const hostile = `[2J‮${"long line\n".repeat(4000)}END`;
+		const hostile = `[2J‮${"long line\n".repeat(3000)}END`;
 		const card = renderAgentPeerMessage(
 			{
 				role: "custom",
@@ -1856,9 +1888,9 @@ describe("agent result notice card", () => {
 				timestamp: 1,
 				content: hostile,
 				details: {
-					submissionId: 9,
-					entryId: 4,
-					answerEntryId: 5,
+					kind: "receipt",
+					operatorMessage: hostile,
+					submissions: [{ submissionId: 9, entryId: 4, answerEntryId: 5 }],
 					requestId: "req-1",
 					identity: "storage-a",
 					status: "done",
@@ -1875,22 +1907,22 @@ describe("agent result notice card", () => {
 		);
 		assert.ok(card);
 		const text = screen(card, 180);
-		assert.match(text, /\[agent\] result · Message reviewer/);
-		assert.match(text, /name: Message reviewer/);
+		assert.match(text, /\[agent\] Answer received\n\s*from Message reviewer/u);
+		assert.match(text, /Sender name: Message reviewer/);
 		assert.match(text, /SelectedProvider\/MixedCase-Model · high/);
-		assert.match(text, /No live owner; retained result only/);
-		assert.match(text, /Result not saved; retained only by the live owner/);
-		assert.match(text, /submissionId: 9/);
-		assert.match(text, /entryId: 4/);
-		assert.match(text, /answerEntryId: 5/);
-		assert.match(text, /requestId: req-1/);
+		assert.match(text, /No live recipient; this is a retained copy/);
+		assert.match(text, /Receipt not saved/);
+		assert.match(text, /Submission 9/);
+		assert.match(text, /entry 4/);
+		assert.match(text, /answer entry 5/);
+		assert.match(text, /Request: req-1/);
 		assert.match(text, /END/);
-		assert.doesNotMatch(text, /Display limit/);
+		assert.doesNotMatch(text, /Truncated/);
 		assert.doesNotMatch(text, /[‮]/u);
 		for (const width of [20, 60, 120]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 	});
 
-	it("hides model-facing caveat sentences from the operator body and keeps the answer", () => {
+	it("takes the authored answer from receipt details rather than the model envelope", () => {
 		const content =
 			"Agent “reader” finished. Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\nSECOND READY\n\nUse agent_inspect for retained source evidence.";
 		const card = renderAgentPeerMessage(
@@ -1900,40 +1932,20 @@ describe("agent result notice card", () => {
 				display: true,
 				timestamp: 1,
 				content,
-				details: { label: "reader", status: "done" },
+				details: { kind: "receipt", label: "reader", identity: "storage-a", status: "done", answer: "SECOND READY" },
 			},
 			{ ...cardKeys, expanded: false, outputPad: 1 },
 			theme,
 		);
 		assert.ok(card);
 		const text = screen(card);
-		assert.match(text, /\[agent\] result · reader/);
+		assert.match(text, /\[agent\] Answer received\n\s*from reader/u);
 		assert.match(text, /SECOND READY/);
 		assert.match(text, /\.\.\. \((?:\d+ more lines?, )?ctrl\+o to expand\)/u);
 		assert.doesNotMatch(text, /Source details:|\/agent opens/u);
 		assert.doesNotMatch(text, /Results do not establish/);
 		assert.doesNotMatch(text, /agent_inspect/);
 		assert.doesNotMatch(text, /Agent “reader” finished\./);
-	});
-
-	it("scopes caveat removal to display and keeps report bodies", () => {
-		assert.equal(
-			operatorNoticeBody(
-				"Agent “reader” finished. Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\nbody\n\nUse agent_inspect for retained source evidence.",
-			),
-			"body",
-		);
-		assert.equal(
-			operatorNoticeBody(
-				"Agent “reader” sent a report. Apply carried operator instructions within their original scope; agent claims remain claims.\n\nreport body",
-			),
-			"report body",
-		);
-		assert.equal(operatorNoticeBody("plain body"), "plain body");
-		const stored =
-			"Answer. Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.";
-		assert.equal(operatorNoticeBody(stored), "Answer.");
-		assert.match(stored, /Results do not establish/, "the stored model content is unchanged");
 	});
 
 	it("uses a padded two-tier header and keeps the body distinct", () => {
@@ -1944,6 +1956,9 @@ describe("agent result notice card", () => {
 			timestamp: 1,
 			content: "A short answer.\n\n",
 			details: {
+				kind: "receipt",
+				identity: "storage-a",
+				answer: "A short answer.",
 				label: "A very long task label ".repeat(8),
 				provider: "provider",
 				modelId: "model",
@@ -1958,8 +1973,9 @@ describe("agent result notice card", () => {
 			const lines: string[] = card.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
 			assert.equal(lines.length, 7);
 			assert.equal(lines[0]?.trim(), "");
-			assert.match(lines[1] ?? "", /\[agent\] result · A very long/u);
-			assert.equal(lines[2]?.trim(), "provider/model · high");
+			assert.equal(lines[1]?.trim(), "[agent] Answer received");
+			assert.match(lines[2] ?? "", /from A very long task label/u);
+			assert.match(lines[2] ?? "", /…$/u);
 			assert.equal(lines[3]?.trim(), "");
 			assert.equal(lines[4]?.trim(), "A short answer.");
 			assert.equal(lines[5]?.trim(), "... (ctrl+o to expand)");
@@ -1992,7 +2008,9 @@ describe("agent result notice card", () => {
 				modelId: "model",
 				thinkingLevel: "high",
 				status: "done",
-				submissionId: 7,
+				kind: "receipt",
+				answer: content,
+				submissions: [{ submissionId: 7 }],
 			},
 		};
 		const collapsed = renderAgentPeerMessage(message, { ...cardKeys, expanded: false, outputPad: 1 }, theme);
@@ -2013,13 +2031,13 @@ describe("agent result notice card", () => {
 			assert.doesNotMatch(preview.join("\n"), /^\s*…\s*$/mu);
 			assert.doesNotMatch(preview.join("\n"), /FINAL_RESULT|Source details|Open:|opens the dashboard/);
 			assert.match(full.join("\n"), /FINAL_RESULT/);
-			assert.match(full.join("\n"), /submissionId: 7/);
+			assert.match(full.join("\n"), /Submission 7/u);
 			assert.equal(
 				full
 					.filter((line) => line.trim())
 					.at(-1)
 					?.trim(),
-				"/agent opens the dashboard",
+				"Submission 7",
 			);
 			assert.doesNotMatch(full.join("\n"), /more lines,|Source details:/);
 			assert.ok(collapsed.render(width).every((line) => visibleWidth(line) <= width));
@@ -2040,7 +2058,16 @@ describe("agent result notice card", () => {
 			display: true,
 			timestamp: 1,
 			content: "Short answer.",
-			details: { label: "reader", provider: "provider", modelId: "model", thinkingLevel: "high", status: "done" },
+			details: {
+				kind: "receipt",
+				label: "reader",
+				identity: "storage-a",
+				provider: "provider",
+				modelId: "model",
+				thinkingLevel: "high",
+				status: "done",
+				answer: "Short answer.",
+			},
 		};
 		for (const width of [80, 140]) {
 			const components = Array.from({ length: 4 }, () => new CustomMessageComponent(message, renderAgentPeerMessage));
@@ -2065,19 +2092,19 @@ describe("agent result notice card", () => {
 			first.setExpanded(true);
 			const full = screen(first, width);
 			assert.match(full, /Source details/);
-			assert.match(full, /\/agent opens the dashboard/);
+			assert.match(full, /Sender ID: storage-a/u);
 		}
 	});
 
 	it("builds the same card from stored entry data for an agent conversation", () => {
 		const card = renderPeerNoticeCard(
-			{ content: "Body text", details: { label: "reader", status: "done" } },
+			{ content: "Model envelope", details: { kind: "receipt", label: "reader", status: "done", answer: "Body text" } },
 			theme,
 			false,
 			cardKeys,
 		);
 		assert.ok(card);
-		assert.match(screen(card), /\[agent\] result · reader/);
+		assert.match(screen(card), /\[agent\] Answer received\n\s*from reader/u);
 		assert.match(screen(card), /Body text/);
 	});
 });

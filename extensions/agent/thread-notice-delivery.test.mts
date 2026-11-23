@@ -215,8 +215,11 @@ it("cuts an oversized thread body at a word boundary and names only the typed th
 	}
 	const details = f.received.find((message) => message.text === first)?.details as Record<string, unknown>;
 	assert.equal(details.textTruncated, true);
-	assert.ok(String(details.operatorMessage).endsWith(`evidence [cut]\n\n${withEvent}`));
-	assert.doesNotMatch(String(details.operatorMessage), /agent_inspect/u);
+	assert.equal(details.operatorTextTruncated, true);
+	assert.equal(details.threadEvent, 7);
+	assert.ok(String(details.operatorMessage).endsWith("evidence"));
+	assert.ok(body.startsWith(String(details.operatorMessage)));
+	assert.doesNotMatch(String(details.operatorMessage), /\[cut\]|agent_collaborate|agent_inspect/u);
 
 	const entries = await native.entries({ order: "ascending" }, 20, undefined, context);
 	const stored = entries.items

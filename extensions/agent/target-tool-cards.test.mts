@@ -11,16 +11,28 @@ import type { AgentConversationSummary } from "./dashboard-types.ts";
 import type { Communication } from "./communication.ts";
 import {
 	createAgentToolCards,
+	renderAgentPeerMessage,
 	compactCommunicationRenderer,
-	operatorNoticeBody,
 	renderCommunicationCard,
-	renderPeerNoticeCard,
 	type AgentCardContext,
 	type AgentCardLookup,
 } from "./tool-cards.ts";
 import { projectSelectedStatus, projectStorageStatus } from "./status-overview.ts";
 import { controlText, readableControlText, projectReportReceipt } from "./control-result.ts";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
+
+function renderPeerNoticeCard(
+	input: { content: string; details?: unknown; timestamp?: number },
+	theme: Theme,
+	expanded: boolean,
+	keys: typeof cardKeys,
+) {
+	return renderAgentPeerMessage(
+		{ role: "custom", customType: "agent.peer", display: true, timestamp: 0, ...input },
+		{ expanded, outputPad: 0, ...keys },
+		theme,
+	);
+}
 
 initTheme("dark", false);
 const nativeTui = await import(
@@ -120,13 +132,22 @@ describe("compact observation cards", () => {
 		assert.match(join, /Check retained events/u);
 	});
 
-	it("preserves the exact typed thread recovery call while removing generic evidence advice from the card body", () => {
-		const call = `agent_collaborate(${JSON.stringify({ action: "read", threadId: `${id}/thread`, before: 10, limit: 1 })})`;
-		const body = operatorNoticeBody(
-			`An active excerpt [cut]\n\n${call}\n\nUse agent_inspect for retained source evidence.`,
+	it("reads the exact thread event from source facts, not model prose", () => {
+		const threadId = `${id}/thread`;
+		const call = `agent_collaborate(${JSON.stringify({ action: "read", threadId, before: 10, limit: 1 })})`;
+		const component = renderPeerNoticeCard(
+			{
+				content: "Use agent_inspect for retained source evidence.",
+				details: { threadId, threadEvent: 9, operatorMessage: "An active excerpt", operatorTextTruncated: true },
+			},
+			theme,
+			true,
+			cardKeys,
 		);
+		assert.ok(component);
+		const body = screen(component);
 		assert.ok(body.includes(call));
-		assert.match(body, /\[cut\]/u);
+		assert.match(body, /Excerpt: first 17 UTF-16 code units retained/u);
 		assert.doesNotMatch(body, /agent_inspect/u);
 	});
 
@@ -347,7 +368,7 @@ describe("compact observation cards", () => {
 		};
 		const receiptCall = `agent_inspect(${JSON.stringify({ view: "result", sessionId: id, submissionId: 7, requestId: "input", receiptCursor: "cGFnZTI" })})`;
 		const content = "Answer excerpt with no receipt call in its prose.";
-		const details = { kind: "receipt", identity: id, status: "done", receiptContinuation };
+		const details = { kind: "receipt", identity: id, status: "done", operatorMessage: content, receiptContinuation };
 		const component = renderPeerNoticeCard({ content, details, timestamp: 1 }, theme, true, cardKeys);
 		assert.ok(component);
 		const output = screen(component);
@@ -771,7 +792,7 @@ describe("thread notice cards", () => {
 		const output = screen(card);
 		assert.match(
 			output,
-			/\[agent\] thread post · Parser contract\nfrom Reviewer · openai-codex\/gpt-6\.1-sol · high · #12 · notified this session\n/u,
+			/\[agent\] Thread post · Parser contract\nfrom Reviewer · openai-codex\/gpt-6\.1-sol · high · #12 · notified this session\n/u,
 		);
 		assert.match(output, /Please check the frame bound\./u);
 		assert.doesNotMatch(output, /model text/u);
@@ -783,7 +804,8 @@ describe("thread notice cards", () => {
 			threadTitle: "Parser contract",
 			passive: true,
 			operatorMessage: "",
-			communicationPassive: { value: { metadata: { event: 13, eventKind: "join" } } },
+			threadEvent: 13,
+			threadEventKind: "join",
 		};
 		const joined = renderPeerNoticeCard(
 			{ content: "Thread notice from the model text", details: passive, timestamp: 1 },
@@ -793,7 +815,8 @@ describe("thread notice cards", () => {
 		);
 		assert.ok(joined);
 		const joinedOutput = screen(joined);
-		assert.match(joinedOutput, /\[agent\] member joined · Parser contract\nfrom Reviewer · #13\n/u);
+		assert.match(joinedOutput, /\[agent\] Member joined · Parser contract\nfrom Reviewer · #13\n/u);
 		assert.doesNotMatch(joinedOutput, /no text|notified this session/u);
+		assert.match(joinedOutput, /Passive copy: up to 280 UTF-16 code units retained/u);
 	});
 });

@@ -235,7 +235,7 @@ export class OrdinaryContinuity {
 	 */
 	turnEnd(
 		event: Pick<TurnEndEvent, "entries">,
-		ctx: Pick<ExtensionContext, "sessionManager" | "model" | "getContextUsage">,
+		ctx: Pick<ExtensionContext, "sessionManager" | "model" | "getContextUsage" | "thinkingLevel">,
 		compacting = false,
 	): TurnEndEventResult | undefined {
 		if (compacting || event.entries.some((entry) => entry.type === "compaction")) return undefined;
@@ -265,7 +265,20 @@ export class OrdinaryContinuity {
 		return {
 			entries: [
 				...event.entries,
-				{ type: "custom_message", customType: PLANNING_BUDGET_NOTICE, content, display: true },
+				{
+					type: "custom_message",
+					customType: PLANNING_BUDGET_NOTICE,
+					content,
+					display: true,
+					details: {
+						tokens: usage.tokens,
+						budget,
+						provider: model.provider,
+						modelId: model.id,
+						...(ctx.thinkingLevel === undefined ? {} : { thinkingLevel: ctx.thinkingLevel }),
+						operatorMessage: "The budget is a planning preference, not a limit.",
+					},
+				},
 			],
 		};
 	}

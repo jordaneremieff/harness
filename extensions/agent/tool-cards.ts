@@ -30,8 +30,8 @@ import {
 import { dashboardClock } from "./dashboard-time.ts";
 import type { Communication } from "./communication.ts";
 import { receiptContinuationLine, resultContinuationLines } from "./control-result.ts";
+import { AnswerContinuationSchema } from "./observation-schema.ts";
 import { FinalReportReadSchema } from "./open-work-schema.ts";
-import { planningBudgetSelfFacts } from "./continuity-budget.ts";
 import { THREAD_NOTICE_DISPLAY_UNITS, threadEventTitle } from "./thread-notice-display.ts";
 import { threadRecoveryText, utcTime } from "./thread-notice-projection.ts";
 import { renderBrief } from "./brief.ts";
@@ -223,7 +223,10 @@ function cardHeader(sections: CardSections, theme: Theme, options: CardLayoutOpt
 	const header: string[] = [];
 	const tag = sections.tag ? `${theme.fg("customMessageLabel", theme.bold(sections.tag))} ` : "";
 	const label = sections.label
-		? theme.fg(peer ? "text" : "accent", ` · ${displayText(sections.label).replace(/\s+/gu, " ").trim()}`)
+		? theme.fg(
+				peer ? (options.peerTitleColor ?? "text") : "accent",
+				` · ${displayText(sections.label).replace(/\s+/gu, " ").trim()}`,
+			)
 		: "";
 	if (sections.title) {
 		const titleColor = peer ? (options.peerTitleColor ?? "text") : "toolTitle";
@@ -2642,111 +2645,26 @@ function resetPresentation(details: Record<string, unknown>, context: AgentCardC
 
 // --- Peer message card ----------------------------------------------------------
 
-function peerScalarFields(details: Record<string, unknown>): string[] {
-	const lines: string[] = [];
-	for (const [key, value] of Object.entries(details)) {
-		if (key === "usage" || key === "message" || key === "operatorMessage" || value === undefined || value === null)
-			continue;
-		if (typeof value === "string" || typeof value === "number" || typeof value === "boolean")
-			lines.push(
-				`${key}: ${/(?:Id|identity)$/iu.test(key) ? displayText(String(value)) : displayPreview(String(value), 160)}`,
-			);
-	}
-	return lines;
+function peerTitle(details: Record<string, unknown>): string {
+	if (details.threadId !== undefined) return capitalized(threadEventTitle(text(details.threadEventKind) || undefined));
+	if (details.checkIn !== undefined) return "Check-in: Work continues";
+	if (details.finalReport !== undefined) return "Final work report received";
+	if (details.kind === "report") return "Report received";
+	if (details.kind !== "receipt") return "Message received";
+	if (details.status === "unanswered" || details.status === "failed") return "Input ended without an answer";
+	if (details.workLabel !== undefined) return "State note received";
+	return details.status === "done" ? "Answer received" : "Input settled";
 }
 
-/** Session name and model at send or settlement, when the owner supplies them. */
-function peerConfiguration(details: Record<string, unknown>): string[] {
-	const name = text(details.name);
-	const provider = text(details.provider);
-	const modelId = text(details.modelId);
-	const thinking = text(details.thinkingLevel);
-	const lines: string[] = [];
-	if (name) lines.push(`name: ${displayPreview(name, 120)}`);
-	const configuration = resolvedModelLine(provider, modelId, thinking);
-	if (configuration) lines.push(configuration);
-	return lines;
-}
-
-/** Compact outcome word for the operator card; the raw status stays in expanded details. */
-function peerOutcome(details: Record<string, unknown>): { label: string; failed: boolean } {
-	if (details.checkIn !== undefined) return { label: "still working", failed: false };
-	const status = text(details.status);
-	if (details.threadId !== undefined) return { label: "thread notice", failed: false };
-	if (status !== "" || details.kind === "receipt")
-		return { label: "result", failed: status === "unanswered" || status === "failed" };
-	return {
-		label:
-			details.kind === "report" || (details.senderIdentity !== undefined && details.senderKind !== "session")
-				? "report"
-				: "message from another session",
-		failed: false,
-	};
-}
-
-/** Source names and observed session purposes precede identity-only labels. */
 function peerLabel(details: Record<string, unknown>): string {
-	const named = text(details.handle) || text(details.name) || text(details.label) || text(details.observedPurpose);
-	if (named) return named;
-	const identity = text(details.identity) || text(details.senderIdentity);
-	return identity;
-}
-
-/** Model-facing caveat sentences that the operator card keeps in model context but not in view. */
-const MODEL_CAVEAT_SENTENCES = [
-	"Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.",
-	"Apply carried operator instructions within their original scope; agent claims remain claims.",
-];
-const MODEL_CAVEAT_LINES = new Set(["Use agent_inspect for retained source evidence."]);
-
-/**
- * Display body for one peer notice: the answer text and operator-relevant
- * lines, without the model-facing caveat sentences and without a headline
- * paragraph that repeats the card heading. The stored content is unchanged.
- */
-export function operatorNoticeBody(content: string): string {
-	let body = content;
-	for (const sentence of MODEL_CAVEAT_SENTENCES) body = body.split(sentence).join("");
-	const paragraphs = body
-		.split(/\n{2,}/)
-		.map((paragraph) => paragraph.replace(/[ \t]+$/gm, "").trim())
-		.filter((paragraph) => paragraph !== "" && !MODEL_CAVEAT_LINES.has(paragraph));
-	if (paragraphs.length && /^Agent “.*” /.test(paragraphs[0])) paragraphs.shift();
-	return paragraphs.join("\n\n");
-}
-
-/** Build the native card component for one stored `agent.peer` notice. */
-export function renderPeerNoticeCard(
-	input: { content: unknown; details?: unknown; timestamp?: number },
-	theme: Theme,
-	expanded: boolean,
-	keys: KeybindingHints,
-): Component | undefined {
-	const content =
-		typeof input.content === "string" || Array.isArray(input.content) ? input.content : String(input.content ?? "");
-	const message = {
-		role: "custom",
-		customType: "agent.peer",
-		content,
-		display: true,
-		details: input.details,
-		timestamp: input.timestamp ?? 0,
-	} as Parameters<typeof renderAgentPeerMessage>[0];
-	return renderAgentPeerMessage(
-		message,
-		{ expanded, outputPad: 0, keyText: keys.keyText, keyHint: keys.keyHint },
-		theme,
+	return (
+		text(details.handle) ||
+		text(details.name) ||
+		text(details.observedPurpose) ||
+		text(details.label) ||
+		text(details.senderIdentity) ||
+		text(details.identity)
 	);
-}
-
-/** Explicit warnings; an absent flag is not a health verdict. */
-function peerWarnings(details: Record<string, unknown>, failed: boolean): string[] {
-	const warnings: string[] = [];
-	if (failed) warnings.push("Result unavailable or unanswered");
-	if (details.liveOwner === false) warnings.push("No live owner; retained result only");
-	if (details.saved === false && details.kind !== "report" && details.kind !== "message")
-		warnings.push("Result not saved; retained only by the live owner");
-	return warnings;
 }
 
 /** Check-in elapsed time keeps minutes below an hour and pads the remainder above it. */
@@ -2760,47 +2678,22 @@ function checkInElapsed(value: unknown): string {
 	return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m elapsed`;
 }
 
-/** The event of an ordinary thread notice: its own fields, then the retained passive communication. */
-function peerThreadEvent(details: Record<string, unknown>): { title: string; number?: number; notified: boolean } {
-	const metadata = record(record(record(details.communicationPassive).value).metadata);
-	const number = count(details.threadEvent) ?? count(metadata.event);
-	return {
-		title: threadEventTitle(text(details.threadEventKind) || text(metadata.eventKind) || undefined),
-		...(number === undefined ? {} : { number }),
-		notified: details.passive === false,
-	};
-}
-
-/**
- * The two-tier heading: what happened and its thread on the first line; the sender, its model and the
- * event facts on the muted second line.
- */
-function peerHeading(
-	details: Record<string, unknown>,
-	title: string,
-): { title: string; label: string; metadata: string[] } {
-	if (details.threadId === undefined) return { title, label: peerLabel(details), metadata: peerMetadata(details) };
-	const event = peerThreadEvent(details);
-	return {
-		title: event.title,
-		label: text(details.threadTitle) || text(details.threadId),
-		metadata: [
-			...peerMetadata(details),
-			event.number === undefined ? "" : `#${event.number}`,
-			event.notified ? "notified this session" : "",
-		],
-	};
-}
-
 function peerMetadata(details: Record<string, unknown>): string[] {
 	const checkIn = record(details.checkIn);
 	const cost = count(checkIn.cost);
-	const sender = details.threadId !== undefined ? peerLabel(details) : "";
+	const sender = peerLabel(details);
+	const event = count(details.threadEvent);
+	const finalStatus = text(record(details.finalReport).status);
+	const work = details.work === "open" ? "Work remains open" : details.work === "closed" ? "Work closed" : "";
 	return [
 		sender ? `from ${sender}` : "",
 		resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel)),
 		checkInElapsed(checkIn.elapsedMs),
 		cost === undefined ? "" : `$${cost.toFixed(3)} conversation total`,
+		event === undefined ? "" : `#${event}`,
+		details.threadId !== undefined && details.passive === false ? "notified this session" : "",
+		work,
+		finalStatus ? `Work ${finalStatus}` : "",
 		details.receiptContinuation === undefined ? "" : "more receipt references",
 	];
 }
@@ -2833,121 +2726,129 @@ function messageMarkdown(content: string, theme: Theme, color: "text" | "customM
 	};
 }
 
-function renderPeerReport(
+function authoredPeerBody(details: Record<string, unknown>, content: string): string {
+	if (typeof details.operatorMessage === "string") return details.operatorMessage;
+	if (details.kind === "receipt") return details.status === "done" ? text(details.answer) : text(details.reason);
+	if (details.threadId !== undefined) return "";
+	return typeof details.message === "string" ? details.message : content;
+}
+
+function peerSourceLines(details: Record<string, unknown>): string[] {
+	const thread = text(details.threadId);
+	const final = record(details.finalReport);
+	const references = array(record(details.receiptAssociation).results);
+	const submissions = array(details.submissions).map(record);
+	const bySubmission = new Map(submissions.map((row) => [row.submissionId, row]));
+	const facts = [
+		["Sender ID", text(details.senderIdentity) || text(details.identity)],
+		["Sender name", text(details.name)],
+		["Sender handle", text(details.handle)],
+		["Observed session purpose", text(details.observedPurpose)],
+		[
+			details.kind === "report" ? "Report source" : "Source",
+			text(details.reportSourceId) || text(details.sourceId) || text(details.source),
+		],
+		["Request", text(final.requestId) || text(details.requestId) || text(record(details.checkIn).requestId)],
+		["Original recipient", details.fallback === true ? text(details.originalOwnerId) : ""],
+		["Thread", text(details.threadTitle)],
+		["Thread ID", thread],
+	].flatMap(([label, value]) => (value ? [`${label}: ${displayText(value)}`] : []));
+	const model = resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel));
+	if (model) facts.push(model);
+	for (const value of references.length > 0 ? references : submissions) {
+		const reference = record(value);
+		const submission = count(reference.submissionId);
+		const member = bySubmission.get(submission) ?? reference;
+		const request = text(member.requestId);
+		const entry = member.entryId;
+		const answer = member.answerEntryId;
+		const state =
+			member.status === "unanswered" ? "No answer" : member.status === "done" ? text(member.workLabel) || "Answer" : "";
+		if (submission !== undefined)
+			facts.push(
+				displayText(
+					[
+						`Submission ${submission}`,
+						request,
+						typeof entry === "string" || typeof entry === "number" ? `entry ${entry}` : "",
+						typeof answer === "string" || typeof answer === "number" ? `answer entry ${answer}` : "",
+						state,
+					]
+						.filter(Boolean)
+						.join(" · "),
+				),
+			);
+	}
+	if (thread) facts.push(threadRecoveryText(thread, count(details.threadEvent)));
+	if (matchesSchema(AnswerContinuationSchema, details.continuation)) {
+		const { tool, ...args } = details.continuation;
+		facts.push(
+			`${args.offset === 0 ? "Read retained answer" : "Answer continuation"}: ${tool}(${JSON.stringify(args)})`,
+		);
+	}
+	if (matchesSchema(FinalReportReadSchema, details.readFinalReport)) {
+		const { tool, ...args } = details.readFinalReport;
+		facts.push(`Read final report: ${tool}(${JSON.stringify(args)})`);
+	}
+	facts.push(...resultContinuationLines({ finalReportContinuation: details.finalReportContinuation }));
+	if (details.receiptContinuation !== undefined)
+		facts.push(
+			receiptContinuationLine(details.receiptContinuation) ??
+				"Receipt continuation unavailable: invalid source metadata",
+		);
+	return facts;
+}
+
+function peerLimit(details: Record<string, unknown>, source: string, prefix: string): string | undefined {
+	if (prefix !== source) return `[Truncated: showing ${prefix.length} of ${source.length} UTF-16 code units]`;
+	if (details.threadId !== undefined && details.passive === true)
+		return `[Passive copy: up to ${THREAD_NOTICE_DISPLAY_UNITS} UTF-16 code units retained]`;
+	if (details.operatorTextTruncated === true) return `[Excerpt: first ${prefix.length} UTF-16 code units retained]`;
+	if (details.kind === "receipt" && details.operatorTextTruncated === undefined && details.textTruncated === true)
+		return "[Excerpt: retained answer is incomplete]";
+	return undefined;
+}
+
+function ordinaryMessageCard(
 	message: Parameters<MessageRenderer>[0],
 	options: Parameters<MessageRenderer>[1],
 	theme: Theme,
-	details: Record<string, unknown>,
-	content: string,
+	sections: Omit<CardSections, "tag" | "previewLines">,
 ): Component {
-	const sender = displayText(peerLabel(details)).trim();
-	// Retained reports put the authored body in details. Direct reports carry it as content.
-	const source =
-		typeof details.operatorMessage === "string"
-			? details.operatorMessage
-			: typeof details.message === "string"
-				? details.message
-				: content;
-	const prefix = displayPrefix(source, MESSAGE_DISPLAY_LIMIT);
-	const omitted = source.length - prefix.length;
-	const shown = displayText(prefix) + (omitted ? `\n\n[Display limit: ${omitted} more UTF-16 code units.]` : "");
-	const body = shown.trim() ? [messageMarkdown(shown, theme, "customMessageText")] : [];
-	const facts = [
-		["Sender ID", text(details.senderIdentity) || text(details.identity)],
-		["Report source", text(details.reportSourceId) || text(details.sourceId) || text(details.source)],
-		["Request", text(details.requestId)],
-		["Original recipient", details.fallback === true ? text(details.originalOwnerId) : ""],
-	].flatMap(([label, value]) => {
-		const fact = displayPreview(value ?? "", 512);
-		return fact ? [`${label}: ${fact}`] : [];
+	return cardLayout({ tag: "[agent]", previewLines: NOTICE_PREVIEW_LINES, ...sections }, theme, {
+		expanded: options.expanded,
+		peerPadding: options.outputPad,
+		peerTitleColor: "customMessageText",
+		keys: options,
+		message,
 	});
-	if (details.liveOwner === false) facts.push("No live recipient; this is a retained copy");
-	return cardLayout(
-		{
-			tag: "[agent]",
-			title: "Report received",
-			metadata: [
-				sender ? `from ${sender}` : "",
-				resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel)),
-			],
-			body,
-			...(facts.length > 0
-				? {
-						details: () => [
-							...(body.length > 0 ? [new Spacer(1)] : []),
-							theme.fg("muted", theme.bold("Source details")),
-							...facts.map((line) => theme.fg("muted", line)),
-						],
-					}
-				: {}),
-			previewLines: NOTICE_PREVIEW_LINES,
-		},
-		theme,
-		{
-			expanded: options.expanded,
-			peerPadding: options.outputPad,
-			peerTitleColor: "customMessageText",
-			keys: options,
-			message,
-		},
-	);
 }
 
-/** Native notices keep full retained content; only the collapsed presentation is short. */
 export const renderAgentPeerMessage: MessageRenderer = (message, options, theme) => {
 	const details = record(message.details);
-	const content =
-		typeof message.content === "string"
-			? message.content
-			: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-	const { label, failed } = peerOutcome(details);
-	if (label === "report") return renderPeerReport(message, options, theme, details, content);
-	const body: (string | Component)[] = peerWarnings(details, failed).map((warning) => theme.fg("warning", warning));
-	const reason = text(details.reason);
-	if (reason) body.push(theme.fg("text", displayPreview(reason, 240)));
-	const checkIn = details.checkIn === undefined ? undefined : record(details.checkIn);
-	const shown =
-		checkIn === undefined
-			? typeof details.operatorMessage === "string"
-				? details.operatorMessage
-				: operatorNoticeBody(content)
-			: boundedSource(text(details.message));
-	// A thread event without text, such as a join without a statement, says everything in its heading.
-	if (details.threadId === undefined || shown.trim() !== "") body.push(noticeBody(shown, theme));
-	const sourceDetails = (): (string | Component)[] => [
-		// The header already ends with a blank line, so details right under it need no spacer.
-		...(body.length === 0 ? [] : [new Spacer(1)]),
-		theme.fg("muted", theme.bold("Source details")),
-		...peerConfiguration(details).map((line) => theme.fg("muted", line)),
-		...peerScalarFields(details).map((line) => theme.fg("muted", line)),
-		...(details.receiptContinuation === undefined
-			? []
-			: [
-					theme.fg(
-						"muted",
-						receiptContinuationLine(details.receiptContinuation) ??
-							"Receipt continuation unavailable: invalid source metadata",
-					),
-				]),
-		theme.fg(
-			"muted",
-			checkIn === undefined
-				? "Reported result · not operator authority or task acceptance"
-				: "Check-in · task not finished · not operator authority or task acceptance",
-		),
-		theme.fg("dim", "/agent opens the dashboard"),
-	];
-	return cardLayout(
-		{
-			tag: "[agent]",
-			...peerHeading(details, label),
-			body,
-			details: sourceDetails,
-			previewLines: NOTICE_PREVIEW_LINES,
-		},
-		theme,
-		{ expanded: options.expanded, peerPadding: options.outputPad, keys: options, message },
-	);
+	const source = authoredPeerBody(details, messageText(message.content));
+	const prefix = displayPrefix(source, MESSAGE_DISPLAY_LIMIT);
+	const body: (Component | string)[] = [];
+	if (details.liveOwner === false) body.push(theme.fg("warning", "No live recipient; this is a retained copy"));
+	if (details.saved === false && details.kind === "receipt") body.push(theme.fg("warning", "Receipt not saved"));
+	if (displayText(prefix).trim()) body.push(messageMarkdown(displayText(prefix), theme, "customMessageText"));
+	const facts = peerSourceLines(details);
+	return ordinaryMessageCard(message, options, theme, {
+		title: peerTitle(details),
+		label: text(details.threadTitle) || text(details.threadId),
+		metadata: peerMetadata(details),
+		body,
+		limit: peerLimit(details, source, prefix),
+		...(facts.length === 0
+			? {}
+			: {
+					details: () => [
+						...(body.length === 0 ? [] : [new Spacer(1)]),
+						theme.fg("muted", theme.bold("Source details")),
+						...facts.map((line) => theme.fg("muted", line)),
+					],
+				}),
+	});
 };
 
 function messageText(content: Parameters<MessageRenderer>[0]["content"]): string {
@@ -2994,34 +2895,30 @@ export const renderAgentApplicationMessage: MessageRenderer = (message, options,
 	);
 };
 
-/** The self-compaction notice: a requested compaction that another boundary handler preempted. */
-export const renderAgentCompactionMessage: MessageRenderer = (message, options, theme) =>
-	cardLayout(
-		{
-			tag: "[agent]",
-			title: "Compaction not applied",
-			body: [noticeBody(messageText(message.content), theme)],
-			previewLines: NOTICE_PREVIEW_LINES,
-		},
-		theme,
-		{ expanded: options.expanded, peerPadding: options.outputPad, keys: options, message },
-	);
+function noticeMessageBody(message: Parameters<MessageRenderer>[0], theme: Theme): Component {
+	const details = record(message.details);
+	const body = typeof details.operatorMessage === "string" ? details.operatorMessage : messageText(message.content);
+	return messageMarkdown(displayText(body), theme, "customMessageText");
+}
 
-/** The planning-budget notice: context use of this session crossed the planning budget of its model. */
+export const renderAgentCompactionMessage: MessageRenderer = (message, options, theme) =>
+	ordinaryMessageCard(message, options, theme, {
+		title: "Self-compaction not applied",
+		body: [noticeMessageBody(message, theme)],
+	});
+
 export const renderAgentPlanningBudgetMessage: MessageRenderer = (message, options, theme) => {
-	const content = messageText(message.content);
-	const facts = planningBudgetSelfFacts(content);
-	return cardLayout(
-		{
-			tag: "[agent]",
-			title: "Planning budget reached",
-			metadata: facts ? [`${facts.tokens} of ${facts.budget} tokens`, facts.model] : [],
-			body: [noticeBody(content, theme)],
-			previewLines: NOTICE_PREVIEW_LINES,
-		},
-		theme,
-		{ expanded: options.expanded, peerPadding: options.outputPad, keys: options, message },
-	);
+	const details = record(message.details);
+	const tokens = count(details.tokens);
+	const budget = count(details.budget);
+	return ordinaryMessageCard(message, options, theme, {
+		title: "Planning budget reached",
+		metadata: [
+			resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel)),
+			tokens === undefined || budget === undefined ? "" : `${tokens} of ${budget} tokens`,
+		],
+		body: [noticeMessageBody(message, theme)],
+	});
 };
 
 /** Upper-case first letter for a card title that leads its line. */

@@ -16,9 +16,22 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { obj } from "@earendil-works/pi-schema";
-import { createAgentToolCards, renderAgentPeerMessage, renderPeerNoticeCard } from "./tool-cards.ts";
+import { createAgentToolCards, renderAgentPeerMessage } from "./tool-cards.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import register from "./index.ts";
+
+function renderPeerNoticeCard(
+	input: { content: string; details?: unknown; timestamp?: number },
+	theme: Theme,
+	expanded: boolean,
+	keys: typeof cardKeys,
+) {
+	return renderAgentPeerMessage(
+		{ role: "custom", customType: "agent.peer", display: true, timestamp: 0, ...input },
+		{ expanded, outputPad: 0, ...keys },
+		theme,
+	);
+}
 
 initTheme("dark", false);
 const nativeTui = await import(
@@ -641,10 +654,11 @@ it("expected unsaved reports and direct messages omit warnings but genuine recei
 		cardKeys,
 	);
 	assert.ok(failure);
-	assert.match(text(failure), /Result unavailable or unanswered/u);
-	assert.match(text(failure), /No live owner; retained result only/u);
-	assert.match(text(failure), /Result not saved; retained only by the live owner/u);
-	assert.doesNotMatch(text(failure), /aborted|Failure body/u);
+	assert.match(text(failure), /Input ended without an answer/u);
+	assert.match(text(failure), /No live recipient; this is a retained copy/u);
+	assert.match(text(failure), /Receipt not saved/u);
+	assert.match(text(failure), /aborted/u);
+	assert.doesNotMatch(text(failure), /Failure body/u);
 	assert.equal((text(failure).match(/to expand|expand for full/gu) ?? []).length, 1);
 	const expanded = renderPeerNoticeCard(
 		{
@@ -657,7 +671,7 @@ it("expected unsaved reports and direct messages omit warnings but genuine recei
 	);
 	assert.ok(expanded);
 	assert.match(text(expanded), /aborted/u);
-	assert.match(text(expanded), /Failure body/u);
+	assert.doesNotMatch(text(expanded), /Failure body/u);
 	assert.doesNotMatch(text(expanded), /to expand|expand for full/u);
 });
 
@@ -667,7 +681,7 @@ it("native peer notices keep three visual body lines and one hint only when text
 	const kinds = [
 		{ kind: "report" },
 		{ kind: "message", senderKind: "session" },
-		{ kind: "receipt", status: "done" },
+		{ kind: "receipt", status: "done", operatorMessage: content },
 		{ kind: "report", threadId: "source/thread", threadTitle: "Parser contract", operatorMessage: content },
 		{ checkIn: {}, message: content },
 	];
@@ -824,7 +838,10 @@ it("peer Markdown and wrapped reasons share the total visual preview bound", (t)
 			content: "```text\nFirst code line\nSecond code line\nThird code line\nFINAL_BODY\n```",
 			details: { kind: "report" },
 		},
-		{ content: "FINAL_BODY", details: { kind: "receipt", status: "done", reason: "Reason detail. ".repeat(20) } },
+		{
+			content: "Envelope",
+			details: { kind: "receipt", status: "unanswered", reason: `${"Reason detail. ".repeat(50)}FINAL_BODY` },
+		},
 	]) {
 		const component = renderPeerNoticeCard(
 			{ ...source, details: { senderIdentity: identity, ...source.details } },
@@ -843,7 +860,7 @@ it("peer Markdown and wrapped reasons share the total visual preview bound", (t)
 		for (const width of "reason" in source.details ? [24, 60] : [24, 160]) {
 			const lines = clean(component, width);
 			const first = lines.findIndex((line) => line.trim());
-			const bodyStart = first + (source.details.kind === "report" ? 3 : 2);
+			const bodyStart = first + 3;
 			assert.equal(lines[bodyStart - 1]?.trim(), "");
 			const preview = lines.slice(bodyStart, -1);
 			assert.equal(preview.length, 4);
@@ -869,16 +886,16 @@ it("thread notice headers show the subject before known sender and secondary fac
 	const cases = [
 		{
 			details: facts,
-			header: ["[agent] thread notice · Parser contract", "from Parser review · provider/model · xhigh"],
+			header: ["[agent] Thread notice · Parser contract", "from Parser review · provider/model · xhigh"],
 		},
 		{
 			details: { ...facts, name: undefined, threadTitle: undefined },
-			header: [`[agent] thread notice · ${threadId}`, `from ${identity} · provider/model · xhigh`],
+			header: [`[agent] Thread notice · ${threadId}`, `from ${identity} · provider/model · xhigh`],
 		},
-		{ details: { threadId, threadTitle: "Parser contract" }, header: ["[agent] thread notice · Parser contract"] },
+		{ details: { threadId, threadTitle: "Parser contract" }, header: ["[agent] Thread notice · Parser contract"] },
 		{
 			details: { threadId, name: "Parser review" },
-			header: [`[agent] thread notice · ${threadId}`, "from Parser review"],
+			header: [`[agent] Thread notice · ${threadId}`, "from Parser review"],
 		},
 		{
 			details: { ...model, kind: "report", name: "Parser review" },
@@ -887,8 +904,8 @@ it("thread notice headers show the subject before known sender and secondary fac
 		{
 			details: { ...model, name: "Parser review", checkIn: { elapsedMs: 90_000, cost: 0 } },
 			header: [
-				"[agent] still working · Parser review",
-				"provider/model · xhigh · 1m elapsed · $0.000 conversation total",
+				"[agent] Check-in: Work continues",
+				"from Parser review · provider/model · xhigh · 1m elapsed · $0.000 conversation total",
 			],
 		},
 	];
@@ -905,7 +922,7 @@ it("thread notice headers show the subject before known sender and secondary fac
 	}
 });
 
-it("peer label uses Pi's custom message label colour, kind, subject and body use text, and metadata and hints use Pi's hint colours", (t) => {
+it("peer label uses Pi's custom message label colour, title, subject and body use custom message text, and metadata and hints use Pi's hint colours", (t) => {
 	noticeKeys(t);
 	const colors: Array<{ color: string; value: string }> = [];
 	const bold: string[] = [];
@@ -923,7 +940,13 @@ it("peer label uses Pi's custom message label colour, kind, subject and body use
 	const card = renderPeerNoticeCard(
 		{
 			content: "First body line\nSecond body line\nThird body line\nFinal body line",
-			details: { threadId: "source/thread", threadTitle: "Parser contract", name: "Parser review", ...model },
+			details: {
+				threadId: "source/thread",
+				threadTitle: "Parser contract",
+				name: "Parser review",
+				...model,
+				operatorMessage: "First body line\nSecond body line\nThird body line\nFinal body line",
+			},
 		},
 		spy,
 		false,
@@ -931,37 +954,40 @@ it("peer label uses Pi's custom message label colour, kind, subject and body use
 	);
 	assert.ok(card);
 	card.render(160);
-	assert.deepEqual(bold, ["[agent]", "thread notice"]);
+	assert.deepEqual(bold, ["[agent]", "Thread notice"]);
 	assert.deepEqual(
 		colors.filter(({ color }) => color === "customMessageLabel").map(({ value }) => value),
 		["[agent]"],
 	);
-	for (const value of ["thread notice", " · Parser contract"])
+	for (const value of ["Thread notice", " · Parser contract"])
 		assert.ok(
-			colors.some((entry) => entry.color === "text" && entry.value === value),
+			colors.some((entry) => entry.color === "customMessageText" && entry.value === value),
 			value,
 		);
-	assert.ok(colors.some(({ color, value }) => color === "text" && value.includes("First body line")));
+	assert.ok(colors.some(({ color, value }) => color === "customMessageText" && value.includes("First body line")));
 	assert.ok(
 		colors.some(({ color, value }) => color === "muted" && value === "from Parser review · provider/model · xhigh"),
 	);
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "... (1 more line, "));
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === ")"));
 	assert.equal(
-		colors.some(({ color }) => ["accent", "customMessageText"].includes(color)),
+		colors.some(({ color }) => color === "accent"),
 		false,
 	);
 	colors.length = 0;
 	const failure = renderPeerNoticeCard(
-		{ content: "Failure body", details: { status: "failed", reason: "Diagnostic reason" } },
+		{
+			content: "Failure body",
+			details: { kind: "receipt", status: "unanswered", reason: "Diagnostic reason", saved: false },
+		},
 		spy,
 		false,
 		cardKeys,
 	);
 	assert.ok(failure);
 	failure.render(160);
-	assert.ok(colors.some(({ color, value }) => color === "warning" && value === "Result unavailable or unanswered"));
-	assert.ok(colors.some(({ color, value }) => color === "text" && value === "Diagnostic reason"));
+	assert.ok(colors.some(({ color, value }) => color === "warning" && value === "Receipt not saved"));
+	assert.ok(colors.some(({ color, value }) => color === "customMessageText" && value.includes("Diagnostic reason")));
 });
 
 it("peer width clips use one ellipsis while wide headers and expanded details retain full identities", (t) => {
@@ -991,8 +1017,8 @@ it("peer width clips use one ellipsis while wide headers and expanded details re
 	assert.match(narrow.at(-2) ?? "", /^\.\.\. \(.*…$/u);
 	assert.doesNotMatch(narrow.slice(1, 3).join("\n"), /\.\.\./u);
 	assert.ok(card.render(20).every((line) => visibleWidth(line) <= 20));
-	assert.ok(text(expanded, 400).includes(`threadId: ${threadId}`));
-	assert.ok(text(expanded, 400).includes(`senderIdentity: ${identity}`));
+	assert.ok(text(expanded, 400).includes(`Thread ID: ${threadId}`));
+	assert.ok(text(expanded, 400).includes(`Sender ID: ${identity}`));
 });
 
 it("wide headers preserve full model identities and narrow headers clip only to width", () => {

@@ -126,13 +126,16 @@ function ownerStorageId(identity: string): string {
 	return separator < 0 ? identity : identity.slice(0, separator);
 }
 
-/** Bound one peer body without splitting a surrogate pair; the marker appears only when cut. */
+/** Bound one peer body without splitting a surrogate pair. */
+function peerTextPrefix(text: string): string {
+	if (text.length <= PEER_TEXT_LIMIT) return text;
+	const last = text.charCodeAt(PEER_TEXT_LIMIT - 1);
+	return text.slice(0, last >= 0xd800 && last <= 0xdbff ? PEER_TEXT_LIMIT - 1 : PEER_TEXT_LIMIT);
+}
+
 function boundedPeerText(text: string): { text: string; truncated: boolean } {
-	if (text.length <= PEER_TEXT_LIMIT) return { text, truncated: false };
-	let end = PEER_TEXT_LIMIT;
-	const last = text.charCodeAt(end - 1);
-	if (last >= 0xd800 && last <= 0xdbff) end -= 1;
-	return { text: `${text.slice(0, end)}${PEER_TRUNCATION_MARKER}`, truncated: true };
+	const prefix = peerTextPrefix(text);
+	return prefix === text ? { text, truncated: false } : { text: `${prefix}${PEER_TRUNCATION_MARKER}`, truncated: true };
 }
 
 /**
@@ -618,9 +621,18 @@ function inlineAnswer(receipt: DeliveryReceipt): string | null {
 }
 
 /** The displayed excerpt belongs to the shared answer, but only an undeclared request uses it as its result. */
-function receiptContinuation(metadata: HostMetadata, row: ReceiptRow, states: readonly ReceiptState[]) {
+function receiptContinuation(
+	metadata: HostMetadata,
+	row: ReceiptRow,
+	states: readonly ReceiptState[],
+	displayOffset?: number,
+) {
 	const { receipt } = row;
-	if (receipt.status !== "done" || receipt.answerEntryId === null || receipt.answerTruncated === false)
+	if (
+		receipt.status !== "done" ||
+		receipt.answerEntryId === null ||
+		(displayOffset === undefined && receipt.answerTruncated === false)
+	)
 		return undefined;
 	const plain = states.find((state) => state.work === undefined)?.receipt;
 	const target = plain
@@ -636,12 +648,17 @@ function receiptContinuation(metadata: HostMetadata, row: ReceiptRow, states: re
 		tool: "agent_inspect",
 		view: "result",
 		...target,
-		offset: receipt.answerTruncated === true ? (receipt.answer?.length ?? 0) : 0,
+		offset: displayOffset ?? (receipt.answerTruncated === true ? (receipt.answer?.length ?? 0) : 0),
 	} as const;
 }
 
-function receiptContinuationDetails(metadata: HostMetadata, row: ReceiptRow, states: readonly ReceiptState[]) {
-	const continuation = receiptContinuation(metadata, row, states);
+function receiptContinuationDetails(
+	metadata: HostMetadata,
+	row: ReceiptRow,
+	states: readonly ReceiptState[],
+	displayOffset?: number,
+) {
+	const continuation = receiptContinuation(metadata, row, states, displayOffset);
 	return continuation === undefined ? {} : { continuation };
 }
 
@@ -789,9 +806,6 @@ function reportOptionalDetails(report: DeliveryReport) {
 		...(report.threadTitle === undefined ? {} : { threadTitle: report.threadTitle }),
 		...(report.threadEvent === undefined ? {} : { threadEvent: report.threadEvent }),
 		...(report.threadEventKind === undefined ? {} : { threadEventKind: report.threadEventKind }),
-		...(report.operatorMessage === undefined
-			? {}
-			: { operatorMessage: boundedReportText(report, report.operatorMessage).text }),
 	};
 }
 function checkInSummary(checkIn: NonNullable<DeliveryReport["checkIn"]>): string {
@@ -1509,7 +1523,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	/** Fields of the displayed receipt and the exact related submissions on this delivery. */
 	const receiptFields = (row: ReceiptRow, states: readonly ReceiptState[], fallback: boolean) => {
 		const receipt = row.receipt;
-		const work = states.find((state) => state.receipt.submissionId === receipt.submissionId)?.work;
+		const workBySubmission = new Map(states.map(({ receipt, work }) => [receipt.submissionId, work]));
+		const work = workBySubmission.get(receipt.submissionId);
 		return {
 			...receiptWorkDetails(receipt, work),
 			submissions: row.receipts.map((member) => ({
@@ -1519,13 +1534,15 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 				entryId: member.entryId,
 				ownerId: member.ownerId,
 				origin: receiptOrigin(member),
+				status: member.status,
+				...receiptWorkDetails(member, workBySubmission.get(member.submissionId)),
 			})),
 			conversationId: receipt.conversationId,
 			status: receipt.status,
 			answerEntryId: receipt.answerEntryId,
 			...(receipt.answerTruncated ? { textTruncated: true } : {}),
-			...receiptContinuationDetails(metadata, row, states),
 			...receiptGroupContinuation(row, metadata.storageId),
+			...(work?.work === "closed" ? { readFinalReport: work.finalReport.read } : {}),
 			...(fallback ? {} : { receiptAssociation: receiptAssociation(metadata, row) }),
 			reason: row.displayReason ?? receipt.reason,
 			...(receipt.providerBlock === undefined ? {} : { providerBlock: receipt.providerBlock }),
@@ -1559,14 +1576,33 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		);
 		// Informational copies do not settle requests in the session that receives the copy.
 		const arrivals = fallback ? {} : arrivedReferences(marks);
-		if (row.kind === "receipt")
+		if (row.kind === "receipt") {
+			const { receipt } = row;
+			const reason = row.displayReason ?? receipt.reason;
+			const authored =
+				receipt.status === "done"
+					? (inlineAnswer(receipt) ?? "")
+					: [reason, receipt.providerBlock && providerBlockText(receipt.providerBlock)].filter(Boolean).join("\n\n");
+			const operatorMessage = peerTextPrefix(authored);
 			return {
 				...shared,
 				...arrivals,
 				...receiptFields(row, states, fallback),
+				...receiptContinuationDetails(
+					metadata,
+					row,
+					states,
+					operatorMessage !== authored ? operatorMessage.length : undefined,
+				),
 				answer: body.text,
+				operatorMessage,
+				operatorTextTruncated: operatorMessage !== authored || receipt.answerTruncated === true,
 			} as unknown as JsonValue;
+		}
 		const report = row.report;
+		const authored = report.operatorMessage ?? (report.threadId === undefined ? report.message : "");
+		const operatorMessage =
+			report.threadId === undefined ? peerTextPrefix(authored) : threadExcerpt(authored, PEER_TEXT_LIMIT).text;
 		return {
 			...shared,
 			...passiveThreadDetails(row, host, metadata, fallback),
@@ -1575,6 +1611,19 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			requestId: report.requestId,
 			senderIdentity: report.senderIdentity,
 			message: body.text,
+			operatorMessage,
+			operatorTextTruncated: operatorMessage !== authored,
+			...(finalReport === undefined
+				? {}
+				: {
+						finalReport: {
+							requestId: finalReport.requestId,
+							...(finalReport.status === undefined ? {} : { status: finalReport.status }),
+						},
+						...(operatorMessage === authored
+							? {}
+							: { finalReportContinuation: { ...finalReport.read, offset: operatorMessage.length } }),
+					}),
 			...reportOptionalDetails(report),
 			replyTo: report.replyTo,
 			acknowledged: report.acknowledged,

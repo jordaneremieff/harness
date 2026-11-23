@@ -2408,8 +2408,13 @@ it("names the work state of each request of a shared answer and continues a cut 
 		const exact = completed.report.message;
 		const head = report.slice(report.indexOf("\n\n") + 2, report.indexOf("\n\n[text truncated]"));
 		assert.equal(exact.startsWith(head), true, "the delivered part is the start of the retained report");
-		assert.equal((received[1].details as { message: string }).message, `${head}\n\n[text truncated] ${call[0]}`);
+		const details = received[1].details as Record<string, unknown>;
+		assert.equal(details.message, `${head}\n\n[text truncated] ${call[0]}`);
+		assert.equal(details.operatorTextTruncated, true);
+		assert.equal(details.operatorMessage, head);
+		assert.deepEqual(details.finalReport, { requestId: "task-a", status: "done" });
 		let next: Record<string, unknown> | undefined = JSON.parse(call[1]) as Record<string, unknown>;
+		assert.deepEqual(details.finalReportContinuation, { tool: "agent_inspect", ...next });
 		assert.equal(next.offset, head.length);
 		let rest = "";
 		while (next !== undefined) {
@@ -2496,7 +2501,18 @@ it("keeps the final report read as the only result pointer for a cut state note"
 	assert.match(receipt.text, /Read the final report: agent_inspect\(.*"finalReport":true/u);
 	assert.match(receipt.text, /\[State note excerpt\]/u);
 	assert.doesNotMatch(receipt.text, /Answer continues:|Read retained answer:|Full answer:/u);
-	assert.equal((receipt.details as { continuation?: unknown }).continuation, undefined);
+	const details = receipt.details as Record<string, unknown>;
+	assert.equal(details.continuation, undefined);
+	assert.equal(details.operatorTextTruncated, true);
+	assert.equal(typeof details.workLabel, "string");
+	assert.deepEqual(details.readFinalReport, {
+		tool: "agent_inspect",
+		view: "result",
+		sessionId: storageId,
+		submissionId: input.submissionId,
+		finalReport: true,
+		offset: 0,
+	});
 });
 
 function toolCall(id: string, name: string, args: Record<string, string | string[]> = {}) {
@@ -4424,11 +4440,16 @@ it("bounds long peer bodies without mutating the retained originals", { timeout:
 	const receiptDetails = receiptMessage.details as Record<string, unknown>;
 	assert.equal((receiptDetails.submissions as { submissionId: number }[])[0]?.submissionId, submissionId);
 	assert.ok(String(receiptDetails.answer).length <= 16_000 + 200);
+	assert.equal(receiptDetails.operatorMessage, longAnswer.slice(0, 16_000));
+	assert.equal(receiptDetails.operatorTextTruncated, true);
+	assert.equal((receiptDetails.continuation as { offset: number }).offset, 16_000);
 	const reportDetails = reportMessage.details as Record<string, unknown>;
 	assert.equal(reportDetails.reportSourceId, "report:long-report");
 	assert.equal(reportDetails.wake, true, "ordinary reports keep their primary wake behavior");
 	assert.equal(reportDetails.checkIn, undefined, "ordinary reports keep their detail shape");
 	assert.ok(String(reportDetails.message).length <= 16_000 + 200);
+	assert.equal(reportDetails.operatorMessage, longReport.slice(0, 16_000));
+	assert.equal(reportDetails.operatorTextTruncated, true);
 	const retained = await deliveryState(source);
 	assert.equal(retained?.receipts[String(submissionId)]?.answer, longAnswer, "the retained answer stays full");
 	assert.equal(retained?.reports[0]?.message, longReport, "the retained report stays full");

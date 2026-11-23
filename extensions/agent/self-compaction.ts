@@ -73,6 +73,10 @@ export class SelfCompaction {
 						display: true,
 						content:
 							"Self-compaction was not applied because an earlier boundary handler already proposed compaction. Inspect the current context before another request.",
+						details: {
+							operatorMessage:
+								"An earlier boundary handler already proposed compaction. Inspect the current context before another request.",
+						},
 					},
 				],
 			};

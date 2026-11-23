@@ -397,6 +397,13 @@ it("retains one own-budget notice at the first crossing of a context episode", (
 				display: true,
 				content:
 					"Context use reached 300000 tokens at 2030-01-01T00:00:00.000Z, at or above the planning budget of 300000 for acme/model-x. The budget is a planning preference, not a limit.",
+				details: {
+					tokens: 300_000,
+					budget: 300_000,
+					provider: "acme",
+					modelId: "model-x",
+					operatorMessage: "The budget is a planning preference, not a limit.",
+				},
 			},
 		],
 	});
