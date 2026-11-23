@@ -290,7 +290,7 @@
 				toast("Select a passage first");
 				return;
 			}
-			const meta = controller.payload?.meta ?? { capturedSource: false },
+			const meta: Record<string, unknown> = controller.payload?.meta ?? {},
 				source = controller.doc.source,
 				first = source.slice(0, selected.start).split(/\r\n|\r|\n/u).length,
 				last = source.slice(0, selected.end).split(/\r\n|\r|\n/u).length,

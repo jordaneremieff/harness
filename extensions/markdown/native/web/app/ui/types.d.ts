@@ -30,7 +30,39 @@ declare global {
 		| "unanswered"
 		| "failed"
 		| "unknown";
+	interface ReaderPromptVersion {
+		documentKey: string;
+		presentation: string;
+		generation: number;
+	}
+	interface ReaderAskDocument {
+		documentKey: string;
+		digest?: string;
+		threads: ReaderThread[];
+		comments: ReaderComment[];
+		overall: string;
+		overallRevision?: number;
+		current: ReaderThread | null;
+		visible: boolean;
+		heldThread: ReaderThread | null;
+	}
+	interface ReaderAskDelivery {
+		owner: ReaderAskDocument;
+		thread: ReaderThread;
+		message: ReaderAskMessage;
+	}
+	interface ReaderAskSessions {
+		readonly shown: ReaderAskDocument;
+		show(key: string, source: string, digest?: string): ReaderAskDocument;
+		change(edits: ReaderEdit[], source: string): void;
+		register(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage): void;
+		delivery(requestId: string, threadId: string): ReaderAskDelivery | undefined;
+		packet(thread: ReaderThread, message: ReaderAskMessage, version: ReaderPromptVersion): Record<string, unknown>;
+		releasePacket(message: ReaderAskMessage): void;
+		forget(message: ReaderAskMessage): void;
+	}
 	interface ReaderAskMessage {
+		authoredRevision?: number;
 		requestId: string;
 		text: string;
 		state: ReaderAskState;
@@ -43,12 +75,15 @@ declare global {
 		contexts: { before: string; after: string }[];
 	}
 	interface ReaderComment {
+		authoredRevision?: number;
 		text: string;
 		quote?: string;
 		sourceAnchor?: ReaderPassageAnchor;
 		range?: ReaderRange;
 	}
 	interface ReaderThread {
+		authoredRevision?: number;
+		draftRevision?: number;
 		threadId: string;
 		quote?: string;
 		sourceAnchor?: ReaderPassageAnchor;
@@ -229,6 +264,7 @@ declare global {
 		uiDOM: ReaderUIHelpers;
 		createNavigation(context: ReaderUIContext): ReaderNavigation;
 		createAskUI(context: ReaderUIContext, navigation: ReaderNavigation): ReaderAskUI;
+		createAskSessions(): ReaderAskSessions;
 		createViewsUI(context: ReaderUIContext, navigation: ReaderNavigation): ReaderViewsUI;
 		createContextMenu(
 			context: ReaderUIContext,

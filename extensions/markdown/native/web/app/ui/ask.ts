@@ -7,43 +7,47 @@
 			activity = get("#activity"),
 			tray = get("#ask-batch-tray"),
 			batchList = get("#ask-batch-list");
-		const batches = new Map<string, ReaderComment[]>(),
-			localBatch: ReaderComment[] = [],
-			// The overall comment of each pending batch, kept by the batch's comment list.
-			overalls = new WeakMap<ReaderComment[], string>(),
+		const sessions = api.createAskSessions(),
 			batchLimit = 50,
 			utf8 = new TextEncoder();
-		let comments = localBatch;
-		function overallOf(batch = comments) {
-			return overalls.get(batch) ?? "";
+		let session = sessions.shown;
+		function revision() {
+			const value = controller.payload?.meta.revision;
+			return typeof value === "number" ? value : undefined;
+		}
+		function version(): ReaderPromptVersion {
+			const payload = controller.payload,
+				doc = controller.doc;
+			if (!payload || !doc || payload.meta.documentKey !== session.documentKey)
+				throw new Error("No document is ready for this question.");
+			return { documentKey: session.documentKey, presentation: payload.presentation, generation: doc.generation };
 		}
 		// The native side counts U+0085 as white space, which JavaScript's trim keeps.
 		function hasText(text: string) {
 			return /[^\s\u0085]/u.test(text);
 		}
-		function setOverall(text: string, batch = comments) {
-			if (text) overalls.set(batch, text);
-			else overalls.delete(batch);
+		function setOverall(text: string, owner = session) {
+			if (!hasText(text)) owner.overallRevision = undefined;
+			else if (!hasText(owner.overall)) owner.overallRevision = revision();
+			owner.overall = text;
 		}
 		// Text returned to a batch joins the text written since, so no overall comment is lost.
-		function restoreOverall(text: string | undefined, batch: ReaderComment[]) {
-			const newer = overallOf(batch);
-			if (text && hasText(text)) setOverall(hasText(newer) && newer !== text ? `${text}\n\n${newer}` : text, batch);
+		function restoreOverall(text: string | undefined, authoredRevision: number | undefined, owner: ReaderAskDocument) {
+			if (!text || !hasText(text)) return;
+			const newer = owner.overall;
+			owner.overall = hasText(newer) && newer !== text ? `${text}\n\n${newer}` : text;
+			owner.overallRevision = authoredRevision;
 		}
 		function batchLabel() {
-			const count = commentCount(comments.length);
-			return hasText(overallOf()) ? `${count} + overall` : count;
+			const count = commentCount(session.comments.length);
+			return hasText(session.overall) ? `${count} + overall` : count;
 		}
-		const threads: ReaderThread[] = [],
-			payloads = new Map<string, Record<string, unknown>>();
 		const off: (() => void)[] = [];
 		type ReviewEntry = { operation: ReaderAgentOperation; edit: ReaderAgentOperation["edits"][number] };
 		let mounted: { panel: HTMLElement; entry: ReviewEntry; target: DiffTarget; conflicted: boolean } | null = null;
-		let current: ReaderThread | null = null,
-			visible = false,
-			changeIndex = 0,
+		let changeIndex = 0,
 			review: ReviewEntry[] = [];
-		function operations(thread = current) {
+		function operations(thread = session.current) {
 			return [...controller.agentOperations.values()].filter((op) => !thread || op.threadId === thread.threadId);
 		}
 		function activeMessage(thread: ReaderThread) {
@@ -78,20 +82,8 @@
 			return api.sourceModel.point(node, display);
 		}
 		function threadRange() {
-			if (!current || current.comments) return undefined;
-			return (current.pendingComment ?? current).range ?? operations(current).at(-1)?.edits[0];
-		}
-		function mapThread(thread: { range?: ReaderRange; quote?: string }, edits: ReaderEdit[]) {
-			if (!thread.range) return;
-			try {
-				const [mapped] = api.exact.mapEdits(
-					[{ ...thread.range, expected: thread.quote ?? "", text: thread.quote ?? "" }],
-					edits,
-				);
-				thread.range = { start: mapped.start, end: mapped.end };
-			} catch {
-				thread.range = undefined;
-			}
+			if (!session.current || session.current.comments) return undefined;
+			return (session.current.pendingComment ?? session.current).range ?? operations(session.current).at(-1)?.edits[0];
 		}
 		function rangeFor(range?: ReaderRange) {
 			if (!range) return null;
@@ -110,7 +102,7 @@
 		// The card floats beside its passage at every width and follows it while the page scrolls;
 		// opening it, redraws and agent changes never scroll the page.
 		function position() {
-			if (!visible) return;
+			if (!session.visible) return;
 			const box = app.getBoundingClientRect(),
 				bar = get(".bar").getBoundingClientRect();
 			const rect = cardAnchorRect();
@@ -158,12 +150,16 @@
 			return ranges.length ? [{ kind: "asked", owner: thread, ranges, open: () => openThread(thread) }] : [];
 		}
 		function isOpen(mark: Mark) {
-			return visible && !!current && (mark.owner === current || mark.owner === current.pendingComment);
+			return (
+				session.visible &&
+				!!session.current &&
+				(mark.owner === session.current || mark.owner === session.current.pendingComment)
+			);
 		}
 		function paintPassage() {
-			const range = visible ? rangeFor(threadRange()) : null;
+			const range = session.visible ? rangeFor(threadRange()) : null;
 			// In the order that clicks open them: comments as listed, then questions, newest first.
-			marks = [...comments.flatMap(commentMark), ...threads.flatMap(askedMark)];
+			marks = [...session.comments.flatMap(commentMark), ...session.threads.flatMap(askedMark)];
 			const shown = marks.filter((mark) => !isOpen(mark));
 			for (const kind of ["comment", "asked"])
 				editor.highlight(
@@ -172,7 +168,7 @@
 				);
 			editor.highlight(
 				"passage",
-				visible && current?.comments ? passageRanges(current.comments) : range ? [range] : [],
+				session.visible && session.current?.comments ? passageRanges(session.current.comments) : range ? [range] : [],
 			);
 			// The hover highlights paint after the marks they strengthen.
 			hovered = null;
@@ -240,7 +236,7 @@
 				selectionAction(),
 				el("div", { class: "sep" }),
 			);
-			if (comments.length)
+			if (session.comments.length)
 				activity.append(
 					button(
 						`Pending batch · ${batchLabel()}`,
@@ -252,8 +248,9 @@
 						{ className: "item" },
 					),
 				);
-			else if (!threads.length) activity.append(el("div", { class: "sec" }, "Select a passage and choose Ask."));
-			for (const thread of threads) {
+			else if (!session.threads.length)
+				activity.append(el("div", { class: "sec" }, "Select a passage and choose Ask."));
+			for (const thread of session.threads) {
 				const b = button(
 					"",
 					"spark",
@@ -281,12 +278,12 @@
 				return {
 					primary: "Done",
 					run: () => ask.close(),
-					secondary: `Send all ${comments.length}`,
+					secondary: `Send all ${session.comments.length}`,
 					runSecondary: () => void sendBatch(),
 					hint: "cmd+return done · cmd+shift+return send",
 				};
 			const add = () => addComment(thread);
-			if (!comments.length)
+			if (!session.comments.length)
 				return {
 					primary: "Send",
 					run: send,
@@ -297,7 +294,7 @@
 			return {
 				primary: "Add to batch",
 				run: add,
-				secondary: `Send all ${comments.length + 1}`,
+				secondary: `Send all ${session.comments.length + 1}`,
 				runSecondary: () => {
 					if (add()) void sendBatch();
 				},
@@ -339,7 +336,10 @@
 			updateButtons();
 			field.addEventListener("input", () => {
 				if (comment) comment.text = field.value;
-				else thread.draft = field.value;
+				else {
+					if (!hasText(thread.draft) && hasText(field.value)) thread.draftRevision = revision();
+					thread.draft = field.value;
+				}
 				updateButtons();
 			});
 			field.addEventListener("keydown", (event) => {
@@ -404,7 +404,7 @@
 			// Input that arrives while the list is closed, such as a late paste after a document
 			// switch, belongs to no visible batch.
 			if (!batchList.matches(":popover-open")) {
-				overallField.value = overallOf();
+				overallField.value = session.overall;
 				return;
 			}
 			setOverall(overallField.value);
@@ -412,7 +412,8 @@
 		});
 		// Text returned ahead of the text being typed keeps the caret on the same characters.
 		function syncOverallField() {
-			const text = overallOf(),
+			if (controller.compositionTarget === overallField) return;
+			const text = session.overall,
 				before = overallField.value;
 			if (before === text) return;
 			const { selectionStart: start, selectionEnd: end } = overallField,
@@ -430,7 +431,7 @@
 		function drawBatchList() {
 			syncOverallField();
 			listBody.replaceChildren();
-			for (const [index, comment] of comments.entries()) {
+			for (const [index, comment] of session.comments.entries()) {
 				const open = button(
 					"",
 					"",
@@ -458,11 +459,13 @@
 			}
 			listFoot.replaceChildren(
 				button("Remove all", "", removeAll, { className: "batch-secondary" }),
-				button(`Send ${commentCount(comments.length)}`, "", () => void sendBatch(), { className: "batch-primary" }),
+				button(`Send ${commentCount(session.comments.length)}`, "", () => void sendBatch(), {
+					className: "batch-primary",
+				}),
 			);
 		}
 		function openBatchList() {
-			if (!comments.length) return;
+			if (!session.comments.length) return;
 			batchList.togglePopover();
 		}
 		function editComment(comment: ReaderComment) {
@@ -478,39 +481,39 @@
 		traySend.id = "ask-batch-send";
 		tray.append(trayOpen, traySend);
 		function refreshTray() {
-			tray.hidden = !comments.length;
-			const count = commentCount(comments.length);
-			const described = hasText(overallOf()) ? `${count} and an overall comment` : count;
+			tray.hidden = !session.comments.length;
+			const count = commentCount(session.comments.length);
+			const described = hasText(session.overall) ? `${count} and an overall comment` : count;
 			trayOpen.setAttribute("aria-label", `Pending batch: ${described}`);
 			trayCount.textContent = batchLabel();
 		}
 		function refreshBatch() {
-			if (!comments.length) batchList.hidePopover();
+			if (!session.comments.length) batchList.hidePopover();
 			refreshTray();
 			if (batchList.matches(":popover-open")) drawBatchList();
 		}
 		function discardEmptyComment() {
-			const comment = current?.pendingComment;
+			const comment = session.current?.pendingComment;
 			if (comment && !comment.text.trim()) {
-				const index = comments.indexOf(comment);
-				if (index >= 0) comments.splice(index, 1);
+				const index = session.comments.indexOf(comment);
+				if (index >= 0) session.comments.splice(index, 1);
 			}
 		}
 		// A question card closed before anything was typed or sent leaves no entry in the Ask menu.
 		function discardEmptyQuestion() {
-			const thread = current;
+			const thread = session.current;
 			if (!thread || thread.pendingComment || thread.comments || thread.messages.length || thread.draft.trim()) return;
-			const index = threads.indexOf(thread);
-			if (index >= 0) threads.splice(index, 1);
-			current = null;
+			const index = session.threads.indexOf(thread);
+			if (index >= 0) session.threads.splice(index, 1);
+			session.current = null;
 		}
 		function removeComment(comment: ReaderComment) {
-			const index = comments.indexOf(comment);
+			const index = session.comments.indexOf(comment);
 			if (index < 0) return;
-			comments.splice(index, 1);
-			if (current?.pendingComment === comment) {
-				current = null;
-				visible = false;
+			session.comments.splice(index, 1);
+			if (session.current?.pendingComment === comment) {
+				session.current = null;
+				session.visible = false;
 			}
 			ask.refresh();
 			if (batchList.matches(":popover-open")) {
@@ -519,15 +522,15 @@
 			}
 		}
 		function removeAll() {
-			const batch = comments,
-				removed = batch.splice(0),
-				overall = overallOf(batch),
-				docAtRemoval = controller.doc;
-			const generation = docAtRemoval?.generation;
-			setOverall("", batch);
-			if (current?.pendingComment) {
-				current = null;
-				visible = false;
+			const owner = session,
+				removed = owner.comments.splice(0),
+				overall = owner.overall,
+				authoredRevision = owner.overallRevision,
+				atRemoval = version();
+			setOverall("", owner);
+			if (owner.current?.pendingComment) {
+				owner.current = null;
+				owner.visible = false;
 			}
 			ask.refresh();
 			const also = hasText(overall) ? " and the overall comment" : "";
@@ -535,12 +538,17 @@
 				label: "Undo",
 				run: () => {
 					if (!removed.length) return;
-					const document = controller.doc;
-					if (comments === batch && document && (docAtRemoval !== document || generation !== document.generation))
-						reanchor(removed, document.source);
-					batch.unshift(...removed.splice(0));
-					restoreOverall(overall, batch);
-					ask.refresh();
+					if (owner !== session) owner.digest = undefined;
+					if (
+						owner === session &&
+						(atRemoval.presentation !== controller.payload?.presentation ||
+							atRemoval.generation !== controller.doc?.generation)
+					)
+						for (const item of removed)
+							item.range = api.uiLogic.reanchorPassage(controller.doc?.source ?? "", item.sourceAnchor);
+					owner.comments.unshift(...removed.splice(0));
+					restoreOverall(overall, authoredRevision, owner);
+					if (owner === session) ask.refresh();
 				},
 			});
 		}
@@ -553,123 +561,104 @@
 		}
 		function addComment(thread: ReaderThread) {
 			if (!thread.draft.trim() || !quoteFits(thread.quote)) return false;
-			if (comments.length >= batchLimit) {
+			if (session.comments.length >= batchLimit) {
 				ctx.notice("The batch is full. Send it before adding another comment.", "warn");
 				return false;
 			}
-			const range = thread.range;
-			const sourceAnchor = range && controller.doc?.source.slice(range.start, range.end);
-			comments.push({ text: thread.draft, quote: thread.quote, range, sourceAnchor });
-			threads.splice(threads.indexOf(thread), 1);
+			session.comments.push({
+				text: thread.draft,
+				quote: thread.quote,
+				range: thread.range,
+				sourceAnchor: thread.sourceAnchor,
+				authoredRevision: thread.authoredRevision ?? thread.draftRevision,
+			});
+			session.threads.splice(session.threads.indexOf(thread), 1);
 			ctx.clearSelection?.();
 			ask.close();
-			current = null;
+			session.current = null;
 			return true;
 		}
-		function reanchor(items: ReaderComment[], source: string) {
-			for (const comment of items)
-				comment.range = api.uiLogic.reanchorPassage(source, comment.sourceAnchor, comment.range);
-		}
-		function batchPacket(id: string, items: ReaderComment[], overall?: string) {
-			return {
-				requestId: id,
-				threadId: id,
-				generation: controller.doc?.generation ?? 0,
-				...(overall ? { overall } : {}),
-				annotations: items.map(({ text, quote, range }) => ({
-					text,
-					...(quote ? { quote } : {}),
-					...(range ? { quoteRange: range } : {}),
-				})),
-			};
-		}
-		function restoreBatch(
-			batch: ReaderComment[],
-			thread: ReaderThread,
-			items: ReaderComment[],
-			sourceAtSend: ReaderExactDocument | null,
-		) {
-			const sourceNow = controller.doc;
-			if (batch === comments && sourceAtSend !== sourceNow && sourceNow) reanchor(items, sourceNow.source);
-			batch.unshift(...items);
-			restoreOverall(thread.overall, batch);
-			const index = threads.indexOf(thread);
-			if (index >= 0) threads.splice(index, 1);
-			if (current === thread) {
-				current = null;
-				visible = false;
+		function restoreBatch(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
+			owner.comments.unshift(...(thread.comments ?? []));
+			restoreOverall(thread.overall, message.authoredRevision, owner);
+			const index = owner.threads.indexOf(thread);
+			if (index >= 0) owner.threads.splice(index, 1);
+			const next: ReaderThread | null = thread.draft
+				? { threadId: "", draft: thread.draft, draftRevision: thread.draftRevision, messages: [] }
+				: null;
+			if (next) owner.threads.unshift(next);
+			if (owner.heldThread === thread) owner.heldThread = null;
+			if (owner.current === thread) {
+				owner.current = next;
+				owner.visible &&= !!next;
 			}
-			const detail = activeMessage(thread)?.detail ?? "The conversation did not accept it.";
-			if (batch === comments) ctx.notice(`Batch not sent. ${detail} Your comments are kept.`, "warn");
+			sessions.forget(message);
+			const detail = message.detail ?? "The conversation did not accept it.";
+			if (owner === session)
+				ctx.notice(
+					`Batch not sent. ${detail} Your comments are kept.${next ? " Your follow-up is a separate draft." : ""}`,
+					"warn",
+				);
 		}
-		const sendingBatches = new Set<ReaderComment[]>();
+		const sendingBatches = new Set<ReaderAskDocument>();
 		const retryBatch = new WeakMap<ReaderAskMessage, () => Promise<void>>();
 		function batchReady() {
-			if (current?.pendingComment && !current.pendingComment.text.trim()) ask.close();
-			if (!comments.length) return false;
-			if (sendingBatches.has(comments)) {
+			if (session.current?.pendingComment && !session.current.pendingComment.text.trim()) ask.close();
+			if (!session.comments.length) return false;
+			if (sendingBatches.has(session)) {
 				ctx.notice("Wait for the current batch to reach the conversation before sending another.", "warn");
 				return false;
 			}
-			if (comments.length > batchLimit) {
+			if (session.comments.length > batchLimit) {
 				ctx.notice("Remove comments until the batch fits, then send it.", "warn");
 				return false;
 			}
 			return batchTextFits();
 		}
 		function batchTextFits() {
-			if (utf8.encode(overallOf()).length > 64 * 1024) {
+			if (utf8.encode(session.overall).length > 64 * 1024) {
 				ctx.notice("Shorten the overall comment before sending the batch.", "warn");
 				return false;
 			}
-			const long = comments.findIndex(({ text }) => utf8.encode(text).length > 64 * 1024);
+			const long = session.comments.findIndex(({ text }) => utf8.encode(text).length > 64 * 1024);
 			if (long < 0) return true;
 			ctx.notice(`Shorten comment ${long + 1} before sending the batch.`, "warn");
 			return false;
 		}
 		async function sendBatch() {
-			if (!batchReady()) return;
-			const batch = comments,
-				documentAtSend = controller.doc;
-			const additions = [...batch],
-				overall = hasText(overallOf(batch)) ? overallOf(batch) : undefined,
-				id = crypto.randomUUID(),
-				payload = batchPacket(id, additions, overall);
-			if (utf8.encode(JSON.stringify(payload)).length > 256 * 1024 - 128) {
-				ctx.notice("The batch is too long. Shorten or remove comments before sending it.", "warn");
-				return;
-			}
+			if (!batchReady() || !releaseEditor()) return;
+			const owner = session,
+				additions = [...owner.comments],
+				overall = hasText(owner.overall) ? owner.overall : undefined,
+				id = crypto.randomUUID();
 			const message: ReaderAskMessage = {
 				requestId: id,
 				text: `Batch of ${commentCount(additions.length)}`,
 				state: "sending",
+				authoredRevision: owner.overallRevision,
 			};
 			const thread: ReaderThread = { threadId: id, comments: additions, overall, draft: "", messages: [message] };
-			batch.length = 0;
-			setOverall("", batch);
-			threads.unshift(thread);
-			payloads.set(id, payload);
+			const packet = sessions.packet(thread, message, version());
+			if (utf8.encode(JSON.stringify(packet)).length > 256 * 1024 - 128) {
+				ctx.notice("The batch is too long. Shorten or remove comments before sending it.", "warn");
+				return;
+			}
+			owner.comments.length = 0;
+			setOverall("", owner);
+			owner.threads.unshift(thread);
+			sessions.register(owner, thread, message);
 			openThread(thread, false);
-			const attempt = () => deliverBatch(batch, thread, message, additions, documentAtSend);
+			const attempt = async () => {
+				if (owner !== session || sendingBatches.has(owner)) return;
+				sendingBatches.add(owner);
+				await sendAttempt(owner, thread, message);
+				sendingBatches.delete(owner);
+				if (!(message.state === "unknown" && message.retryable)) retryBatch.delete(message);
+				if (message.state === "failed") restoreBatch(owner, thread, message);
+				if (owner === session) ask.refresh();
+			};
 			retryBatch.set(message, attempt);
 			await attempt();
-		}
-		async function deliverBatch(
-			batch: ReaderComment[],
-			thread: ReaderThread,
-			message: ReaderAskMessage,
-			items: ReaderComment[],
-			sourceAtSend: ReaderExactDocument | null,
-		) {
-			sendingBatches.add(batch);
-			await sendAttempt(message);
-			sendingBatches.delete(batch);
-			if (!(message.state === "unknown" && message.retryable)) {
-				payloads.delete(message.requestId);
-				retryBatch.delete(message);
-			}
-			if (message.state === "failed") restoreBatch(batch, thread, items, sourceAtSend);
-			ask.refresh();
 		}
 		function drawStatus(message: ReaderAskMessage, changeCount: number) {
 			const glyph =
@@ -785,12 +774,14 @@
 			card.scrollTop = card.scrollHeight;
 		}
 		function draw() {
-			if (!current || !visible) {
+			if (!session.current || !session.visible) {
 				card.removeAttribute("data-open");
 				paintPassage();
 				return;
 			}
-			const thread = current,
+			const target = controller.compositionTarget;
+			if (target instanceof Node && card.contains(target)) return;
+			const thread = session.current,
 				focused = focusedComposer();
 			card.replaceChildren();
 			card.dataset.state = activeMessage(thread)?.state ?? "draft";
@@ -816,66 +807,102 @@
 			}
 		}
 		function receivePrompt(value: unknown) {
-			const msg = value as { requestId: string; threadId?: string; state: ReaderAskState; detail?: string };
-			const thread = threads.find(
-				(t) => t.threadId === msg.threadId || t.messages.some((m) => m.requestId === msg.requestId),
-			);
-			const message = thread?.messages.find((m) => m.requestId === msg.requestId);
-			if (!thread || !message) return;
-			message.state = api.uiLogic.promptTransition(message.state, msg.state);
-			if (message.state === msg.state) message.detail = msg.detail;
-			ask.refresh();
-		}
-		function promptPayload(thread: ReaderThread, message: ReaderAskMessage) {
-			return {
-				requestId: message.requestId,
-				threadId: thread.threadId,
-				text: message.text,
-				...(thread.quote ? { quote: thread.quote } : {}),
-				...(thread.range ? { quoteRange: thread.range } : {}),
-				generation: controller.doc?.generation ?? 0,
+			const msg = value as {
+				documentKey?: string;
+				requestId: string;
+				threadId: string;
+				state: ReaderAskState;
+				detail?: string;
 			};
+			const delivery = sessions.delivery(msg.requestId, msg.threadId);
+			if (!delivery || (msg.documentKey !== undefined && msg.documentKey !== delivery.owner.documentKey)) return;
+			const { owner, message } = delivery;
+			// Admission evidence from the original request resolves an earlier transport uncertainty.
+			if (message.state === "unknown" && ["sent", "admitted", "working"].includes(msg.state)) message.state = msg.state;
+			else message.state = api.uiLogic.promptTransition(message.state, msg.state);
+			if (message.state === msg.state) message.detail = msg.detail;
+			if (owner === session) ask.refresh();
 		}
 		function newMessage(thread: ReaderThread) {
-			const message: ReaderAskMessage = { requestId: crypto.randomUUID(), text: thread.draft, state: "sending" };
+			const authoredRevision =
+				(!thread.messages.length ? thread.authoredRevision : undefined) ?? thread.draftRevision ?? revision();
+			const message: ReaderAskMessage = {
+				requestId: crypto.randomUUID(),
+				text: thread.draft,
+				state: "sending",
+				authoredRevision,
+			};
 			if (!thread.threadId) thread.threadId = message.requestId;
 			thread.messages.push(message);
 			thread.draft = "";
-			payloads.set(message.requestId, promptPayload(thread, message));
+			thread.draftRevision = undefined;
+			sessions.register(session, thread, message);
 			return message;
 		}
-		async function sendMessage(retry?: ReaderAskMessage) {
-			const thread = current;
-			if (!thread) return;
-			if (!retry && (!thread.draft.trim() || pending(thread) || !quoteFits(thread.quote))) return;
-			await sendAttempt(retry ?? newMessage(thread));
-			ask.refresh();
+		function releaseEditor() {
+			// Closing an open block can commit an edit. Capture its generation only afterwards.
+			if (!controller.doc?.active || editor.close()) return true;
+			ctx.notice("Finish the composition before sending the question.", "warn");
+			return false;
 		}
-		async function sendAttempt(message: ReaderAskMessage) {
+		async function sendMessage(retry?: ReaderAskMessage) {
+			const thread = session.current;
+			if (!thread || (!retry && (!thread.draft.trim() || pending(thread) || !quoteFits(thread.quote)))) return;
+			if (!releaseEditor()) return;
+			await sendAttempt(session, thread, retry ?? newMessage(thread));
+			if (thread === session.current) ask.refresh();
+		}
+		async function sendAttempt(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
 			message.state = "sending";
 			message.retryable = false;
-			// Sending a request is the person's consent to the agent's change: the open block, which
-			// holds its passage against agent edits, closes before the request leaves.
-			if (controller.doc?.active) editor.close();
-			draw();
 			ask.refresh();
-			await deliverMessage(message);
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const packet = sessions.packet(thread, message, version());
+				try {
+					const receipt = (await host.request("prompt", packet)) as {
+						accepted: boolean;
+						uncertain?: true;
+						retryable?: boolean;
+						fresh?: true;
+						detail?: string;
+					};
+					if (receipt.fresh) {
+						// Native confirmed that this request never entered the conversation. Only then is a new base safe.
+						sessions.releasePacket(message);
+						if (
+							!attempt &&
+							owner === session &&
+							(packet.presentation !== controller.payload?.presentation ||
+								packet.generation !== controller.doc?.generation)
+						)
+							continue;
+					}
+					receiveReceipt(message, receipt);
+					if (receipt.accepted) sessions.releasePacket(message);
+				} catch (error) {
+					if (message.state === "sending") {
+						message.state = "unknown";
+						message.retryable = true;
+						message.detail = String(error);
+					}
+				}
+				break;
+			}
 		}
-		// The thread whose request was working when the agent was held back by the open block.
-		let heldThread: ReaderThread | null = null;
+		// The held request belongs to the document where the passage was open.
 		function noteHeld() {
-			heldThread =
-				[...threads].reverse().find((t) => {
+			session.heldThread =
+				[...session.threads].reverse().find((t) => {
 					const state = activeMessage(t)?.state;
 					return !!state && ["sending", "sent", "admitted", "working"].includes(state);
-				}) ?? heldThread;
+				}) ?? session.heldThread;
 		}
 		// Let it releases the passage. If the held request has already ended, the agent is asked in
 		// the same thread to make the change now; while it still works, its own retry lands.
 		function letAgentChange() {
 			editor.releaseHold();
-			const thread = heldThread;
-			heldThread = null;
+			const thread = session.heldThread;
+			session.heldThread = null;
 			const state = thread ? activeMessage(thread)?.state : undefined;
 			if (!thread || !state) {
 				ctx.toast("The passage is free. Ask the agent again to change it.");
@@ -883,23 +910,28 @@
 			}
 			if (!["answered", "failed"].includes(state)) return;
 			openThread(thread);
-			thread.draft = "I closed the passage I had open. Please make the change now.";
-			void sendMessage();
+			if (!releaseEditor()) return;
+			const message: ReaderAskMessage = {
+				requestId: crypto.randomUUID(),
+				text: "I closed the passage I had open. Please make the change now.",
+				state: "sending",
+				authoredRevision: revision(),
+			};
+			thread.messages.push(message);
+			sessions.register(session, thread, message);
+			void sendAttempt(session, thread, message).then(() => {
+				if (thread === session.current) ask.refresh();
+			});
 		}
 		function receiveReceipt(message: ReaderAskMessage, value: unknown) {
 			const receipt = value as { accepted: boolean; uncertain?: true; retryable?: boolean; detail?: string };
 			const state = receipt.uncertain ? "unknown" : receipt.accepted ? "sent" : "failed";
+			// A delayed transport receipt must not undo proven admission or progress.
+			if ((state === "unknown" || state === "failed") && ["sent", "admitted", "working"].includes(message.state))
+				return;
 			message.state = api.uiLogic.promptTransition(message.state, state);
 			message.retryable = message.state === "unknown" && receipt.retryable === true;
 			if (message.state === "failed" && state === "failed") message.detail = receipt.detail;
-		}
-		async function deliverMessage(message: ReaderAskMessage) {
-			try {
-				receiveReceipt(message, await host.request("prompt", payloads.get(message.requestId) ?? {}));
-			} catch (error) {
-				message.state = api.uiLogic.promptTransition(message.state, "unknown");
-				if (message.state === "unknown") message.detail = String(error);
-			}
 		}
 		function undoLabel(op: ReaderAgentOperation, latest = false) {
 			if (op.edits.length === 1) return latest ? "Undo latest change" : "Undo";
@@ -934,12 +966,12 @@
 		}
 		function openThread(thread: ReaderThread, focus = true) {
 			closeReview();
-			if (current !== thread) {
+			if (session.current !== thread) {
 				discardEmptyComment();
 				discardEmptyQuestion();
 			}
-			current = thread;
-			visible = true;
+			session.current = thread;
+			session.visible = true;
 			refreshBatch();
 			draw();
 			if (focus) card.querySelector("textarea")?.focus({ preventScroll: true });
@@ -1066,7 +1098,7 @@
 			}
 			head.append(button("Close changes", "x", closeReview, { iconOnly: true, key: "esc" }));
 			const foot = el("div", { class: "diff-actions" });
-			const thread = operation.threadId && threads.find((t) => t.threadId === operation.threadId);
+			const thread = operation.threadId && session.threads.find((t) => t.threadId === operation.threadId);
 			if (thread) foot.append(button("Back to question", "ask", () => openThread(thread), { className: "link agent" }));
 			foot.append(button(undoLabel(operation), "undo", () => undo(operation.operationId), { className: "link" }));
 			diff.append(head, diffBody(target), foot);
@@ -1113,14 +1145,18 @@
 				return !!mark;
 			},
 			open(selection) {
+				if (!controller.doc || !session.documentKey) return;
 				const thread: ReaderThread = {
 					threadId: "",
 					quote: selection?.text,
 					range: selection ? { start: selection.start, end: selection.end } : undefined,
+					sourceAnchor:
+						selection && controller.doc ? api.uiLogic.capturePassage(controller.doc.source, selection) : undefined,
+					authoredRevision: selection ? revision() : undefined,
 					draft: "",
 					messages: [],
 				};
-				threads.unshift(thread);
+				session.threads.unshift(thread);
 				openThread(thread);
 			},
 			close() {
@@ -1128,11 +1164,11 @@
 					closeReview();
 					return true;
 				}
-				if (!visible) return false;
+				if (!session.visible) return false;
 				discardEmptyComment();
 				discardEmptyQuestion();
-				if (current?.pendingComment) current = null;
-				visible = false;
+				if (session.current?.pendingComment) session.current = null;
+				session.visible = false;
 				card.removeAttribute("data-open");
 				refreshBatch();
 				paintPassage();
@@ -1147,7 +1183,7 @@
 					b = get("#b-ask");
 				b.querySelector(".dot")?.remove();
 				b.querySelector(".change-count")?.remove();
-				if (threads.some(pending)) b.append(el("span", { class: "dot", "aria-hidden": "true" }));
+				if (session.threads.some(pending)) b.append(el("span", { class: "dot", "aria-hidden": "true" }));
 				if (count)
 					b.append(el("span", { class: "change-count", "aria-label": `${count} unseen changes` }, String(count)));
 				b.setAttribute("aria-label", `Ask the agent${count ? `, ${count} unseen changes` : ""}`);
@@ -1160,9 +1196,9 @@
 				if (!selected) return;
 				const group = selected.threadId ? all.filter((op) => op.threadId === selected.threadId) : [selected];
 				editor.close();
-				if (current?.pendingComment) ask.close();
+				if (session.current?.pendingComment) ask.close();
 				discardEmptyQuestion();
-				visible = false;
+				session.visible = false;
 				draw();
 				review = group.flatMap((operation) => operation.edits.map((edit) => ({ operation, edit })));
 				visitChange(review.findIndex((entry) => entry.operation === selected));
@@ -1175,11 +1211,13 @@
 		off.push(
 			host.on("promptState", receivePrompt),
 			controller.on("change", (change) => {
-				for (const thread of threads) {
-					mapThread(thread, change.edits);
-					for (const item of thread.comments ?? []) mapThread(item, change.edits);
-				}
-				for (const item of comments) mapThread(item, change.edits);
+				if (controller.doc) sessions.change(change.edits, controller.doc.source);
+			}),
+			controller.on("ack", (ack) => {
+				const { payload, doc } = controller;
+				if (!payload || !doc) return;
+				if (payload.meta.documentKey !== session.documentKey) installSession(payload, doc.source);
+				if (ack.generation === doc.generation && typeof ack.digest === "string") session.digest = ack.digest;
 			}),
 			controller.on("agentOperations", () => ask.refresh()),
 			controller.on("view", () => {
@@ -1201,28 +1239,36 @@
 						`agent-${id}`,
 					);
 			}),
-			controller.on("document", () => {
-				closeReview();
-				ask.close();
-				batchList.hidePopover();
-				threads.length = 0;
-				payloads.clear();
-				current = null;
-				heldThread = null;
-				const key = controller.payload?.meta.documentId;
-				if (typeof key === "string" && key) {
-					comments = batches.get(key) ?? [];
-					batches.set(key, comments);
-				} else {
-					localBatch.length = 0;
-					overalls.delete(localBatch);
-					comments = localBatch;
-				}
-				reanchor(comments, controller.doc?.source ?? "");
-				syncOverallField();
-				refreshBatch();
-			}),
+			controller.on("document", (payload) => installSession(payload, payload.source)),
 		);
+		function installSession(payload: ReaderCoreDocument, source: string) {
+			closeReview();
+			if (session.documentKey !== payload.meta.documentKey) {
+				batchList.hidePopover();
+				activity.hidePopover();
+				// Never carry a focused field or its selection to a different document.
+				if (document.activeElement instanceof HTMLElement && card.contains(document.activeElement))
+					document.activeElement.blur();
+			}
+			session = sessions.show(
+				payload.meta.documentKey,
+				source,
+				typeof payload.meta.digest === "string" ? payload.meta.digest : undefined,
+			);
+			syncOverallField();
+			ask.refresh();
+		}
+		// The final input event commits marked text before the postponed card redraw.
+		let compositionFrame = 0;
+		const finishCardInput = () => {
+			cancelAnimationFrame(compositionFrame);
+			compositionFrame = requestAnimationFrame(() => ask.refresh());
+		};
+		card.addEventListener("compositionend", finishCardInput);
+		off.push(() => {
+			card.removeEventListener("compositionend", finishCardInput);
+			cancelAnimationFrame(compositionFrame);
+		});
 		const onBatchToggle = (event: ToggleEvent) => {
 			const open = event.newState === "open";
 			trayOpen.setAttribute("aria-expanded", String(open));

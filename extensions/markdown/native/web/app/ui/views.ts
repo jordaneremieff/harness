@@ -545,7 +545,7 @@
 			// Grouped by use, most frequent first. Unavailable commands stay in place, disabled, and
 			// commands that ask for more input before they act end with an ellipsis.
 			menu() {
-				const meta = controller.payload?.meta ?? { capturedSource: false },
+				const meta: Record<string, unknown> = controller.payload?.meta ?? {},
 					revisions = (meta.revisions as Revision[] | undefined) ?? [],
 					stored = typeof meta.revision === "number";
 				menu.replaceChildren(
