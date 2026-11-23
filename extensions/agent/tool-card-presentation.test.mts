@@ -210,7 +210,8 @@ it("status keeps one keyless disclosure after a result, and preserves the exact 
 	};
 	card.updateResult({ ...fixtureResult(details), isError: false });
 	const collapsed = screen(card);
-	assert.match(collapsed, /Retained storage page: 7 conversations; next call in expanded details/u);
+	assert.match(collapsed, /7 conversations on a retained storage page; more available/u);
+	assert.match(screen(card, 60), /7 conversations on a retained storage page; more available/u);
 	assert.match(collapsed, /Reader 4 · live activity not observed\n\.\.\. \(2 more lines, click to expand\)$/u);
 	assert.doesNotMatch(collapsed, /Reader [56]|backend\/cursor|\[Truncated/u);
 	const rows = card.render(240);
@@ -232,7 +233,100 @@ it("status keeps one keyless disclosure after a result, and preserves the exact 
 	);
 	assert.match(screen(card), /Reader 6 · live activity not observed/u);
 	assert.ok(screen(card).includes(`Continue with agent_status(${JSON.stringify(next)})`));
-	assert.doesNotMatch(screen(card), /click to expand/u);
+	assert.match(screen(card), /7 conversations on a retained storage page; more available/u);
+	assert.doesNotMatch(screen(card), /click to expand|\[Storage scan incomplete\]/u);
+});
+
+it("status leads with observed activity and keeps its source and limits", () => {
+	const conversation = {
+		identity: targetId,
+		conversationId: 1,
+		name: "Parser review",
+		busy: true,
+		availability: "live",
+		model: { provider: "provider", modelId: "model" },
+		thinkingLevel: "high",
+		timers: 0,
+		queue: { inbox: 0, submissions: 1 },
+		unplaced: 0,
+		openWorkCount: 0,
+		omitted: ["host inventory"],
+		detail: { tool: "agent_status", sessionId: targetId, detail: true },
+	};
+	const args = { sessionId: targetId };
+	const card = nativeRow("agent_status", args, { format: "compact", conversation });
+	const working = screen(card, 60);
+	assert.match(
+		working,
+		/^agent_status Parser review\nprovider\/model · high · selected status\nWorking\nDurable agent · live host observation/u,
+	);
+	assert.doesNotMatch(working, /Activity:|0 timers|unplaced|work open/u);
+	assert.match(working, /\[Compact status omits facts; see full detail\]/u);
+	card.setExpanded(true);
+	assert.match(screen(card), /Working\nDurable agent · live host observation/u);
+	assert.match(screen(card), /\[Compact status omits facts; see full detail\]/u);
+
+	const idle = nativeRow("agent_status", args, {
+		format: "compact",
+		conversation: {
+			...conversation,
+			busy: false,
+			timers: 1,
+			unplaced: 2,
+			oldest: 10_000,
+			openWorkCount: 1,
+		},
+	});
+	assert.match(screen(idle), /\nIdle\nDurable agent · live host observation/u);
+	assert.match(screen(idle), /1 timer\n2 unplaced inputs · oldest 10s\n1 open work item/u);
+
+	const retained = nativeRow("agent_status", args, { format: "compact", live: false, conversation });
+	assert.match(screen(retained), /Live session activity not observed\nDurable agent · retained snapshot/u);
+	assert.doesNotMatch(screen(retained), /\n(?:Working|Idle)\n/u);
+	const unknown = nativeRow("agent_status", args, { format: "compact", conversation: { ...conversation, busy: null } });
+	assert.match(screen(unknown), /Live session activity not established\nDurable agent · live host observation/u);
+	const ordinary = nativeRow(
+		"agent_status",
+		{ ...args, detail: true },
+		{
+			kind: "ordinary-primary",
+			view: "status",
+			sessionId: targetId,
+			presence: { name: "Parser review", process: { state: "live" } },
+			coverage: { complete: false },
+		},
+	);
+	for (const expanded of [false, true]) {
+		ordinary.setExpanded(expanded);
+		assert.match(screen(ordinary), /Live session activity not observed\nOrdinary primary/u);
+		assert.match(screen(ordinary), /Local process exists/u);
+		assert.match(screen(ordinary), /\[Retained ancestry scan incomplete\]/u);
+		assert.doesNotMatch(screen(ordinary), /\n(?:Working|Idle)\n/u);
+	}
+});
+
+it("fleet status leads with counts and keeps one separate coverage warning at narrow widths", () => {
+	const card = nativeRow(
+		"agent_status",
+		{ view: "fleet" },
+		{
+			view: "fleet",
+			models: [{}, {}],
+			failures: Array.from({ length: 4 }, () => ({})),
+			warnings: [],
+			usageCoverage: { status: "partial", sampledResponses: 1273 },
+			coverage: { catalog: { complete: false, records: 320 }, output: { omittedWarnings: 27 } },
+		},
+	);
+	for (const expanded of [false, true]) {
+		card.setExpanded(expanded);
+		const output = screen(card, 60);
+		assert.match(output, /^agent_status fleet\n/u);
+		assert.match(output, /2 models, 4 failures in local evidence\nPublished evidence, not provider health/u);
+		assert.equal(output.match(/\[Partial fleet coverage\]/gu)?.length, 1);
+		assert.doesNotMatch(output, /0 warnings|Returned:/u);
+		if (expanded) assert.match(output, /Catalogue scan incomplete\n320 storage records read/u);
+	}
 });
 
 it("status presents the actual flagged diagnostic and adds no hint to an empty call with a complete answer", () => {

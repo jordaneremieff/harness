@@ -207,11 +207,8 @@ describe("status cards", () => {
 		assert.doesNotMatch(firstCall, /overview|continuation/u);
 		assert.match(screen(card.renderCall(nextArgs, theme, context())), /storage page · continuation/u);
 		const text = render(value, args);
-		assert.match(text, /Retained storage page/u);
-		assert.match(
-			text,
-			/Retained storage page: 0 conversations; next call in expanded details; storage scan incomplete; 50 scanned/u,
-		);
+		assert.match(text, /0 conversations on a retained storage page; more available/u);
+		assert.match(text, /50 conversations scanned/u);
 		assert.doesNotMatch(text, /agent_list|opaque-token|0 working/u);
 		assert.ok(render(value, args, true).includes(`Continue with agent_status(${JSON.stringify(nextArgs)})`));
 		assert.ok(render(value).includes(storageId), "implicit native storage is named by the result");
@@ -289,26 +286,26 @@ describe("status cards", () => {
 		const providerOnly = screen(card.renderCall({ view: "fleet", provider: "sample" }, theme, context()));
 		assert.match(providerOnly, /agent_status sample\nfleet/u);
 		const match = render(await readFleetStatus(catalog, { now, model, provider: "sample" }), args);
-		assert.match(match, /Local published evidence, not provider health/u);
-		assert.match(match, /Filter matched/u);
-		assert.match(match, /Failure sample · sample\/runner: Request refused/u);
-		assert.match(match, /Last 7 days for the filter: 1 sampled response.*\$0\.2 reported/u);
-		assert.match(match, /Partial machine-wide usage · 2 sampled responses/u);
-		assert.match(match, /Catalogue coverage incomplete · 1 storage record read/u);
+		assert.match(match, /1 model, 1 failure in local evidence\nPublished evidence, not provider health/u);
+		assert.doesNotMatch(match, /0 warnings/u);
+		assert.match(match, /Sampled failure · sample\/runner · Request refused/u);
+		assert.match(match, /1 sampled response for the filter in the last 7 days.*\$0\.2 reported/u);
+		assert.match(match, /2 machine-wide usage samples/u);
+		assert.match(match, /\[Partial fleet coverage\]/u);
 		assert.doesNotMatch(match, /Result received|"usageCoverage"/u);
 		const none = render(await readFleetStatus(catalog, { now, model: "missing/model" }), {
 			view: "fleet",
 			model: "missing/model",
 		});
-		assert.match(none, /No evidence matched the filter; use is not established/u);
-		assert.match(none, /Partial machine-wide usage · 2 sampled responses/u);
+		assert.match(none, /No evidence matched the filter/u);
+		assert.match(none, /2 machine-wide usage samples/u);
 		assert.doesNotMatch(none, /Last 7 days|\$0|healthy/u);
 
 		const empty = new AgentCatalog("/work/catalog");
 		empty.scanPages = async function* () {
 			yield { records: [], nextCursor: null, observedAt, coverage: { visited: 0, skipped: 0, complete: true } };
 		};
-		assert.match(screen(card.renderCall({ view: "fleet" }, theme, context())), /^agent_status\nfleet/u);
+		assert.match(screen(card.renderCall({ view: "fleet" }, theme, context())), /^agent_status fleet/u);
 		const unfiltered = render(await readFleetStatus(empty, { now }), { view: "fleet" });
 		assert.match(unfiltered, /No machine-wide usage samples; use is not established/u);
 		assert.doesNotMatch(unfiltered, /\$0|healthy|Result received/u);
@@ -357,7 +354,7 @@ describe("status cards", () => {
 			},
 		};
 		const ordinary = render(primary, { sessionId: "primary", detail: true });
-		assert.match(ordinary, /Ordinary primary · live session activity not observed/u);
+		assert.match(ordinary, /Live session activity not observed\nOrdinary primary/u);
 		assert.match(ordinary, /Primary review/u);
 		assert.match(ordinary, /Local process exists/u);
 		assert.match(ordinary, /Latest retained entry b5e12936/u);
@@ -434,7 +431,7 @@ describe("agent call cards", () => {
 	it("shows an argument hint only when a collapsed call hides or clips content", () => {
 		assert.equal(
 			screen(renderAgentCall("agent_status", { sessionId: "s" }, theme, context())),
-			"agent_status s\nselected status\n... (ctrl+o to expand)",
+			"agent_status s\nselected status",
 		);
 		assert.match(
 			screen(renderAgentCall("agent_status", { sessionId: "s", detail: true }, theme, context())),
@@ -774,7 +771,7 @@ describe("agent result cards", () => {
 			),
 			180,
 		);
-		assert.match(wrapped, /Storage page: 2 conversations/);
+		assert.match(wrapped, /2 conversations on a storage page/);
 		assert.match(wrapped, /live activity not observed/);
 		assert.doesNotMatch(wrapped, /\$0\.00/);
 	});
@@ -810,12 +807,9 @@ describe("agent result cards", () => {
 			),
 			180,
 		);
-		assert.match(
-			text,
-			/5 conversations observed; 5 rows returned\n1 working · 1 need attention\n0 unavailable · 3 quiet/,
-		);
+		assert.match(text, /5 conversations observed; 5 rows returned\n1 working · 1 need attention\n3 quiet/);
 		assert.match(text, /Parser review · working/);
-		assert.match(text, /4 more lines/);
+		assert.match(text, /3 more lines/);
 		assert.doesNotMatch(text, /≥|\+\?/);
 		assert.doesNotMatch(text, /\$/, "sampled costs are not fleet totals");
 		assert.match(text, /1 storage unavailable; absence not established/);

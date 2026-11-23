@@ -609,7 +609,8 @@ function argumentCard(
 function statusCallMode(args: Record<string, unknown>, identity: string): string {
 	if (args.view === "fleet") {
 		const provider = text(args.provider);
-		return `fleet${text(args.model) && provider ? ` · provider filter ${displayText(provider)}` : ""}`;
+		if (text(args.model) && provider) return `fleet · provider filter ${displayText(provider)}`;
+		return text(args.model) || provider ? "fleet" : "";
 	}
 	if (args.view === "storage-page") return args.cursor === undefined ? "storage page" : "storage page · continuation";
 	if (args.detail === true) return "full detail";
@@ -625,6 +626,16 @@ function statusSubject(args: Record<string, unknown>): string | undefined {
 	return undefined;
 }
 
+function statusCallSubject(
+	args: Record<string, unknown>,
+	context: AgentCardContext,
+): { subject: string; key?: string } {
+	const sessionId = text(args.sessionId);
+	if (sessionId) return { subject: targetLabel(sessionId, context) };
+	const key = statusSubject(args);
+	return { key, subject: key ? text(args[key]) : args.view === "fleet" ? "fleet" : "" };
+}
+
 function renderStatusCall(
 	name: string,
 	args: Record<string, unknown>,
@@ -632,8 +643,7 @@ function renderStatusCall(
 	context: AgentCardContext,
 ): Component {
 	const sessionId = text(args.sessionId);
-	const key = statusSubject(args);
-	const subject = sessionId ? targetLabel(sessionId, context) : key ? text(args[key]) : "";
+	const { subject, key } = statusCallSubject(args, context);
 	const limit = count(args.limit);
 	return toolCallCard(
 		{
@@ -1239,34 +1249,40 @@ function liveActivity(status: Record<string, unknown>): string {
 	return status.busy ? "working" : "idle";
 }
 
-function fleetStatusLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
-	const selection = record(details.selection);
-	const models = array(details.models);
+function fleetStatus(details: Record<string, unknown>, context: AgentCardContext): ToolResultPresentation {
+	const selection = record(details.selection).outcome;
 	const failures = array(details.failures);
-	const warnings = array(details.warnings);
-	const outcome = selection.outcome;
-	const lines = [theme.fg("toolOutput", "Local published evidence, not provider health")];
-	if (outcome === "no-match") lines.push(muted(theme, "No evidence matched the filter; use is not established"));
-	else {
-		const prefix = outcome === "matched" ? "Filter matched · returned" : "Returned";
-		lines.push(
-			muted(theme, `${prefix}: ${models.length} models, ${failures.length} failures, ${warnings.length} warnings`),
-		);
-	}
-	const failure = record(failures[0]);
-	if (text(failure.message)) {
-		const model = resolvedModelLine(text(failure.provider), text(failure.modelId), "");
-		lines.push(
-			muted(theme, `Failure sample${model ? ` · ${model}` : ""}: ${displayPreview(text(failure.message), 120)}`),
-		);
-	}
+	const counts = [
+		[array(details.models).length, "model"],
+		[failures.length, "failure"],
+		[array(details.warnings).length, "warning"],
+	] as const;
+	const returned = counts.filter(([n]) => n > 0).map(([n, noun]) => cardinal(n, noun));
+	const outcome =
+		selection === "no-match"
+			? "No evidence matched the filter"
+			: returned.length
+				? `${returned.join(", ")} in local evidence`
+				: "No model, failure or warning records returned";
+	return {
+		outcome,
+		body: [
+			"Published evidence, not provider health",
+			selection === "matched" ? fleetSelectionUsage(details, record(context.args)) : "",
+			fleetUsageCoverage(details),
+			fleetFailureSample(record(failures[0])),
+		]
+			.filter(Boolean)
+			.join("\n"),
+		...fleetCoveragePresentation(details),
+	};
+}
 
-	if (outcome === "matched") {
-		const usage = fleetSelectionUsage(details, record(context.args));
-		if (usage) lines.push(muted(theme, usage));
-	}
-	lines.push(...fleetCoverageLines(details, theme));
-	return lines;
+function fleetFailureSample(failure: Record<string, unknown>): string {
+	const message = text(failure.message);
+	if (!message) return "";
+	const model = resolvedModelLine(text(failure.provider), text(failure.modelId), "");
+	return ["Sampled failure", model, message].filter(Boolean).join(" · ");
 }
 
 function fleetSelectionUsage(details: Record<string, unknown>, args: Record<string, unknown>): string {
@@ -1284,96 +1300,95 @@ function fleetSelectionUsage(details: Record<string, unknown>, args: Record<stri
 	if (responses === undefined || responses <= 0) return "";
 	const cost = count(last7d.reportedCost);
 	const costText = cost === undefined ? "" : ` · $${Number(cost.toPrecision(4))} reported`;
-	return `Last 7 days for the filter: ${responses} sampled response${responses === 1 ? "" : "s"}${costText}`;
+	return `${cardinal(responses, "sampled response")} for the filter in the last 7 days${costText}`;
 }
 
-function fleetCoverageLines(details: Record<string, unknown>, theme: Theme): string[] {
-	const lines: string[] = [];
+function fleetUsageCoverage(details: Record<string, unknown>): string {
 	const sampled = count(record(details.usageCoverage).sampledResponses);
-	if (sampled !== undefined)
-		lines.push(
-			muted(
-				theme,
-				sampled === 0
-					? "No machine-wide usage samples; use is not established"
-					: `Partial machine-wide usage · ${sampled} sampled responses`,
-			),
-		);
+	if (sampled === undefined) return "";
+	return sampled === 0
+		? "No machine-wide usage samples; use is not established"
+		: `${cardinal(sampled, "machine-wide usage sample")}`;
+}
+
+function fleetCoveragePresentation(
+	details: Record<string, unknown>,
+): Pick<ToolResultPresentation, "expanded" | "limit"> {
 	const coverage = record(details.coverage);
 	const catalog = record(coverage.catalog);
-	if (catalog.complete === false || (count(catalog.skipped) ?? 0) > 0) {
-		const records = count(catalog.records);
-		lines.push(
-			muted(
-				theme,
-				`Catalogue coverage incomplete${records === undefined ? "" : ` · ${records} storage record${records === 1 ? "" : "s"} read`}`,
-			),
-		);
-	}
-	if (Object.values(record(coverage.output)).some((value) => value === true || (count(value) ?? 0) > 0))
-		lines.push(muted(theme, "Fleet output omitted some evidence"));
-	return lines;
+	const incomplete = catalog.complete === false || (count(catalog.skipped) ?? 0) > 0;
+	const records = count(catalog.records);
+	const omitted = Object.values(record(coverage.output)).some((value) => value === true || (count(value) ?? 0) > 0);
+	const partial = record(details.usageCoverage).status === "partial";
+	return {
+		limit: incomplete || omitted || partial ? "Partial fleet coverage" : undefined,
+		expanded: [
+			incomplete ? "Catalogue scan incomplete" : "",
+			incomplete && records !== undefined ? `${cardinal(records, "storage record")} read` : "",
+			omitted ? "Fleet result omits some evidence" : "",
+			partial ? "Machine-wide usage is sampled" : "",
+		]
+			.filter(Boolean)
+			.join("\n"),
+	};
 }
 
-function ordinaryStatusLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
+function ordinaryStatus(
+	details: Record<string, unknown>,
+	theme: Theme,
+	context: AgentCardContext,
+): ToolResultPresentation {
 	const presence = record(details.presence);
-	const lines = [theme.fg("toolOutput", "Ordinary primary · live session activity not observed")];
-	lines.push(
-		...snapshotIdentityLines(
-			{ ...details, name: presence.name, agent: { model: presence.model } },
-			theme,
-			context,
-			false,
-		),
+	const identity = snapshotIdentityLines(
+		{ ...details, name: presence.name, agent: { model: presence.model } },
+		theme,
+		context,
+		false,
 	);
 	const state = record(presence.process).state;
-	if (state === "live") lines.push(muted(theme, "Local process exists"));
-	else if (state === "dead") lines.push(muted(theme, "Local process not found"));
+	const process = state === "live" ? "Local process exists" : state === "dead" ? "Local process not found" : "";
 	const source = record(details.source);
-	if (source.latestKnown === true) {
-		const id = displayIdentity(text(record(source.head).id));
-		if (id) lines.push(muted(theme, `Latest retained entry ${id}`));
-	}
-	if (record(details.coverage).complete === false) lines.push(muted(theme, "Retained ancestry scan incomplete"));
-	return lines;
+	const entry = source.latestKnown === true ? text(record(source.head).id) : "";
+	return {
+		outcome: "Live session activity not observed",
+		body: ["Ordinary primary", ...identity.map(displayText), process, entry ? `Latest retained entry ${entry}` : ""]
+			.filter(Boolean)
+			.join("\n"),
+		limit: record(details.coverage).complete === false ? "Retained ancestry scan incomplete" : undefined,
+	};
 }
 
 function statusPage(details: Record<string, unknown>, context: AgentCardContext): ToolResultPresentation {
 	const coverage = record(details.coverage);
 	const rows = array(details.conversations).map(record);
 	const storageId = text(details.storageId);
-	const source = details.live === false ? "Retained storage page" : "Storage page";
-	const where = storageId && storageId !== record(context.args).storageId ? `storage ${storageId}` : "";
-	const scanned = count(coverage.scanned);
-	const scan =
-		coverage.complete === false
-			? "storage scan incomplete"
-			: coverage.complete === true
-				? "storage scan reached its end"
-				: "";
+	const retained = details.live === false;
+	const scope = retained ? "a retained storage page" : "a storage page";
 	const next = record(coverage.next);
 	const continuation = next.tool === "agent_status" && next.view === "storage-page";
 	const { tool: _tool, ...nextArgs } = next;
+	const where = storageId && storageId !== record(context.args).storageId ? `Storage ${storageId}` : "";
+	const scanned = count(coverage.scanned);
 	return {
-		outcome: [
-			`${source}: ${cardinal(rows.length, "conversation")}`,
-			continuation ? "next call in expanded details" : "",
-			scan,
-			scanned === undefined ? "" : `${scanned} scanned`,
+		outcome: `${cardinal(rows.length, "conversation")} on ${scope}${continuation ? "; more available" : ""}`,
+		body: [
 			where,
+			...rows.map((row) => storagePageRow(row, retained)),
+			scanned === undefined || scanned === rows.length ? "" : `${cardinal(scanned, "conversation")} scanned`,
+			coverage.complete === true ? "Storage scan reached its end" : "",
 		]
-			.filter(Boolean)
-			.join("; "),
-		body: rows
-			.map((row) => {
-				const label = text(row.name) || text(row.identity);
-				if (!label) return "";
-				return `${label} · ${(details.live === false ? "" : liveActivity(row)) || "live activity not observed"}`;
-			})
 			.filter(Boolean)
 			.join("\n"),
 		expanded: continuation ? `Continue with agent_status(${JSON.stringify(nextArgs)})` : undefined,
+		limit: coverage.complete === false && !continuation ? "Storage scan incomplete" : undefined,
 	};
+}
+
+function storagePageRow(row: Record<string, unknown>, retained: boolean): string {
+	const label = text(row.name) || text(row.identity);
+	if (!label) return "";
+	const activity = retained ? "" : liveActivity(row);
+	return `${label} · ${activity || "live activity not observed"}`;
 }
 
 function statusOverview(details: Record<string, unknown>): ToolResultPresentation {
@@ -1383,7 +1398,7 @@ function statusOverview(details: Record<string, unknown>): ToolResultPresentatio
 		keys
 			.flatMap(([key, label]) => {
 				const n = count(sessions[key]);
-				return n === undefined ? [] : [`${n} ${label}`];
+				return n === undefined || n <= 0 ? [] : [`${n} ${label}`];
 			})
 			.join(" · ");
 	const observed = count(sessions.observed);
@@ -1463,14 +1478,14 @@ function runningSlotLine(slot: Record<string, unknown>): string {
 	return parts.join(" · ");
 }
 
-function latestSavedResult(submissions: unknown): string | undefined {
+function latestSavedResult(submissions: unknown, label = "Saved: "): string | undefined {
 	const rows = array(submissions)
 		.map(record)
 		.filter((row) => row.type === "input" && (row.status === "done" || row.status === "unanswered"));
 	const last = rows.at(-1);
 	if (!last) return undefined;
 	const id = count(last.id);
-	return `Saved: ${text(last.status)}${id === undefined ? "" : ` · submission ${id}`}`;
+	return `${label}${text(last.status)}${id === undefined ? "" : ` · submission ${id}`}`;
 }
 
 function retryLines(live: Record<string, unknown>, theme: Theme): string[] {
@@ -1788,43 +1803,114 @@ function statusTimerFact(status: Record<string, unknown>): string {
 function fullStatusFacts(
 	status: Record<string, unknown>,
 	details: Record<string, unknown>,
-	retained: boolean,
+	live: boolean,
 	theme: Theme,
 ): string[] {
 	const inventory = record(details.inventory ?? record(details.status).inventory ?? status.limits);
 	const ordinaryOnly = array(inventory.ordinaryOnly).length;
-	const activity =
-		status.live === undefined && typeof status.state === "string"
-			? [`State: ${status.state}`]
-			: activityLines(status, retained, theme);
 	return [
 		statusTimerFact(status),
-		...activity,
-		ordinaryOnly ? `Capability limits: ${cardinal(ordinaryOnly, "configured extension")} without a native form` : "",
+		...fullStatusActivityFacts(status, live, theme),
+		ordinaryOnly ? `${cardinal(ordinaryOnly, "configured extension")} without a native form` : "",
 	];
 }
 
-function compactStatusFacts(
-	status: Record<string, unknown>,
-	details: Record<string, unknown>,
-	live: boolean,
-	theme: Theme,
-): string[] {
-	const activity = compactActivityFacts(status);
-	const block = record(status.providerBlock);
+function fullStatusActivityFacts(status: Record<string, unknown>, live: boolean, theme: Theme): string[] {
+	if (status.providerBlock !== undefined) return providerBlockLines(status.providerBlock, theme);
+	const inbox = record(status.inbox);
+	const pending = Array.isArray(inbox.items) ? inbox.items.length : 0;
+	const runtime = record(status.live);
+	const running = live ? runningSlots(runtime) : [];
+	const lastText = text(status.lastText);
 	return [
-		activity.length ? `${live ? "Activity" : "Snapshot facts"}: ${activity.join(" · ")}` : "",
-		...compactRecoveryLines(status, details, theme),
+		pending > 0 ? cardinal(pending, "pending input") : "",
+		statusUnplaced(status),
+		...running.map(statusToolFact),
+		lastText ? `${newestTextLabel(live && status.busy === true, text(status.lastTextRole))} · ${lastText}` : "",
+		latestSavedResult(status.submissions, "Saved result · "),
+		...(live ? statusRetryFacts(runtime) : []),
+	];
+}
+
+function statusToolFact(slot: Record<string, unknown>): string {
+	const states = { sleeping: "Sleeping", waiting: "Waiting", pending: "Pending", running: "Running" };
+	const label = states[slot.status as keyof typeof states];
+	const id = text(slot.callId);
+	return [[label, text(slot.name)].filter(Boolean).join(" "), id ? `call ${id}` : ""].filter(Boolean).join(" · ");
+}
+
+function statusRetryFacts(runtime: Record<string, unknown>): string[] {
+	const generation = record(record(runtime.generation).retry);
+	const compactions = array(runtime.compactions).map((value) => record(record(value).retry));
+	const fact = (label: string, retry: Record<string, unknown>) =>
+		Object.keys(retry).length > 0 ? [label, text(retry.error)].filter(Boolean).join(" · ") : "";
+	return [fact("Provider retry", generation), ...compactions.map((retry) => fact("Compaction retry", retry))];
+}
+
+function statusCountWithAge(value: unknown, oldest: unknown, noun: string): string {
+	const n = count(value);
+	if (n === undefined || n <= 0) return "";
+	const name = cardinal(n, noun);
+	const millis = count(oldest);
+	if (millis === undefined) return name;
+	const seconds = Math.floor(millis / 1000);
+	const minutes = Math.floor(seconds / 60);
+	const age =
+		seconds < 60
+			? `${seconds}s`
+			: minutes < 60
+				? `${minutes}m ${seconds % 60}s`
+				: `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+	return `${name} · oldest ${age}`;
+}
+
+function statusUnplaced(status: Record<string, unknown>): string {
+	return statusCountWithAge(status.unplaced, status.oldest, "unplaced input");
+}
+
+function compactStatusFacts(status: Record<string, unknown>, details: Record<string, unknown>): string[] {
+	const queue = count(record(status.queue).inbox) ?? 0;
+	const timers = count(status.timers) ?? 0;
+	const failure = record(status.runFailure);
+	const block = record(status.providerBlock);
+	const unplaced = statusUnplaced(status);
+	return [
+		!unplaced && queue > 0 ? cardinal(queue, "queued input") : "",
+		timers > 0 ? cardinal(timers, "timer") : "",
+		unplaced,
+		statusCountWithAge(status.openWorkCount, status.openWorkOldest, "open work item"),
+		statusDiagnostic(
+			"Run failed",
+			text(failure.reason),
+			failure.reasonTruncated,
+			text(failure.detail),
+			failure.detailTruncated,
+		),
+		statusDiagnostic("Delivery error", text(details.deliveryError), details.deliveryErrorTruncated),
 		text(block.blockId)
 			? [`Provider block ${text(block.blockId)}`, text(block.recovery)].filter(Boolean).join(" · ")
 			: "",
 	];
 }
 
+function statusDiagnostic(
+	label: string,
+	diagnostic: string,
+	truncated?: unknown,
+	detail = "",
+	detailTruncated?: unknown,
+): string {
+	if (!diagnostic) return "";
+	const excerpt = (value: string, bound: unknown) => (bound === true ? `${value} [Excerpt]` : value);
+	return [label, excerpt(diagnostic, truncated), detail ? excerpt(detail, detailTruncated) : ""]
+		.filter(Boolean)
+		.join(" · ");
+}
+
 function statusDetailCall(detail: Record<string, unknown>): string {
 	if (detail.tool !== "agent_status" || typeof detail.sessionId !== "string") return "";
 	const { tool: _tool, ...args } = detail;
-	return `Full detail: agent_status(${JSON.stringify(args)})`;
+	return `Get full detail with agent_status(${JSON.stringify(args)})`;
 }
 
 function statusSnapshot(
@@ -1835,28 +1921,30 @@ function statusSnapshot(
 ): ToolResultPresentation {
 	const retained = readOnlySnapshot(details) || status.availability === "retained";
 	const compact = details.format === "compact";
-	const source = compact && count(status.conversationId) === undefined ? "Ordinary primary" : "Durable agent";
-	const live = compact ? status.availability === "live" : !retained && fullStatusObserved(status, details);
-	const reach = live ? "live host observation" : "live session activity not observed";
-	const body = compact
-		? compactStatusFacts(status, details, live, theme)
-		: fullStatusFacts(status, details, retained, theme);
+	const kind = compact && count(status.conversationId) === undefined ? "Ordinary primary" : "Durable agent";
+	const live = !retained && (compact ? status.availability === "live" : fullStatusObserved(status, details));
+	const activity = live ? selectedLiveOutcome(status) : "";
+	const outcome = activity || (live ? "Live session activity not established" : "Live session activity not observed");
+	const basis = live ? "live host observation" : retained ? "retained snapshot" : "";
+	const body = compact ? compactStatusFacts(status, details) : fullStatusFacts(status, details, live, theme);
 	const observed = compact
 		? { ...status, agent: { model: status.model, thinkingLevel: status.thinkingLevel } }
 		: status;
-	const identityFacts = snapshotIdentityLines(observed, theme, context, false);
+	const identityFacts = snapshotIdentityLines(observed, theme, context, false).map(displayText);
 	const omissions = [...array(status.omitted), ...array(details.omitted)].map(text).filter(Boolean);
 	return {
-		outcome: `${source} · ${retained ? "retained snapshot; " : ""}${reach}`,
-		body: [...identityFacts, ...body]
-			.map((line) => displayText(line).replace(/\s+/gu, " ").trim())
-			.filter(Boolean)
-			.join("\n"),
-		expanded: [statusDetailCall(record(status.detail)), ...omissions.map((fact) => `Omitted: ${fact}`)]
+		outcome,
+		body: [[kind, basis].filter(Boolean).join(" · "), ...identityFacts, ...body].filter(Boolean).join("\n"),
+		expanded: [statusDetailCall(record(status.detail)), ...omissions.map((fact) => `Omitted ${fact}`)]
 			.filter(Boolean)
 			.join("\n"),
 		limit: omissions.length ? "Compact status omits facts; see full detail" : undefined,
 	};
+}
+
+function selectedLiveOutcome(status: Record<string, unknown>): string {
+	if (status.busy === true || Object.keys(record(record(status.live).run)).length > 0) return "Working";
+	return status.busy === false ? "Idle" : "";
 }
 
 function fullStatusObserved(status: Record<string, unknown>, details: Record<string, unknown>): boolean {
@@ -1871,18 +1959,8 @@ function statusPresentation(
 	if (details.cancelled === true) return { outcome: "Cancelled" };
 	const diagnostic = diagnosticPresentation(details);
 	if (context.isError || details.format === "refused" || diagnostic.outcome) return diagnostic;
-	if (details.view === "fleet") {
-		const [lead, selection, ...facts] = fleetStatusLines(details, theme, context).map(displayText);
-		const incomplete = record(record(details.coverage).catalog).complete === false;
-		return {
-			outcome: [lead, selection, incomplete ? "incomplete catalogue coverage" : ""].filter(Boolean).join("; "),
-			body: facts.join("\n"),
-		};
-	}
-	if (details.view === "status" && details.kind === "ordinary-primary") {
-		const [outcome, ...facts] = ordinaryStatusLines(details, theme, context).map(displayText);
-		return { outcome, body: facts.join("\n") };
-	}
+	if (details.view === "fleet") return fleetStatus(details, context);
+	if (details.view === "status" && details.kind === "ordinary-primary") return ordinaryStatus(details, theme, context);
 	if (Array.isArray(details.sessions)) return statusOverview(details);
 	if (Array.isArray(details.conversations)) return statusPage(details, context);
 	const snapshot = snapshotStatus(details);
@@ -1900,8 +1978,8 @@ function renderStatusResult(
 	const snapshotError = text(details.snapshotError);
 	const deliveryError = text(details.deliveryError) || text(record(details.status).deliveryError);
 	const body = [
-		snapshotError ? `Snapshot unavailable: ${snapshotError}` : "",
-		deliveryError && details.format !== "compact" ? `Delivery paused: ${deliveryError}` : "",
+		snapshotError ? `Snapshot unavailable · ${snapshotError}` : "",
+		deliveryError && details.format !== "compact" ? `Delivery paused · ${deliveryError}` : "",
 		presentation.body,
 	]
 		.filter(Boolean)

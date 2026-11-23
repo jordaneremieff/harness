@@ -128,9 +128,9 @@ describe("compact observation cards", () => {
 		const output = screen(
 			cards.agent_status.renderResult(result, { expanded: false, isPartial: false }, theme, context()),
 		);
-		assert.match(output, /Durable agent · retained snapshot; live session activity not observed/u);
-		assert.match(output, /Snapshot facts: 1 queued input · 0 timers/u);
-		assert.doesNotMatch(output, /Activity: working|Activity: idle/u);
+		assert.match(output, /Live session activity not observed\nDurable agent · retained snapshot/u);
+		assert.match(output, /1 queued input/u);
+		assert.doesNotMatch(output, /\b(?:Working|Idle)\b|0 timers/u);
 		const expanded = screen(
 			cards.agent_status.renderResult(result, { expanded: true, isPartial: false }, theme, context({ expanded: true })),
 		);
@@ -144,8 +144,8 @@ describe("compact observation cards", () => {
 				context(),
 			),
 		);
-		assert.match(unknown, /Ordinary primary · live session activity not observed/u);
-		assert.doesNotMatch(unknown, /Activity: idle/u);
+		assert.match(unknown, /Live session activity not observed\nOrdinary primary/u);
+		assert.doesNotMatch(unknown, /\b(?:Working|Idle)\b/u);
 	});
 
 	it("shows retained run failure and parked delivery once each in a compact status card", () => {
@@ -184,12 +184,12 @@ describe("compact observation cards", () => {
 				),
 			);
 			const lines = output.split("\n").map((line) => line.trimStart());
-			assert.equal(lines.filter((line) => line.startsWith("Run failure:")).length, 1);
-			assert.equal(lines.filter((line) => line.startsWith("Delivery error:")).length, 1);
-			assert.ok(output.includes(`Run failure: ${failure.reason}`));
+			assert.equal(lines.filter((line) => line.startsWith("Run failed · ")).length, 1);
+			assert.equal(lines.filter((line) => line.startsWith("Delivery error · ")).length, 1);
+			assert.ok(output.includes(`Run failed · ${failure.reason}`));
 			if (failure.detail !== undefined) assert.ok(output.includes("Request failed\\u000aat a tool"));
-			assert.match(output, /Delivery error: .*parked/u);
-			assert.doesNotMatch(output, /Delivery paused:/u);
+			assert.match(output, /Delivery error · .*parked/u);
+			assert.doesNotMatch(output, /Delivery paused/u);
 		}
 	});
 
@@ -374,9 +374,9 @@ describe("compact observation cards", () => {
 				context() as never,
 			),
 		);
-		assert.match(output, /Retained storage page/u);
+		assert.match(output, /1 conversation on a retained storage page/u);
 		assert.match(output, /Reader · live activity not observed/u);
-		assert.match(output, /Retained storage page: 1 conversation; storage scan reached its end; 1 scanned/u);
+		assert.match(output, /Storage scan reached its end/u);
 	});
 });
 
