@@ -50,12 +50,12 @@ import Testing
         }
         let source = String(repeating: "a", count: ReaderBridgeCodec.sourceLimit)
         let edit: [String: Any] = ["start": 0, "end": 0, "text": source, "expected": ""]
-        let decoded = try ReaderBridgeCodec.decode(body: envelope("edits", ["baseGeneration": 0, "generation": 1, "origin": "person", "edits": [edit]]))
+        let decoded = try ReaderBridgeCodec.decode(body: envelope("edits", ["presentation": UUID().uuidString, "baseGeneration": 0, "generation": 1, "origin": "person", "edits": [edit]]))
         #expect(decoded.change?.edits.first?.text.utf8.count == ReaderBridgeCodec.sourceLimit)
         var largerEdit = edit
         largerEdit["text"] = source + "a"
         #expect(throws: (any Error).self) {
-            try ReaderBridgeCodec.decode(body: envelope("edits", ["baseGeneration": 0, "generation": 1, "origin": "person", "edits": [largerEdit]]))
+            try ReaderBridgeCodec.decode(body: envelope("edits", ["presentation": UUID().uuidString, "baseGeneration": 0, "generation": 1, "origin": "person", "edits": [largerEdit]]))
         }
     }
 
@@ -145,7 +145,7 @@ import Testing
         for (index, entry) in changes.enumerated() {
             let (expected, text, origin) = entry
             let edits: [[String: Any]] = [["start": 0, "end": expected.utf16.count, "expected": expected, "text": text]]
-            let fields: [String: Any] = ["baseGeneration": index, "generation": index + 1, "origin": origin, "edits": edits]
+            let fields: [String: Any] = ["presentation": UUID().uuidString, "baseGeneration": index, "generation": index + 1, "origin": origin, "edits": edits]
             let data = try JSONSerialization.data(withJSONObject: envelope("edits", fields), options: [.withoutEscapingSlashes])
             let decoded = try ReaderBridgeCodec.decode(data: data)
             let change = try #require(decoded.change)
@@ -159,13 +159,13 @@ import Testing
         let oversized: [[String: Any]] = [["start": 0, "end": count, "expected": first, "text": second],
                                           ["start": count, "end": count, "expected": "", "text": first]]
         #expect(throws: ReaderBridgeError.oversized) {
-            try ReaderBridgeCodec.decode(body: envelope("edits", ["baseGeneration": 0, "generation": 1, "origin": "person", "edits": oversized]))
+            try ReaderBridgeCodec.decode(body: envelope("edits", ["presentation": UUID().uuidString, "baseGeneration": 0, "generation": 1, "origin": "person", "edits": oversized]))
         }
         #expect(throws: ReaderBridgeError.oversized) {
             try ReaderBridgeCodec.validateNativeEnvelope(["v": 1, "type": "agentApply", "operationId": "op", "baseGeneration": 0, "edits": oversized])
         }
         #expect(throws: ReaderBridgeError.oversized) {
-            try ReaderBridgeCodec.decode(body: envelope("edits", ["baseGeneration": 0, "generation": 1, "origin": "person",
+            try ReaderBridgeCodec.decode(body: envelope("edits", ["presentation": UUID().uuidString, "baseGeneration": 0, "generation": 1, "origin": "person",
                 "operationId": String(repeating: "x", count: ReaderBridgeCodec.messageLimit),
                 "edits": [["start": 0, "end": 0, "expected": "", "text": first]]]))
         }
@@ -348,7 +348,7 @@ import Testing
     }
 
     @Test func promptsRequireABoundedOpaqueThreadIdentity() throws {
-        let first: [String: Any] = ["requestId": "first-request", "threadId": "first-request", "text": "Ask about this document", "generation": 0]
+        let first: [String: Any] = ["presentation": UUID().uuidString, "documentKey": UUID().uuidString, "requestId": "first-request", "threadId": "first-request", "text": "Ask about this document", "generation": 0]
         let opened = try ReaderBridgeCodec.decode(body: envelope("prompt", first))
         #expect(opened.type == .prompt)
         #expect(opened.fields["threadId"] as? String == "first-request")
@@ -370,8 +370,25 @@ import Testing
         }
     }
 
+    @Test func promptAndEditMessagesRequireTheirPageIdentities() throws {
+        let prompt: [String: Any] = ["presentation": UUID().uuidString, "documentKey": UUID().uuidString,
+            "text": "Which revision?", "requestId": "r", "threadId": "t", "generation": 0, "authoredRevision": 2]
+        #expect(try ReaderBridgeCodec.decode(body: envelope("prompt", prompt)).fields["authoredRevision"] as? Int == 2)
+        for field in ["presentation", "documentKey"] {
+            var invalid = prompt; invalid[field] = nil
+            #expect(throws: ReaderBridgeError.self) { try ReaderBridgeCodec.decode(body: envelope("prompt", invalid)) }
+            invalid[field] = "other"
+            #expect(throws: ReaderBridgeError.self) { try ReaderBridgeCodec.decode(body: envelope("prompt", invalid)) }
+        }
+        var invalid = prompt; invalid["authoredRevision"] = true
+        #expect(throws: ReaderBridgeError.self) { try ReaderBridgeCodec.decode(body: envelope("prompt", invalid)) }
+        let edits: [String: Any] = ["baseGeneration": 0, "generation": 1, "origin": "person",
+            "edits": [["start": 0, "end": 0, "text": "x", "expected": ""]]]
+        #expect(throws: ReaderBridgeError.self) { try ReaderBridgeCodec.decode(body: envelope("edits", edits)) }
+    }
+
     @Test func batchPromptRequiresBoundedAnnotationsAndNoSingleFields() throws {
-        let header: [String: Any] = ["requestId": "first-request", "threadId": "first-request", "generation": 1]
+        let header: [String: Any] = ["presentation": UUID().uuidString, "documentKey": UUID().uuidString, "requestId": "first-request", "threadId": "first-request", "generation": 1]
         let quote = "😀\n"
         let annotation: [String: Any] = ["text": "Rewrite this.", "quote": quote, "quoteRange": ["start": 0, "end": 3]]
         func decode(_ fields: [String: Any]) throws -> ReaderBridgeMessage {
@@ -387,6 +404,8 @@ import Testing
         for fields: [String: Any] in [
             ["annotations": [annotation], "overall": " \n"], ["annotations": [annotation], "overall": "\u{85}"],
             ["annotations": [annotation], "overall": true],
+            ["annotations": [annotation], "authoredRevision": 1],
+            ["annotations": [["text": "Which revision?", "authoredRevision": 0]]],
             ["annotations": [annotation], "overall": String(repeating: "é", count: 32769)],
             ["text": "A single comment.", "overall": "Only batches carry one."],
             ["annotations": []], ["annotations": Array(repeating: annotation, count: 51)],
@@ -433,7 +452,7 @@ import Testing
     }
 
     @Test func editDecoderRejectsBadOrderTypesAndGenerations() throws {
-        let valid: [String: Any] = ["baseGeneration": 1, "generation": 2, "origin": "history",
+        let valid: [String: Any] = ["presentation": UUID().uuidString, "baseGeneration": 1, "generation": 2, "origin": "history",
             "edits": [["start": 0, "end": 1, "text": "x", "expected": "a"]]]
         #expect(try ReaderBridgeCodec.decode(body: envelope("edits", valid)).change?.origin == .history)
         for (key, value): (String, Any) in [

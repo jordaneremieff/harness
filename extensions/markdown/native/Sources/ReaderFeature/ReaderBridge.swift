@@ -57,6 +57,7 @@ public struct ReaderBridgePageState: Equatable, Sendable {
     public var canBack: Bool
     public var canForward: Bool
     public var hasSelection: Bool
+    public var editingPending = false
     public var findOpen: Bool
     public var held: ReaderBridgeRange?
     public var activeBlock: ReaderBridgeRange?
@@ -94,6 +95,7 @@ public struct ReaderBridgePageState: Equatable, Sendable {
                   held: try BridgeField.optionalRange(fields, "held"),
                   activeBlock: try BridgeField.optionalRange(fields, "activeBlock"),
                   scroll: try BridgeField.scroll(fields, "scroll"), overlay: overlay)
+        if fields["editingPending"] != nil { editingPending = try BridgeField.bool(fields, "editingPending") }
         if fields["find"] != nil {
             let value = try BridgeField.object(fields, "find")
             try BridgeField.keys(value, allowed: ["query", "count", "index"])
@@ -224,10 +226,11 @@ public enum ReaderBridgeCodec {
                 }
             }
         case .state:
-            try BridgeField.keys(fields, allowed: ["lock", "overlay", "canUndo", "canRedo", "canBack", "canForward", "hasSelection", "findOpen", "held", "activeBlock", "scroll", "find", "selection"])
+            try BridgeField.keys(fields, allowed: ["lock", "overlay", "canUndo", "canRedo", "canBack", "canForward", "hasSelection", "findOpen", "held", "activeBlock", "scroll", "find", "selection", "editingPending"])
             pageState = try ReaderBridgePageState(fields: fields)
         case .edits:
-            try BridgeField.keys(fields, allowed: ["baseGeneration", "generation", "origin", "operationId", "edits"])
+            try BridgeField.keys(fields, allowed: ["presentation", "baseGeneration", "generation", "origin", "operationId", "edits"])
+            try validateIdentity(fields, "presentation")
             change = try ReaderBridgeChange(fields: fields)
         case .agentRefused:
             try BridgeField.keys(fields, allowed: ["operationId", "reason", "range"])
@@ -243,17 +246,24 @@ public enum ReaderBridgeCodec {
             try BridgeField.choice(fields, "lock", values: ["reading", "writing"])
             _ = try BridgeField.bool(fields, "copy")
         case .prompt:
-            try BridgeField.keys(fields, allowed: ["requestId", "threadId", "quote", "quoteRange", "text", "annotations", "overall", "generation"])
+            try BridgeField.keys(fields, allowed: ["documentKey", "presentation", "authoredRevision", "requestId", "threadId", "quote", "quoteRange", "text", "annotations", "overall", "generation"])
+            try validateIdentity(fields, "documentKey")
+            try validateIdentity(fields, "presentation")
             _ = try BridgeField.string(fields, "requestId", limit: 256)
             _ = try BridgeField.string(fields, "threadId", limit: 256)
             _ = try BridgeField.integer(fields, "generation")
             if let value = fields["annotations"] {
+                if fields["authoredRevision"] != nil {
+                    guard fields["overall"] != nil, try BridgeField.integer(fields, "authoredRevision") > 0 else {
+                        throw ReaderBridgeError.invalid("authoredRevision")
+                    }
+                }
                 guard fields["text"] == nil, fields["quote"] == nil, fields["quoteRange"] == nil,
                       let annotations = value as? [[String: Any]], (1...50).contains(annotations.count) else {
                     throw ReaderBridgeError.invalid("annotations")
                 }
                 for annotation in annotations {
-                    try BridgeField.keys(annotation, allowed: ["text", "quote", "quoteRange"])
+                    try BridgeField.keys(annotation, allowed: ["text", "quote", "quoteRange", "authoredRevision"])
                     try validateAnnotation(annotation, nonblank: true)
                 }
                 // The overall comment of a batch, when the page sends one, has text.
@@ -278,8 +288,16 @@ public enum ReaderBridgeCodec {
         return ReaderBridgeMessage(type: type, id: id, fields: fields, change: change, pageState: pageState)
     }
 
+    private static func validateIdentity(_ fields: [String: Any], _ key: String) throws {
+        let value = try BridgeField.string(fields, key, limit: 36)
+        guard UUID(uuidString: value) != nil else { throw ReaderBridgeError.invalid(key) }
+    }
+
     private static func validateAnnotation(_ fields: [String: Any], nonblank: Bool = false) throws {
         let text = try BridgeField.string(fields, "text", limit: 64 * 1024)
+        if fields["authoredRevision"] != nil, try BridgeField.integer(fields, "authoredRevision") < 1 {
+            throw ReaderBridgeError.invalid("authoredRevision")
+        }
         if nonblank && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw ReaderBridgeError.invalid("text")
         }
@@ -305,7 +323,7 @@ public enum ReaderBridgeCodec {
             try validateArrayGroup(fields, key: "blocks", limit: renderedLimit)
         case "agentApply":
             try validateArrayGroup(fields, key: "edits", limit: editListLimit)
-        case "ack", "refused", "claim", "release", "promptState", "saveState", "command", "notice":
+        case "ack", "refused", "claim", "release", "promptState", "connectionState", "saveState", "command", "notice":
             try validateJSONSize(fields, limit: messageLimit)
         default: throw ReaderBridgeError.invalid("type")
         }

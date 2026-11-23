@@ -375,8 +375,8 @@ struct Context {
     func installProbeHTML(_ html: String, model: ReaderModel) async throws {
         try CheckRunner.requireReady(model)
         _ = try await model.sendEnvelope([
-            "v": 1, "type": "document", "generation": model.sourceGeneration,
-            "meta": ["documentId": "check", "kind": "localFile", "title": "Security check", "shortId": "check",
+            "v": 1, "type": "document", "presentation": UUID().uuidString, "generation": model.sourceGeneration,
+            "meta": ["documentKey": UUID().uuidString, "documentId": "check", "kind": "localFile", "title": "Security check", "shortId": "check",
                      "revision": NSNull(), "revisions": [], "digest": model.snapshot?.digest ?? "",
                      "provenance": "Offscreen check", "capturedSource": false] as [String: Any],
             "source": "Security check", "blocks": [["key": "check-probe", "start": 0, "end": 14, "type": "paragraph", "html": html]],

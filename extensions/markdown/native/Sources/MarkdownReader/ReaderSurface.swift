@@ -15,6 +15,15 @@ final class ReaderSurface: NSView {
     var onReturnFocus: (() -> Void)?
     private var pendingAgent: (id: String, finish: (WebAgentApplyResult) -> Void)?
     private var observedDocument: UUID?
+    private struct SaveState: Equatable {
+        let presentation: String
+        let state: String
+        let detail: String?
+        let revision: Int?
+    }
+    private var shownSave: SaveState?
+    private var shownConnection: String?
+    private var shownNotice: UInt64?
     private var observation = 0
     private var applying = false
     private var changeTail: Task<Void, Never>?
@@ -46,7 +55,10 @@ final class ReaderSurface: NSView {
         view.frame = bounds; view.autoresizingMask = [.width, .height]
         addSubview(view)
         model.page.onDocumentReady = { [weak self] ready in
-            guard let workspace = self?.workspace else { return }
+            guard let self, let workspace = self.workspace else { return }
+            self.shownSave = nil
+            self.shownConnection = nil
+            if ready { Task { await self.reportStatus() } }
             workspace.webReady = ready
             if ready, let document = workspace.active, workspace.isDisplayed(document) { document.checkForUpdates() }
         }
@@ -62,6 +74,7 @@ final class ReaderSurface: NSView {
 
     func setWorkspace(_ workspace: EditorWorkspace) {
         self.workspace = workspace
+        shownNotice = nil; shownConnection = nil; shownSave = nil
         connect(workspace); observe()
         Task { await showWorkspace() }
     }
@@ -86,8 +99,13 @@ final class ReaderSurface: NSView {
 
     private func connect(_ workspace: EditorWorkspace) {
         model.live = workspace.collaboration != nil
-        workspace.webReady = model.page.documentReady
-        workspace.webHostModel = model
+        if workspace.webHostModel !== model {
+            let previousKey = workspace.logicalDocumentKey
+            workspace.webHostModel = model
+            workspace.webReady = model.page.documentReady
+            if previousKey != workspace.logicalDocumentKey { workspace.collaboration?.bind(document: workspace.liveDocumentID) }
+        }
+        workspace.drainPageChanges = { [weak self] in await self?.waitForPendingChanges() }
         workspace.webAgentApply = { [weak self] operation, generation, edits in
             guard let self, self.pageReady, self.pendingAgent == nil else { return .refused(reason: "stale") }
             return await withCheckedContinuation { continuation in
@@ -96,8 +114,8 @@ final class ReaderSurface: NSView {
                     do {
                         var envelope: [String: Any] = ["v": 1, "type": "agentApply", "operationId": operation,
                             "baseGeneration": generation, "edits": edits.map(Self.editPayload)]
-                        if let workspace = self.workspace,
-                           let thread = workspace.collaboration?.currentAdmittedThreadId(for: workspace.liveDocumentID) { envelope["threadId"] = thread }
+                        if let workspace = self.workspace, let key = workspace.logicalDocumentKey,
+                           let thread = workspace.collaboration?.currentAdmittedThreadId(for: key) { envelope["threadId"] = thread }
                         _ = try await self.model.sendEnvelope(envelope)
                     } catch {
                         self.finishAgent(operation, result: .refused(reason: "unknown"))
@@ -123,8 +141,8 @@ final class ReaderSurface: NSView {
         workspace.webRelease = { [weak self] id in
             Task { _ = try? await self?.model.sendEnvelope(["v": 1, "type": "release", "claimId": id]) }
         }
-        workspace.collaboration?.onPromptState = { [weak self] id, thread, status, detail in
-            var message: [String: Any] = ["v": 1, "type": "promptState", "requestId": id, "threadId": thread, "state": status]
+        workspace.collaboration?.onDocumentPromptState = { [weak self] key, id, thread, status, detail in
+            var message: [String: Any] = ["v": 1, "type": "promptState", "documentKey": key.uuidString, "requestId": id, "threadId": thread, "state": status]
             if let detail { message["detail"] = detail }
             Task { _ = try? await self?.model.sendEnvelope(message) }
         }
@@ -149,11 +167,12 @@ final class ReaderSurface: NSView {
         switch type {
         case "ready":
             pageReady = true; workspace?.webReady = model.page.documentReady
-            if workspace?.active != nil { await showWorkspace() }
+            if workspace?.active != nil, observedDocument == nil { await showWorkspace() }
         case "state":
             pageState = message
-            workspace?.pageHeld = Self.range(message["held"])
-            if let document = workspace?.active, let selection = message["selection"] as? [String: Any],
+            guard let workspace, pageMatchesWorkspace else { break }
+            workspace.pageHeld = Self.range(message["held"])
+            if let document = workspace.active, let selection = message["selection"] as? [String: Any],
                let range = Self.range(selection), let text = selection["text"] as? String,
                MirrorText.validRange(range, source: document.text.source),
                (document.text.source as NSString).substring(with: range).utf8.elementsEqual(text.utf8) {
@@ -162,18 +181,23 @@ final class ReaderSurface: NSView {
                     selection: .init(location: range.location, length: range.length), markedText: false)
             }
             // Queued source writes keep the live document busy until acknowledgement.
-            workspace?.pageBusy = queuedChanges > 0
+            updateBusy()
         case "edits":
             let change = try Self.change(message)
+            guard let presentation = message["presentation"] as? String else { throw BridgeFailure.invalid }
+            guard installed(presentation) else {
+                await refuseChange(change, presentation: presentation)
+                break
+            }
             queuedChanges += 1
             workspace?.pageBusy = true
             let previous = changeTail
             let task = Task { @MainActor [weak self] in
                 await previous?.value
                 guard let self else { return }
-                await self.applyPageChange(change)
+                await self.applyPageChange(change, presentation: presentation)
                 self.queuedChanges -= 1
-                self.workspace?.pageBusy = self.queuedChanges > 0
+                self.updateBusy()
             }
             changeTail = task
             await task.value
@@ -182,17 +206,21 @@ final class ReaderSurface: NSView {
             finishAgent(operation, result: .refused(reason: message["reason"] as? String ?? "stale", range: Self.range(message["range"])))
         case "prompt":
             guard let request = message["requestId"] as? String, let thread = message["threadId"] as? String,
-                  let generation = Self.generation(message["generation"]) else { throw BridgeFailure.invalid }
+                  let generation = Self.generation(message["generation"]), let presentation = message["presentation"] as? String,
+                  let key = message["documentKey"] as? String else { throw BridgeFailure.invalid }
             await waitForPendingChanges()
-            let expected = workspace?.active?.text.generation ?? 0
-            // An exact retry reconciles an existing request, not a new request against stale text.
-            guard let client = workspace?.collaboration,
-                  generation == expected || client.knowsPrompt(requestId: request, threadId: thread) else {
-                return ["accepted": false, "detail": "The conversation connection is not available for this document version."]
+            guard let workspace, let client = workspace.collaboration else {
+                return ["accepted": false, "detail": "The conversation connection is not available."]
             }
-            // Passages are located in the text that the page's generation names. A retry against
-            // later text repeats the message of its first submission instead.
-            let source = generation == expected ? workspace?.active?.text.source : nil
+            let stale: [String: Any] = ["accepted": false, "fresh": true,
+                "detail": "The displayed document changed. Review your comment and send it again."]
+            guard workspace.logicalDocumentKey?.uuidString == key, model.page.documentKey == key,
+                  pageMatchesWorkspace else { return stale }
+            let known = client.knowsPrompt(requestId: request, threadId: thread)
+            let visible = workspace.visibleText
+            guard known || (installed(presentation) && visible?.generation == generation && model.sourceGeneration == generation
+                && visible?.digest == model.snapshot?.digest) else { return stale }
+            let source = known ? nil : visible?.source
             var structure: SourceStructure?
             func passage(_ range: NSRange?) -> PassageExcerpt? {
                 guard let source, let range else { return nil }
@@ -204,15 +232,16 @@ final class ReaderSurface: NSView {
                 let annotations = try records.map { record in
                     guard let text = record["text"] as? String else { throw BridgeFailure.invalid }
                     let range = Self.range(record["quoteRange"])
-                    return CollaborationClient.Annotation(text: text, quote: record["quote"] as? String, passage: passage(range), range: range)
+                    return CollaborationClient.Annotation(text: text, quote: record["quote"] as? String, passage: passage(range), range: range, authoredRevision: record["authoredRevision"] as? Int)
                 }
                 result = await client.submitBatch(requestId: request, threadId: thread, annotations: annotations,
-                                                  overall: message["overall"] as? String, generation: generation)
+                                                  overall: message["overall"] as? String, generation: generation,
+                                                  authoredRevision: message["authoredRevision"] as? Int)
             } else {
                 guard let text = message["text"] as? String else { throw BridgeFailure.invalid }
                 let range = Self.range(message["quoteRange"])
                 result = await client.submitAnnotation(requestId: request, threadId: thread, text: text, quote: message["quote"] as? String,
-                                                       range: range, passage: passage(range), generation: generation)
+                                                       range: range, passage: passage(range), generation: generation, authoredRevision: message["authoredRevision"] as? Int)
             }
             switch result {
             case .submitted: return ["accepted": true]
@@ -222,11 +251,13 @@ final class ReaderSurface: NSView {
         case "query":
             if message["kind"] as? String == "library", message["collection"] as? String == "drafts" { return try await draftLibrary(message) }
             guard message["kind"] as? String == "review", message["against"] as? String == "base",
-                  let workspace, let document = workspace.active else { throw BridgeFailure.invalid }
+                  let workspace, pageMatchesWorkspace, let document = workspace.active else { throw BridgeFailure.invalid }
             let source = document.text.source, generation = document.text.generation
             let base = try await workspace.draftReviewBase()
             guard workspace.active === document, document.text.generation == generation else { throw BridgeFailure.invalid }
-            return try await model.queryDraftReview(base: base, currentSource: source, resolver: document.assetResolver)
+            let review = try await model.queryDraftReview(base: base, currentSource: source, resolver: document.assetResolver)
+            guard pageMatchesWorkspace, workspace.active === document, document.text.generation == generation else { throw BridgeFailure.invalid }
+            return review
         case "command":
             await waitForPendingChanges()
             guard let name = message["name"] as? String else { throw BridgeFailure.invalid }
@@ -236,27 +267,51 @@ final class ReaderSurface: NSView {
         return [:]
     }
 
-    private func applyPageChange(_ change: WebPageChange) async {
+    private func updateBusy() {
+        workspace?.pageBusy = queuedChanges > 0 || (pageMatchesWorkspace && pageState["editingPending"] as? Bool == true)
+    }
+
+    private func installed(_ presentation: String) -> Bool {
+        model.page.documentReady && model.page.presentation == presentation && model.displayedPresentation == presentation
+    }
+
+    private var pageMatchesWorkspace: Bool {
+        guard let workspace, workspace.webReady, let key = workspace.logicalDocumentKey, let presentation = model.page.presentation else { return false }
+        return model.page.documentKey == key.uuidString && installed(presentation)
+    }
+
+    private func refuseChange(_ change: WebPageChange, presentation: String, reason: String = "stale") async {
+        _ = try? await model.sendEnvelope(["v": 1, "type": "refused", "presentation": presentation,
+            "generation": change.generation, "reason": reason])
+        if let operation = change.operationId { finishAgent(operation, result: .refused(reason: "stale")) }
+    }
+
+    private func applyPageChange(_ change: WebPageChange, presentation: String) async {
+        guard installed(presentation) else { await refuseChange(change, presentation: presentation); return }
         let workspace = ensureWorkspace()
+        guard pageMatchesWorkspace else { await refuseChange(change, presentation: presentation); return }
+        let wasReading = workspace.reading != nil
         applying = true; workspace.pageBusy = true
-        defer { applying = false; workspace.pageBusy = queuedChanges > 0 }
+        defer { applying = false; updateBusy() }
         do {
-            let ack = try await workspace.receivePageChange(change)
-            if let document = workspace.active {
-                observedDocument = document.id
-                try await model.acceptSource(source: document.text.source, generation: document.text.generation,
-                    meta: metadata(document), resolver: document.assetResolver, draftId: document.session.record.id)
-            }
-            var envelope: [String: Any] = ["v": 1, "type": "ack", "generation": ack.generation,
+            let ack = try await workspace.receivePageChange(change, presentation: presentation)
+            guard installed(presentation), let document = workspace.active else { throw BridgeFailure.invalid }
+            observedDocument = document.id
+            try await model.acceptSource(source: document.text.source, generation: document.text.generation,
+                meta: metadata(document), resolver: document.assetResolver, draftId: document.session.record.id)
+            guard installed(presentation), workspace.active === document else { throw BridgeFailure.invalid }
+            var envelope: [String: Any] = ["v": 1, "type": "ack", "presentation": presentation, "generation": ack.generation,
                 "digest": ack.digest, "recovery": ack.recoveryRetained ? "retained" : "pending"]
-            if ack.copied, let document = workspace.active { envelope["meta"] = metadata(document) }
-            _ = try await model.sendEnvelope(envelope)
+            if wasReading { envelope["meta"] = metadata(document) }
+            guard try await model.sendEnvelope(envelope) as? Bool == true else { throw BridgeFailure.invalid }
             if let operation = change.operationId { finishAgent(operation, result: .accepted(change)) }
+            await reportStatus()
         } catch {
-            _ = try? await model.sendEnvelope(["v": 1, "type": "refused", "generation": workspace.active?.text.generation ?? 0, "reason": String(describing: error)])
-            applying = false
-            await resynchronise()
-            if let operation = change.operationId { finishAgent(operation, result: .refused(reason: "stale")) }
+            await refuseChange(change, presentation: presentation, reason: String(describing: error))
+            if installed(presentation), pageMatchesWorkspace {
+                applying = false
+                await resynchronise()
+            }
         }
     }
 
@@ -409,7 +464,8 @@ final class ReaderSurface: NSView {
     private func metadata(_ document: WorkingDocument) -> [String: Any] {
         let record = document.session.record
         var kind = "draft", id = record.id.uuidString
-        var result: [String: Any] = [:]
+        var result: [String: Any] = ["revision": NSNull()]
+        result["documentKey"] = workspace?.documentKey(for: document).uuidString
         switch record.destination {
         case .file(let base): kind = "localFile"; id = base.path
         case .published(let base): kind = "published"; id = base.document; result["revision"] = base.revision
@@ -438,31 +494,53 @@ final class ReaderSurface: NSView {
         if workspace?.active != nil { await showWorkspace() }
         else if let snapshot = model.snapshot { try? await model.sendDocument(source: snapshot.source, generation: 0) }
     }
+    private func reportStatus() async {
+        guard let workspace, model.page.documentReady else { return }
+        if let status = workspace.collaboration?.connectionStatus, status != shownConnection {
+            shownConnection = status
+            _ = try? await model.sendEnvelope(["v": 1, "type": "connectionState", "detail": status])
+        }
+        if let notice = workspace.notice, workspace.noticeSerial != shownNotice {
+            shownNotice = workspace.noticeSerial
+            _ = try? await model.sendEnvelope(["v": 1, "type": "notice", "tone": "warn", "text": notice, "actions": []])
+        }
+        guard pageMatchesWorkspace, let presentation = model.page.presentation, let document = workspace.active else { return }
+        let session = document.session
+        let state: String, detail: String?
+        if let conflict = session.record.conflict { state = "conflict"; detail = conflict.message }
+        else if case .failed(let error) = session.recovery { state = "retrying"; detail = "Draft recovery failed: " + error }
+        else if let error = session.destinationSaveError { state = "retrying"; detail = error }
+        else { state = session.saving ? "saving" : "saved"; detail = nil }
+        let revision: Int? = if case .published(let base) = session.record.destination { base.revision } else { nil }
+        let save = SaveState(presentation: presentation, state: state, detail: detail, revision: revision)
+        guard save != shownSave else { return }
+        shownSave = save
+        var envelope: [String: Any] = ["v": 1, "type": "saveState", "presentation": presentation, "state": state]
+        envelope["detail"] = detail; envelope["revision"] = revision
+        _ = try? await model.sendEnvelope(envelope)
+    }
+
     private func observe() {
         observation += 1; let token = observation
         withObservationTracking {
-            _ = workspace?.selected
+            _ = workspace?.active?.id
             _ = workspace?.reading?.snapshot?.digest
-            _ = workspace?.collaboration
+            _ = workspace?.noticeSerial
+            _ = workspace?.collaboration?.connectionStatus
             _ = workspace?.active?.session.saving
-            _ = workspace?.active?.session.error
+            _ = workspace?.active?.session.destinationSaveError
             _ = workspace?.active?.session.recovery
-            _ = workspace?.active?.session.record.conflict
+            _ = workspace?.active?.session.record
+            _ = model.displayedPresentation
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self, token == self.observation else { return }
+                self.observe()
                 if let workspace = self.workspace {
                     self.connect(workspace)
                     if workspace.active?.id != self.observedDocument { await self.showWorkspace() }
-                    if let document = workspace.active {
-                        let session = document.session
-                        let status = session.record.conflict != nil ? "conflict" : session.saving ? "saving" : session.error != nil ? "retrying" : "saved"
-                        var envelope: [String: Any] = ["v": 1, "type": "saveState", "state": status]
-                        if let detail = session.record.conflict?.message ?? session.error { envelope["detail"] = detail }
-                        _ = try? await self.model.sendEnvelope(envelope)
-                    }
+                    await self.reportStatus()
                 }
-                self.observe()
             }
         }
     }

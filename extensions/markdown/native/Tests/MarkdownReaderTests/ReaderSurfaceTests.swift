@@ -227,6 +227,114 @@ import Testing
         }
     }
 
+    @Test func thePageReceivesConflictAndRepeatedWorkspaceNotices() async throws {
+        try await withSurface { surface, model, drafts in
+            let workspace = EditorWorkspace(directory: drafts, store: nil)
+            surface.setWorkspace(workspace)
+            try await post("command", fields: ["name": "newDraft"], to: model)
+            let document = try #require(workspace.active)
+            _ = try await model.page.callJavaScript("""
+            window.statusEvents = [];
+            const receive = reader.receive;
+            reader.receive = message => {
+                window.statusEvents.push(message);
+                document.dispatchEvent(new Event('surface-status'));
+                return receive(message);
+            };
+            window.waitForStatus = (type, field, value, count) => new Promise((resolve, reject) => {
+                const check = () => {
+                    const seen = window.statusEvents.filter(m => m.type === type && m[field] === value);
+                    if (seen.length < count) return;
+                    clearTimeout(timer); document.removeEventListener('surface-status', check); resolve(seen.at(-1));
+                };
+                const timer = setTimeout(() => { document.removeEventListener('surface-status', check); reject(Error(type)); }, 3000);
+                document.addEventListener('surface-status', check); check();
+            });
+            return true;
+            """)
+            func wait(_ type: String, _ field: String, _ value: String, count: Int = 1) async throws -> [String: Any] {
+                let received = try await model.page.callJavaScript("return await window.waitForStatus(type, field, value, count);",
+                    arguments: ["type": type, "field": field, "value": value, "count": count])
+                return try #require(received as? [String: Any])
+            }
+            let conflict = "Save stopped because the same passage changed."
+            document.session.setConflict(.init(message: conflict))
+            let state = try await wait("saveState", "state", "conflict")
+            #expect(state["detail"] as? String == conflict && state["presentation"] as? String == model.page.presentation)
+            for count in 1...2 {
+                workspace.notice = "Finish your edit first."
+                _ = try await wait("notice", "text", "Finish your edit first.", count: count)
+            }
+            let events = try await model.page.callJavaScript("return window.statusEvents.filter(m => m.state === 'conflict').length;")
+            #expect(events as? Int == 1)
+        }
+    }
+
+    @Test func asksUseTheInstalledReadingTextAcrossDraftSwitches() async throws {
+        let server = try LiveTestBridge(); defer { server.stop() }
+        try await withSurface { surface, model, drafts in
+            let workspace = EditorWorkspace(directory: drafts, store: nil)
+            surface.setWorkspace(workspace)
+            let file = drafts.deletingLastPathComponent().appendingPathComponent("reading.md")
+            let source = "# Visible section\n\nAn exact quote in its paragraph.\n"
+            try source.write(to: file, atomically: true, encoding: .utf8)
+            let reference = DocumentReference.file(path: file.path)
+            await workspace.openReading(reference)
+            workspace.startCollaboration(try await server.configuration())
+            defer { workspace.collaboration?.stop() }
+            func waitForBinding() async throws {
+                let deadline = ContinuousClock.now + .seconds(5)
+                while true {
+                    let state = try await server.request(["op": "state"])
+                    if state["document"] as? String == workspace.liveDocumentID.uuidString { return }
+                    if ContinuousClock.now >= deadline { throw LiveTestBridge.Failure.deadline }
+                    await Task.yield()
+                }
+            }
+            try await waitForBinding()
+            let key = try #require(model.page.documentKey), presentation = try #require(model.page.presentation)
+            let requestId = UUID().uuidString, range = (source as NSString).range(of: "exact quote")
+            let annotation: [String: Any] = ["text": "Explain this.", "quote": "exact quote",
+                "quoteRange": ["start": range.location, "end": NSMaxRange(range)]]
+            let first = annotation.merging(["requestId": requestId, "threadId": requestId, "presentation": presentation,
+                "documentKey": key, "generation": 0]) { _, new in new }
+            let accepted = try await request("prompt", fields: first, to: model)
+            #expect(accepted["accepted"] as? Bool == true)
+            #expect(workspace.documents.isEmpty)
+
+            try await post("command", fields: ["name": "newDraft"], to: model)
+            let draft = try #require(workspace.active)
+            let wrongDocument = try await request("prompt", fields: first, to: model)
+            #expect(wrongDocument["accepted"] as? Bool == false)
+            #expect(wrongDocument["fresh"] as? Bool == true)
+            await workspace.openReading(reference)
+            try await waitForBinding()
+            let current = try #require(model.page.presentation)
+            #expect(current != presentation && model.page.documentKey == key)
+            #expect(workspace.active == nil && workspace.documents.contains(where: { $0 === draft }))
+            let receipt = try await request("prompt", fields: first, to: model)
+            #expect(receipt["accepted"] as? Bool == true)
+            let id = UUID().uuidString
+            var batch: [String: Any] = ["requestId": id, "threadId": id, "presentation": presentation,
+                "documentKey": key, "annotations": [annotation], "generation": 0]
+            let stale = try await request("prompt", fields: batch, to: model)
+            #expect(stale["fresh"] as? Bool == true && stale["accepted"] as? Bool == false)
+            try await post("edits", fields: ["presentation": presentation, "origin": "person", "baseGeneration": 0,
+                "generation": 1, "edits": [["start": 0, "end": 0, "text": "old", "expected": ""]]], to: model)
+            #expect(model.page.presentation == current && model.source == source && workspace.active == nil)
+            batch["presentation"] = current
+            let refreshed = try await request("prompt", fields: batch, to: model)
+            #expect(refreshed["accepted"] as? Bool == true)
+            let state = try await server.request(["op": "state"])
+            let prompts = try #require(state["prompts"] as? [[String: Any]])
+            #expect(prompts.count == 2)
+            for prompt in prompts {
+                let text = try #require(prompt["text"] as? String)
+                #expect(text.contains("in its paragraph."))
+            }
+        }
+    }
+
     @Test func metadataLockWithoutCopyDoesNotCreateAnEditWorkspace() async throws {
         try await withSurface { surface, model, drafts in
             #expect(surface.workspace == nil)
