@@ -18,6 +18,9 @@ the harness already holds the answer:
   and verified facts and lessons about this environment.
 - The Pillars hold the operator's principles for judgment calls about design,
   tradeoffs, verification and prose. Consult them before you make one.
+- The slop catalog holds the writing, code and interface habits that the
+  operator rejects as AI slop. Check documents and commits against it, and
+  record each habit the operator flags.
 
 ## Autonomy
 
