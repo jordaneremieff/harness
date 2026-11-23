@@ -128,7 +128,9 @@ describe("compact observation cards", () => {
 		const output = screen(
 			cards.agent_status.renderResult(result, { expanded: false, isPartial: false }, theme, context()),
 		);
-		assert.match(output, /Activity: working · source retained · 1 queued inputs · 0 timers/u);
+		assert.match(output, /Durable agent · retained snapshot; live session activity not observed/u);
+		assert.match(output, /Snapshot facts: 1 queued inputs · 0 timers/u);
+		assert.doesNotMatch(output, /Activity: working|Activity: idle/u);
 		const expanded = screen(
 			cards.agent_status.renderResult(result, { expanded: true, isPartial: false }, theme, context({ expanded: true })),
 		);
@@ -142,7 +144,7 @@ describe("compact observation cards", () => {
 				context(),
 			),
 		);
-		assert.doesNotMatch(unknown, /unknown|unavailable/u);
+		assert.match(unknown, /Ordinary primary · live session activity not observed/u);
 		assert.doesNotMatch(unknown, /Activity: idle/u);
 	});
 
@@ -372,9 +374,9 @@ describe("compact observation cards", () => {
 				context() as never,
 			),
 		);
-		assert.match(output, /1 conversation · 1 working/u);
-		assert.match(output, /retained; live state unavailable/u);
-		assert.match(output, /Storage scan reached its end/u);
+		assert.match(output, /Retained storage page/u);
+		assert.match(output, /Reader · live activity not observed/u);
+		assert.match(output, /Storage scan reached its end · 1 scanned · 1 returned on this page/u);
 	});
 });
 

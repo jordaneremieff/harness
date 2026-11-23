@@ -10,7 +10,10 @@ import type { OpenWorkDependencyView, OpenWorkDetails, OpenWorkView } from "./op
 import { projectReportReceipt } from "./control-result.ts";
 import { briefPreview, briefPreviewText, renderBrief } from "./brief.ts";
 import { fixtures, rows, targetId } from "./tool-card-fixture.mts";
-import { buildStatusOverview } from "./status-overview.ts";
+import { buildStatusOverview, projectStorageStatus } from "./status-overview.ts";
+import { AgentCatalog } from "./catalog.ts";
+import { readFleetStatus } from "./fleet-status.ts";
+import type { OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { coverage as rosterCoverage } from "./dashboard-test-fixture.mts";
 import type { AgentConversationSummary, AgentPrioritySummary } from "./dashboard-types.ts";
 import { CustomMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
@@ -178,29 +181,209 @@ const snapshotResult = (status: Record<string, unknown>, outer: Record<string, u
 		lifetime: "independent host process",
 	});
 
-it("shows incomplete storage scan coverage and its status continuation", () => {
-	const value = result({
-		conversations: [],
-		coverage: {
-			complete: false,
-			scanned: 50,
-			returned: 0,
-			next: {
-				tool: "agent_status",
-				view: "storage-page",
-				storageId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-				cursor: {},
-				limit: 50,
-			},
-		},
+describe("status cards", () => {
+	const card = createAgentToolCards().agent_status;
+	const options = { ...cardKeys, expanded: false, isPartial: false };
+	const render = (details: unknown, args: unknown = {}, expanded = false) =>
+		screen(
+			card.renderResult(result(details), { ...options, expanded }, theme, context({ args, expanded })),
+			expanded ? 1000 : 180,
+		);
+
+	it("shows the exact storage and distinguishes an initial scan from a cursor continuation", () => {
+		const storageId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+		const args = { view: "storage-page", storageId };
+		const nextArgs = { ...args, cursor: { after: "opaque-token" }, limit: 50 };
+		const next = { tool: "agent_status", ...nextArgs };
+		const value = projectStorageStatus({
+			storageId,
+			live: false,
+			conversations: [],
+			coverage: { complete: false, scanned: 50, returned: 0, next },
+		});
+		const firstCall = screen(card.renderCall(args, theme, context()));
+		assert.ok(firstCall.includes(storageId));
+		assert.match(firstCall, /storage page/u);
+		assert.doesNotMatch(firstCall, /overview|continuation/u);
+		assert.match(screen(card.renderCall(nextArgs, theme, context())), /storage page · continuation/u);
+		const text = render(value, args);
+		assert.match(text, /Retained storage page/u);
+		assert.match(text, /Storage scan incomplete.*50 scanned.*0 returned on this page/u);
+		assert.match(text, /coverage\.next using agent_status/u);
+		assert.doesNotMatch(text, /agent_list|opaque-token|0 working/u);
+		assert.ok(render(value, args, true).includes(JSON.stringify(next)));
+		assert.ok(render(value).includes(storageId), "implicit native storage is named by the result");
 	});
-	const text = screen(
-		renderAgentResult(value, { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
-		180,
-	);
-	assert.match(text, /Storage scan incomplete.*50 scanned.*0 returned on this page/u);
-	assert.match(text, /coverage\.next using agent_status/u);
-	assert.doesNotMatch(text, /agent_list discovers stored conversations/u);
+
+	it("distinguishes matched fleet samples from machine-wide coverage and from a no-match filter", async () => {
+		const now = Date.UTC(2026, 9, 1);
+		const observedAt = new Date(now).toISOString();
+		const model = "sample/runner";
+		const catalog = new AgentCatalog("/work/catalog");
+		catalog.scanPages = async function* () {
+			yield {
+				records: [
+					{
+						storageId: "storage-a",
+						storagePath: "/work/agent.sqlite",
+						cwd: "/work",
+						agentDir: "/work",
+						packageDir: "/work",
+						model: { provider: "sample", modelId: "runner" },
+						thinkingLevel: "high",
+						createdAt: observedAt,
+						view: {
+							updatedAt: observedAt,
+							rows: [],
+							coverage: { complete: false, omitted: 1 },
+							modelEvidence: {
+								models: [{ model, reportedCost: 0.2 }],
+								failures: [
+									{
+										provider: "sample",
+										modelId: "runner",
+										at: now,
+										conversationId: "storage-a",
+										entryId: 2,
+										message: "Request refused",
+									},
+								],
+								warnings: [],
+								toolReportedCost: 0,
+								sampling: {
+									observedAt,
+									entriesVisited: 2,
+									entriesOmitted: 0,
+									messagesOmitted: 0,
+									invalidSamples: 0,
+									omittedSamples: 0,
+									samples: [
+										{ model, at: now, tokens: 100, reportedCost: 0.2 },
+										{ model: "other/runner", at: now, tokens: 24, reportedCost: 0.1 },
+									],
+								},
+								coverage: {
+									conversationsVisited: 1,
+									conversationsComplete: false,
+									unavailableUsage: 0,
+									incompleteHistory: 1,
+									omittedModels: 0,
+									omittedFailures: 0,
+									omittedWarnings: 0,
+								},
+							},
+						},
+					},
+				],
+				nextCursor: null,
+				observedAt,
+				coverage: { visited: 2, skipped: 1, complete: false },
+			};
+		};
+		const args = { view: "fleet", model, provider: "sample" };
+		const call = screen(card.renderCall(args, theme, context()));
+		assert.match(call, /agent_status · sample\/runner\nfleet · provider filter sample/u);
+		assert.doesNotMatch(call, /overview/u);
+		const providerOnly = screen(card.renderCall({ view: "fleet", provider: "sample" }, theme, context()));
+		assert.match(providerOnly, /agent_status · sample\nfleet/u);
+		const match = render(await readFleetStatus(catalog, { now, model, provider: "sample" }), args);
+		assert.match(match, /Local published evidence, not provider health/u);
+		assert.match(match, /Filter matched/u);
+		assert.match(match, /Failure sample · sample\/runner: Request refused/u);
+		assert.match(match, /Last 7 days for the filter: 1 sampled response.*\$0\.2 reported/u);
+		assert.match(match, /Partial machine-wide usage · 2 sampled responses/u);
+		assert.match(match, /Catalogue coverage incomplete · 1 storage record read/u);
+		assert.doesNotMatch(match, /Result received|"usageCoverage"/u);
+		const none = render(await readFleetStatus(catalog, { now, model: "missing/model" }), {
+			view: "fleet",
+			model: "missing/model",
+		});
+		assert.match(none, /No evidence matched the filter; use is not established/u);
+		assert.match(none, /Partial machine-wide usage · 2 sampled responses/u);
+		assert.doesNotMatch(none, /Last 7 days|\$0|healthy/u);
+
+		const empty = new AgentCatalog("/work/catalog");
+		empty.scanPages = async function* () {
+			yield { records: [], nextCursor: null, observedAt, coverage: { visited: 0, skipped: 0, complete: true } };
+		};
+		assert.match(screen(card.renderCall({ view: "fleet" }, theme, context())), /^agent_status\nfleet/u);
+		const unfiltered = render(await readFleetStatus(empty, { now }), { view: "fleet" });
+		assert.match(unfiltered, /No machine-wide usage samples; use is not established/u);
+		assert.doesNotMatch(unfiltered, /\$0|healthy|Result received/u);
+	});
+
+	it("identifies ordinary primary presence and Durable timer facts in full selected results", () => {
+		const timestamp = "2026-10-01T00:00:00.000Z";
+		const primary: OrdinaryPrimaryObservation = {
+			kind: "ordinary-primary",
+			view: "status",
+			sessionId: "primary",
+			observedAt: timestamp,
+			presence: {
+				basis: "endpoint-record",
+				cwd: "/work",
+				name: "Primary review",
+				process: {
+					pid: 1,
+					hostname: "local",
+					state: "live",
+					basis: "local-pid-probe",
+					attribution: "process-existence-not-session-progress",
+				},
+			},
+			unknown: {
+				idle: "unknown",
+				selectedLeaf: "unknown",
+				timers: "unknown",
+				tasks: "unknown",
+				unretainedActivity: "unknown",
+			},
+			source: {
+				ancestry: "latest-retained-ancestry",
+				head: { id: "b5e12936", parentId: null, timestamp, byteOffset: 8 },
+				latestKnown: true,
+			},
+			entries: [],
+			coverage: {
+				complete: false,
+				reasons: ["line-budget"],
+				bytesRead: 240,
+				linesVisited: 3,
+				parentVisits: 1,
+				textScanBytes: 0,
+				omissions: { credentials: 0, fields: 0, text: 0 },
+			},
+		};
+		const ordinary = render(primary, { sessionId: "primary", detail: true });
+		assert.match(ordinary, /Ordinary primary · live session activity not observed/u);
+		assert.match(ordinary, /Primary review/u);
+		assert.match(ordinary, /Local process exists/u);
+		assert.match(ordinary, /Latest retained entry b5e12936/u);
+		assert.match(ordinary, /Retained ancestry scan incomplete/u);
+		assert.doesNotMatch(ordinary, /idle|working|Result received/u);
+		const durable = render(
+			{
+				storageId: "storage-a",
+				pid: 1,
+				inventory: { contributions: [], ordinaryOnly: [] },
+				conversation: conversationStatus({
+					timers: [
+						{
+							id: 12,
+							target: "storage-a",
+							deadline: Date.parse(timestamp),
+							mode: "followUp",
+							status: "unsettled",
+							overdue: true,
+						},
+					],
+				}),
+			},
+			{ sessionId: "storage-a", detail: true },
+		);
+		assert.match(durable, /Durable agent · live host observation/u);
+		assert.match(durable, /Earliest timer 12 · 2026-10-01T00:00:00\.000Z · unsettled · overdue/u);
+	});
 });
 
 describe("agent call cards", () => {
@@ -429,7 +612,7 @@ describe("agent result cards", () => {
 			180,
 		);
 		assert.match(text, /Read-only snapshot; live owner state unavailable/);
-		assert.match(text, /Activity: idle/);
+		assert.doesNotMatch(text, /Activity: idle/);
 	});
 
 	it("labels the newest text by state instead of claiming an in-progress reply", () => {
@@ -563,7 +746,8 @@ describe("agent result cards", () => {
 			),
 			180,
 		);
-		assert.match(wrapped, /2 conversations · 1 working/);
+		assert.match(wrapped, /2 conversations returned/);
+		assert.match(wrapped, /live activity not observed/);
 		assert.doesNotMatch(wrapped, /\$0\.00/);
 	});
 

@@ -407,6 +407,13 @@ A result card shows `Answer continuation:` and `Receipt continuation:` as
 separate exact calls when the result carries them. An expanded result notice
 shows its receipt continuation call in its source details.
 
+Status cards distinguish fleet samples, storage pages and selected sessions.
+Fleet cards separate matching evidence from partial machine-wide coverage.
+Storage pages name their storage and point to the exact `coverage.next` call
+when another page exists. Selected cards distinguish ordinary primary presence
+from Durable host or retained observations; neither ordinary presence nor a
+retained snapshot establishes live session activity.
+
 A collapsed card has at most one expansion hint across its call and result.
 Before execution, the call owns the hint; after execution starts, the result
 owns it. The native-style `... (ctrl+o to expand)` hint applies to the whole

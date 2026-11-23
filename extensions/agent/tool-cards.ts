@@ -585,14 +585,31 @@ function argumentCard(
 
 function statusCallMode(name: string, args: Record<string, unknown>, identity: string): string {
 	if (name !== "agent_status") return "";
+	if (args.view === "fleet") {
+		const provider = text(args.provider);
+		return `fleet${text(args.model) && provider ? ` · provider filter ${displayText(provider)}` : ""}`;
+	}
+	if (args.view === "storage-page") return args.cursor === undefined ? "storage page" : "storage page · continuation";
 	if (args.detail === true) return "full detail";
 	return identity ? "selected status" : "overview";
+}
+
+function statusSubject(name: string, args: Record<string, unknown>): string | undefined {
+	if (name !== "agent_status") return undefined;
+	if (args.view === "storage-page" && text(args.storageId)) return "storageId";
+	if (args.view === "fleet") {
+		if (text(args.model)) return "model";
+		if (text(args.provider)) return "provider";
+	}
+	return undefined;
 }
 
 /** Generic call card for snapshot and control tools. */
 export function renderAgentCall(name: string, value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
-	const subjectKey = text(args.sessionId) ? "sessionId" : (SUBJECT_KEYS.find((key) => text(args[key]) !== "") ?? "");
+	const subjectKey = text(args.sessionId)
+		? "sessionId"
+		: (statusSubject(name, args) ?? SUBJECT_KEYS.find((key) => text(args[key]) !== "") ?? "");
 	const subjectValue = subjectKey ? text(args[subjectKey]) : "";
 	const identity =
 		subjectKey === "handle" ? `@${subjectValue.replace(/^@/u, "")}` : subjectKey === "sessionId" ? subjectValue : "";
@@ -1135,56 +1152,150 @@ function sessionSummaryLines(
 	return lines;
 }
 
-function compactActivityLabel(row: Record<string, unknown>): string {
-	const activity = row.busy === null ? "activity unknown" : row.busy === true ? "working" : "idle";
-	const source =
-		row.availability === "retained"
-			? " (retained; live state unavailable)"
-			: row.availability === "unknown"
-				? " (source availability unknown)"
-				: "";
-	return `${activity}${source}`;
+function liveActivity(status: Record<string, unknown>): string {
+	if (status.availability !== "live" || typeof status.busy !== "boolean") return "";
+	return status.busy ? "working" : "idle";
 }
 
-function conversationListLines(conversations: Record<string, unknown>[], theme: Theme): string[] {
-	const busy = conversations.filter(
-		(row) => row.busy === true || Object.keys(record(record(row.live).run)).length > 0,
-	).length;
-	const lines = [
-		theme.fg(
-			"toolOutput",
-			`${conversations.length} conversation${conversations.length === 1 ? "" : "s"} · ${busy} working`,
-		),
-	];
-	for (const row of conversations.slice(0, 4))
+function storageStatusRow(row: Record<string, unknown>, theme: Theme): string {
+	const label = text(row.name) ? displayPreview(text(row.name), 120) : displayIdentity(text(row.identity));
+	return muted(theme, `${label} · ${liveActivity(row) || "live activity not observed"}`);
+}
+
+function storageStatusLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
+	const conversations = array(details.conversations).map(record);
+	const storageId = text(details.storageId);
+	const implicitId =
+		storageId && storageId !== record(context.args).storageId ? ` · ${displayIdentity(storageId)}` : "";
+	const source = details.live === false ? "Retained storage page" : "Storage page";
+	const lines = [theme.fg("toolOutput", `${source}${implicitId}`)];
+	const coverage = record(details.coverage);
+	const scanned = count(coverage.scanned);
+	const scannedText = scanned === undefined ? "" : ` · ${scanned} scanned`;
+	if (coverage.complete === false)
 		lines.push(
-			muted(
-				theme,
-				`${text(row.name) ? displayPreview(text(row.name), 120) : displayIdentity(text(row.identity)) || "conversation"} · ${compactActivityLabel(row)}`,
-			),
+			theme.fg("warning", `Storage scan incomplete${scannedText} · ${conversations.length} returned on this page`),
 		);
+	else if (coverage.complete === true)
+		lines.push(
+			muted(theme, `Storage scan reached its end${scannedText} · ${conversations.length} returned on this page`),
+		);
+	else lines.push(muted(theme, `${conversations.length} conversations returned`));
+	const next = record(coverage.next);
+	if (next.tool === "agent_status" && next.view === "storage-page")
+		lines.push(muted(theme, "Continue with coverage.next using agent_status"));
+	for (const row of conversations.slice(0, 4)) lines.push(storageStatusRow(row, theme));
 	if (conversations.length > 4) lines.push(muted(theme, `${conversations.length - 4} more conversation records`));
 	return lines;
 }
 
-function storageStatusLines(conversations: readonly unknown[], value: unknown, theme: Theme): string[] {
-	const lines = conversationListLines(conversations.map(record), theme);
-	const coverage = record(value);
-	if (coverage.complete === false)
+function fleetStatusLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
+	const selection = record(details.selection);
+	const models = array(details.models);
+	const failures = array(details.failures);
+	const warnings = array(details.warnings);
+	const outcome = selection.outcome;
+	const lines = [theme.fg("toolOutput", "Local published evidence, not provider health")];
+	if (outcome === "no-match") lines.push(muted(theme, "No evidence matched the filter; use is not established"));
+	else {
+		const prefix = outcome === "matched" ? "Filter matched · returned" : "Returned";
 		lines.push(
-			theme.fg(
-				"warning",
-				`Storage scan incomplete · ${count(coverage.scanned) ?? 0} scanned · ${count(coverage.returned) ?? 0} returned on this page`,
-			),
+			muted(theme, `${prefix}: ${models.length} models, ${failures.length} failures, ${warnings.length} warnings`),
 		);
-	else if (coverage.complete === true)
-		lines.push(muted(theme, `Storage scan reached its end · ${count(coverage.scanned) ?? 0} scanned on this page`));
-	if (coverage.next !== null && coverage.next !== undefined)
-		lines.push(muted(theme, "Continue with coverage.next using agent_status; this is not agent_list discovery"));
+	}
+	const failure = record(failures[0]);
+	if (text(failure.message)) {
+		const model = resolvedModelLine(text(failure.provider), text(failure.modelId), "");
+		lines.push(
+			muted(theme, `Failure sample${model ? ` · ${model}` : ""}: ${displayPreview(text(failure.message), 120)}`),
+		);
+	}
+
+	if (outcome === "matched") {
+		const usage = fleetSelectionUsage(details, record(context.args));
+		if (usage) lines.push(muted(theme, usage));
+	}
+	lines.push(...fleetCoverageLines(details, theme));
 	return lines;
 }
 
-function statusOverviewLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+function fleetSelectionUsage(details: Record<string, unknown>, args: Record<string, unknown>): string {
+	const model = text(args.model);
+	const provider = text(args.provider);
+	const row = model
+		? array(details.models)
+				.map(record)
+				.find((row) => row.model === model)
+		: array(details.providers)
+				.map(record)
+				.find((row) => row.provider === provider);
+	const last7d = record(record(row?.usage).last7d);
+	const responses = count(last7d.responses);
+	if (responses === undefined || responses <= 0) return "";
+	const cost = count(last7d.reportedCost);
+	const costText = cost === undefined ? "" : ` · $${Number(cost.toPrecision(4))} reported`;
+	return `Last 7 days for the filter: ${responses} sampled response${responses === 1 ? "" : "s"}${costText}`;
+}
+
+function fleetCoverageLines(details: Record<string, unknown>, theme: Theme): string[] {
+	const lines: string[] = [];
+	const sampled = count(record(details.usageCoverage).sampledResponses);
+	if (sampled !== undefined)
+		lines.push(
+			muted(
+				theme,
+				sampled === 0
+					? "No machine-wide usage samples; use is not established"
+					: `Partial machine-wide usage · ${sampled} sampled responses`,
+			),
+		);
+	const coverage = record(details.coverage);
+	const catalog = record(coverage.catalog);
+	if (catalog.complete === false || (count(catalog.skipped) ?? 0) > 0) {
+		const records = count(catalog.records);
+		lines.push(
+			muted(
+				theme,
+				`Catalogue coverage incomplete${records === undefined ? "" : ` · ${records} storage record${records === 1 ? "" : "s"} read`}`,
+			),
+		);
+	}
+	if (Object.values(record(coverage.output)).some((value) => value === true || (count(value) ?? 0) > 0))
+		lines.push(muted(theme, "Fleet output omitted some evidence"));
+	return lines;
+}
+
+function ordinaryStatusLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
+	const presence = record(details.presence);
+	const lines = [theme.fg("toolOutput", "Ordinary primary · live session activity not observed")];
+	lines.push(
+		...snapshotIdentityLines(
+			{ ...details, name: presence.name, agent: { model: presence.model } },
+			theme,
+			context,
+			false,
+		),
+	);
+	const state = record(presence.process).state;
+	if (state === "live") lines.push(muted(theme, "Local process exists"));
+	else if (state === "dead") lines.push(muted(theme, "Local process not found"));
+	const source = record(details.source);
+	if (source.latestKnown === true) {
+		const id = displayIdentity(text(record(source.head).id));
+		if (id) lines.push(muted(theme, `Latest retained entry ${id}`));
+	}
+	if (record(details.coverage).complete === false) lines.push(muted(theme, "Retained ancestry scan incomplete"));
+	return lines;
+}
+
+function statusResultLines(
+	details: Record<string, unknown>,
+	theme: Theme,
+	context: AgentCardContext,
+): string[] | undefined {
+	if (details.view === "fleet") return fleetStatusLines(details, theme, context);
+	if (details.view === "status" && details.kind === "ordinary-primary")
+		return ordinaryStatusLines(details, theme, context);
 	if (Array.isArray(details.sessions)) {
 		const lines = sessionSummaryLines(details.sessions.map(record), record(record(details.summary).sessions), theme);
 		if (record(details.coverage).complete === false)
@@ -1197,7 +1308,7 @@ function statusOverviewLines(details: Record<string, unknown>, theme: Theme): st
 		lines.push(muted(theme, "agent_list discovers stored conversations"));
 		return lines;
 	}
-	if (Array.isArray(details.conversations)) return storageStatusLines(details.conversations, details.coverage, theme);
+	if (Array.isArray(details.conversations)) return storageStatusLines(details, theme, context);
 	return undefined;
 }
 
@@ -1208,7 +1319,7 @@ function summarizeGeneric(
 ): string[] | undefined {
 	return (
 		resolveProfileLines(details, theme, context) ??
-		statusOverviewLines(details, theme) ??
+		statusResultLines(details, theme, context) ??
 		rewindLines(details, theme, context) ??
 		forkLines(details, theme, context) ??
 		receiptLines(details, theme, context) ??
@@ -1294,24 +1405,24 @@ function providerBlockLines(block: unknown, theme: Theme, compact = false): stri
 	return lines.map((line) => theme.fg("warning", displayText(line)));
 }
 function activityLines(status: Record<string, unknown>, readOnly: boolean, theme: Theme): string[] {
-	if (status.providerBlock !== undefined) return providerBlockLines(status.providerBlock, theme);
+	const lines = readOnly ? [muted(theme, "Read-only snapshot; live owner state unavailable")] : [];
+	if (status.providerBlock !== undefined) return [...lines, ...providerBlockLines(status.providerBlock, theme)];
 	const live = record(status.live);
-	const working = status.busy === true || Object.keys(record(live.run)).length > 0;
-	const running = runningSlots(live);
+	const working = !readOnly && (status.busy === true || Object.keys(record(live.run)).length > 0);
+	const activity = working ? "working" : "idle";
+	const running = readOnly ? [] : runningSlots(live);
 	const current = running.find((slot) => slot.status === "running");
 	const inbox = record(status.inbox);
 	const pending = Array.isArray(inbox.items) ? inbox.items.length : undefined;
 	const parts = [
-		`Activity: ${working ? "working" : "idle"}`,
+		readOnly ? "" : `Activity: ${activity}`,
 		current ? `tool ${displayPreview(text(current.name), 100)}` : undefined,
 		pending === undefined ? "pending unknown" : `${pending} pending`,
 		unplacedText(status),
 	];
-	const lines = [muted(theme, parts.filter(Boolean).join(" · "))];
-	if (readOnly) lines.unshift(theme.fg("muted", "Read-only snapshot; live owner state unavailable"));
+	lines.push(muted(theme, parts.filter(Boolean).join(" · ")));
 	for (const slot of running.slice(0, 4)) lines.push(muted(theme, runningSlotLine(slot)));
 	if (running.length > 4) lines.push(muted(theme, `${running.length - 4} more active tools`));
-	// The status contract carries no role for this text, so the label reports the state only.
 	const lastText = text(status.lastText);
 	if (lastText)
 		lines.push(
@@ -1322,7 +1433,7 @@ function activityLines(status: Record<string, unknown>, readOnly: boolean, theme
 		);
 	const saved = latestSavedResult(status.submissions);
 	if (saved) lines.push(muted(theme, saved));
-	lines.push(...retryLines(live, theme));
+	if (!readOnly) lines.push(...retryLines(live, theme));
 	return lines;
 }
 
@@ -1390,6 +1501,28 @@ function snapshotIdentityLines(
 	return lines;
 }
 
+function durableStatusSourceLines(
+	status: Record<string, unknown>,
+	details: Record<string, unknown>,
+	theme: Theme,
+): string[] {
+	if (details.conversation !== status || count(status.conversationId) === undefined) return [];
+	const liveHost = details.live !== false && (details.pid !== undefined || details.inventory !== undefined);
+	const lines = [theme.fg("toolOutput", liveHost ? "Durable agent · live host observation" : "Durable agent")];
+	const timer = record(array(status.timers)[0]);
+	const deadline = count(timer.deadline);
+	if (count(timer.id) === undefined || deadline === undefined) return lines;
+	const when = new Date(deadline);
+	if (Number.isFinite(when.getTime()))
+		lines.push(
+			muted(
+				theme,
+				`Earliest timer ${timer.id} · ${when.toISOString()} · ${text(timer.status)}${timer.overdue === true ? " · overdue" : ""}`,
+			),
+		);
+	return lines;
+}
+
 function snapshotLines(
 	status: Record<string, unknown>,
 	details: Record<string, unknown>,
@@ -1399,6 +1532,7 @@ function snapshotLines(
 ): string[] {
 	if (details.format === "compact") return compactStatusLines(status, details, theme, context);
 	const lines = snapshotIdentityLines(status, theme, context, namedByReceipt);
+	lines.push(...durableStatusSourceLines(status, details, theme));
 	if (status.live === undefined && typeof status.state === "string")
 		lines.push(muted(theme, `State: ${displayPreview(status.state, 40)}`));
 	else lines.push(...activityLines(status, readOnlySnapshot(details), theme));
@@ -1441,8 +1575,7 @@ function compactRecoveryLines(
 function compactActivityFacts(status: Record<string, unknown>): string[] {
 	const queue = record(status.queue);
 	return [
-		status.busy === true ? "working" : status.busy === false ? "idle" : "",
-		text(status.availability) && status.availability !== "unknown" ? `source ${text(status.availability)}` : "",
+		liveActivity(status),
 		count(status.unplaced) === undefined && count(queue.inbox) !== undefined ? `${queue.inbox} queued inputs` : "",
 		count(status.timers) === undefined ? "" : `${status.timers} timers`,
 		unplacedText(status),
@@ -1463,8 +1596,14 @@ function compactStatusLines(
 		context,
 		false,
 	);
+	const live = status.availability === "live";
+	const retained = status.availability === "retained";
+	const ordinary = count(status.conversationId) === undefined;
+	const source = ordinary ? "Ordinary primary" : "Durable agent";
+	const reach = live ? "live host observation" : "live session activity not observed";
+	lines.push(theme.fg("toolOutput", `${source} · ${retained ? "retained snapshot; " : ""}${reach}`));
 	const activity = compactActivityFacts(status);
-	if (activity.length) lines.push(theme.fg("toolOutput", `Activity: ${activity.join(" · ")}`));
+	if (activity.length) lines.push(muted(theme, `${live ? "Activity" : "Snapshot facts"}: ${activity.join(" · ")}`));
 	lines.push(...compactRecoveryLines(status, details, theme));
 	const block = record(status.providerBlock);
 	if (text(block.blockId))
