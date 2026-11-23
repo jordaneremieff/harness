@@ -188,6 +188,7 @@
 			};
 		}
 		function queryResponse(fields: Fields): Fields {
+			if (fields.kind === "reviewDraft") return { available: false, version: 0 };
 			if (fields.kind === "review") return reviewResponse();
 			if (fields.kind === "details") return { rows: [{ label: "Document", value: "Fixture" }], images: [] };
 			if (fields.kind === "image")

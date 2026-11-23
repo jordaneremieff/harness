@@ -73,8 +73,81 @@ test("uncertain sends replay the identical packet; a confirmed fresh refusal per
 		text: "Explain this",
 		quote: "alpha",
 		quoteRange: { start: 4, end: 9 },
+		passageAnchor: { text: "alpha", contexts: [] },
 		authoredRevision: 1,
 	});
+});
+
+function viewOf(source: string): ReaderPassageView {
+	let start = 0;
+	return {
+		blocks: source.split("\n").map((line, i) => {
+			const block = {
+				key: String(i),
+				start,
+				end: start + line.length,
+				type: line.startsWith("# ") ? "heading1" : "paragraph",
+			};
+			start += line.length + 1;
+			return block;
+		}),
+	};
+}
+
+test("a replaced pending or parked comment cannot move to another occurrence, even after a second edit and refresh", () => {
+	const original = "# Alpha\nStatus: ready.\n# Beta\nStatus: ready.";
+	const changed = original.replace("ready", "done");
+	const sessions = reader.createAskSessions(),
+		a = sessions.show("A", original, "v1");
+	const range = { start: original.indexOf("ready"), end: original.indexOf("ready") + 5 };
+	const item: ReaderComment = {
+		text: "Clarify",
+		quote: "ready",
+		authoredRevision: 1,
+		range,
+		sourceAnchor: reader.uiLogic.capturePassage(original, range, viewOf(original), "ready"),
+	};
+	a.parked = [{ comment: item, text: item.text, index: 0 }];
+	sessions.change([{ ...range, expected: "ready", text: "done" }], changed);
+	sessions.change([{ start: changed.length, end: changed.length, expected: "", text: "!" }], `${changed}!`);
+	assert.equal(item.range, undefined);
+	assert.equal(
+		item.sourceAnchor,
+		undefined,
+		"recovery cannot store unrestricted evidence while native rendering is pending",
+	);
+	sessions.render(viewOf(`${changed}!`));
+	sessions.show("A", original.replace("# Alpha", "# Gamma"), "v3");
+	sessions.render(viewOf(original.replace("# Alpha", "# Gamma")));
+	assert.equal(item.range, undefined);
+	assert.equal(item.quote, "ready");
+	assert.equal(item.authoredRevision, 1);
+});
+
+test("restored offsets are authoritative only for matching source, including repeated headings and emoji", () => {
+	const text = "# Same\n🍋 pass\n# Same\n🍋 pass",
+		range = { start: text.lastIndexOf("pass"), end: text.length };
+	const anchor = reader.uiLogic.capturePassage(text, range, viewOf(text), "pass");
+	const sessions = reader.createAskSessions(),
+		a = sessions.show("A", text, "original");
+	const item: ReaderComment = {
+		text: "Here",
+		range: { ...range },
+		anchorDigest: "original",
+		sourceAnchor: anchor,
+		quote: "pass",
+	};
+	a.comments = [item];
+	sessions.render(viewOf(text));
+	sessions.restoreRanges(a);
+	assert.deepEqual(plain(item.range), range);
+	sessions.show("B", "Other", "other");
+	sessions.show("A", text, "original");
+	sessions.render(viewOf(text));
+	assert.deepEqual(plain(item.range), range);
+	sessions.show("A", `${text}!`, "changed");
+	sessions.render(viewOf(`${text}!`));
+	assert.equal(item.range, undefined);
 });
 
 test("batch members, the overall comment and a follow-up keep their own authored revisions", () => {

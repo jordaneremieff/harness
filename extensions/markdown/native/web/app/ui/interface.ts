@@ -186,6 +186,7 @@
 			hostCommand,
 			toast,
 			notice,
+			removeNotice,
 			onMenuOpen: () => hideSelection(),
 			clearSelection() {
 				getSelection()?.removeAllRanges();

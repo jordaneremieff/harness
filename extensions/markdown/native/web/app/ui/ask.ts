@@ -38,6 +38,78 @@
 			owner.overall = hasText(newer) && newer !== text ? `${text}\n\n${newer}` : text;
 			owner.overallRevision = authoredRevision;
 		}
+		const warnings = new WeakMap<ReaderAskDocument, { text: string; action: { label: string; run(): void } }>();
+		const recovering = api.createAskRecovery<ReaderAskDocument>(host, {
+			snapshot: (owner) => pendingSnapshot(owner),
+			apply: restorePending,
+			warn(owner, text, action) {
+				warnings.set(owner, { text, action });
+				if (owner === session) showRecoveryWarning(owner);
+			},
+			clear(owner) {
+				warnings.delete(owner);
+				if (owner === session) ctx.removeNotice("batch-recovery");
+			},
+		});
+		api.flushReviewDrafts = async () =>
+			!controller.compositionTarget && (await recovering.flush()) && !controller.compositionTarget;
+		function showRecoveryWarning(owner: ReaderAskDocument) {
+			const warning = warnings.get(owner);
+			if (owner === session && warning) ctx.notice(warning.text, "warn", [warning.action], "batch-recovery");
+		}
+		function persistedComment(owner: ReaderAskDocument, item: ReaderComment): ReaderComment {
+			const { text, quote, authoredRevision } = item;
+			const copy: ReaderComment = {
+				text,
+				...(quote ? { quote } : {}),
+				...(authoredRevision === undefined ? {} : { authoredRevision }),
+			};
+			if (item.sourceAnchor && utf8.encode(item.sourceAnchor.text).length <= 16384) {
+				copy.sourceAnchor = structuredClone(item.sourceAnchor);
+				if (item.range) copy.range = { ...item.range };
+			}
+			if (copy.range && copy.sourceAnchor && owner.digest && /^sha256:[0-9a-f]{64}$/u.test(owner.digest))
+				copy.anchorDigest = owner.digest;
+			else delete copy.range;
+			return copy;
+		}
+		function pendingSnapshot(owner: ReaderAskDocument, parkedOnly = false): ReaderReviewDraft | undefined {
+			const comments = parkedOnly ? [] : owner.comments.map((item) => persistedComment(owner, item));
+			const overall = parkedOnly ? "" : owner.overall;
+			const parked = owner.parked?.map((item) =>
+				item.comment
+					? { ...item, text: item.comment.text, comment: persistedComment(owner, item.comment) }
+					: { ...item },
+			);
+			if (!comments.length && !overall && !parked?.length) return undefined;
+			return {
+				comments,
+				overall,
+				...(!parkedOnly && owner.overallRevision !== undefined ? { overallRevision: owner.overallRevision } : {}),
+				...(parked?.length ? { parked } : {}),
+			};
+		}
+		function restorePending(owner: ReaderAskDocument, draft?: ReaderReviewDraft) {
+			if (owner.current?.pendingComment) {
+				owner.current = null;
+				owner.visible = false;
+			}
+			owner.comments = draft?.comments ?? [];
+			owner.overall = draft?.overall ?? "";
+			owner.overallRevision = draft?.overallRevision;
+			owner.parked = draft?.parked;
+			sessions.restoreRanges(owner);
+			if (owner === session) {
+				syncOverallField();
+				ask.refresh();
+			}
+		}
+		function hasPendingPassages(owner: ReaderAskDocument) {
+			return owner.comments.length > 0 || (owner.parked?.some((item) => item.comment) ?? false);
+		}
+		function pendingChanged(owner: ReaderAskDocument) {
+			recovering.changed(owner);
+		}
 		function batchLabel() {
 			const count = commentCount(session.comments.length);
 			return hasText(session.overall) ? `${count} + overall` : count;
@@ -62,6 +134,35 @@
 			return [...doc.children].find(
 				(n) => Number((n as HTMLElement).dataset.start) <= start && Number((n as HTMLElement).dataset.end) >= start,
 			) as HTMLElement | undefined;
+		}
+		let rendered: { blocks: ReaderMappedBlock[]; view: ReaderPassageView } | undefined;
+		function currentView() {
+			return rendered?.blocks === controller.blocks ? rendered.view : undefined;
+		}
+		function installBlocks(blocks: ReaderMappedBlock[]) {
+			const source = controller.doc?.source;
+			if (source === undefined) return;
+			const nodes = new Map(
+				Array.from(doc.children, (element) => [(element as HTMLElement).dataset.block, element as HTMLElement]),
+			);
+			const maps = new Map<string, ReturnType<ReaderSourceModelAPI["map"]>>();
+			const view: ReaderPassageView = {
+				blocks,
+				map(block) {
+					const node = nodes.get(block.key);
+					if (!node?.isConnected || node.dataset.role === "block-editor") return undefined;
+					let map = maps.get(block.key);
+					if (!map) {
+						map = api.sourceModel.map(block, source, node);
+						maps.set(block.key, map);
+					}
+					return map;
+				},
+			};
+			rendered = { blocks, view };
+			sessions.render(view);
+			paintPassage();
+			position();
 		}
 		function passagePoint(offset: number) {
 			const node = blockAt(offset),
@@ -272,7 +373,9 @@
 			}
 		}
 		function composerActions(thread: ReaderThread, followUp: boolean) {
-			const send = () => void sendMessage();
+			const send = () => {
+				if (thread === session.current) void sendMessage();
+			};
 			if (followUp) return { primary: "Send", run: send, hint: "cmd+return send" };
 			if (thread.pendingComment)
 				return {
@@ -335,8 +438,10 @@
 			}
 			updateButtons();
 			field.addEventListener("input", () => {
-				if (comment) comment.text = field.value;
-				else {
+				if (comment) {
+					comment.text = field.value;
+					pendingChanged(session);
+				} else {
 					if (!hasText(thread.draft) && hasText(field.value)) thread.draftRevision = revision();
 					thread.draft = field.value;
 				}
@@ -408,6 +513,7 @@
 				return;
 			}
 			setOverall(overallField.value);
+			pendingChanged(session);
 			refreshTray();
 		});
 		// Text returned ahead of the text being typed keeps the caret on the same characters.
@@ -496,7 +602,10 @@
 			const comment = session.current?.pendingComment;
 			if (comment && !comment.text.trim()) {
 				const index = session.comments.indexOf(comment);
-				if (index >= 0) session.comments.splice(index, 1);
+				if (index >= 0) {
+					session.comments.splice(index, 1);
+					pendingChanged(session);
+				}
 			}
 		}
 		// A question card closed before anything was typed or sent leaves no entry in the Ask menu.
@@ -511,6 +620,7 @@
 			const index = session.comments.indexOf(comment);
 			if (index < 0) return;
 			session.comments.splice(index, 1);
+			pendingChanged(session);
 			if (session.current?.pendingComment === comment) {
 				session.current = null;
 				session.visible = false;
@@ -523,7 +633,16 @@
 		}
 		function removeAll() {
 			const owner = session,
-				removed = owner.comments.splice(0),
+				presentation = controller.payload?.presentation;
+			void recovering.prepare(
+				owner,
+				pendingSnapshot(owner, true),
+				() => owner === session && controller.payload?.presentation === presentation,
+				() => removedBatch(owner),
+			);
+		}
+		function removedBatch(owner: ReaderAskDocument) {
+			const removed = owner.comments.splice(0),
 				overall = owner.overall,
 				authoredRevision = owner.overallRevision,
 				atRemoval = version();
@@ -536,21 +655,29 @@
 			const also = hasText(overall) ? " and the overall comment" : "";
 			ctx.toast(`Removed ${commentCount(removed.length)}${also}.`, {
 				label: "Undo",
-				run: () => {
-					if (!removed.length) return;
-					if (owner !== session) owner.digest = undefined;
-					if (
-						owner === session &&
-						(atRemoval.presentation !== controller.payload?.presentation ||
-							atRemoval.generation !== controller.doc?.generation)
-					)
-						for (const item of removed)
-							item.range = api.uiLogic.reanchorPassage(controller.doc?.source ?? "", item.sourceAnchor);
-					owner.comments.unshift(...removed.splice(0));
-					restoreOverall(overall, authoredRevision, owner);
-					if (owner === session) ask.refresh();
-				},
+				run: () => undoRemove(owner, removed, overall, authoredRevision, atRemoval),
 			});
+		}
+		function undoRemove(
+			owner: ReaderAskDocument,
+			items: ReaderComment[],
+			overall: string,
+			authoredRevision: number | undefined,
+			base: ReaderPromptVersion,
+		) {
+			if (!items.length) return;
+			if (owner !== session) owner.digest = undefined;
+			else if (
+				base.presentation !== controller.payload?.presentation ||
+				base.generation !== controller.doc?.generation
+			) {
+				for (const item of items)
+					item.range = api.uiLogic.reanchorPassage(controller.doc?.source ?? "", item.sourceAnchor, currentView());
+			}
+			owner.comments.unshift(...items.splice(0));
+			restoreOverall(overall, authoredRevision, owner);
+			pendingChanged(owner);
+			if (owner === session) ask.refresh();
 		}
 		function quoteFits(quote?: string) {
 			if (quote && utf8.encode(quote).length > 8192) {
@@ -572,6 +699,7 @@
 				sourceAnchor: thread.sourceAnchor,
 				authoredRevision: thread.authoredRevision ?? thread.draftRevision,
 			});
+			pendingChanged(session);
 			session.threads.splice(session.threads.indexOf(thread), 1);
 			ctx.clearSelection?.();
 			ask.close();
@@ -593,6 +721,7 @@
 				owner.visible &&= !!next;
 			}
 			sessions.forget(message);
+			pendingChanged(owner);
 			const detail = message.detail ?? "The conversation did not accept it.";
 			if (owner === session)
 				ctx.notice(
@@ -628,37 +757,59 @@
 		async function sendBatch() {
 			if (!batchReady() || !releaseEditor()) return;
 			const owner = session,
-				additions = [...owner.comments],
-				overall = hasText(owner.overall) ? owner.overall : undefined,
-				id = crypto.randomUUID();
-			const message: ReaderAskMessage = {
-				requestId: id,
-				text: `Batch of ${commentCount(additions.length)}`,
-				state: "sending",
-				authoredRevision: owner.overallRevision,
-			};
-			const thread: ReaderThread = { threadId: id, comments: additions, overall, draft: "", messages: [message] };
-			const packet = sessions.packet(thread, message, version());
+				base = version(),
+				thread = batchThread(owner),
+				message = thread.messages[0];
+			const packet = sessions.packet(thread, message, base);
 			if (utf8.encode(JSON.stringify(packet)).length > 256 * 1024 - 128) {
 				ctx.notice("The batch is too long. Shorten or remove comments before sending it.", "warn");
 				return;
 			}
+			const stillCurrent = () =>
+				session === owner &&
+				controller.payload?.presentation === base.presentation &&
+				controller.doc?.generation === base.generation;
+			await recovering.prepare(owner, pendingSnapshot(owner, true), stillCurrent, () =>
+				submitBatch(owner, thread, message),
+			);
+		}
+		function batchThread(owner: ReaderAskDocument): ReaderThread {
+			const id = crypto.randomUUID();
+			const message: ReaderAskMessage = {
+				requestId: id,
+				text: `Batch of ${commentCount(owner.comments.length)}`,
+				state: "sending",
+				authoredRevision: owner.overallRevision,
+			};
+			return {
+				threadId: id,
+				comments: [...owner.comments],
+				overall: hasText(owner.overall) ? owner.overall : undefined,
+				draft: "",
+				messages: [message],
+			};
+		}
+		function submitBatch(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
 			owner.comments.length = 0;
 			setOverall("", owner);
 			owner.threads.unshift(thread);
 			sessions.register(owner, thread, message);
 			openThread(thread, false);
-			const attempt = async () => {
-				if (owner !== session || sendingBatches.has(owner)) return;
-				sendingBatches.add(owner);
-				await sendAttempt(owner, thread, message);
-				sendingBatches.delete(owner);
-				if (!(message.state === "unknown" && message.retryable)) retryBatch.delete(message);
-				if (message.state === "failed") restoreBatch(owner, thread, message);
-				if (owner === session) ask.refresh();
-			};
+			const attempt = () => deliverBatch(owner, thread, message);
 			retryBatch.set(message, attempt);
-			await attempt();
+			void attempt();
+		}
+		async function deliverBatch(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
+			if (owner !== session || sendingBatches.has(owner)) return;
+			sendingBatches.add(owner);
+			try {
+				await sendAttempt(owner, thread, message);
+			} finally {
+				sendingBatches.delete(owner);
+			}
+			if (!(message.state === "unknown" && message.retryable)) retryBatch.delete(message);
+			if (message.state === "failed") restoreBatch(owner, thread, message);
+			if (owner === session) ask.refresh();
 		}
 		function drawStatus(message: ReaderAskMessage, changeCount: number) {
 			const glyph =
@@ -1151,7 +1302,9 @@
 					quote: selection?.text,
 					range: selection ? { start: selection.start, end: selection.end } : undefined,
 					sourceAnchor:
-						selection && controller.doc ? api.uiLogic.capturePassage(controller.doc.source, selection) : undefined,
+						selection && controller.doc
+							? api.uiLogic.capturePassage(controller.doc.source, selection, currentView(), selection.text)
+							: undefined,
 					authoredRevision: selection ? revision() : undefined,
 					draft: "",
 					messages: [],
@@ -1209,15 +1362,25 @@
 			},
 		};
 		off.push(
+			host.on("beforeDocument", () => {
+				sessions.captureAnchors();
+			}),
 			host.on("promptState", receivePrompt),
+			controller.on("blocks", installBlocks),
 			controller.on("change", (change) => {
-				if (controller.doc) sessions.change(change.edits, controller.doc.source);
+				if (!controller.doc) return;
+				sessions.change(change.edits, controller.doc.source);
+				if (hasPendingPassages(session)) pendingChanged(session);
 			}),
 			controller.on("ack", (ack) => {
 				const { payload, doc } = controller;
 				if (!payload || !doc) return;
-				if (payload.meta.documentKey !== session.documentKey) installSession(payload, doc.source);
-				if (ack.generation === doc.generation && typeof ack.digest === "string") session.digest = ack.digest;
+				if (payload.meta.documentKey !== session.documentKey)
+					installSession(payload, doc.source, ack.generation === doc.generation ? ack.digest : undefined);
+				if (ack.generation === doc.generation && typeof ack.digest === "string") {
+					session.digest = ack.digest;
+					if (hasPendingPassages(session)) pendingChanged(session);
+				}
 			}),
 			controller.on("agentOperations", () => ask.refresh()),
 			controller.on("view", () => {
@@ -1239,9 +1402,9 @@
 						`agent-${id}`,
 					);
 			}),
-			controller.on("document", (payload) => installSession(payload, payload.source)),
+			controller.on("document", (payload) => installSession(payload, payload.source, payload.meta.digest)),
 		);
-		function installSession(payload: ReaderCoreDocument, source: string) {
+		function installSession(payload: ReaderCoreDocument, source: string, digest: unknown) {
 			closeReview();
 			if (session.documentKey !== payload.meta.documentKey) {
 				batchList.hidePopover();
@@ -1250,12 +1413,10 @@
 				if (document.activeElement instanceof HTMLElement && card.contains(document.activeElement))
 					document.activeElement.blur();
 			}
-			session = sessions.show(
-				payload.meta.documentKey,
-				source,
-				typeof payload.meta.digest === "string" ? payload.meta.digest : undefined,
-			);
+			session = sessions.show(payload.meta.documentKey, source, typeof digest === "string" ? digest : undefined);
 			syncOverallField();
+			const owner = session;
+			void recovering.open(owner).then(() => showRecoveryWarning(owner));
 			ask.refresh();
 		}
 		// The final input event commits marked text before the postponed card redraw.

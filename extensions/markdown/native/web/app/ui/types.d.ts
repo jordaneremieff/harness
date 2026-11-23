@@ -35,7 +35,14 @@ declare global {
 		presentation: string;
 		generation: number;
 	}
+	interface ReaderParkedComment {
+		comment?: ReaderComment;
+		text: string;
+		index: number;
+		authoredRevision?: number;
+	}
 	interface ReaderAskDocument {
+		parked?: ReaderParkedComment[];
 		documentKey: string;
 		digest?: string;
 		threads: ReaderThread[];
@@ -55,6 +62,9 @@ declare global {
 		readonly shown: ReaderAskDocument;
 		show(key: string, source: string, digest?: string): ReaderAskDocument;
 		change(edits: ReaderEdit[], source: string): void;
+		render(view: ReaderPassageView): void;
+		captureAnchors(): void;
+		restoreRanges(owner: ReaderAskDocument): void;
 		register(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage): void;
 		delivery(requestId: string, threadId: string): ReaderAskDelivery | undefined;
 		packet(thread: ReaderThread, message: ReaderAskMessage, version: ReaderPromptVersion): Record<string, unknown>;
@@ -83,6 +93,7 @@ declare global {
 		contexts: { before: string; after: string }[];
 	}
 	interface ReaderComment {
+		anchorDigest?: string;
 		authoredRevision?: number;
 		text: string;
 		quote?: string;
@@ -215,6 +226,7 @@ declare global {
 		command(name: string, args?: Record<string, unknown>): void;
 		hostCommand(name: string, args?: Record<string, unknown>): Promise<unknown>;
 		notice(text: string, tone?: string, actions?: { label: string; run: () => void }[], id?: string): void;
+		removeNotice(id: string): void;
 		toast(text: string, action?: { label: string; run: () => void }): void;
 		onMenuOpen?(): void;
 		clearSelection?(): void;
@@ -283,6 +295,7 @@ declare global {
 		createNavigation(context: ReaderUIContext): ReaderNavigation;
 		createAskUI(context: ReaderUIContext, navigation: ReaderNavigation): ReaderAskUI;
 		createAskSessions(): ReaderAskSessions;
+		flushReviewDrafts(): Promise<boolean>;
 		createViewsUI(context: ReaderUIContext, navigation: ReaderNavigation): ReaderViewsUI;
 		createContextMenu(
 			context: ReaderUIContext,
