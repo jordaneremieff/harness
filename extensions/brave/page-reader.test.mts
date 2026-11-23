@@ -51,7 +51,9 @@ describe("web page reader", () => {
 		assert.equal(result.details.status, "readable");
 		assert.equal(result.details.outputTruncated, false);
 		assert.match(result.content[0].text, /Untrusted page content/);
-		assert.ok(result.content[0].text.includes(`[${result.details.sourceId}:E1] Direct evidence.`));
+		const firstRecord = `[${result.details.sourceId}:E1] Direct evidence.`;
+		assert.equal(result.details.previewOffset, result.content[0].text.indexOf(firstRecord));
+		assert.match(result.content[0].text.slice(0, result.details.previewOffset), /End of retained excerpts/);
 		assert.ok(!("body" in result.details));
 		assert.ok(!("excerpts" in result.details));
 	});
@@ -61,6 +63,7 @@ describe("web page reader", () => {
 		});
 		assert.equal(empty.details.status, "no-readable-text");
 		assert.equal(empty.details.excerptCount, 0);
+		assert.equal(empty.details.previewOffset, empty.content[0].text.length);
 		assert.match(empty.content[0].text, /may require scripts/);
 		const body = await readWebPage({ url: "https://example.com" }, undefined, {
 			fetchPage: async () => response("<p>Static body</p>"),

@@ -415,30 +415,21 @@ across a close and reopen over retained storage.
 
 ## Tool cards
 
-Each tool draws a compact TUI card. A collapsed call shows one heading row
-(`web_read · <url>` or `web_search · <query>`) plus, when the call sets other
-fields, one dim qualifier row with the view, find phrase, offsets, source id,
-byte budget, or search controls. The argument expansion hint appears only when
-the URL or query is clipped.
+The `web_read` card follows the [emission grammar](../../docs/conventions/emissions.md).
+It identifies the requested URL and any known source, including the final URL
+on a redirect. The outcome states what the retained page returned, whether
+more records follow, and any budget needed for the next complete link record. No match
+in retained excerpts or links does not establish absence from the whole page.
 
-A collapsed result leads with the outcome the response establishes:
+The collapsed result previews the returned excerpts or links, not the fetch
+preamble. The reader records an offset into the retained text without copying
+the records. Expansion restores the fetch and coverage context, the bounded
+retained text, the exact continuation call, and counts for the bytes downloaded
+and redirects followed.
 
-- `web_read` text reads lead with the source identity (page title and domain)
-  before the status, the excerpt count, whether a continuation exists, an exact
-  label range when no `find` applies, and the first matched label for a
-  `find`. Coverage flags state extraction or output truncation. A redirect
-  shows the final URL when it differs from the request.
-- `web_read` links reads show the link count, page offset, coverage flags, and
-  the `max_bytes` the next complete record needs.
-- `web_search` leads with the first ranked sources (rank, title, domain) from
-  the bounded `sources` projection the producer carries in result details,
-  then the returned result count, whether more pages are available, an altered
-  query, and output truncation; further sources are in the expanded detail.
-
-Expansion shows the full result text with a display bound. A collapsed error
-shows one clipped line; the expanded card keeps the complete retained
-diagnostic. Terminal controls escape to text in every collapsed value, and
-expansion hints use the host-injected key binding.
+The `web_search` card shows the query, any search controls, the first ranked
+sources, the returned result count, and any altered query, continuation or
+output bound. Expansion includes the retained search text and diagnostics.
 
 ## Dependencies
 

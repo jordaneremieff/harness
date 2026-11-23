@@ -325,6 +325,7 @@ describe("links view reader", () => {
 			fetchPage: async () => fetched(body),
 		});
 		assert.equal(result.details.linkCount, 1);
+		assert.ok(result.content[0].text.slice(result.details.previewOffset).startsWith(`[${result.details.sourceId}:L1]`));
 		assert.match(result.content[0].text, /Destinations were not fetched or DNS-checked/);
 		assert.doesNotMatch(JSON.stringify(result), /synthetic-pass|baseIdentity/);
 		assert.ok(!("records" in result.details));

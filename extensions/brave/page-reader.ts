@@ -96,10 +96,11 @@ function textResult(fetched: PublicPageResponse, page: PageText, params: WebRead
 	const contentType = cleanPageText(fetched.contentType).replace(/\s+/g, " ").slice(0, 200);
 	const status = page.paragraphs.length ? "readable" : "no-readable-text";
 	const notes = readerNotes(page, status, excerpts);
-	const text = readerText(fetched, page, contentType, status, excerpts, notes);
+	const { text, previewOffset } = readerText(fetched, page, contentType, status, excerpts, notes);
 	return {
 		content: [{ type: "text" as const, text }],
 		details: {
+			previewOffset,
 			requestedUrl: fetched.requestedUrl,
 			finalUrl: fetched.finalUrl,
 			retrievedAt: fetched.retrievedAt,
@@ -150,7 +151,7 @@ function linkResult(fetched: PublicPageResponse, textPage: PageText, page: PageL
 		notes.push(
 			"Extraction hit a link, byte, label, or base limit. Omitted records and label tails are unavailable through continuation.",
 		);
-	const text = [
+	const header = [
 		`Final URL: ${fetched.finalUrl}`,
 		`Requested URL: ${fetched.requestedUrl}`,
 		`Retrieved: ${fetched.retrievedAt}`,
@@ -162,12 +163,14 @@ function linkResult(fetched: PublicPageResponse, textPage: PageText, page: PageL
 		`Eligible anchors: ${page.anchorsSeen}; retained: ${page.records.length}; skipped URL policy/parse: ${page.skippedUrl}; skipped limits: ${page.skippedLimit}; truncated labels: ${page.truncatedLabels}; retained bytes: ${page.retainedBytes}.`,
 		...notes,
 		"",
-		result.records.map((record) => record.text).join(""),
+		"",
 	].join("\n");
+	const text = header + result.records.map((record) => record.text).join("");
 	return {
 		content: [{ type: "text" as const, text }],
 		details: {
 			view: "links" as const,
+			previewOffset: header.length,
 			requestedUrl: fetched.requestedUrl,
 			finalUrl: fetched.finalUrl,
 			retrievedAt: fetched.retrievedAt,
@@ -271,8 +274,8 @@ function readerText(
 	status: string,
 	excerpts: PageExcerpts,
 	notes: string[],
-): string {
-	return [
+): { text: string; previewOffset: number } {
+	const header = [
 		`Final URL: ${fetched.finalUrl}`,
 		`Requested URL: ${fetched.requestedUrl}`,
 		`Retrieved: ${fetched.retrievedAt}`,
@@ -283,6 +286,9 @@ function readerText(
 		`Excerpt offset: ${excerpts.excerptOffset}; returned: ${excerpts.excerpts.length}; nextOffset: ${excerpts.nextOffset ?? "null"}; extractionTruncated: ${excerpts.extractionTruncated}.`,
 		...notes,
 		"",
-		...excerpts.excerpts.map((excerpt) => `[${excerpt.reference}] ${excerpt.text}\n`),
 	].join("\n");
+	const records = excerpts.excerpts.map((excerpt) => `[${excerpt.reference}] ${excerpt.text}\n`).join("\n");
+	// The existing output has a separator after the header only when it includes records.
+	const prefix = records ? `${header}\n` : header;
+	return { text: prefix + records, previewOffset: prefix.length };
 }

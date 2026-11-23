@@ -3,8 +3,9 @@ import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-
 import type { KeybindingHints } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 
+export { renderReadCall, renderReadResult } from "./web-read-card.ts";
+
 const RESULT_DISPLAY_LIMIT = 32_000;
-const URL_LIMIT = 120;
 const QUERY_LIMIT = 160;
 
 interface CardContext extends Partial<KeybindingHints> {
@@ -105,77 +106,6 @@ function countLabel(count: number, noun: string): string {
 	return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-/** Read requests show the page identity and any continuation fields. */
-function readQualifier(args: Record<string, unknown>): string[] {
-	const parts: string[] = [];
-	if (stringField(args, "view") === "links") parts.push("view links");
-	const find = stringField(args, "find");
-	if (find) parts.push(`find ${displayValue(find, 60)}`);
-	const excerpt = numberField(args, "excerpt_offset");
-	if (excerpt !== undefined) parts.push(`excerpt offset ${excerpt}`);
-	const link = numberField(args, "link_offset");
-	if (link !== undefined) parts.push(`link offset ${link}`);
-	const source = stringField(args, "expected_source_id");
-	if (source) parts.push(`source ${displayValue(source, 24)}`);
-	const max = numberField(args, "max_bytes");
-	if (max !== undefined) parts.push(`max bytes ${max}`);
-	return parts;
-}
-
-export function renderReadCall(value: unknown, theme: Theme, context: CardContext): Component {
-	const args = asRecord(value);
-	const url = stringField(args, "url");
-	const lines = [heading("web_read", url, theme, URL_LIMIT)];
-	if (context.expanded) {
-		lines.push(expandedArguments(args, theme));
-		return textComponent(lines.join("\n"), context.lastComponent);
-	}
-	const parts = readQualifier(args);
-	if (url.length > URL_LIMIT) parts.push(expansionHint("arguments", context));
-	if (parts.length > 0) lines.push(theme.fg("dim", parts.join(" · ")));
-	return textComponent(lines.join("\n"), context.lastComponent);
-}
-
-/** Text reads report status, excerpt count, and coverage bounds. */
-function textLead(details: Record<string, unknown>): string {
-	if (stringField(details, "status") === "no-readable-text") return "no readable text";
-	const parts = ["readable"];
-	const count = numberField(details, "excerptCount") ?? 0;
-	const offset = numberField(details, "excerptOffset") ?? 0;
-	const find = asRecord(details.find);
-	if (Object.keys(find).length > 0) {
-		// Find results keep only matching chunks, so their labels are not a contiguous range.
-		parts.push(countLabel(count, "matching excerpt"));
-		const first = numberField(find, "firstMatchOffset");
-		if (count > 0 && first !== undefined) parts.push(`first E${first + 1}`);
-	} else if (count > 0) {
-		const first = `E${offset + 1}`;
-		parts.push(
-			count === 1
-				? `${countLabel(count, "excerpt")} (${first})`
-				: `${countLabel(count, "excerpt")} (${first}..E${offset + count})`,
-		);
-	} else parts.push("0 excerpts");
-	if (numberField(details, "nextOffset") !== undefined) parts.push("continuation");
-	if (booleanField(details, "extractionTruncated") === true) parts.push("extraction truncated");
-	if (booleanField(details, "outputTruncated") === true) parts.push("output truncated");
-	return parts.join(" · ");
-}
-
-/** Link reads report the link count, page offset, and the budget the next record needs. */
-function linksLead(details: Record<string, unknown>): string {
-	const count = numberField(details, "linkCount") ?? 0;
-	const parts = [countLabel(count, "link")];
-	const offset = numberField(details, "linkOffset");
-	if (offset !== undefined && offset > 0) parts.push(`offset ${offset}`);
-	if (numberField(details, "nextOffset") !== undefined) parts.push("continuation");
-	if (booleanField(details, "extractionTruncated") === true) parts.push("extraction truncated");
-	if (booleanField(details, "outputTruncated") === true) parts.push("output truncated");
-	const required = numberField(details, "requiredMaxBytes");
-	if (required !== undefined) parts.push(`next record needs max_bytes ${required}`);
-	return parts.join(" · ");
-}
-
 function errorResult(
 	name: string,
 	output: string,
@@ -188,51 +118,6 @@ function errorResult(
 		`\n${theme.fg("error", summary)}${options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : ""}`,
 		context.lastComponent,
 	);
-}
-
-/** Identity labels drop control and format characters instead of showing their escaped forms. */
-function identityValue(value: string, limit: number): string {
-	const clean = value
-		.replace(/[\p{Cc}\p{Cf}]/gu, " ")
-		.replace(/\s+/gu, " ")
-		.trim();
-	const end = Math.min(clean.length, limit);
-	return clean.slice(0, /[\uD800-\uDBFF]/u.test(clean[end - 1] ?? "") ? end - 1 : end);
-}
-
-function readIdentity(details: Record<string, unknown>): string {
-	const title = stringField(details, "title");
-	const url = stringField(details, "finalUrl") || stringField(details, "requestedUrl");
-	let domain = "";
-	try {
-		domain = new URL(url).hostname;
-	} catch {
-		/* A missing URL supplies no domain. */
-	}
-	return [title ? identityValue(title, 120) : "", domain ? identityValue(domain, 80) : ""].filter(Boolean).join(" · ");
-}
-
-export function renderReadResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: CardContext,
-): Component {
-	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Reading the page...")}`, context.lastComponent);
-	const output = textContent(result);
-	if (context.isError) return errorResult("web_read", output, options, theme, context);
-	const details = asRecord(result.details);
-	const lead = stringField(details, "view") === "links" ? linksLead(details) : textLead(details);
-	const identity = readIdentity(details);
-	let text = identity
-		? `\n${theme.fg("accent", identity)}\n${theme.fg("success", lead)}`
-		: `\n${theme.fg("success", lead)}`;
-	const finalUrl = stringField(details, "finalUrl");
-	if (finalUrl && finalUrl !== stringField(details, "requestedUrl"))
-		text += theme.fg("dim", ` → ${displayValue(finalUrl, URL_LIMIT)}`);
-	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
-	else text += `\n${theme.fg("dim", expansionHint("result", context))}`;
-	return textComponent(text, context.lastComponent);
 }
 
 /** Search requests show the query and any non-default search controls. */
