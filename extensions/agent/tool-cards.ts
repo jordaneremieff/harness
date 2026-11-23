@@ -955,15 +955,19 @@ function abortLines(details: Record<string, unknown>, theme: Theme, context: Age
 	return lines;
 }
 
-function commandPresentation(details: Record<string, unknown>, context: AgentCardContext): ToolResultPresentation {
-	const identity = text(details.identity) || text(details.sessionId);
+function commandFacts(details: Record<string, unknown>, identity: string, context: AgentCardContext): string {
 	const name = text(details.name);
-	const facts = [
+	return [
 		name && name !== record(context.args).name ? `Command ${name}` : "",
 		identity && !sameTarget(identity, context) ? targetLabel(identity, context) : "",
 	]
 		.filter(Boolean)
 		.join("\n");
+}
+
+function commandPresentation(details: Record<string, unknown>, context: AgentCardContext): ToolResultPresentation {
+	const identity = text(details.identity) || text(details.sessionId);
+	const facts = commandFacts(details, identity, context);
 	if (details.reloaded === true) {
 		const countInstalled = count(details.contributionCount) ?? array(record(details.inventory).contributions).length;
 		return {
@@ -1529,6 +1533,102 @@ function mutationSnapshotFacts(
 	];
 }
 
+function mutationTargetSuffix(identity: string, details: Record<string, unknown>, context: AgentCardContext): string {
+	const name = text(details.name) || text(record(details.profile).name) || text(record(details.creation).name);
+	if (!identity || headerHasName(identity, name, context) || sameTarget(identity, context)) return "";
+	return name && targetLabel(identity, context) === displayIdentity(identity)
+		? ` · ${name}`
+		: targetSuffix(identity, context);
+}
+
+function mutationFacts(
+	details: Record<string, unknown>,
+	snapshot: Record<string, unknown> | undefined,
+	theme: Theme,
+	context: AgentCardContext,
+	namedByReceipt: boolean,
+): string[] {
+	const snapshotError = text(details.snapshotError);
+	const deliveryError = text(details.deliveryError) || text(record(details.status).deliveryError);
+	return [
+		snapshotError ? `Snapshot unavailable: ${snapshotError}` : "",
+		deliveryError ? `Delivery paused: ${deliveryError}` : "",
+		...(snapshot ? mutationSnapshotFacts(snapshot, details, theme, context, namedByReceipt) : []),
+		...(details.availability === "initializing" ? ["Agent initialization in progress"] : []),
+	].filter(Boolean);
+}
+
+type MutationTarget = { identity: string; suffix: string; facts: string[] };
+
+function admissionRecorded(admission: Record<string, unknown>): boolean {
+	return count(admission.submissionId) !== undefined || admission.admitted === true;
+}
+
+function ownerPresentation(
+	name: "agent_spawn" | "agent_place",
+	details: Record<string, unknown>,
+	{ identity, suffix, facts }: MutationTarget,
+	context: AgentCardContext,
+): ToolResultPresentation {
+	const action =
+		name === "agent_place"
+			? "Directory owner resolved"
+			: details.created === true
+				? "Agent created"
+				: details.created === false
+					? "Agent reused"
+					: "Agent resolved";
+	const admission = mutationAdmission(details);
+	if (!admissionRecorded(admission)) return { outcome: identity ? action + suffix : undefined, body: facts.join("\n") };
+	const disposition =
+		receiptPlacement(admission) === "withdrawn"
+			? "Dispatch withdrawn"
+			: admission.deduped === true
+				? "Already admitted"
+				: "Admitted";
+	const configuration = !callIdentity(context) ? targetConfiguration(identity, context) : "";
+	return {
+		outcome: [mutationReceipt(disposition + suffix, admission), configuration].filter(Boolean).join(" · "),
+		expanded: [action, mutationPlacement(admission), ...facts.filter((fact) => fact !== configuration)]
+			.filter(Boolean)
+			.join("\n"),
+	};
+}
+
+function branchPresentation(
+	name: "agent_fork" | "agent_rewind",
+	details: Record<string, unknown>,
+	{ identity, suffix, facts }: MutationTarget,
+): ToolResultPresentation {
+	const conversation = count(details.conversationId);
+	if (conversation === undefined) return {};
+	const branch =
+		suffix ||
+		(!identity ? ` · ${[text(details.name), `conversation ${conversation}`].filter(Boolean).join(" · ")}` : "");
+	const deduped = details.deduped === true;
+	const action =
+		name === "agent_rewind"
+			? deduped
+				? "Rewind already submitted"
+				: "Rewind submitted"
+			: deduped
+				? "Existing fork reused"
+				: "Fork created";
+	const admission = mutationAdmission(details);
+	const predecessor = count(details.predecessorEntryId);
+	const outcome = mutationReceipt(action + branch, admission);
+	const evidence = [
+		predecessor === undefined ? "" : `Forked before entry ${predecessor}`,
+		mutationPlacement(admission),
+		...facts,
+	]
+		.filter(Boolean)
+		.join("\n");
+	return name === "agent_rewind" || admissionRecorded(admission)
+		? { outcome, expanded: evidence }
+		: { outcome, body: evidence };
+}
+
 function mutationPresentation(
 	name: MutationTool,
 	details: Record<string, unknown>,
@@ -1537,49 +1637,10 @@ function mutationPresentation(
 ): ToolResultPresentation {
 	const snapshot = snapshotStatus(details);
 	const identity = text(details.identity) || text(details.sessionId) || text(snapshot?.identity);
-	const nameFromResult =
-		text(details.name) || text(record(details.profile).name) || text(record(details.creation).name);
-	const suffix = identity
-		? headerHasName(identity, nameFromResult, context) || sameTarget(identity, context)
-			? ""
-			: nameFromResult && targetLabel(identity, context) === displayIdentity(identity)
-				? ` · ${nameFromResult}`
-				: targetSuffix(identity, context)
-		: "";
-	const snapshotError = text(details.snapshotError);
-	const deliveryError = text(details.deliveryError) || text(record(details.status).deliveryError);
-	const facts = [
-		snapshotError ? `Snapshot unavailable: ${snapshotError}` : "",
-		deliveryError ? `Delivery paused: ${deliveryError}` : "",
-		...(snapshot ? mutationSnapshotFacts(snapshot, details, theme, context, suffix !== "") : []),
-		...(details.availability === "initializing" ? ["Agent initialization in progress"] : []),
-	].filter(Boolean);
-	const admission = mutationAdmission(details);
-	const dispatched = count(admission.submissionId) !== undefined || admission.admitted === true;
-	if (name === "agent_spawn" || name === "agent_place") {
-		const action =
-			name === "agent_place"
-				? "Directory owner resolved"
-				: details.created === true
-					? "Agent created"
-					: details.created === false
-						? "Agent reused"
-						: "Agent resolved";
-		if (!dispatched) return { outcome: identity ? action + suffix : undefined, body: facts.join("\n") };
-		const disposition =
-			receiptPlacement(admission) === "withdrawn"
-				? "Dispatch withdrawn"
-				: admission.deduped === true
-					? "Already admitted"
-					: "Admitted";
-		const configuration = !callIdentity(context) ? targetConfiguration(identity, context) : "";
-		return {
-			outcome: [mutationReceipt(disposition + suffix, admission), configuration].filter(Boolean).join(" · "),
-			expanded: [action, mutationPlacement(admission), ...facts.filter((fact) => fact !== configuration)]
-				.filter(Boolean)
-				.join("\n"),
-		};
-	}
+	const suffix = mutationTargetSuffix(identity, details, context);
+	const facts = mutationFacts(details, snapshot, theme, context, suffix !== "");
+	if (name === "agent_spawn" || name === "agent_place")
+		return ownerPresentation(name, details, { identity, suffix, facts }, context);
 	if (name === "agent_attach") {
 		return {
 			outcome: identity || snapshot ? `Agent attached${suffix}` : undefined,
@@ -1592,47 +1653,40 @@ function mutationPresentation(
 			body: [...new Set([...configurationFacts(details, identity, context), ...facts])].join("\n"),
 		};
 	}
-	const conversation = count(details.conversationId);
-	if (conversation === undefined) return {};
-	const branch =
-		suffix ||
-		(!identity ? ` · ${[text(details.name), `conversation ${conversation}`].filter(Boolean).join(" · ")}` : "");
-	const action =
-		name === "agent_rewind"
-			? details.deduped === true
-				? "Rewind already submitted"
-				: "Rewind submitted"
-			: details.deduped === true
-				? "Existing fork reused"
-				: "Fork created";
-	const predecessor = count(details.predecessorEntryId);
-	const outcome = mutationReceipt(action + branch, admission);
-	const evidence = [
-		predecessor === undefined ? "" : `Forked before entry ${predecessor}`,
-		mutationPlacement(admission),
-		...facts,
-	]
-		.filter(Boolean)
-		.join("\n");
-	return name === "agent_rewind" || dispatched ? { outcome, expanded: evidence } : { outcome, body: evidence };
+	return branchPresentation(name, details, { identity, suffix, facts });
+}
+
+function controlPresentation(
+	name: ControlTool,
+	details: Record<string, unknown>,
+	diagnostic: ToolResultPresentation,
+	theme: Theme,
+	context: AgentCardContext,
+): ToolResultPresentation {
+	if (details.cancelled === true) return { outcome: "Cancelled" };
+	if (context.isError || details.outcome === "failed" || details.format === "refused") return diagnostic;
+	const view = { ...context, expanded: false };
+	switch (name) {
+		case "agent_abort": {
+			const [outcome, ...facts] = (abortLines(details, theme, view) ?? []).map(displayText);
+			const writes = count(details.writesPlaced);
+			if (writes) facts.push(`Placed ${cardinal(writes, "leftover write")}`);
+			return { outcome, body: facts.join("\n") };
+		}
+		case "agent_command":
+			return commandPresentation(details, view);
+		case "agent_reset":
+			return resetPresentation(details, view);
+		default:
+			return mutationPresentation(name, details, theme, view);
+	}
 }
 
 function renderAgentResult(name: ControlTool): AgentToolCard["renderResult"] {
 	return (result, options, theme, context) => {
 		const details = resultDetails(result);
 		const diagnostic = diagnosticPresentation(details);
-		const view = { ...context, expanded: false };
-		let presentation: ToolResultPresentation;
-		if (details.cancelled === true) presentation = { outcome: "Cancelled" };
-		else if (context.isError || details.outcome === "failed" || details.format === "refused") presentation = diagnostic;
-		else if (name === "agent_abort") {
-			const [outcome, ...facts] = (abortLines(details, theme, view) ?? []).map(displayText);
-			const writes = count(details.writesPlaced);
-			if (writes) facts.push(`Placed ${cardinal(writes, "leftover write")}`);
-			presentation = { outcome, body: facts.join("\n") };
-		} else if (name === "agent_command") presentation = commandPresentation(details, view);
-		else if (name === "agent_reset") presentation = resetPresentation(details, view);
-		else presentation = mutationPresentation(name, details, theme, view);
+		const presentation = controlPresentation(name, details, diagnostic, theme, context);
 		return controlResultCard(result, options, theme, context, {
 			...presentation,
 			outcome: presentation.outcome ?? diagnostic.outcome,
