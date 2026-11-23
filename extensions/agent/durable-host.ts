@@ -57,8 +57,8 @@ import {
 	snapshotReceipt,
 	storeDeliveryRow,
 } from "./delivery-store.ts";
-import { abortScopeConversations, taskPathCrossesBackground } from "./abort-scope.ts";
-import { captureStoppedWork, PENDING_TASKS_LIMIT, stopScope } from "./conversation-stop.ts";
+import { abortScopeConversations } from "./abort-scope.ts";
+import { captureStoppedWork, PENDING_TASKS_LIMIT, recoverStoppedTasks, stopScope } from "./conversation-stop.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -698,10 +698,11 @@ export class DurableHost {
 		});
 	}
 
-	/** Resume only after the caller installs contributions and model-facing sections. */
-	async resume(context: Context = BACKGROUND_CONTEXT): Promise<void> {
+	/** Install the serving registry and finish interrupted stop marks before work can resume. */
+	async resume(context: Context = BACKGROUND_CONTEXT, install?: (setup: Harness) => Promise<void>): Promise<void> {
 		await this.requireOpen();
 		this.resumeWork ??= (async () => {
+			await recoverStoppedTasks(this.harness, context, await this.harness.inspect(context), install);
 			this.recovery = new StrandedInputRecovery(this.harness, (error) => this.recoveryError?.(error));
 			try {
 				await reconcileInputCommunications(this.harness, this.storageId, context);
@@ -1516,7 +1517,7 @@ export class DurableHost {
 			context,
 			host: this.contributionHost,
 			invocationId: requestRequiredString(params, "invocationId"),
-			harness: this.harness,
+			harness: this.contributionHost.harness,
 		});
 		const result = typeof answer === "string" ? { text: answer } : answer;
 		if (typeof result?.text !== "string") throw new Error(`durable command ${name} returned no text`);
@@ -1841,26 +1842,6 @@ export async function stopLiveConversation(
 	};
 }
 
-/** Match the native task walk: exclude a task below a background owner from an ordinary stop. */
-async function coldTasks(
-	tx: Tx,
-	inspection: HarnessInspection,
-	included: ReadonlySet<ConversationId>,
-	background: boolean,
-) {
-	const tasks = [];
-	for (const { record } of inspection.tasks) {
-		if (!included.has(record.conversationId)) continue;
-		if (!background) {
-			const crosses = await taskPathCrossesBackground(tx, record.id);
-			if (crosses === undefined) throw new Error("A retained task has an incomplete ownership chain");
-			if (crosses) continue;
-		}
-		tasks.push(record.id);
-	}
-	return tasks;
-}
-
 /** Apply a single stop under a cold writer lease. The scheduler and delivery driver must not start. */
 export async function stopBeforeResume(
 	harness: Harness,
@@ -1874,10 +1855,10 @@ export async function stopBeforeResume(
 	if (!conversation) throw new Error(`Conversation ${sessionId} does not exist`);
 	const inspection = await harness.inspect(context);
 	if (inspection.scheduling !== "paused") throw new Error("A cold stop requires a paused scheduler");
+	await recoverStoppedTasks(harness, context, inspection);
 	const { scope, work, tasks } = await harness.commit(async (tx) => {
 		const scope = await abortScopeConversations(tx, conversation.id, background);
-		const tasks = await coldTasks(tx, inspection, new Set(scope), background);
-		const work = await captureStoppedWork(tx, scope, {
+		const { tasks, work } = await captureStoppedWork(tx, scope, background, {
 			now: Date.now(),
 			captureWork: (tx, id, scope) => closeSettledAtStop(tx, storageId, Date.now, scope, id),
 		});

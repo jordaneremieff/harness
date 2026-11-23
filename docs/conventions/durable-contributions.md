@@ -95,7 +95,11 @@ interface DurableContributionHost {
   readonly storageId: string;
   /**
    * The host's open Harness. The host opens it before the first `create()` call
-   * and starts scheduling only after it installs every contribution.
+   * and starts scheduling only after it installs every contribution. During
+   * recovery of a captured stop, setup may inspect tasks, read documents and
+   * register observers, but not write, start work or obtain writable handles.
+   * A retained Harness or method works normally once the host restores the
+   * native marks. Setup that requires earlier access fails without dispatch.
    */
   readonly harness: Durable.Harness;
   /** Aborted when the host starts to shut down. */

@@ -16,8 +16,12 @@ import {
 	type Cursor,
 	type ConversationHandle,
 	type ConversationId,
+	type Harness,
+	type HarnessInspection,
 	type JsonObject,
 	type SubmissionId,
+	type TaskId,
+	type TaskQuery,
 	type TaskState,
 	type Tx,
 	type UserInput,
@@ -187,11 +191,81 @@ async function withdrawStoppedInputs(tx: Tx, scope: readonly ConversationId[], n
 	}
 }
 
+/** The stop commit selects this exact task. Its document retires when the task ends. */
+export const CapturedStopTaskDoc = defineDoc<{ captured: boolean }>({
+	kind: "agent.captured-stop-task",
+	version: 1,
+	scope: "task",
+	initial: () => ({ captured: false }),
+	checkpointWhen: () => false,
+});
+
+// These reads and observations return no handle that can resume scheduling. Register observers on the real writer.
+const SETUP_READS = new Set<PropertyKey>([
+	"closed",
+	"getTask",
+	"inspect",
+	"observeCommits",
+	"observeConversation",
+	"observeDoc",
+	"observeTaskGraph",
+	"snapshot",
+	"snapshotAsOf",
+	"subscribeClose",
+	"usage",
+	"wake",
+	"watchDoc",
+	"watchTaskGraph",
+] satisfies (keyof Harness)[]);
+
+/** A factory may retain its Harness or a method for use after installation. Refuse an early act rather than deadlock it. */
+function recoverySetupHarness(harness: Harness, ready: () => boolean): Harness {
+	return new Proxy(harness, {
+		get(target, key) {
+			const value: unknown = Reflect.get(target, key, target);
+			if (ready() || SETUP_READS.has(key)) return typeof value === "function" ? value.bind(target) : value;
+			if (typeof value !== "function") return undefined;
+			return (...args: unknown[]) => {
+				if (!ready()) throw new Error(`Harness.${String(key)} is unavailable during stop recovery setup`);
+				return Reflect.apply(value, target, args);
+			};
+		},
+	});
+}
+
+/** Even an already marked task needs its definition installed before any scheduling call can orphan it. */
+export async function recoverStoppedTasks(
+	harness: Harness,
+	context: Context,
+	inspection: HarnessInspection,
+	install?: (setup: Harness) => Promise<void>,
+): Promise<void> {
+	const captured = [];
+	for (const { record } of inspection.tasks) {
+		if ((await harness.snapshot(CapturedStopTaskDoc, record.id, context))?.captured) captured.push(record);
+	}
+	if (!captured.length) {
+		await install?.(harness);
+		return;
+	}
+	if (inspection.scheduling !== "paused") throw new Error("Stop recovery requires a paused scheduler");
+	let ready = false;
+	await install?.(recoverySetupHarness(harness, () => ready));
+	for (const task of captured) {
+		if (!task.abortRequested || task.abortReason !== undefined) await harness.abortTask(task.id, context);
+	}
+	ready = true;
+}
+
 export async function captureStoppedWork(
 	tx: Tx,
 	scope: readonly ConversationId[],
+	background: boolean,
 	options: Pick<StopOptions, "now" | "captureWork">,
-): Promise<StoppedWork> {
+): Promise<{ work: StoppedWork; tasks: TaskId[] }> {
+	const tasks: TaskId[] = [];
+	for await (const id of scopedTasks(tx, scope, background, false)) tasks.push(id);
+	for (const id of tasks) (await tx.doc(CapturedStopTaskDoc, id)).captured = true;
 	const open = new Map<ConversationId, readonly string[]>();
 	for (const id of scope) {
 		const requests = await options.captureWork(tx, id, scope);
@@ -199,7 +273,7 @@ export async function captureStoppedWork(
 	}
 	await markStopped(tx, scope, options.now);
 	await withdrawStoppedInputs(tx, scope, options.now);
-	return open;
+	return { work: open, tasks };
 }
 
 type Store = { commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): Promise<T> };
@@ -222,7 +296,8 @@ export async function stopScope(
 	const write = store.commit(async (tx) => {
 		try {
 			const scope = await selectScope(tx);
-			return { scope, work: await captureStoppedWork(tx, scope, options) };
+			const { work } = await captureStoppedWork(tx, scope, background, options);
+			return { scope, work };
 		} catch (error) {
 			veto.abort(error);
 			throw error;
@@ -249,26 +324,31 @@ export async function stopScope(
 	return { settled: false, pendingTasks: await pendingTasks(store, scope, background, context), work, scope };
 }
 
-async function* pendingInConversation(
-	tx: Tx,
-	conversationId: ConversationId,
-	status: (typeof LIVE_STATUSES)[number],
-	background: boolean,
-) {
-	let cursor: Cursor | undefined;
-	do {
-		const page = await tx.scanTasks(
-			{ conversationId, abortRequested: true, status, ...(background ? {} : { background: false }) },
-			PENDING_TASKS_LIMIT,
-			cursor,
-		);
-		for (const task of page.items) {
-			if (!background && task.owner !== undefined && (await taskPathCrossesBackground(tx, task.owner)) !== false)
-				continue;
-			yield task.id;
+async function* liveTasks(tx: Tx, query: TaskQuery) {
+	for (const status of LIVE_STATUSES) {
+		let cursor: Cursor | undefined;
+		do {
+			const page = await tx.scanTasks({ ...query, status }, PENDING_TASKS_LIMIT, cursor);
+			yield* page.items;
+			cursor = page.next;
+		} while (cursor);
+	}
+}
+
+async function foregroundPath(tx: Tx, owner: TaskId | undefined): Promise<boolean> {
+	if (owner === undefined) return true;
+	const crosses = await taskPathCrossesBackground(tx, owner);
+	if (crosses === undefined) throw new Error("A retained task has an incomplete ownership chain");
+	return !crosses;
+}
+
+async function* scopedTasks(tx: Tx, scope: readonly ConversationId[], background: boolean, markedOnly: boolean) {
+	const filter = { ...(markedOnly ? { abortRequested: true } : {}), ...(background ? {} : { background: false }) };
+	for (const conversationId of scope) {
+		for await (const task of liveTasks(tx, { ...filter, conversationId })) {
+			if (background || (await foregroundPath(tx, task.owner))) yield task.id;
 		}
-		cursor = page.next;
-	} while (cursor);
+	}
 }
 
 /** Live abort-marked tasks of the scope, by status so that ended tasks never fill the bound. */
@@ -280,13 +360,10 @@ async function pendingTasks(
 ): Promise<number[]> {
 	return store.commit(async (tx) => {
 		const ids: number[] = [];
-		for (const conversationId of scope)
-			for (const status of LIVE_STATUSES) {
-				for await (const id of pendingInConversation(tx, conversationId, status, background)) {
-					ids.push(id);
-					if (ids.length === PENDING_TASKS_LIMIT) return ids;
-				}
-			}
+		for await (const id of scopedTasks(tx, scope, background, true)) {
+			ids.push(id);
+			if (ids.length === PENDING_TASKS_LIMIT) break;
+		}
 		return ids;
 	}, context);
 }

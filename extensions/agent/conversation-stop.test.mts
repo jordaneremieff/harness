@@ -18,6 +18,7 @@ import {
 	scriptedRuntime,
 } from "./durable-host-fixture.mts";
 import {
+	CapturedStopTaskDoc,
 	QUIET_INPUT_ENTRY_KIND,
 	StoppedDoc,
 	noteExplicitInput,
@@ -30,11 +31,16 @@ import {
 /** A transaction stub that holds the stop document in memory. */
 function memoryStore(extra: { id: number; state: { status: string }; background: boolean; owner?: number }[] = []) {
 	const state = new Map<number, { stoppedAt: number | null; explicit: number | null }>();
+	const taskMarks = new Map<number, { captured: boolean }>();
 	const tx = {
 		retireDoc: async (token: unknown, id: number) => {
 			if (token === StoppedDoc) state.delete(id);
 		},
 		doc: async (token: unknown, id: number) => {
+			if (token === CapturedStopTaskDoc) {
+				if (!taskMarks.has(id)) taskMarks.set(id, { captured: false });
+				return taskMarks.get(id);
+			}
 			if (token !== StoppedDoc) return { items: [] };
 			if (!state.has(id)) state.set(id, { stoppedAt: null, explicit: null });
 			return state.get(id);
@@ -51,11 +57,11 @@ function memoryStore(extra: { id: number; state: { status: string }; background:
 				.slice(0, limit),
 		}),
 	} as unknown as Tx;
-	return { state, store: { commit: async <T,>(change: (tx: Tx) => T | Promise<T>) => change(tx) } };
+	return { state, taskMarks, store: { commit: async <T,>(change: (tx: Tx) => T | Promise<T>) => change(tx) } };
 }
 
 it("answers within its bound while a marked task ignores its abort, and names live tasks ahead of any number of ended tasks", async () => {
-	const { state, store } = memoryStore();
+	const { state, taskMarks, store } = memoryStore();
 	let aborted = false;
 	const conversation = {
 		id: 1 as ConversationId,
@@ -81,13 +87,20 @@ it("answers within its bound while a marked task ignores its abort, and names li
 	);
 	assert.ok(aborted);
 	assert.deepEqual([...state.keys()], [1, 2]);
+	assert.deepEqual(
+		[...taskMarks],
+		[
+			[10, { captured: true }],
+			[20, { captured: true }],
+		],
+	);
 	assert.ok(performance.now() - started < 2000);
 	assert.deepEqual(outcome, { settled: false, pendingTasks: [10, 20], scope: [1, 2], work: new Map() });
 	assert.deepEqual(reports, []);
 });
 
 it("excludes independently marked background descendants from a foreground stop answer", async () => {
-	const { store } = memoryStore([
+	const { store, taskMarks } = memoryStore([
 		{ id: 11, state: { status: "running" }, background: true },
 		{ id: 12, state: { status: "running" }, background: false, owner: 11 },
 	]);
@@ -101,6 +114,7 @@ it("excludes independently marked background descendants from a foreground stop 
 	);
 	assert.ok(!outcome.settled);
 	assert.deepEqual(outcome.pendingTasks, [10]);
+	assert.deepEqual([...taskMarks], [[10, { captured: true }]]);
 });
 
 it("answers settled when the scope becomes idle within the bound", async () => {

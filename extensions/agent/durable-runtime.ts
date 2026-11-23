@@ -830,8 +830,8 @@ export async function createDurableRuntime(
 				readAgentPreferences(metadata.agentDir).document?.preferences?.contextBudgetTokens?.[`${provider}/${modelId}`],
 			requestRelease: () => requestRelease(),
 		});
-		try {
-			await services.install(opened.harness);
+		const install = async (setup: Harness): Promise<void> => {
+			await services.install(setup);
 			host = opened;
 			opened.setForeignStop(async (references, context) => {
 				const manager = new AgentManager({
@@ -892,7 +892,9 @@ export async function createDurableRuntime(
 				}
 			});
 			await settleRecoveryMarker();
-			await opened.resume(BACKGROUND_CONTEXT);
+		};
+		try {
+			await opened.resume(BACKGROUND_CONTEXT, install);
 			scheduleCatalogView();
 			return opened;
 		} catch (error) {

@@ -905,6 +905,9 @@ it("runs a contributed command with its host bindings", async (t) => {
 		cwd: "/work",
 		agentDir: "/agent",
 		storageId: "contribution-storage",
+		get harness() {
+			return opened?.harness;
+		},
 		signal: controller.signal,
 		inventory: { contributions: [], ordinaryOnly: [] },
 	} as unknown as DurableCommandHost;
