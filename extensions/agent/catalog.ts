@@ -478,17 +478,35 @@ export class AgentCatalog {
 		const metadata = parseHostMetadata({ ...input, storageId, storagePath: join(this.root, `${storageId}.sqlite`) });
 		if (!isThinkingLevel(metadata.thinkingLevel)) throw new Error("Unknown reasoning level");
 		const record: CatalogRecord = { ...metadata, createdAt: new Date().toISOString() };
+		const text = `${JSON.stringify(record)}\n`;
+		if (Buffer.byteLength(text, "utf8") > MAX_RECORD_BYTES) throw new Error("Agent metadata exceeds its bound");
 		beforeCreate?.(storageId);
+		const path = this.path(storageId);
+		const prepared = join(this.root, `.${storageId}.${randomUUID()}.claim`);
+		const fd = openSync(prepared, "wx", 0o600);
 		try {
-			writeFileSync(this.path(storageId), `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 });
-		} catch (error) {
-			if (requestId === undefined || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			const previous = this.read(storageId);
-			if (JSON.stringify(hostMetadata(previous, metadata.packageDir)) !== JSON.stringify(metadata))
-				throw new Error("Spawn request ID already belongs to different agent configuration");
-			return { record: previous, created: false };
+			try {
+				writeFileSync(fd, text, "utf8");
+			} finally {
+				closeSync(fd);
+			}
+			try {
+				linkSync(prepared, path);
+			} catch (error) {
+				if (requestId === undefined || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+				const previous = this.read(storageId);
+				if (JSON.stringify(hostMetadata(previous, metadata.packageDir)) !== JSON.stringify(metadata))
+					throw new Error("Spawn request ID already belongs to different agent configuration");
+				return { record: previous, created: false };
+			}
+		} finally {
+			try {
+				unlinkSync(prepared);
+			} catch {
+				// A leftover staging file does not change the result at the published path.
+			}
 		}
-		forgetValidatedRecord(this.path(storageId));
+		forgetValidatedRecord(path);
 		publishCatalogChange(this.root, storageId);
 		return { record, created: true };
 	}
@@ -535,7 +553,9 @@ export class AgentCatalog {
 	/** Read the storage already assigned to one creation request, without resolving defaults again. */
 	readRequest(ownerId: string, requestId: string): CatalogRecord | undefined {
 		try {
-			return this.read(requestStorageId(JSON.stringify([ownerId, requestId])));
+			const record = this.read(requestStorageId(JSON.stringify([ownerId, requestId])));
+			if (record.ownerId !== ownerId) throw new Error("Spawn request record has a different creating owner");
+			return record;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 			throw error;

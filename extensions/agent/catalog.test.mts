@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import {
+import fs, {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -15,6 +15,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
@@ -608,6 +609,38 @@ it("deduplicates a spawn request by owner and request identity", (t) => {
 	assert.notEqual(catalog.create(input, "other").storageId, first.storageId);
 	assert.notEqual(catalog.create({ ...input, ownerId: "other" }, "request").storageId, first.storageId);
 	assert.throws(() => catalog.create({ ...input, name: "changed" }, "request"), /different agent configuration/u);
+});
+
+it("allows an exact request retry after a partial catalogue write", (t) => {
+	const { catalog, input } = fixture(t);
+	const original = fs.writeFileSync;
+	const name = "catalogue write fault";
+	const interrupt: typeof original = (file, data, options) => {
+		if (typeof data === "string" && data.includes(name)) {
+			original(file, data.slice(0, data.length / 2), options);
+			throw new Error("interrupted catalogue write");
+		}
+		original(file, data, options);
+	};
+	const patch = t.mock.method(fs, "writeFileSync", interrupt);
+	syncBuiltinESMExports();
+	try {
+		assert.throws(() => catalog.create({ ...input, name }, "request"), /interrupted catalogue write/u);
+	} finally {
+		patch.mock.restore();
+		syncBuiltinESMExports();
+	}
+	assert.equal(catalog.readRequest(input.ownerId, "request"), undefined);
+	const retried = catalog.createTracked({ ...input, name }, "request");
+	assert.equal(retried.created, true);
+	assert.deepEqual(catalog.readRequest(input.ownerId, "request"), retried.record);
+});
+
+it("refuses a deterministic request record with a different creating owner", (t) => {
+	const { catalog, input } = fixture(t);
+	const record = catalog.create(input, "request");
+	writeFileSync(catalog.path(record.storageId), JSON.stringify({ ...record, ownerId: "other" }));
+	assert.throws(() => catalog.readRequest(input.ownerId, "request"), /different creating owner/u);
 });
 
 it("reuses immutable creation metadata across Pi installations without rewriting the record", (t) => {
