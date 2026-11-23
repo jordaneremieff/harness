@@ -146,7 +146,18 @@ export type ViewArgs = Static<typeof ViewParams>;
 export type CheckArgs = Static<typeof CheckParams>;
 export type RecordArgs = Static<typeof RecordParams>;
 
-function inspectStarter(comparison: ReturnType<typeof compareStarter>, id?: string) {
+export const catalogPreviewRows = 5;
+
+type CatalogListDetails = {
+	kind: "catalog" | "starter";
+	count: number;
+	rows: string[];
+	hasGuidance: boolean;
+	fresh?: number;
+	updated?: number;
+};
+
+export function inspectStarter(comparison: ReturnType<typeof compareStarter>, id?: string) {
 	if (id !== undefined) {
 		const item = comparison.find(({ entry }) => entry.id === id);
 		if (!item) throw new Error(`No starter entry named ${id}.`);
@@ -157,10 +168,16 @@ function inspectStarter(comparison: ReturnType<typeof compareStarter>, id?: stri
 		};
 	}
 	const lines = comparison.map(({ entry, status }) => `- ${entry.id} · ${status} · ${entry.title}`);
+	const list: CatalogListDetails = {
+		kind: "starter",
+		count: comparison.length,
+		rows: lines.slice(0, catalogPreviewRows),
+		hasGuidance: true,
+	};
 	lines.push(
 		'Import new entries with slop_record action "import". For an updated entry, read both versions and decide.',
 	);
-	return { content: textBlock(lines.join("\n")), details: { summary: `${comparison.length} starter entries` } };
+	return { content: textBlock(lines.join("\n")), details: { summary: `${comparison.length} starter entries`, list } };
 }
 
 export function inspectCatalog(options: ReadOptions, args: ViewArgs) {
@@ -184,24 +201,38 @@ export function inspectCatalog(options: ReadOptions, args: ViewArgs) {
 			(args.scope === undefined || entry.applies.includes(args.scope)) &&
 			(args.query === undefined || searchEntry(entry, args.query)),
 	);
+	const rows: string[] = [];
 	const lines = domains.flatMap((domain) => {
 		const group = selected.filter((entry) => entry.domain === domain);
-		return group.length
-			? [
-					`${domain}:`,
-					...group.map(
-						(entry) =>
-							`- ${entry.id} · ${entry.title} · ${entry.origin} · ${stateLabel(entry)}${cues.has(entry.id) ? " · prompt" : ""} · ${entry.detectors.length} detector(s) · ${firstSentence(entry.recognition)}`,
-					),
-				]
-			: [];
+		if (!group.length) return [];
+		return [`${domain}:`, ...group.map((entry) => catalogRow(entry, cues.has(entry.id), rows))];
 	});
 	if (!lines.length) lines.push("No matching slop entries.");
 	const fresh = comparison.filter(({ status }) => status === "new").length;
 	const updated = comparison.filter(({ status }) => status === "updated").length;
 	if (fresh || updated)
 		lines.unshift(`Starter set: ${fresh} new, ${updated} updated. Read with slop {"starter":true}.`);
-	return { content: textBlock(lines.join("\n")), details: { summary: `${selected.length} slop entries` } };
+	const list: CatalogListDetails = {
+		kind: "catalog",
+		count: selected.length,
+		rows,
+		hasGuidance: Boolean(fresh || updated),
+		...(fresh ? { fresh } : {}),
+		...(updated ? { updated } : {}),
+	};
+	return { content: textBlock(lines.join("\n")), details: { summary: `${selected.length} slop entries`, list } };
+}
+
+function catalogRow(entry: CatalogEntry, prompt: boolean, preview: string[]): string {
+	const title = `- ${entry.id} · ${entry.title}`;
+	const origin = `${entry.origin} · ${stateLabel(entry)}${prompt ? " · prompt" : ""}`;
+	const recognition = firstSentence(entry.recognition);
+	const detectors = entry.detectors.length;
+	if (preview.length < catalogPreviewRows) {
+		const detectorFact = detectors ? ` · ${detectors} ${detectors === 1 ? "detector" : "detectors"}` : "";
+		preview.push(`${title} · ${entry.domain} · ${origin}${detectorFact} · ${recognition}`);
+	}
+	return `${title} · ${origin} · ${detectors} detector(s) · ${recognition}`;
 }
 
 const closing = "Repair the underlying move: a synonym or punctuation swap keeps the tell.";
@@ -223,7 +254,7 @@ function* reportSkipped(skipped: string[]) {
 	yield `\nSkipped ${skipped.length} input(s):`;
 	for (const item of skipped) yield `- ${JSON.stringify(item)}`;
 }
-export function formatReport(findings: Finding[], skipped: string[]): string {
+function formatReport(findings: Finding[], skipped: string[]) {
 	const lines = [findings.length ? `${findings.length} slop detector finding(s):` : "No slop findings."];
 	let bytes = Buffer.byteLength(lines[0]);
 	let truncated = false;
@@ -239,7 +270,7 @@ export function formatReport(findings: Finding[], skipped: string[]): string {
 		}
 	}
 	if (truncated) lines.push("Output limit reached; check fewer paths or entries to see more.");
-	return `${lines.join("\n")}\n${closing}`;
+	return { text: `${lines.join("\n")}\n${closing}`, truncated };
 }
 
 /** Longer lines are minified code or data; checking them costs time without finding prose or comments. */
@@ -263,8 +294,15 @@ export function runCheck(options: ReadOptions, input: Collected, ids?: string[])
 			),
 	];
 	const findings = checkLines(entries, lines, readLexicon(usesLexicon ? values.lexicon : undefined));
-	const details = { ok: findings.length === 0, findingCount: findings.length, skippedCount: skipped.length };
-	return { content: textBlock(formatReport(findings, skipped)), details };
+	const report = formatReport(findings, skipped);
+	const details = {
+		ok: findings.length === 0,
+		findingCount: findings.length,
+		skippedCount: skipped.length,
+		reportLimited: report.truncated,
+		locationsLimited: findings.some((finding) => finding.count > finding.locations.length),
+	};
+	return { content: textBlock(report.text), details };
 }
 
 export async function check(options: ReadOptions, cwd: string, args: CheckArgs, signal?: AbortSignal) {
@@ -311,7 +349,10 @@ export function record(
 	options: ReadOptions,
 	args: RecordArgs,
 	identity: Identity,
-): { content: ReturnType<typeof textBlock>; details: Record<string, string> } {
+): {
+	content: ReturnType<typeof textBlock>;
+	details: { summary: string; id?: string; unmatchedCount?: number; importedCount?: number };
+} {
 	const { action, id, operator, reason } = args;
 	const fields = actionFields[action];
 	if (Object.keys(args).some((key) => key !== "action" && !fields.includes(key)))
@@ -320,7 +361,7 @@ export function record(
 	if (action === "import") {
 		const ids = importEntries(dir, args.ids);
 		const summary = ids.length ? `Imported starter entries: ${ids.join(", ")}.` : "No new starter entries to import.";
-		return { content: textBlock(summary), details: { summary } };
+		return { content: textBlock(summary), details: { summary, importedCount: ids.length } };
 	}
 	if (id === undefined) throw new Error(`${action} requires id.`);
 	let summary: string;
@@ -329,7 +370,7 @@ export function record(
 		const { entry, unmatched } = saveEntry(dir, { ...args, id, operator }, identity, lexicon);
 		summary = `Saved ${entry.id} (${stateLabel(entry)}).`;
 		const content = unmatched.length ? `${summary}\nNo detector matched: ${unmatched.join(", ")}.` : summary;
-		return { content: textBlock(content), details: { id, summary } };
+		return { content: textBlock(content), details: { id, summary, unmatchedCount: unmatched.length } };
 	}
 	if (action === "remove") {
 		removeEntry(dir, id, identity, reason);

@@ -9,9 +9,12 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } f
 import * as durable from "@earendil-works/pi-durable";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { parseEntry } from "./catalog.ts";
+import { CHECK_REQUEST, renderCheckRequest } from "./check-request.ts";
+import { checkPrompt } from "./command.ts";
 import type { toolDisplay } from "./display.ts";
 import { slopContribution } from "./durable.ts";
 import slopExtension from "./index.ts";
+import { inspectCatalog } from "./operations.ts";
 import { openView } from "./view.ts";
 
 const fixture = `---
@@ -94,7 +97,8 @@ test("ordinary Pi registers direct tools and submits one slop check with the ver
 	const hooks = new Map<string, (event: unknown) => void>();
 	let command: Parameters<ExtensionAPI["registerCommand"]>[1] | undefined;
 	const messages: Parameters<ExtensionAPI["sendMessage"]>[] = [];
-	const notices: string[] = [];
+	const notices: [string, string][] = [];
+	const renderers = new Map<string, unknown>();
 	const seen: ReturnType<typeof toolDisplay>[] = [];
 	events.on("harness:tool-display:publish", (value) => {
 		seen.push(value as ReturnType<typeof toolDisplay>);
@@ -102,6 +106,7 @@ test("ordinary Pi registers direct tools and submits one slop check with the ver
 	const host = {
 		events,
 		registerTool: (tool: (typeof registered)[number]) => registered.push(tool),
+		registerMessageRenderer: (name: string, render: unknown) => renderers.set(name, render),
 		registerCommand: (_name: string, spec: typeof command) => {
 			command = spec;
 		},
@@ -132,19 +137,32 @@ test("ordinary Pi registers direct tools and submits one slop check with the ver
 	const prompt = { systemPromptOptions: { sections: {} as Record<string, string> } };
 	hooks.get("before_agent_start")?.(prompt);
 	assert.match(prompt.systemPromptOptions.sections.slop, /Field note: State the result first/);
-	const ctx = { ui: { notify: (notice: string) => notices.push(notice) } } as unknown as ExtensionCommandContext;
+	const ctx = {
+		ui: { notify: (text: string, level: string) => notices.push([text, level]) },
+	} as unknown as ExtensionCommandContext;
 	assert.ok(command);
 	assert.deepEqual(await command.getArgumentCompletions?.("ch"), [{ value: "check", label: "check" }]);
 	await command.handler("browse", ctx);
 	assert.equal(messages.length, 0);
-	assert.match(notices[0], /Use \/slop/);
+	assert.deepEqual(notices[0], [
+		"Use /slop to browse the catalog or /slop check [hint] to check your work.",
+		"warning",
+	]);
+	await command.handler("", ctx);
+	assert.deepEqual(notices[1], [
+		"Slop catalog did not open: The slop browser requires the interactive terminal.",
+		"error",
+	]);
+	assert.equal(renderers.get(CHECK_REQUEST), renderCheckRequest);
 	const hint = '  The heading: "Results".\nLook at its sequence.  ';
 	await command.handler(`check ${hint}`, ctx);
 	assert.equal(messages.length, 1);
 	const [message, delivery] = messages[0];
 	assert.equal(message.display, true);
-	assert.match(String(message.content), /slop_record/);
+	assert.equal(message.customType, CHECK_REQUEST);
+	assert.equal(message.content, checkPrompt(hint));
 	assert.ok(String(message.content).endsWith(`Operator hint:\n${hint}`));
+	assert.deepEqual(message.details, { hint });
 	assert.deepEqual(delivery, { triggerTurn: true, deliverAs: "steer" });
 	hooks.get("session_shutdown")?.({});
 	assert.equal(events.count("harness:tool-display:request"), 0);
@@ -179,6 +197,9 @@ test("native Pi installs the same tools, example-backed check and prompt section
 		agent: async () => ({ cwd: root, model: { provider: "fixture", modelId: "demo" } }),
 	} as unknown as durable.ToolExecutionApi;
 	const context = {} as Parameters<typeof read.execute>[2];
+	const catalog = (await read.execute({}, api, context)) as durable.ToolExecutionResult;
+	assert.deepEqual(catalog.output, inspectCatalog({ agentDir: root }, {}).content);
+	assert.equal(catalog.structuredOutput, undefined);
 	const checked = (await check.execute(
 		{ text: "field note", entries: ["field-note"] },
 		api,
@@ -266,6 +287,7 @@ test("catalog view confirms state changes and cancellation preserves the selecti
 	key("\r");
 	assert.equal(entry.disabled, true);
 	assert.match(render(100), /starter · off/);
+	assert.match(render(100), /field-note is off\./);
 	assert.doesNotMatch(render(100), /\bid: field-note\b/, "the detail renders the entry body without its front matter");
 	key("\u001b");
 	key("\u001b");

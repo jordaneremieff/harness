@@ -31,7 +31,9 @@ Rows mark entries set to reach the prompt and entries that are off.
 `/slop check [hint]` directs the agent to review recent replies and changed work.
 The hint is optional and the command passes it through as text. For a Durable
 conversation, select `slop` in the dashboard command form and enter `check`
-with an optional hint as the arguments.
+with an optional hint as the arguments. In the ordinary transcript, the request
+card previews only your hint. Expand it to read the instructions sent to the
+agent. Durable submits those instructions as input and returns a submission ID.
 
 The `slop` tool accepts `scope` and `query` filters or reads one `entry` by ID.
 To compare with the starter set, use `{"starter":true}`. Add `entry` to read a
@@ -45,6 +47,13 @@ starter file. The comparison reports:
 
 Local edits to an imported entry do not change its status. Read both versions
 before you decide whether to import an updated entry.
+
+The [emission convention](../../docs/conventions/emissions.md) defines the cards.
+Slop shows the operation and target, such as an entry ID, path, or diff range.
+It does not show supplied prose, search text, or catalog edit bodies as call
+arguments. Expand a check to read the retained report. The compact result
+separates findings and skipped inputs from tool errors. If a diagnostic can quote
+arguments omitted from the call, expand the error to read its full diagnostic.
 
 ## Check work
 

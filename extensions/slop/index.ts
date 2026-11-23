@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { checkPrompt, parseCheckHint } from "./command.ts";
+import { CHECK_REQUEST, renderCheckRequest } from "./check-request.ts";
+import { checkPrompt, checkRequestDetails, parseCheckHint } from "./command.ts";
 import { toolDisplay } from "./display.ts";
 import { slopContribution } from "./durable.ts";
 import {
@@ -20,7 +21,7 @@ import {
 	type ViewArgs,
 	ViewParams,
 } from "./operations.ts";
-import { terminalText } from "./presentation-text.ts";
+import { singleLine } from "./presentation-text.ts";
 import { publishSettings, readSettings } from "./settings.ts";
 import { type Identity, readCatalog, setDisabled } from "./store.ts";
 import type { ViewState } from "./view.ts";
@@ -114,26 +115,34 @@ export default function slopExtension(pi: ExtensionAPI) {
 			closeView = undefined;
 		}
 	}
+	pi.registerMessageRenderer(CHECK_REQUEST, renderCheckRequest);
 	pi.registerCommand("slop", {
 		description: "Browse the slop catalog or check this conversation's work with an optional hint.",
 		getArgumentCompletions: (prefix) => ("check".startsWith(prefix) ? [{ value: "check", label: "check" }] : null),
 		handler: async (args, ctx) => {
+			const hint = parseCheckHint(args);
 			try {
-				const hint = parseCheckHint(args);
 				if (hint !== undefined) {
 					pi.sendMessage(
-						{ customType: "slop-check-request", content: checkPrompt(hint), display: true },
+						{
+							customType: CHECK_REQUEST,
+							content: checkPrompt(hint),
+							details: checkRequestDetails(hint),
+							display: true,
+						},
 						{ triggerTurn: true, deliverAs: "steer" },
 					);
 					return;
 				}
 				if (args.trim()) {
-					ctx.ui.notify("Use /slop to browse, or /slop check [hint] to check your work.", "info");
+					ctx.ui.notify("Use /slop to browse the catalog or /slop check [hint] to check your work.", "warning");
 					return;
 				}
 				await openBrowser(ctx);
 			} catch (error) {
-				ctx.ui.notify(terminalText(error instanceof Error ? error.message : String(error)), "error");
+				const action = hint === undefined ? "Slop catalog did not open" : "Slop check request failed";
+				const cause = singleLine(error instanceof Error ? error.message : String(error));
+				ctx.ui.notify(cause ? `${action}: ${cause}` : `${action}.`, "error");
 			}
 		},
 	});

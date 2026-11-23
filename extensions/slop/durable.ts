@@ -80,7 +80,8 @@ export function slopContribution(source: string, bus: SettingsBus, stopOrdinaryP
 						execute: async (args, api, context) => {
 							const agent = await api.agent(context);
 							const checked = await check(options, agent.cwd ?? host.cwd, args, context.abortSignal);
-							return { ...result(checked), structuredOutput: checked.details };
+							const { ok, findingCount, skippedCount } = checked.details;
+							return { ...result(checked), structuredOutput: { ok, findingCount, skippedCount } };
 						},
 					}),
 					defineTool({

@@ -5,8 +5,7 @@ export function parseCheckHint(args: string): string | undefined {
 	if (match) return match[1]?.trim() ? match[1] : "";
 }
 
-export function checkPrompt(hint: string): string {
-	return `The operator invoked /slop check. This message is task scaffolding from the slop extension.
+const checkInstructions = `The operator invoked /slop check. This message is task scaffolding from the slop extension.
 
 Check the work of this conversation for slop: your recent replies, the documents and messages you wrote, and the code and commits you changed. If the operator's hint names a passage, a habit or a piece of work, start there.
 
@@ -16,8 +15,14 @@ Repair what you find in the work itself. If you repair a reply, give the correct
 
 Record each habit that the hint names with slop_record: update the entry that covers it, or save a new one.
 
-Say in a few plain sentences what you found and changed.
+Say in a few plain sentences what you found and changed.`;
 
-Operator hint:
-${hint || "(none)"}`;
+export function checkPrompt(hint: string): string {
+	return `${checkInstructions}\n\nOperator hint:\n${hint || "(none)"}`;
+}
+
+export type CheckRequestDetails = { hint: string } | { instructionsEnd: number };
+
+export function checkRequestDetails(hint: string): CheckRequestDetails {
+	return hint ? { hint } : { instructionsEnd: checkInstructions.length };
 }

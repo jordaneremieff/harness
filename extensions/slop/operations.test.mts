@@ -86,6 +86,7 @@ test("save validates merged examples and appends unmatched variants once", (t) =
 	const update = { action: "save" as const, id: entry.id, operator: "Retain another variant.", examples: [variant] };
 	const changed = record(options, update, identity);
 	assert.match(changed.content[0].text, /No detector matched: Example 3 \(slop, ts\)\./);
+	assert.equal(changed.details.unmatchedCount, 1);
 	assert.equal(readCatalog(dir).find((item) => item.id === entry.id)?.prompt, false);
 	record(options, { ...update, operator: "Keep the cue in prompts.", prompt: true }, identity);
 	const merged = readCatalog(dir).find((item) => item.id === entry.id);
@@ -172,6 +173,25 @@ test("a line too long to check in bounded time is skipped and reported", async (
 	assert.equal(result.details.skippedCount, 1);
 	assert.match(result.content[0].text, /text:2: line longer than 20000 characters/);
 	assert.match(result.content[0].text, /phrase: 1 match, allowance 0/);
+});
+
+test("check distinguishes its retained location limit from its report byte limit", async (t) => {
+	const { dir, options, cwd, identity } = fixture(t);
+	const arg = { kind: "document" as const, entries: [entry.id] };
+	saveEntry(dir, entry, identity);
+	const limited = await check(options, cwd, { ...arg, text: "release diary\n".repeat(25) });
+	assert.equal(limited.details.locationsLimited, true);
+	assert.equal(limited.details.reportLimited, false);
+	assert.match(limited.content[0].text, /25 matches/);
+	assert.equal(limited.content[0].text.match(/^ {4}line /gmu)?.length, 20);
+
+	const detectors = Array.from({ length: 20 }, (_, i) => ({ ...entry.detectors[0], id: `phrase-${i + 1}` }));
+	saveEntry(dir, { ...entry, detectors }, identity);
+	const report = await check(options, cwd, { ...arg, text: "release diary\n".repeat(20) });
+	assert.equal(report.details.locationsLimited, false);
+	assert.equal(report.details.reportLimited, true);
+	assert.match(report.content[0].text, /Output limit reached/);
+	assert.ok(Buffer.byteLength(report.content[0].text) <= 8192);
 });
 
 test("settings keep a rejected environment value above the file and resolve relative paths", (t) => {

@@ -53,7 +53,7 @@ class SlopView {
 	private confirm?: { id: string; disabled: boolean };
 	private more?: { index: number; actions: Control[] };
 	private openMore?: () => void;
-	private notice = "";
+	private notice?: { level: "muted" | "error"; text: string };
 	private entries: CatalogEntry[] = [];
 	private targets: Target[] = [];
 	private shownWidth = 0;
@@ -105,7 +105,7 @@ class SlopView {
 	private reviewState() {
 		const entry = this.entries.find((item) => item.id === this.state.selected);
 		if (entry) {
-			this.notice = "";
+			this.notice = undefined;
 			this.confirm = { id: entry.id, disabled: entry.disabled };
 		}
 	}
@@ -118,9 +118,9 @@ class SlopView {
 				throw new Error("The entry changed. Cancel and open its current state.");
 			this.ops.setDisabled(id, !disabled);
 			this.confirm = undefined;
-			this.notice = `${id} is ${disabled ? "active" : "disabled"}.`;
+			this.notice = { level: "muted", text: `${id} is ${disabled ? "active" : "off"}.` };
 		} catch (error) {
-			this.notice = String(error instanceof Error ? error.message : error);
+			this.notice = { level: "error", text: String(error instanceof Error ? error.message : error) };
 		}
 	}
 	private scrollBy(delta: number) {
@@ -131,7 +131,7 @@ class SlopView {
 		else if (this.focus === "search") this.focus = "list";
 		else if (this.confirm) {
 			this.confirm = undefined;
-			this.notice = "";
+			this.notice = undefined;
 		} else if (this.nested || this.focus === "read") {
 			this.nested = false;
 			this.focus = "list";
@@ -310,7 +310,7 @@ class SlopView {
 		else if (this.more) lines.push(...this.menuRows(width, lines.length, this.more));
 		else if (this.confirm) lines.push(...this.confirmationRows(this.confirm));
 		else lines.push(...this.browserRows(width, lines.length));
-		if (this.notice) lines.push(this.theme.fg("muted", singleLine(this.notice)));
+		if (this.notice) lines.push(this.theme.fg(this.notice.level, singleLine(this.notice.text)));
 		lines.push(this.keyRow(width, lines.length));
 		this.shownWidth = width;
 		this.shownHeight = lines.length;
