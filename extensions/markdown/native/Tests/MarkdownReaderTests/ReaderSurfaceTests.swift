@@ -214,6 +214,41 @@ import Testing
         }
     }
 
+    @Test func hiddenBatchWritesResolveOnlyTheirIssuedDocumentAndLaunchingConversation() async throws {
+        try await withSurface { surface, model, drafts in
+            let workspace = EditorWorkspace(directory: drafts, store: nil)
+            func bind(_ conversation: String) {
+                workspace.collaboration = CollaborationClient(configuration: CollaborationConfiguration(version: 1,
+                    endpoint: URL(string: "http://127.0.0.1:1")!, token: "test", live: 3, conversation: conversation),
+                    workspace: UUID(), document: UUID()) { _ in LiveResult(status: "error") }
+            }
+            bind("ordinary:first")
+            surface.setWorkspace(workspace)
+            let a = model.issueReference(.stored(root: drafts.path, storeId: "store", document: "a"))
+            let b = model.issueReference(.stored(root: drafts.path, storeId: "store", document: "b"))
+            let local = model.issueReference(.file(path: drafts.appendingPathComponent("local.md").path))
+            @MainActor func snapshot(_ key: String) async throws -> [String: Any] {
+                try await request("query", fields: ["kind": "reviewDraft", "documentKey": key], to: model)
+            }
+            let draft: [String: Any] = ["comments": [["text": "for A", "authoredRevision": 2]], "overall": "read this first"]
+            let args: [String: Any] = ["documentKey": a, "expectedVersion": 0, "draft": draft]
+            @MainActor func set(_ args: [String: Any]) async throws -> [String: Any] {
+                try await request("command", fields: ["name": "setReviewDraft", "args": args], to: model)
+            }
+            #expect(try await set(args)["status"] as? String == "stored")
+            #expect(try await snapshot(b)["version"] as? Int == 0)
+            #expect(try await snapshot(local)["available"] as? Bool == false)
+            #expect(try await set(args)["status"] as? String == "stale")
+            bind("ordinary:other")
+            #expect(try await snapshot(a)["draft"] == nil)
+            bind("ordinary:first")
+            let restored = try #require(try await snapshot(a)["draft"] as? [String: Any])
+            #expect(restored["overall"] as? String == "read this first")
+            #expect(try await set(["documentKey": a, "expectedVersion": 1])["version"] as? Int == 2)
+            #expect(try await snapshot(a)["draft"] == nil)
+        }
+    }
+
     @Test func draftLibraryReferencesOpenOnlyTheirRetainedDocument() async throws {
         try await withSurface { surface, model, drafts in
             let workspace = EditorWorkspace(directory: drafts, store: nil)
