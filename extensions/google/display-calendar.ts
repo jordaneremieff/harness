@@ -10,6 +10,7 @@ import {
 	text,
 	type ResultContext,
 } from "./display-data.ts";
+import { displayCalendarDateTime, displayDate, displayInstant } from "./display-dates.ts";
 
 function calendarId(args: Data): string {
 	return field(args.calendarId) || "primary calendar";
@@ -17,7 +18,7 @@ function calendarId(args: Data): string {
 
 function time(value: unknown): string {
 	const stamp = object(value);
-	return field(stamp.dateTime) || field(stamp.date);
+	return displayCalendarDateTime(stamp.dateTime, stamp.timeZone) || displayDate(stamp.date);
 }
 
 function eventFacts(event: Data): string[] {
@@ -84,8 +85,8 @@ export const calendarPresenters: Record<string, Presenter> = {
 	calendar_events_list: {
 		call: (args) => ({
 			subject: calendarId(args),
-			facts: [field(args.timeMin), field(args.timeMax)].filter(Boolean),
-			args: pick(args, "query", "limit", "cursor", "orderBy"),
+			facts: [displayInstant(args.timeMin), displayInstant(args.timeMax)].filter(Boolean),
+			args: pick(args, "timeMin", "timeMax", "query", "limit", "cursor", "orderBy"),
 		}),
 		result: page("events", "event", ["calendarId", "timeMin", "timeMax", "query", "limit", "orderBy"], (row) =>
 			[time(row.start), field(object(row.externalData).summary), field(row.eventId)].filter(Boolean).join(" · "),

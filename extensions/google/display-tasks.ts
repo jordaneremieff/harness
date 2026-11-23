@@ -1,4 +1,5 @@
 import { type CardCall, count, type Data, field, list, object, pick, type Presenter, text } from "./display-data.ts";
+import { displayDate, displayInstant } from "./display-dates.ts";
 
 function taskCall(args: Data) {
 	return { subject: field(args.taskId), facts: [field(args.taskListId)].filter(Boolean) };
@@ -15,6 +16,9 @@ function taskWriteCall(args: Data, create: boolean): CardCall {
 	const call = taskCall(args);
 	if (create) call.subject = field(args.title);
 	const options = create ? pick(args, "due", "parentTaskId") : pick(args, "title", "due");
+	const due = displayDate(args.due);
+	if (due) call.facts.push(`due ${due}`);
+	if (args.due === null) call.facts.push("clear due date");
 	if (typeof args.notes === "string") options.notes = count([...args.notes].length, "character");
 	return { ...call, ...(Object.keys(options).length ? { args: options } : {}) };
 }
@@ -22,7 +26,7 @@ function taskWriteCall(args: Data, create: boolean): CardCall {
 function taskLine(task: Data): string {
 	const title = field(object(task.externalData).title);
 	const status = field(task.status);
-	const due = field(task.due);
+	const due = displayDate(task.due);
 	return [
 		title || field(task.taskId),
 		status === "needsAction" ? "needs action" : status,
@@ -36,8 +40,8 @@ function taskLine(task: Data): string {
 
 function taskDetails(task: Data): string[] {
 	const parent = field(task.parentTaskId);
-	const updated = field(task.updated);
-	const completed = field(task.completed);
+	const updated = displayInstant(task.updated);
+	const completed = displayInstant(task.completed);
 	return [
 		parent ? `Parent task: ${parent}` : "",
 		updated ? `Updated: ${updated}` : "",
@@ -88,7 +92,7 @@ function taskPageRow(value: unknown, i: number, lists: boolean) {
 }
 
 function taskListDetails(record: Data): string[] {
-	const updated = field(record.updated);
+	const updated = displayInstant(record.updated);
 	return updated ? [`Updated: ${updated}`] : [];
 }
 
@@ -98,13 +102,24 @@ function taskPageOutcome(records: unknown, noun: string, hasNext: boolean): stri
 	return `Returned ${count(records.length, noun)} on this page. ${continuation}`;
 }
 
+function taskFilters(args: Data): string[] {
+	const dueMin = displayInstant(args.dueMin);
+	const dueMax = displayInstant(args.dueMax);
+	const updatedMin = displayInstant(args.updatedMin);
+	return [
+		dueMin && `due from ${dueMin}`,
+		dueMax && `due until ${dueMax}`,
+		updatedMin && `updated since ${updatedMin}`,
+	].filter(Boolean);
+}
+
 function taskListPage(lists: boolean): Presenter {
 	return {
 		call(args) {
 			const options = lists ? {} : pick(args, "includeCompleted", "dueMin", "dueMax", "updatedMin");
 			return {
 				subject: lists ? "task lists" : field(args.taskListId),
-				facts: pagingFacts(args),
+				facts: [...pagingFacts(args), ...(lists ? [] : taskFilters(args))],
 				...(Object.keys(options).length ? { args: options } : {}),
 			};
 		},

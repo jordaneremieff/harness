@@ -47,7 +47,13 @@ test("task pages preserve filters and expose task notes on expansion", () => {
 	};
 	const page = result("tasks_list", { taskListId: "list-1", tasks: [task], nextCursor: "opaque+/==" }, args);
 	assert.match(page.outcome, /1 task on this page.*More tasks/);
-	assert.deepEqual(page.body, [`1. Check inventory · needs action · due ${due}`]);
+	assert.deepEqual(page.body, ["1. Check inventory · needs action · due 26 Nov"]);
+	const call = tasksPresenters.tasks_list.call(args);
+	assert.match(
+		call.facts?.join("\n") ?? "",
+		/due from (?:2[56] Nov )?\d{1,2}:\d{2} [AP]M\ndue until (?:2[56] Nov )?\d{1,2}:\d{2} [AP]M/,
+	);
+	assert.deepEqual(call.args, { includeCompleted: false, dueMin: due, dueMax: due, updatedMin: due });
 	assert.deepEqual(page.details, [
 		"1. Task: task-42",
 		"Parent task: parent-8",
@@ -70,16 +76,25 @@ test("task write calls summarise notes and write receipts omit note prose", () =
 	const create = tasksPresenters.tasks_create;
 	assert.ok(update && create);
 	assert.deepEqual(update.call({ ...address, notes: "secret", due: null }).args, { due: null, notes: "6 characters" });
-	assert.deepEqual(create.call({ ...address, title: "Check inventory", notes: "", due }).args, {
-		due,
-		notes: "0 characters",
-	});
+	const createCall = create.call({ ...address, title: "Check inventory", notes: "", due });
+	assert.deepEqual(createCall.args, { due, notes: "0 characters" });
+	assert.deepEqual(createCall.facts, [address.taskListId, "due 26 Nov"]);
+	assert.deepEqual(update.call({ ...address, due: null }).facts, [address.taskListId, "clear due date"]);
 	const created = result("tasks_create", task);
 	const updated = result("tasks_update", task, address);
 	assert.match(created.outcome, /^Created/);
 	assert.match(updated.outcome, /^Updated/);
 	assert.doesNotMatch(JSON.stringify([created, updated]), /Check the north shelf\./);
 	assert.doesNotMatch(result("tasks_update", {}, address).outcome, /^Updated/);
+});
+
+test("task and task-list update times are local instants, unlike task due dates", () => {
+	const updated = new Date(2020, 10, 23, 14, 32).toISOString();
+	const completed = new Date(2020, 10, 24, 0, 0).toISOString();
+	const detail = result("tasks_get", { ...task, updated, completed }, address);
+	assert.deepEqual(detail.details, ["Parent task: parent-8", "Updated: 23 Nov 2:32 PM", "Completed: 24 Nov 12:00 AM"]);
+	const lists = result("tasks_lists_list", { taskLists: [{ taskListId: address.taskListId, updated }] });
+	assert.ok(lists.details?.includes("Updated: 23 Nov 2:32 PM"));
 });
 
 test("completion and deletion require their distinct success evidence", () => {

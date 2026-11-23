@@ -21,6 +21,7 @@ import {
 	type TUI,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
+import { displayDate, displayInstant } from "./display-dates.ts";
 import { toolDisplay } from "./display.ts";
 import registerGoogle from "./index.ts";
 import { failure, GoogleError, ok, partial, toolResult, type Result } from "./result.ts";
@@ -240,14 +241,76 @@ test("Drive names the share grantee and keeps the notification message private",
 	assert.doesNotMatch(expanded, /PRIVATE_NOTIFICATION_MESSAGE/);
 });
 
+test("Google display dates distinguish local clock time and unshifted calendar days", () => {
+	const now = new Date(2026, 10, 23, 11);
+	const at = (day: number, hour: number, minute = 0) => new Date(2026, 10, day, hour, minute).toISOString();
+	assert.equal(displayInstant(at(23, 14, 32), now), "2:32 PM");
+	assert.equal(displayInstant(at(23, 12), now), "12:00 PM");
+	assert.equal(displayInstant(at(23, 0), now), "12:00 AM");
+	assert.equal(displayInstant(at(22, 0), now), "22 Nov 12:00 AM");
+	assert.equal(displayInstant(new Date(2025, 10, 23, 14, 32).toISOString(), now), "23 Nov 2:32 PM");
+	assert.equal(displayDate("2026-11-23"), "23 Nov");
+	assert.equal(displayDate("2026-11-23T00:00:00.000Z"), "23 Nov");
+	assert.equal(displayInstant("2026-11-23T14:32:00", now), "2026-11-23T14:32:00");
+});
+
+test("Calendar event cards show local instants and preserve unshifted all-day dates", () => {
+	const eventId = "evt";
+	const start = new Date(2020, 10, 23, 14, 32).toISOString();
+	const end = new Date(2020, 10, 23, 15).toISOString();
+	const event = card("calendar_event_get", { eventId });
+	settle(event, ok({ eventId, start: { dateTime: start }, end: { dateTime: end } }));
+	assert.match(rows(event).join("\n"), /Starts 23 Nov 2:32 PM\nEnds 23 Nov 3:00 PM/);
+	settle(event, ok({ eventId, start: { date: "2020-11-23" }, end: { date: "2020-11-24" } }));
+	assert.match(rows(event).join("\n"), /Starts 23 Nov\nEnds 24 Nov/);
+	settle(
+		event,
+		ok({
+			eventId,
+			start: { dateTime: "2026-11-01T01:30:00", timeZone: "America/New_York" },
+			end: { dateTime: "2026-11-01T12:00:00" },
+		}),
+	);
+	assert.match(
+		rows(event).join("\n"),
+		/Starts 1 Nov 1:30 AM \(America\/New_York\)\nEnds 1 Nov 12:00 PM \(zone not supplied\)/,
+	);
+});
+
+test("Tasks cards show a due calendar date without shifting its midnight UTC value", () => {
+	const due = "2026-11-23T00:00:00.000Z";
+	const dueMin = new Date(2020, 10, 23, 0).toISOString();
+	const component = card("tasks_list", { taskListId: "team", dueMin });
+	assert.match(rows(component).join("\n"), /due from 23 Nov 12:00 AM/);
+	settle(component, ok({ tasks: [{ taskId: "task-1", due, externalData: { title: "Review agenda" } }] }));
+	const collapsed = rows(component).join("\n");
+	assert.match(collapsed, /Review agenda · due 23 Nov\n/);
+	assert.doesNotMatch(collapsed, /22 Nov|T00:00:00/);
+	component.setExpanded(true);
+	assert.ok(rows(component).join("\n").includes(`dueMin: ${dueMin}`));
+});
+
 test("calendar page owns the only settled hint and preserves the exact next call", (t) => {
 	expansionKey(t, ["ctrl+g"]);
-	const args = { calendarId: "cal@example.invalid", limit: 1, orderBy: "updated", cursor: "old-token" };
+	const timeMin = new Date(2020, 10, 23, 14, 32, 19).toISOString().replace("Z", "+00:00");
+	const timeMax = new Date(2020, 10, 24, 9, 0, 45).toISOString();
+	const args = {
+		calendarId: "cal@example.invalid",
+		timeMin,
+		timeMax,
+		limit: 1,
+		orderBy: "updated",
+		cursor: "old-token",
+	};
 	const component = card("calendar_events_list", args);
+	assert.match(rows(component).join("\n"), /23 Nov 2:32 PM · 24 Nov 9:00 AM/);
 	assert.match(rows(component).filter(Boolean).at(-1) ?? "", /ctrl\+g to expand/);
 	settle(
 		component,
-		ok({ events: [{ eventId: "evt", externalData: { summary: "Planning" } }], nextCursor: "x+/_=  %" }),
+		ok({
+			events: [{ eventId: "evt", start: { dateTime: timeMin }, externalData: { summary: "Planning" } }],
+			nextCursor: "x+/_=  %",
+		}),
 	);
 	const collapsed = rows(component).filter(Boolean);
 	assert.match(collapsed.join("\n"), /This page contains 1 event\. Another page is available\./);
@@ -255,14 +318,13 @@ test("calendar page owns the only settled hint and preserves the exact next call
 		collapsed.filter((line) => line.includes("to expand")),
 		[collapsed.at(-1)],
 	);
-	assert.doesNotMatch(collapsed.join("\n"), /old-token|x\+\/|schemaVersion/);
+	assert.match(collapsed.join("\n"), /23 Nov 2:32 PM · Planning · evt/);
+	assert.doesNotMatch(collapsed.join("\n"), /old-token|x\+\/|schemaVersion|T\d{2}:/);
 	component.setExpanded(true);
-	const expanded = rows(component, 160).join("\n");
-	assert.ok(
-		expanded.includes(
-			'Continue with calendar_events_list {"calendarId":"cal@example.invalid","limit":1,"orderBy":"updated","cursor":"x+/_=  %"}',
-		),
-	);
+	const expanded = rows(component, 220).join("\n");
+	assert.ok(expanded.includes(`timeMin: ${timeMin}`));
+	assert.ok(expanded.includes(`timeMax: ${timeMax}`));
+	assert.ok(expanded.includes(`Continue with calendar_events_list ${JSON.stringify({ ...args, cursor: "x+/_=  %" })}`));
 	assert.doesNotMatch(expanded, /to expand|to collapse/);
 });
 
