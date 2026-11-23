@@ -240,12 +240,7 @@ function continuation(args: unknown): string {
 	return `Continue with jobs ${displayText(JSON.stringify(args))}`;
 }
 
-function logsCopy(logs: Record<string, unknown>, earliest: number, args: unknown): ResultCopy {
-	const job = record(logs.job) ?? {};
-	const call = record(args);
-	const id = lineOf(logs.id) ?? lineOf(job.id) ?? lineOf(call?.id);
-	const start = call ? Math.max(knownNumber(call.cursor) ? call.cursor : 0, earliest) : undefined;
-	const next = knownNumber(logs.next) ? logs.next : undefined;
+function logPageOutcome(logs: Record<string, unknown>, start: number | undefined, next: number | undefined): string {
 	const bytes = next !== undefined && start !== undefined && next >= start ? next - start : undefined;
 	const page =
 		bytes === undefined ? "Read a retained log page" : `Read ${count(bytes, "byte", "bytes")} from retained logs`;
@@ -254,10 +249,18 @@ function logsCopy(logs: Record<string, unknown>, earliest: number, args: unknown
 		logs.more === true ? "more output is available" : logs.more === false ? "reached the readable end" : undefined;
 	const pendingFact =
 		pending === undefined ? undefined : `${count(pending, "byte", "bytes")} in an incomplete UTF-8 suffix`;
-	const outcome = `${[page, coverage, pendingFact].filter(Boolean).join("; ")}.`;
+	return `${[page, coverage, pendingFact].filter(Boolean).join("; ")}.`;
+}
+
+function logsCopy(logs: Record<string, unknown>, earliest: number, args: unknown): ResultCopy {
+	const job = record(logs.job) ?? {};
+	const call = record(args);
+	const id = lineOf(logs.id) ?? lineOf(job.id) ?? lineOf(call?.id);
+	const start = call ? Math.max(knownNumber(call.cursor) ? call.cursor : 0, earliest) : undefined;
+	const next = knownNumber(logs.next) ? logs.next : undefined;
 	const error = jobError(job);
 	return {
-		outcome,
+		outcome: logPageOutcome(logs, start, next),
 		body: typeof logs.text === "string" ? textOf(logs.text) : undefined,
 		details: [
 			...jobFacts({ ...job, id }, true, true),
@@ -313,14 +316,18 @@ function resultText(result: AgentToolResult<unknown>): string {
 	).trim();
 }
 
+function receiptCopy(details: unknown, args: unknown, admitted: boolean): ResultCopy | undefined {
+	const data = record(details);
+	if (!data) return undefined;
+	if (Array.isArray(data.jobs)) return listCopy(data.jobs, data.nextTaskCursor);
+	if (knownNumber(data.earliest)) return logsCopy(data, data.earliest, args);
+	const job = record(data.job);
+	return job && (lineOf(job.id) || jobState(job)) ? singleCopy(job, admitted, args) : undefined;
+}
+
 function resultCopy(result: AgentToolResult<unknown>, context: RenderContext, admitted: boolean): ResultCopy {
-	if (!context.isError) {
-		const data = record(result.details);
-		if (Array.isArray(data?.jobs)) return listCopy(data.jobs, data.nextTaskCursor);
-		if (data && knownNumber(data.earliest)) return logsCopy(data, data.earliest, context.args);
-		const job = record(data?.job);
-		if (job && (lineOf(job.id) || jobState(job))) return singleCopy(job, admitted, context.args);
-	}
+	const receipt = context.isError ? undefined : receiptCopy(result.details, context.args, admitted);
+	if (receipt) return receipt;
 	const [outcome, ...body] = resultText(result).split("\n");
 	return {
 		outcome: outcome || (context.isError ? "No diagnostic was retained." : "No job result was retained."),
@@ -328,6 +335,34 @@ function resultCopy(result: AgentToolResult<unknown>, context: RenderContext, ad
 		details: !context.isError && body.length ? [body.join("\n")] : undefined,
 		color: context.isError ? "error" : undefined,
 	};
+}
+
+function resultHidden(
+	copy: ResultCopy,
+	call: CallCopy,
+	width: number,
+	theme: Theme,
+	bodyHidden: number,
+): Hidden | undefined {
+	const callHidden = callRows(call, width, theme, false).hidden;
+	return (
+		bodyHidden ||
+		callHidden ||
+		(copy.details?.length || (copy.limit && visibleWidth(copy.limit) > width) ? "details" : undefined)
+	);
+}
+
+function resultEvidence(copy: ResultCopy, expanded: boolean, width: number, theme: Theme): string[] {
+	const rows: string[] = [];
+	if (expanded && copy.details?.length) {
+		const color = copy.color ?? "toolOutput";
+		rows.push("", ...copy.details.flatMap((line) => wrapped(line, width).map((row) => theme.fg(color, row))));
+	}
+	if (copy.limit) {
+		const limit = theme.fg("warning", copy.limit);
+		rows.push(...(expanded ? wrapped(limit, width) : [clipRow(limit, width)]));
+	}
+	return rows;
 }
 
 function renderResult(
@@ -349,19 +384,9 @@ function renderResult(
 			theme.fg(copy.color ?? (options.isPartial ? "muted" : "toolOutput"), outcome),
 			...shown.map((row) => theme.fg(bodyColor, row)),
 		];
-		if (expanded && copy.details?.length)
-			rows.push("", ...copy.details.flatMap((line) => wrapped(line, width).map((row) => theme.fg(bodyColor, row))));
-		if (copy.limit) {
-			const limit = theme.fg("warning", copy.limit);
-			rows.push(...(expanded ? wrapped(limit, width) : [clipRow(limit, width)]));
-		}
+		rows.push(...resultEvidence(copy, expanded, width, theme));
 		if (!expanded) {
-			const callHidden = callRows(call, width, theme, false).hidden;
-			const bodyHidden = body.length - shown.length;
-			const hidden =
-				bodyHidden ||
-				callHidden ||
-				(copy.details?.length || (copy.limit && visibleWidth(copy.limit) > width) ? "details" : undefined);
+			const hidden = resultHidden(copy, call, width, theme, body.length - shown.length);
 			if (hidden) rows.push(...expansionHint(theme, context, width, hidden));
 		}
 		return rows.map((row) => clipRow(row, width));
@@ -384,7 +409,8 @@ export function renderJobsResult(
 let nativeBash: ReturnType<typeof createBashToolDefinition> | undefined;
 
 function nativeRenderers() {
-	return (nativeBash ??= createBashToolDefinition(process.cwd()));
+	nativeBash ??= createBashToolDefinition(process.cwd());
+	return nativeBash;
 }
 
 export function renderBashCall(args: unknown, theme: Theme, context: RenderContext): Component {
@@ -445,68 +471,86 @@ export function yieldSummary(jobs: readonly { state: string }[], omitted: number
 	];
 }
 
-function yieldCard(facts: YieldFacts, theme: Theme, context: RenderContext): Component {
-	return component(
-		(width) => {
-			if (!facts.settled && context.state?.yieldResult) return [];
-			const pad = Math.max(0, Math.min(context.outputPad ?? 1, Math.floor((width - 1) / 2)));
-			const inner = Math.max(1, width - pad * 2);
-			const expanded = context.expanded;
-			const error = facts.error !== undefined;
-			const status = error ? "Could not end the turn" : facts.settled ? "Turn ended" : "Ending turn";
-			const title = `${theme.fg("toolTitle", theme.bold("jobs_yield"))} ${theme.fg("accent", status)}`;
-			const secondary = error ? [] : yieldSummary(facts.jobs, facts.omitted);
-			if (facts.at !== undefined) secondary.push(yieldClock(facts.at));
-			const headings = [title, ...(secondary.length ? [theme.fg("muted", secondary.join(" · "))] : [])];
-			const rows = expanded
-				? headings.flatMap((line) => wrapped(line, inner))
-				: headings.map((line) => clipRow(line, inner));
-			const note = wrapped(facts.note, inner);
-			const shown = expanded ? note : note.slice(0, YIELD_NOTE_LINES);
-			if (shown.length) rows.push("", ...shown.map((row) => theme.fg("toolOutput", row)));
-			const diagnostic = wrapped(facts.error ?? "", inner);
-			const errorRows = expanded ? diagnostic : diagnostic.slice(0, BODY_ROWS);
-			if (errorRows.length) rows.push("", ...errorRows.map((row) => theme.fg("error", row)));
-			if (expanded && facts.settled && !error) {
-				const jobs = facts.jobs.flatMap((job) =>
-					wrapped(
-						[
-							`job ${job.id}`,
-							job.state === "running" ? "running" : "completion pending",
-							job.commandPreview ? `command preview: ${job.commandPreview}` : undefined,
-						]
-							.filter(Boolean)
-							.join(" · "),
-						inner,
-					).map((row) => theme.fg("toolOutput", row)),
-				);
-				if (jobs.length) rows.push("", ...jobs);
-				rows.push(
-					"",
-					...wrapped("Each job completion starts the next turn.", inner).map((row) => theme.fg("muted", row)),
-				);
-			}
-			if (facts.omitted > 0)
-				rows.push(clipRow(theme.fg("warning", `[Excerpt: ${count(facts.omitted, "job", "jobs")} not listed]`), inner));
-			if (!expanded) {
-				const noteHidden = note.length - shown.length;
-				const errorHidden = diagnostic.length - errorRows.length;
-				const hidden =
-					noteHidden ||
-					errorHidden ||
-					((facts.settled && !error) || headings.some((line) => visibleWidth(line) > inner) ? "details" : undefined);
-				if (hidden) rows.push(...expansionHint(theme, context, inner, hidden, !facts.settled));
-			}
-			const color = error ? "toolErrorBg" : "customMessageBg";
-			const background = theme.getBgAnsi(color);
-			return ["", ...rows, ""].map((row) => {
-				const line = clipRow(row, inner);
-				const content = line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background);
-				return theme.bg(color, " ".repeat(pad) + content + " ".repeat(Math.max(0, inner - visibleWidth(line)) + pad));
-			});
-		},
-		() => !facts.settled && context.state?.yieldResult === true,
+function yieldHeadings(facts: YieldFacts, theme: Theme): string[] {
+	const error = facts.error !== undefined;
+	const status = error ? "Could not end the turn" : facts.settled ? "Turn ended" : "Ending turn";
+	const title = `${theme.fg("toolTitle", theme.bold("jobs_yield"))} ${theme.fg("accent", status)}`;
+	const secondary = error ? [] : yieldSummary(facts.jobs, facts.omitted);
+	if (facts.at !== undefined) secondary.push(yieldClock(facts.at));
+	return [title, ...(secondary.length ? [theme.fg("muted", secondary.join(" · "))] : [])];
+}
+
+function yieldDetails(jobs: YieldFacts["jobs"], width: number, theme: Theme): string[] {
+	const rows = jobs.flatMap((job) => {
+		const facts = [
+			`job ${job.id}`,
+			job.state === "running" ? "running" : "completion pending",
+			job.commandPreview ? `command preview: ${job.commandPreview}` : undefined,
+		];
+		return wrapped(facts.filter(Boolean).join(" · "), width).map((row) => theme.fg("toolOutput", row));
+	});
+	return [
+		...(rows.length ? ["", ...rows] : []),
+		"",
+		...wrapped("Each job completion starts the next turn.", width).map((row) => theme.fg("muted", row)),
+	];
+}
+
+function yieldDisclosure(
+	facts: YieldFacts,
+	headings: string[],
+	width: number,
+	noteHidden: number,
+	errorHidden: number,
+): Hidden | undefined {
+	return (
+		noteHidden ||
+		errorHidden ||
+		((facts.settled && facts.error === undefined) || headings.some((line) => visibleWidth(line) > width)
+			? "details"
+			: undefined)
 	);
+}
+
+function yieldBody(facts: YieldFacts, expanded: boolean, width: number, theme: Theme) {
+	const note = wrapped(facts.note, width);
+	const shown = expanded ? note : note.slice(0, YIELD_NOTE_LINES);
+	const diagnostic = wrapped(facts.error ?? "", width);
+	const errorRows = expanded ? diagnostic : diagnostic.slice(0, BODY_ROWS);
+	const rows = [
+		...(shown.length ? ["", ...shown.map((row) => theme.fg("toolOutput", row))] : []),
+		...(errorRows.length ? ["", ...errorRows.map((row) => theme.fg("error", row))] : []),
+	];
+	return { rows, noteHidden: note.length - shown.length, errorHidden: diagnostic.length - errorRows.length };
+}
+
+function yieldCard(facts: YieldFacts, theme: Theme, context: RenderContext): Component {
+	const hiddenByResult = () => !facts.settled && context.state?.yieldResult === true;
+	return component((width) => {
+		if (hiddenByResult()) return [];
+		const pad = Math.max(0, Math.min(context.outputPad ?? 1, Math.floor((width - 1) / 2)));
+		const inner = Math.max(1, width - pad * 2);
+		const expanded = context.expanded;
+		const error = facts.error !== undefined;
+		const headings = yieldHeadings(facts, theme);
+		const rows = headings.flatMap((line) => (expanded ? wrapped(line, inner) : [clipRow(line, inner)]));
+		const body = yieldBody(facts, expanded, inner, theme);
+		rows.push(...body.rows);
+		if (expanded && facts.settled && !error) rows.push(...yieldDetails(facts.jobs, inner, theme));
+		if (facts.omitted > 0)
+			rows.push(clipRow(theme.fg("warning", `[Excerpt: ${count(facts.omitted, "job", "jobs")} not listed]`), inner));
+		if (!expanded) {
+			const hidden = yieldDisclosure(facts, headings, inner, body.noteHidden, body.errorHidden);
+			if (hidden) rows.push(...expansionHint(theme, context, inner, hidden, !facts.settled));
+		}
+		const color = error ? "toolErrorBg" : "customMessageBg";
+		const background = theme.getBgAnsi(color);
+		return ["", ...rows, ""].map((row) => {
+			const line = clipRow(row, inner);
+			const content = line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background);
+			return theme.bg(color, " ".repeat(pad) + content + " ".repeat(Math.max(0, inner - visibleWidth(line)) + pad));
+		});
+	}, hiddenByResult);
 }
 
 function yieldRows(value: unknown): YieldFacts["jobs"] {
