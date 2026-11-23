@@ -60,12 +60,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let livePath {
-            do { liveConfiguration = try CollaborationConfiguration.consume(livePath) }
-            catch {
-                liveUnavailable = "Agent connection unavailable. The saved document remains readable."
-                FileHandle.standardError.write(Data("Markdown Reader: agent connection unavailable; document access is unchanged.\n".utf8))
+            Task { @MainActor in
+                var target = "the original Pi conversation"
+                do {
+                    let configuration = try CollaborationConfiguration.consume(livePath)
+                    target = configuration.target
+                    try await configuration.reportStarting()
+                    liveConfiguration = configuration
+                } catch {
+                    liveUnavailable = "No connection to \(target). Reopen from the original Pi conversation."
+                    FileHandle.standardError.write(Data("Markdown Reader: agent connection unavailable; document access is unchanged.\n".utf8))
+                }
+                finishLaunch()
             }
-        }
+        } else { finishLaunch() }
+    }
+
+    private func finishLaunch() {
         if case .editor(let launch) = mode { startEditor(launch); return }
         if case .pane(let target) = mode {
             startPane(target)
