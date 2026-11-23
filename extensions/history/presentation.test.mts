@@ -487,7 +487,7 @@ describe("history_read in Pi's tool card", () => {
 		assert.deepEqual(JSON.parse(cursor), { maxBytes: 4, ...next });
 	});
 
-	it("adds no hint for a short complete result and describes omitted records without a line count", () => {
+	it("adds no hint for a short result and counts visually hidden descriptor lines", () => {
 		const options = { expanded: false, isPartial: false };
 		const context = { isError: false, args: { entryId: 42 } };
 		const noDetails = renderReadResult(
@@ -503,7 +503,10 @@ describe("history_read in Pi's tool card", () => {
 			value: index,
 		}));
 		const manifest = { ...emptyResult(""), details: { status: "complete", items: descriptors } };
-		assert.match(screen(renderReadResult(manifest, options, theme, context)), /\.\.\. \(click to expand\)$/u);
+		assert.match(
+			screen(renderReadResult(manifest, options, theme, context)),
+			/\.\.\. \(2 more lines, click to expand\)$/u,
+		);
 		assert.doesNotMatch(screen(renderReadResult(manifest, options, theme, context)), /\/field5/u);
 		assert.match(
 			screen(renderReadResult(manifest, { ...options, expanded: true }, theme, context)),
@@ -550,8 +553,8 @@ describe("expanded history cards", () => {
 		};
 		const result = emptyResult(JSON.stringify(value));
 		const view = screen(renderSearchResult(result, { expanded: false, isPartial: false }, theme, { isError: false }));
-		assert.doesNotMatch(view, /retained tail|more lines/u);
-		assert.match(view, /\.\.\. \(click to expand\)/u);
+		assert.doesNotMatch(view, /retained tail/u);
+		assert.match(view, /\.\.\. \(\d+ more lines, click to expand\)/u);
 		const open = screen(
 			renderSearchResult(result, { expanded: true, isPartial: false }, theme, { isError: false }),
 			400,

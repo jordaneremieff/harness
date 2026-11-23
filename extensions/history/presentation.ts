@@ -252,7 +252,6 @@ interface ResultView {
 	literalOutcome?: string;
 	continuation?: string;
 	limit?: string;
-	countLines?: boolean;
 }
 
 function textContent(result: AgentToolResult<unknown>): string {
@@ -338,7 +337,7 @@ function renderResult(
 			theme.fg(color, truncateToWidth(collapsedOutcome, width, "…")),
 			...preview.visualLines,
 			...limitRows(theme, width, limit),
-			...(hidden ? [hintLine(theme, context, width, view.countLines ? preview.skippedCount : 0)] : []),
+			...(hidden ? [hintLine(theme, context, width, preview.skippedCount)] : []),
 		];
 	});
 }
@@ -437,7 +436,6 @@ function readView(value: RecordValue, args: unknown): ResultView {
 			...(guide ? { action: guide } : {}),
 		}),
 		limit: asRecord(value.entry)?.truncated === true ? "[Stored source was truncated]" : undefined,
-		countLines: !Array.isArray(items),
 	};
 }
 
