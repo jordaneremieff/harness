@@ -94,6 +94,28 @@ struct ReviewCommentStoreTests {
         }
     }
 
+    @Test func reviewVersionsStayWithinTheLiveIntegerRange() throws {
+        try fixture { store in
+            var item = comment()
+            try store.record(scope: scope, comments: [item])
+            let url = try #require(FileManager.default.contentsOfDirectory(at: store.directory, includingPropertiesForKeys: nil).first { $0.pathExtension == "json" })
+            func seed(_ revision: Int, _ comments: [ReviewComment]) throws {
+                try JSONEncoder().encode(ReviewSheet(revision: revision, comments: comments)).write(to: url)
+            }
+            let last = (1 << 53) - 1
+            item.version = last
+            try seed(last, [item])
+            #expect(try store.load(scope: scope).revision == last)
+            #expect(throws: ReviewStoreError.limit) { try store.set(scope: scope, id: item.commentId, state: "closed", expectedVersion: last) }
+            #expect(throws: ReviewStoreError.limit) { try store.record(scope: scope, comments: [comment()]) }
+            try seed(last + 1, [item, comment()])
+            #expect(throws: ReviewStoreError.invalid) { try store.load(scope: scope) }
+            item.version = last + 1; item.commentState = "closed"
+            try seed(last + 1, [item])
+            #expect(throws: ReviewStoreError.invalid) { try store.load(scope: scope) }
+        }
+    }
+
     @Test func oversizedSheetRefusesWithoutEviction() throws {
         try fixture { store in
             let first = comment()

@@ -172,7 +172,7 @@ final class EditorWorkspace {
     var pageHeld: NSRange?
     var pageBusy = false
     @ObservationIgnored var webAgentApply: ((String, UInt64, [MarkdownSourceEdit]) async -> WebAgentApplyResult)?
-    @ObservationIgnored var webClaim: ((String, [NSRange], String?, Date) -> Void)?
+    @ObservationIgnored var webClaim: ((String, [NSRange], String?, Int64) -> Void)?
     @ObservationIgnored var webRelease: ((String) -> Void)?
     /// Tells the page that an agent edit or claim waited because the person holds the passage.
     @ObservationIgnored var webHeldRefusal: (() -> Void)?

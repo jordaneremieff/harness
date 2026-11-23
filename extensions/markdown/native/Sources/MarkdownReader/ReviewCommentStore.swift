@@ -49,6 +49,8 @@ struct ReviewCommentStore: Sendable {
     let directory: URL
     private static let byteLimit = 4 * 1024 * 1024
     private static let countLimit = 16_384
+    // The page and live client compare sheet and comment versions as JavaScript numbers.
+    private static let lastVersion = 9_007_199_254_740_991
 
     func load(scope: ReviewScope) throws -> ReviewSheet {
         let file = try ReviewRecordFile(directory: directory, scope: scope, suffix: ".json")
@@ -89,7 +91,7 @@ struct ReviewCommentStore: Sendable {
             guard let index = sheet.comments.firstIndex(where: { $0.commentId == id }) else { throw ReviewStoreError.missing }
             guard sheet.comments[index].version == expectedVersion else { throw ReviewStoreError.stale }
             if sheet.comments[index].commentState != state {
-                guard expectedVersion < Int.max else { throw ReviewStoreError.limit }
+                guard expectedVersion < Self.lastVersion else { throw ReviewStoreError.limit }
                 sheet.comments[index].commentState = state
                 sheet.comments[index].version += 1
                 try publish(&sheet, to: file)
@@ -116,7 +118,8 @@ struct ReviewCommentStore: Sendable {
         for item in items {
             guard item.threadId == first.threadId, validId(item.commentId), item.commentId == "\(item.threadId):\(item.ordinal)",
                   item.ordinal == 0 ? ["overall", "question"].contains(item.kind) : item.kind == "annotation",
-                  (item.madeOnRevision ?? 1) > 0, item.version >= 1, item.commentState == (item.version.isMultiple(of: 2) ? "closed" : "open"),
+                  (item.madeOnRevision ?? 1) > 0, (1...Self.lastVersion).contains(item.version),
+                  item.commentState == (item.version.isMultiple(of: 2) ? "closed" : "open"),
                   !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   item.text.utf8.count <= 131_072 else { throw ReviewStoreError.invalid }
             if let quote = item.quote, quote.isEmpty || quote.utf8.count > 8192 { throw ReviewStoreError.invalid }
@@ -152,12 +155,12 @@ struct ReviewCommentStore: Sendable {
                 revision = next
             }
         }
-        guard revision > 0, revision == sheet.revision else { throw ReviewStoreError.invalid }
+        guard (1...Self.lastVersion).contains(revision), revision == sheet.revision else { throw ReviewStoreError.invalid }
         return sheet
     }
 
     private func publish(_ sheet: inout ReviewSheet, to file: ReviewRecordFile) throws {
-        guard sheet.revision < Int.max else { throw ReviewStoreError.limit }
+        guard sheet.revision < Self.lastVersion else { throw ReviewStoreError.limit }
         sheet.revision += 1
         let bytes = try JSONEncoder().encode(sheet)
         // Reserve space on admission so a full sheet still permits closing and reopening its comments.

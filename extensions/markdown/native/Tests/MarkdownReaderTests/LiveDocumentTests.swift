@@ -81,7 +81,7 @@ import ReaderFeature
           else if (command.op === 'state') write({ document: bridge.list()[0]?.document, prompts, submissions, transport });
           else if (command.op === 'closeEndpoint') { proxy.close(); proxy.closeAllConnections(); write({ok:true}); }
           else if (command.op === 'failPoll') { pollFailure = command.status; write({ok:true}); }
-          else if (command.op === 'navigate') write(await bridge.execute(bridge.list()[0].handle, command));
+          else if (command.op === 'navigate' || command.op === 'claim') write(await bridge.execute(bridge.list()[0].handle, command));
           else if (command.op === 'publish') { bridge.publish(command.status, command.text, command.operationId); write({ ok: true }); }
           else if (command.op === 'read') write(await bridge.execute(bridge.list()[0].handle, { op: 'read' }));
           else if (command.op === 'connect') {
@@ -864,6 +864,29 @@ import ReaderFeature
         await workspace.closeViews()
     }
 
+    @Test func theBridgeAcceptsTheNativeReceiptForThePaintedClaim() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root, store: nil)
+        let source = "before after"
+        workspace.add(DraftRecord(source: source))
+        connectPage(workspace)
+        var painted: (id: String, expiresAt: Int64)?
+        workspace.webClaim = { claim, _, _, expiresAt in painted = (claim, expiresAt) }
+        let server = try LiveTestBridge(); defer { server.stop() }
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: workspace.id,
+            document: workspace.liveDocumentID, handle: workspace.handleLive)
+        defer { client.stop() }
+        client.start()
+        try await connected(server, document: workspace.liveDocumentID)
+        let result = try await server.request(["op": "claim", "baseGeneration": 0, "baseDigest": Digest.sha256(Data(source.utf8)),
+                                               "ranges": [["start": 0, "end": 6]]])
+        let claim = try #require(painted)
+        #expect(result["status"] as? String == "claimed")
+        #expect(result["claimId"] as? String == claim.id)
+        #expect(result["expiresAt"] as? Int64 == claim.expiresAt)
+        await workspace.closeViews()
+    }
+
     @Test func claimsExpireReleaseAndApplyClearsTheHandleClaims() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let workspace = EditorWorkspace(directory: root, store: nil)
@@ -883,7 +906,7 @@ import ReaderFeature
         let first = await workspace.handleLive(claim)
         #expect(first.status == "claimed" && first.claimId == paints.first)
         let expiry = try #require(first.expiresAt)
-        #expect(abs(expiry - Date().addingTimeInterval(90).timeIntervalSince1970 * 1000) < 2000)
+        #expect(abs(expiry - Int64(Date().addingTimeInterval(90).timeIntervalSince1970 * 1000)) < 2000)
         workspace.expireClaims(now: Date().addingTimeInterval(91))
         #expect(releases == paints)
         let second = await workspace.handleLive(claim)

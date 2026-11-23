@@ -167,10 +167,10 @@ final class ReaderSurface: NSView {
                 }
             }
         }
-        workspace.webClaim = { [weak self] id, ranges, label, expires in
+        workspace.webClaim = { [weak self] id, ranges, label, expiresAtMilliseconds in
             var message: [String: Any] = ["v": 1, "type": "claim", "claimId": id,
                 "ranges": ranges.map { ["start": $0.location, "end": NSMaxRange($0)] },
-                "expiresAt": expires.timeIntervalSince1970 * 1000]
+                "expiresAt": expiresAtMilliseconds]
             if let label { message["label"] = label }
             Task { _ = try? await self?.model.sendEnvelope(message) }
         }

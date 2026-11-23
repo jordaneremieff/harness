@@ -67,7 +67,7 @@ struct LiveResult: Codable, Sendable {
     var operationId: String?
     var retained: Bool?
     var claimId: String?
-    var expiresAt: Double?
+    var expiresAt: Int64?
     var reason: String?
     var commentId: String?
     var commentState: String?
@@ -342,13 +342,14 @@ extension EditorWorkspace {
             if overlapsHold(values) { return heldResult() }
             guard liveClaims.count < 128 else { return LiveResult(status: "busy", message: "Release an active claim before claiming another passage.") }
             let claim = UUID().uuidString, expires = Date().addingTimeInterval(90)
+            let expiresAtMilliseconds = Int64(expires.timeIntervalSince1970 * 1000)
             liveClaims[claim] = WebLiveClaim(document: liveDocumentID, expiresAt: expires)
-            webClaim?(claim, values, command.label, expires)
+            webClaim?(claim, values, command.label, expiresAtMilliseconds)
             Task { @MainActor [weak self] in
                 do { try await Task.sleep(for: .seconds(90)) } catch { return }
                 self?.expireClaims()
             }
-            return LiveResult(status: "claimed", claimId: claim, expiresAt: expires.timeIntervalSince1970 * 1000)
+            return LiveResult(status: "claimed", claimId: claim, expiresAt: expiresAtMilliseconds)
         }
         guard command.op == "apply", let operation = command.operationId, UUID(uuidString: operation) != nil,
               let baseGeneration = command.baseGeneration, let baseDigest = command.baseDigest,
