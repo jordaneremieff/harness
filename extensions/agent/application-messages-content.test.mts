@@ -136,7 +136,7 @@ it("previews only the body and shows the whole message on expansion without term
 	};
 	const collapsed = render(false);
 	assert.match(collapsed, /\[agent\] Document reader · Notes 🗒/u);
-	assert.match(collapsed, /#a2b3c4d5 · follows #f0e1d2c3 · pane 42 · reply in your final message/u);
+	assert.match(collapsed, /#a2b3c4d5 · follows #f0e1d2c3 · reply requested · pane 42/u);
 	assert.match(collapsed, /Body preview/u);
 	assert.match(collapsed, /ctrl\+o to expand/u);
 	assert.doesNotMatch(collapsed, /Application messages:|Use the live pane|Last/u);

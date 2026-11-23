@@ -594,7 +594,7 @@ is left out:
 | Message type | First line | Second line |
 | --- | --- | --- |
 | `agent.peer` | `[agent] result · Parser review`, `[agent] report · …`, `[agent] thread post · Parser contract` | `from Reviewer · provider/model · high · #12` and other known facts |
-| `agent.application` | `[agent] Notebook · Release notes` | The request reference, any earlier reference and place, and whether the application expects a reply |
+| `agent.application` | `[agent] Notebook · Release notes` | `#a2b3c4d5 · follows #d1c2b3a4 · reply requested · pane 42`: the request reference, any earlier reference, whether the application expects a reply, then the place |
 | `agent.compaction` | `[agent] Compaction not applied` | none |
 | `agent.planning-budget` | `[agent] Planning budget reached` | `210000 of 200000 tokens · openai-codex/gpt-6.1-sol` |
 

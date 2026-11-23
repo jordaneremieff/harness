@@ -128,6 +128,7 @@ export function formatApplicationMessage(message: ApplicationMessage, explain: b
 			place,
 			reference,
 			follow,
+			reply,
 			replyExpectation,
 			bodyOffset: prefix.length,
 			explanation: explain,

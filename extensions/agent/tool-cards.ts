@@ -2654,7 +2654,13 @@ export const renderAgentApplicationMessage: MessageRenderer = (message, options,
 			tag: "[agent]",
 			title: displayText(text(details.application)).replace(/\s+/gu, " ").trim() || "Application message",
 			label: text(details.subject),
-			metadata: [text(details.reference), text(details.follow), text(details.place), text(details.replyExpectation)],
+			// Short facts lead, so a narrow card cuts the place, such as a pane handle, first.
+			metadata: [
+				text(details.reference),
+				text(details.follow),
+				details.reply === "none" ? "no reply needed" : details.reply === "final" ? "reply requested" : "",
+				text(details.place),
+			],
 			body,
 			expandedBody: () => {
 				const headerEnd = content.indexOf("\n");
