@@ -176,6 +176,8 @@ interface PrimaryClient {
 	retainSentWork?(sessionId: string): void;
 	retainContinuity?(fact: ContinuityFact): void;
 	send(text: string, details: unknown, sourceId: string, requireRetained: boolean): void;
+	/** A confirmed body needs no new message, but a replay can carry new request results. */
+	receiveRetainedReplay?(details: unknown): void;
 	resumeInbox?(): void;
 	status?(text: string | undefined): void;
 	signal: AbortSignal;
@@ -482,7 +484,7 @@ export class AgentManager {
 	private readonly lifecycle = new AbortController();
 	private refreshing = false;
 	private refreshAgain = false;
-	private readonly delivered: BoundedMap<true>;
+	private readonly delivered: BoundedMap<symbol>;
 	private readonly failures: BoundedMap<string>;
 	private readonly crashes = new BoundedMap<{ times: number[]; stopped: boolean }>(DEFAULT_FAILURE_LIMIT);
 	private readonly recoveryErrors = new BoundedMap<string>(DEFAULT_FAILURE_LIMIT);
@@ -1876,6 +1878,7 @@ export class AgentManager {
 		if (this.stopping(primary)) return;
 		const location = await this.locations.resolve(primary.cwd ?? this.options.root);
 		if (this.stopping(primary)) return;
+		const deliveryScope = Symbol();
 		const channel = await (this.options.createPrimary ?? createPrimaryChannel)({
 			id: ownerId,
 			...location,
@@ -1896,9 +1899,12 @@ export class AgentManager {
 					return;
 				}
 				const key = `${ownerId}:retained:${message.sourceId}`;
-				if (this.delivered.has(key)) return;
+				if (this.delivered.get(key) === deliveryScope) {
+					primary.receiveRetainedReplay?.(message.details);
+					return;
+				}
 				primary.send(message.text, message.details, message.sourceId, true);
-				this.delivered.set(key, true);
+				this.delivered.set(key, deliveryScope);
 			},
 		});
 		if (this.stopping(primary)) {

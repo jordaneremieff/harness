@@ -1342,6 +1342,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				retention.deliver(sourceId, text, details);
 				continuity.delivered(sessionId, results);
 			},
+			receiveRetainedReplay: (details) => continuity.delivered(sessionId, deliveredResults(details)),
 			status: (text) => {
 				agentFigures = text ?? "";
 				showAgentCell(ctx);

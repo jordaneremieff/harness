@@ -183,6 +183,52 @@ it("carries a real session's open requests in the first request after a self-com
 	assert.deepEqual(conversation(reloaded.messages).slice(0, earlier.length), earlier);
 });
 
+it("closes new requests from a replayed answer without retaining or waking for the body again", {
+	timeout: 15_000,
+}, async (t) => {
+	const f = await ordinarySession(t);
+	f.script.push(
+		{ tool: ["agent_send", { sessionId: f.target, message: "First task" }] },
+		{ tool: ["agent_send", { sessionId: f.target, message: "Second task" }] },
+		{ text: "Waiting on both tasks" },
+	);
+	await f.prompt("Send both tasks");
+	const admissions = f.facts().filter((fact) => fact.phase === "admitted");
+	assert.equal(admissions.length, 2);
+	const [first, second] = admissions.map(({ sessionId, submissionId, requestId }) => {
+		assert.ok(submissionId);
+		return { sessionId, submissionId, requestId };
+	});
+	const sourceId = "receipt:shared-answer";
+	const body = "One answer to both tasks";
+	const delivered = () => f.facts().filter((fact) => fact.phase === "delivered");
+	const bodies = () =>
+		f.sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.content === body);
+	const deliver = (result: typeof first) => f.deliver(sourceId, body, { deliveredResults: [result] });
+	const wakeCount = f.requests.length;
+	const confirmed = await deliver(first);
+	await f.session.waitForIdle();
+	if (!confirmed) assert.equal(await deliver(first), true, "retry confirms the retained body after the wake");
+	assert.deepEqual(
+		delivered().map((fact) => fact.requestId),
+		[first.requestId],
+	);
+	assert.equal(await deliver(second), true);
+	await f.session.waitForIdle();
+	const expected = admissions.map((fact) => ({ ...fact, phase: "delivered" }));
+	assert.deepEqual(delivered(), expected, "a new tuple closes its request even when the body is already retained");
+	assert.equal(bodies().length, 1);
+	assert.equal(f.requests.length, wakeCount + 1);
+
+	await f.restart();
+	assert.equal(await deliver(first), true);
+	assert.equal(await deliver(second), true);
+	await f.session.waitForIdle();
+	assert.deepEqual(delivered(), expected, "reopen and replay do not write another closure");
+	assert.equal(bodies().length, 1);
+	assert.equal(f.requests.length, wakeCount + 1);
+});
+
 /** A sibling hook that puts its own note directly after the compaction summary. */
 const siblingNote =
 	(label: string): ExtensionFactory =>
