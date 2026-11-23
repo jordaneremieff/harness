@@ -13,6 +13,7 @@ import {
 	writeFileSync,
 	linkSync,
 	type BigIntStats,
+	type Dirent,
 } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -212,6 +213,7 @@ export interface CatalogInventory {
 interface CatalogPriorityOptions {
 	ownerIds?: readonly string[];
 	activeStorageIds?: readonly string[];
+	hasCurrentPublication?: (fact: CatalogFact) => boolean;
 	cursor?: string;
 	limit: number;
 }
@@ -349,7 +351,10 @@ export function projectCatalogPriority(
 		const { record, modifiedAt, claim } = fact;
 		coverage.unknownClaims += Number(claim.kind === "unknown");
 		const priority =
-			claim.kind === "live" || ownerIds.includes(record.ownerId ?? "") || activeStorageIds.includes(record.storageId);
+			claim.kind === "live" ||
+			ownerIds.includes(record.ownerId ?? "") ||
+			activeStorageIds.includes(record.storageId) ||
+			options.hasCurrentPublication?.(fact) === true;
 		if (after && comparePriority({ priority, modifiedAt, storageId: record.storageId }, after) <= 0) continue;
 		items.push({ record, modifiedAt, priority, claim, observedAt: fact.observedAt });
 	}
@@ -756,33 +761,51 @@ export class AgentCatalog {
 		const binding = queryBinding(options);
 		const start = startName(options.cursor, binding);
 		const entries = await directoryEntries(this.root);
+		const first = entries.findIndex((entry) => entry.name > start);
+		return this.collectPage(entries, first === -1 ? entries.length : first, limit, options, observedAt).page;
+	}
+
+	/** Read several internal pages from one directory listing; record contents remain independently observed. */
+	async *scanPages(limit: number, maxPages: number): AsyncGenerator<CatalogPage> {
+		const size = pageLimit(limit);
+		const observedAt = new Date().toISOString();
+		const entries = await directoryEntries(this.root);
+		let first = 0;
+		for (let count = 0; count < maxPages; count++) {
+			const { page, next } = this.collectPage(entries, first, size, {}, observedAt);
+			yield page;
+			if (page.nextCursor === null) return;
+			first = next;
+		}
+	}
+
+	private collectPage(
+		entries: readonly Dirent[],
+		first: number,
+		limit: number,
+		options: CatalogQuery,
+		observedAt: string,
+	): { page: CatalogPage; next: number } {
 		const records: CatalogRecord[] = [];
-		const cursorAt = (after: string): string => Buffer.from(JSON.stringify({ binding, after })).toString("base64url");
-		let last = start,
-			visited = 0,
-			skipped = 0,
-			complete = true;
-		for (const entry of entries) {
-			if (entry.name <= start) continue;
-			if (visited === MAX_VISITS || records.length === limit) {
-				complete = false;
-				break;
-			}
-			last = entry.name;
-			visited++;
+		let next = first;
+		let skipped = 0;
+		for (; next < entries.length && next - first < MAX_VISITS && records.length < limit; next++) {
 			try {
-				const record = this.select(entry.name, options);
+				const record = this.select(entries[next].name, options);
 				if (record) records.push(record);
 			} catch {
 				skipped++;
 			}
 		}
-		const nextCursor = complete ? null : cursorAt(last);
+		const complete = next === entries.length;
+		const nextCursor = complete
+			? null
+			: Buffer.from(JSON.stringify({ binding: queryBinding(options), after: entries[next - 1].name })).toString(
+					"base64url",
+				);
 		return {
-			records,
-			nextCursor,
-			coverage: { visited, skipped, complete },
-			observedAt,
+			next,
+			page: { records, nextCursor, coverage: { visited: next - first, skipped, complete }, observedAt },
 		};
 	}
 }

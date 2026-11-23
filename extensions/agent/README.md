@@ -1289,9 +1289,11 @@ renderer. Missing arguments stay absent. For nonpartial results, remaining
 snapshots are never mutated.
 The primary's no-target `agent_status` is a compact fleet overview.
 Each `sessions` row uses `id` for the conversation identity and `state` for
-its catalogue lifecycle state. Live hosts and records created by the caller
-appear first, including idle conversations, then other records. Within each
-set, display order uses catalogue metadata recency and identity. Summary counts
+its catalogue lifecycle state. Hosts with a verified current publication on a
+connection this reader already holds, and records created by the caller, appear
+first, including idle conversations. Within each set, display order uses
+catalogue metadata recency and identity. The overview does not connect to all
+hosts to find out which are live. Summary counts
 form disjoint groups, not state totals. Explicit catalogue intervention hints,
 host or recovery faults,
 and failed turns with errors count as `attention`, even when observation is also
@@ -1332,7 +1334,13 @@ sampled-row totals or costs.
 
 `coverage` states source inspections, skipped views, excluded rows, byte omissions,
 and the exact serialized byte size. Its `inventory` reports the priority scan
-and source output limit. `omittedPriorityRows` counts live or caller-owned rows
+and source output limit. `inventory.unknownClaims` counts raw diagnostic records
+that establish neither an ended writer generation nor a live host. An empty
+lease file also gives no owner evidence. This count includes records outside
+the source output limit and does not decrease when a verified host publication
+resolves a returned row. It does not count running hosts or failures.
+`inventory.remaining` counts catalogue records excluded by the source output
+limit, before row sampling and byte trimming. `omittedPriorityRows` counts live or caller-owned rows
 excluded by the overview byte limit. `omittedPriorityRecords` counts distinct
 records with at least one such excluded row, even when another row from that
 record remains visible. `omittedOpenWorkRows` counts declared-open-work rows
@@ -1384,7 +1392,8 @@ The latest retained attributed failure per provider sorts newest first, with
 stable identity tie-breakers. Warning samples describe observed conversation
 state, not proven provider faults. The response bounds rows, samples, and
 serialized text; coverage separates catalog limits, unknown publications,
-source omissions, and output omissions. Each call starts a fresh scan. It
+source omissions, and output omissions. Each call starts a fresh scan of one
+filename listing; record contents can change as the reader scans them. It
 reports whether more catalog entries remain but exposes no unusable cursor.
 Missing evidence is unknown, not zero. Reported costs are not invoices or
 remaining allowance; past use is not preference. This view does not query

@@ -1626,6 +1626,8 @@ export class AgentManager {
 			cursor: input.cursor,
 			ownerIds: input.ownerId ? [input.ownerId] : [...this.primaries.keys()],
 			activeStorageIds,
+			hasCurrentPublication: ({ record, claim }) =>
+				this.observedCatalogOwner(record.storageId, claim).publication !== undefined,
 			limit: MAX_INVENTORY_PAGES * 20,
 		});
 		const coverage = {
@@ -1639,7 +1641,7 @@ export class AgentManager {
 			unresolvedClaims: 0,
 		};
 		for (const { record, modifiedAt, priority, claim, observedAt } of page.items) {
-			const projection = await this.catalogRows(record, claim, observedAt);
+			const projection = this.catalogRows(record, claim, observedAt);
 			coverage.skipped += projection.skipped;
 			if (!projection.resolvedClaim) coverage.unresolvedClaims++;
 			coverage.omitted += projection.omitted;
@@ -1664,13 +1666,17 @@ export class AgentManager {
 		return { rows, coverage, observedAt: page.observedAt };
 	}
 
-	private async catalogRows(
+	private observedCatalogOwner(storageId: string, claim: ClaimObservation): ReturnType<typeof catalogOwner> {
+		const connection = this.clients.get(storageId) ?? this.recoveryClients.get(storageId)?.client;
+		return catalogOwner(storageId, claim, connection?.ownerEvidence);
+	}
+
+	private catalogRows(
 		record: CatalogRecord,
 		observedClaim: ClaimObservation,
 		observedAt: string,
-	): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number; resolvedClaim: boolean }> {
-		const connection = this.clients.get(record.storageId) ?? this.recoveryClients.get(record.storageId)?.client;
-		const owner = catalogOwner(record.storageId, observedClaim, connection?.ownerEvidence);
+	): { rows: AgentConversationSummary[]; skipped: number; omitted: number; resolvedClaim: boolean } {
+		const owner = this.observedCatalogOwner(record.storageId, observedClaim);
 		const { publication, resolvedClaim } = owner;
 		const starting = this.launchRows.get(record.storageId);
 		const view = publication ?? record.view;

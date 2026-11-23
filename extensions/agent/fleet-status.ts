@@ -637,7 +637,11 @@ class FleetCollector {
 	finish(): FleetStatus {
 		this.finishEffort();
 		const models = [...this.models.values()].sort((a, b) => compareText(a.model, b.model));
-		for (const model of models) model.currentSelections.sort((a, b) => compareText(a.thinkingLevel, b.thinkingLevel));
+		if (!Number.isFinite(this.value.toolReportedCost)) this.value.toolReportedCost = null;
+		for (const model of models) {
+			if (!Number.isFinite(model.reportedCost)) model.reportedCost = null;
+			model.currentSelections.sort((a, b) => compareText(a.thinkingLevel, b.thinkingLevel));
+		}
 		if (this.value.selection) {
 			const matched = { models: models.length, failures: this.failures.size, warnings: this.warnings.length };
 			this.value.selection.matched = matched;
@@ -662,17 +666,13 @@ export async function readFleetStatus(
 	const selection = validateFleetSelection({ ...options, view: "fleet" });
 	const collector = new FleetCollector(options.now ?? Date.now(), options.effort, selection);
 	const coverage = collector.value.coverage.catalog;
-	let cursor: string | undefined;
-	for (let index = 0; index < MAX_PAGES; index++) {
-		const page = await catalog.page({ limit: PAGE_LIMIT, ...(cursor === undefined ? {} : { cursor }) });
+	for await (const page of catalog.scanPages(PAGE_LIMIT, MAX_PAGES)) {
 		coverage.pages++;
 		coverage.visited += page.coverage.visited;
 		coverage.skipped += page.coverage.skipped;
 		coverage.hasMore = page.nextCursor !== null;
 		coverage.complete = page.coverage.complete && !coverage.hasMore;
 		for (const record of page.records) collector.observe(record);
-		if (page.nextCursor === null) break;
-		cursor = page.nextCursor;
 	}
 	coverage.scanLimitReached = coverage.hasMore && coverage.pages === MAX_PAGES;
 	return collector.finish();

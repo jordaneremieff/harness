@@ -2,7 +2,7 @@ import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, it } from "node:test";
@@ -3477,7 +3477,7 @@ it("shows current-host publications without changing raw claim coverage", { time
 			record: CatalogRecord,
 			claim: import("./claims.ts").ClaimObservation,
 			observedAt: string,
-		): Promise<{ rows: Array<{ state: string; currentTool?: unknown }> }>;
+		): { rows: Array<{ state: string; currentTool?: unknown }> };
 	};
 	const end = {
 		kind: "dead" as const,
@@ -3486,18 +3486,13 @@ it("shows current-host publications without changing raw claim coverage", { time
 		endedAt: "2026-01-01T00:00:02.000Z",
 	};
 	assert.equal(
-		(await projection.catalogRows(manager.catalog.read(record.storageId), end, end.endedAt)).rows[0].state,
+		projection.catalogRows(manager.catalog.read(record.storageId), end, end.endedAt).rows[0].state,
 		"interrupted",
 		"the exact end overrides a retiring connected link",
 	);
 	assert.equal(
-		(
-			await projection.catalogRows(
-				manager.catalog.read(record.storageId),
-				{ ...end, writerId: "previous" },
-				end.endedAt,
-			)
-		).rows[0].state,
+		projection.catalogRows(manager.catalog.read(record.storageId), { ...end, writerId: "previous" }, end.endedAt)
+			.rows[0].state,
 		"working",
 		"a previous generation does not end this link",
 	);
@@ -3516,6 +3511,25 @@ it("shows current-host publications without changing raw claim coverage", { time
 	const rebound = (await manager.dashboardPage()).rows.find((row) => row.id === record.storageId);
 	assert.equal(rebound?.state, "working", "a new link consumes the retained initial frame without another write");
 	assert.equal(rebound?.currentTool?.argument, "current");
+
+	// Make the verified host older than a full page of unrelated cold records.
+	const limit = current.coverage.inventory.outputLimit;
+	for (let index = 0; index < limit; index++) createRecord(manager, root, "cold-owner");
+	utimesSync(manager.catalog.path(record.storageId), 1, 1);
+	const mixed = await manager.dashboardPage({ ownerId: "reader" });
+	assert.equal(mixed.coverage.inventory.remaining, 2);
+	assert.equal(mixed.coverage.inventory.priorityRemaining, 0);
+	assert.equal(mixed.coverage.inventory.unknownClaims, 2, "raw classification is independent of the host link");
+	assert.equal(mixed.rows[0]?.id, record.storageId, "verified live state ranks before newer cold records");
+	assert.equal(mixed.rows[0]?.state, "working");
+	assert.equal(mixed.rows[0]?.rosterOrder?.priority, true);
+	await clients.at(-1)?.close();
+	const detached = await manager.dashboardPage({ ownerId: "reader" });
+	assert.equal(
+		detached.rows.some((row) => row.id === record.storageId),
+		false,
+		"a closed link loses priority",
+	);
 });
 
 it("uses a startup recovery link publication before explicit attachment", { timeout: 15000 }, async (t) => {

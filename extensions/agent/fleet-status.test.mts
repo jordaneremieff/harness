@@ -465,6 +465,21 @@ it("omits overflowing sample contributions and member costs without invalid JSON
 	assert.equal(result.effort.missingMembers, 1);
 });
 
+it("keeps unrepresentable lifetime aggregates unknown without losing finite model costs", async () => {
+	const source = evidence({
+		models: [{ model: "sample/overflow", reportedCost: Number.MAX_VALUE }],
+		toolReportedCost: Number.MAX_VALUE,
+	});
+	const result = await read([
+		record("a", [], source),
+		record("b", [], source),
+		record("c", [], evidence({ models: [{ model: "sample/finite", reportedCost: 1 }] })),
+	]);
+	assert.equal(result.toolReportedCost, null);
+	assert.equal(result.models.find(({ model }) => model === "sample/overflow")?.reportedCost, null);
+	assert.equal(result.models.find(({ model }) => model === "sample/finite")?.reportedCost, 1);
+});
+
 it("normalizes publication timestamps and treats malformed publication time as unknown", async () => {
 	const now = Date.parse(observedAt);
 	const sample = { model: "sample/a", at: now, tokens: 1, reportedCost: 1 };
@@ -604,12 +619,16 @@ class FixtureCatalog extends AgentCatalog {
 		super("/work/fleet");
 		this.pages = pages;
 	}
-	override async page(options: Parameters<AgentCatalog["page"]>[0] = {}): Promise<CatalogPage> {
-		this.calls.push(options);
-		const index = options.cursor === undefined ? 0 : Number(options.cursor);
-		assert.equal(options.limit, 20);
-		assert.ok(this.pages[index], `unexpected catalog page ${index}`);
-		return this.pages[index];
+	override async *scanPages(limit: number, maxPages: number): AsyncGenerator<CatalogPage> {
+		assert.equal(limit, 20);
+		for (let index = 0; index < maxPages; index++) {
+			const previous = this.pages[index - 1]?.nextCursor;
+			this.calls.push({ limit, ...(previous == null ? {} : { cursor: previous }) });
+			const page = this.pages[index];
+			assert.ok(page, `unexpected catalog page ${index}`);
+			yield page;
+			if (page.nextCursor === null) return;
+		}
 	}
 }
 async function read(records: CatalogRecord[]): Promise<FleetStatus> {

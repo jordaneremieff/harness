@@ -463,6 +463,28 @@ it("continues strictly after the last name through publication, creation, and re
 	assert.ok((await catalog.page()).records.some((record) => record.storageId === behind.record.storageId));
 });
 
+it("keeps one filename inventory for a fleet scan, but reads each record on its page", async (t) => {
+	const { catalog, input } = fixture(t);
+	const candidates = Array.from({ length: 3 }, (_, index) => ({
+		request: `record-${index}`,
+		record: catalog.create(input, `record-${index}`),
+	})).sort((a, b) => (a.record.storageId < b.record.storageId ? -1 : 1));
+	const [first, second, added] = candidates;
+	assert.equal(catalog.discardUnopened(added.record), "removed");
+	const scan = catalog.scanPages(1, 3);
+	const before = await scan.next();
+	assert.equal(before.value?.records[0]?.storageId, first.record.storageId);
+	assert.ok(before.value?.nextCursor);
+	catalog.create(input, added.request);
+	catalog.markRecoveryDue(second.record.storageId, true);
+	const after = await scan.next();
+	assert.equal(after.value?.records[0]?.storageId, second.record.storageId);
+	assert.equal(after.value?.records[0]?.recoveryDue, true);
+	assert.equal(after.value?.nextCursor, null);
+	assert.equal((await scan.next()).done, true);
+	assert.equal((await catalog.page()).records.length, 3, "a new read sees the new record");
+});
+
 it("bounds visits through nonmatching entries and preserves corrupt-record accounting", async (t) => {
 	const { catalog, input } = fixture(t);
 	const corrupt = catalog.create(input);
