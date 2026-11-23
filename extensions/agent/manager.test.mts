@@ -2,7 +2,17 @@ import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	unlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, it } from "node:test";
@@ -677,6 +687,70 @@ it("retains successful work targets across manager submission paths, not reports
 	await manager.control("submit", { sessionId: target, message: "Task" }, { id: "second-primary", cwd: root });
 	assert.deepEqual(other, [target]);
 	assert.equal(retained.includes(target), false, "one primary never adopts another primary's work");
+});
+
+it("guards prompted handle reuse by cwd, including a concurrent winner", async (t) => {
+	const root = realpathSync(fixtureRoot(t));
+	const creatorCwd = join(root, "creator");
+	const callerCwd = join(root, "caller");
+	mkdirSync(creatorCwd);
+	mkdirSync(callerCwd);
+	symlinkSync(creatorCwd, join(callerCwd, "alias"));
+	const entered = deferred();
+	const release = deferred();
+	let first = true;
+	const submits: unknown[] = [];
+	const manager = new AgentManager(
+		managerOptions(root, {
+			validateModel: async () => {
+				if (first) {
+					first = false;
+					entered.resolve();
+					await release.promise;
+				}
+			},
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method, params) => {
+					if (method === "profile-read")
+						return { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel };
+					if (method === "task-submit") {
+						submits.push(params);
+						return nativeAdmission(params);
+					}
+					return {};
+				}),
+		}),
+	);
+	t.after(() => manager.close());
+	const caller = { id: "caller", cwd: callerCwd };
+	const handle = { handle: "reviewer" };
+	const mismatch = (error: Error) => {
+		assert.match(error.message, /@reviewer is retained in a different cwd/u);
+		assert.ok(error.message.includes(creatorCwd));
+		assert.match(error.message, /agent_send or agent_brief\(sessionId\)/u);
+		return true;
+	};
+	const loser = assert.rejects(manager.spawn({ ...handle, prompt: "Wrong in race" }, caller), mismatch);
+	await entered.promise;
+	try {
+		await manager.spawn({ ...handle, prompt: "Winner" }, { id: "creator", cwd: creatorCwd });
+	} finally {
+		release.resolve();
+	}
+	await loser;
+	assert.equal(submits.length, 1);
+	await assert.rejects(manager.spawn({ ...handle, prompt: "Wrong after creation" }, caller), mismatch);
+	await assert.rejects(manager.spawn({ ...handle, cwd: "." }, caller), mismatch);
+	assert.equal(submits.length, 1);
+	const retained = (await manager.spawn(handle, caller)) as { created: boolean; cwd: string };
+	assert.equal(retained.created, false);
+	assert.equal(retained.cwd, creatorCwd);
+	await manager.spawn({ ...handle, cwd: "alias", prompt: "Reuse by directory" }, caller);
+	await manager.control("submit", { sessionId: "@reviewer", message: "Direct send" }, caller);
+	assert.deepEqual(
+		submits.map((value) => (value as { message: string }).message),
+		["Winner", "Reuse by directory", "Direct send"],
+	);
 });
 
 for (const operation of ["submit", "task-submit"] as const)

@@ -278,6 +278,48 @@ it("ordinary and native callers share machine preferences and receive advisory s
 		});
 		assert.deepEqual({ calls: seen.length, entries: entries.length }, beforePreview);
 	});
+	await t.test("checks ordinary brief sources against the recipient directory", async () => {
+		const brief = tools.get("agent_brief");
+		assert.ok(brief);
+		const fields = { objective: "Read the source.", endCondition: "Stop after review.", result: "List findings." };
+		const briefCall = (id: string, input: Record<string, unknown>) =>
+			brief.execute(id, { ...fields, ...input }, undefined, undefined, ctx) as Promise<AgentToolResult>;
+		const beforePreview = { calls: seen.length, entries: entries.length };
+		const recipientCwd = join(directory, "recipient");
+		mkdirSync(recipientCwd);
+		writeFileSync(join(recipientCwd, "recipient.md"), "Recipient source");
+		manager.catalog.createHandled(
+			{
+				cwd: recipientCwd,
+				model: { provider: "acme", modelId: "model-x" },
+				thinkingLevel: "off",
+				ownerId: "primary",
+				agentDir: directory,
+				packageDir: directory,
+			},
+			"reader",
+			"Read the source",
+		);
+		const target = { sessionId: "@reader" };
+		const targetedPreview = await briefCall("target-preview", { ...target, preview: true, sources: ["recipient.md"] });
+		assert.deepEqual((targetedPreview.details as { problems: string[] }).problems, []);
+		await assert.rejects(briefCall("target-missing", { ...target, sources: ["harness.json"] }), (error: Error) => {
+			assert.ok(error.message.includes(join(recipientCwd, "harness.json")));
+			return true;
+		});
+		const handle = { handle: "reader", sources: ["recipient.md"] };
+		const mismatch = await briefCall("handle-mismatch-preview", { ...handle, preview: true });
+		assert.match(
+			(mismatch.details as { problems: string[] }).problems[0] ?? "",
+			/@reader is retained in a different cwd/u,
+		);
+		await assert.rejects(briefCall("handle-mismatch", handle), /@reader is retained in a different cwd/u);
+		assert.deepEqual({ calls: seen.length, entries: entries.length }, beforePreview);
+		await briefCall("reuse-brief", { ...handle, cwd: "recipient" });
+		assert.equal(seen.at(-1)?.method, "spawn");
+		await briefCall("target-brief", { ...target, sources: ["recipient.md"] });
+		assert.equal(seen.at(-1)?.method, "submit");
+	});
 	const models = createModels();
 	const primaryProvider = fauxProvider({ provider: "acme", models: [{ id: "model-x" }] });
 	const otherProvider = fauxProvider({ provider: "other", models: [{ id: "model-y" }] });
@@ -571,12 +613,12 @@ for (const method of ["resolve-agent", "place"] as const)
 				),
 			);
 		writePreset("low", 0);
-		const args = {
+		const args: Record<string, string> = {
 			preset: "review",
 			prompt: "Review this input",
 			senderIdentity: f.metadata.storageId,
 			origin: "model",
-			...(method === "resolve-agent" ? { handle: "reviewer" } : { area: f.childCwd }),
+			...(method === "resolve-agent" ? { handle: "reviewer", cwd: f.childCwd } : { area: f.childCwd }),
 		};
 		let caller = await acquireHost(f.metadata, { env: f.env("answer") });
 		trackHost(t, caller.pid);
@@ -623,7 +665,12 @@ for (const method of ["resolve-agent", "place"] as const)
 		const resumedTarget = await acquireHost(hostMetadata(record), { env: f.env("answer") });
 		trackHost(t, resumedTarget.pid);
 		t.after(() => resumedTarget.close());
-		const { prompt: _prompt, ...reuseArgs } = args;
+		const { prompt, cwd: _cwd, ...reuseArgs } = args;
+		if (method === "resolve-agent")
+			await assert.rejects(
+				caller.request(method, { ...reuseArgs, prompt }, { requestId: "wrong-directory" }),
+				/@reviewer is retained in a different cwd/u,
+			);
 		const fresh = (await caller.request(method, reuseArgs, { requestId: "fresh-reuse" }).catch((cause: unknown) => {
 			throw new Error("Fresh native reuse failed", { cause });
 		})) as Outcome;

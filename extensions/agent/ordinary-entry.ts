@@ -85,13 +85,15 @@ import { createRestartCommand, type RestartHosts } from "./restart.ts";
 import { BriefOutputSchema, DispatchOutputSchema } from "./result-schema.ts";
 import {
 	BRIEF_DESCRIPTION,
+	briefCreationDirectory,
 	briefCreationInput,
 	briefInputProblems,
 	briefParameters,
 	briefPreview,
 	briefPreviewText,
 	briefRefusal,
-	briefSourceProblems,
+	briefTargetDirectory,
+	checkBriefSources,
 	renderBrief,
 	type BriefPreview,
 } from "./brief.ts";
@@ -676,7 +678,13 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	};
 	register("agent_brief", BRIEF_DESCRIPTION, brief, async (input, ctx, callId, _admissionCaller, signal) => {
 		const inputProblems = briefInputProblems(input, creationKeys);
-		const sourceProblems = briefSourceProblems(input, ctx.cwd);
+		if (input.preview !== true && inputProblems.length) throw new Error(briefRefusal(inputProblems, []));
+		const sourceProblems = await checkBriefSources(input, async () => {
+			const manager = getManager();
+			return typeof input.sessionId === "string"
+				? briefTargetDirectory(await manager.resolveTarget(input.sessionId, signal), manager.catalog)
+				: briefCreationDirectory(input, ctx.cwd, manager.catalog);
+		});
 		const rendered = renderBrief(input);
 		if (input.preview === true) return briefPreview(rendered, [...inputProblems, ...sourceProblems]);
 		if (inputProblems.length || sourceProblems.length) throw new Error(briefRefusal(inputProblems, sourceProblems));

@@ -548,6 +548,15 @@ export class AgentCatalog {
 		return this.readWithTime(identity).record;
 	}
 
+	readHandle(handle: string): CatalogRecord | undefined {
+		try {
+			return this.read(handleStorageId(handle, this.root));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			return undefined;
+		}
+	}
+
 	private readWithTime(identity: string): { record: CatalogRecord; modifiedAt: number; fileStamp: string } {
 		const storageId = storageIdOf(identity);
 		const path = this.path(storageId);

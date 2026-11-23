@@ -184,7 +184,7 @@ test("recognises path tokens without treating URLs, globs or prose as local file
 		assert.equal(briefSourceToken(entry), token, entry);
 });
 
-test("resolves sources relative to the selected creation directory and skips only relative paths for existing agents", (t) => {
+test("resolves sources against the recipient directory and only checks non-relative paths without it", (t) => {
 	const cwd = mkdtempSync(join(tmpdir(), "brief-sources-"));
 	t.after(() => rmSync(cwd, { recursive: true, force: true }));
 	const child = join(cwd, "child");
@@ -198,12 +198,14 @@ test("resolves sources relative to the selected creation directory and skips onl
 	assert.deepEqual(briefSourceProblems({ sources: ["extensions/agent", "./extensions/agent"] }, cwd), [
 		`Source path does not exist: ./extensions/agent (resolved ${join(cwd, "extensions", "agent")})`,
 	]);
-	assert.deepEqual(briefSourceProblems({ cwd: "child", sources }, cwd), [
+	assert.deepEqual(briefSourceProblems({ sources }, child), [
 		`Source path does not exist: ${absoluteMissing} (resolved ${absoluteMissing})`,
 	]);
-	assert.deepEqual(briefSourceProblems({ cwd: child, sources: ["child.md"] }, cwd), []);
+	assert.deepEqual(briefSourceProblems({ sessionId: "@parser", sources: ["child.md", "caller.md"] }, child), [
+		`Source path does not exist: caller.md (resolved ${join(child, "caller.md")})`,
+	]);
 	const missingHome = `~/missing-${cwd.split("/").at(-1)}.md`;
-	assert.deepEqual(briefSourceProblems({ sessionId: "@parser", sources: [...sources, missingHome] }, cwd), [
+	assert.deepEqual(briefSourceProblems({ sources: [...sources, missingHome] }), [
 		`Source path does not exist: ${absoluteMissing} (resolved ${absoluteMissing})`,
 		`Source path does not exist: ${missingHome} (resolved ${join(homedir(), missingHome.slice(2))})`,
 	]);

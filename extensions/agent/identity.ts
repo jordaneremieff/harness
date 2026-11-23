@@ -1,5 +1,20 @@
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
+
+export function canonicalAgentCwd(callerCwd: string, cwd?: string): string {
+	const directory = realpathSync(resolve(callerCwd, cwd ?? "."));
+	if (!statSync(directory).isDirectory()) throw new Error("Agent cwd must be a directory");
+	return directory;
+}
+
+export function assertHandleCwd(handle: string, requested: string, retained: string): void {
+	if (requested === retained) return;
+	throw new Error(
+		`@${handle} is retained in a different cwd: ${retained}. Requested cwd: ${requested}. ` +
+			`Pass cwd: ${JSON.stringify(retained)} to reuse it, target @${handle} directly with agent_send or agent_brief(sessionId), or omit handle to create a local agent.`,
+	);
+}
 
 export const HANDLE_PATTERN = "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$";
 export function handleSlug(value: unknown): string {

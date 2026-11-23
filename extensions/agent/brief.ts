@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { arr, bool, obj, opt, str, type Properties, type Schema } from "@earendil-works/pi-schema";
+import type { AgentCatalog } from "./catalog.ts";
+import { assertHandleCwd, canonicalAgentCwd } from "./identity.ts";
 
 export const briefEnum = <const T extends readonly string[]>(values: T, description?: string): Schema<T[number]> => ({
 	type: "string",
@@ -49,7 +51,7 @@ const titles: Record<(typeof BRIEF_SECTIONS)[number], string> = {
 };
 
 export const BRIEF_DESCRIPTION =
-	"Brief an agent with a standard task brief. The fields render into one brief with fixed sections: objective, purpose, quoted operator decisions, context, sources, permitted acts, restrictions, checks, end condition and result. Without sessionId it creates an agent as agent_spawn does; with sessionId it admits the brief to an existing agent as new work, or as a steer. It refuses a brief whose named source paths do not exist. preview renders and checks the brief without sending it. Result references and placement match agent_spawn and agent_send.";
+	"Brief an agent with a standard task brief. The fields render into one brief with fixed sections: objective, purpose, quoted operator decisions, context, sources, permitted acts, restrictions, checks, end condition and result. Without sessionId it creates an agent as agent_spawn does; with sessionId it admits the brief to an existing agent as new work, or as a steer. It checks named source paths relative to the recipient's cwd and refuses missing paths. preview renders and checks the brief without sending it. Result references and placement match agent_spawn and agent_send.";
 
 const items = (description: string) => opt(arr(str(), { description }));
 
@@ -204,24 +206,76 @@ export function briefSourceToken(entry: string): string | undefined {
 	return dot > 0 && /^[a-z\d]{1,8}$/iu.test(extension) && /[a-z]/iu.test(extension) ? token : undefined;
 }
 
-export function briefSourceProblems(input: Record<string, unknown>, callerCwd: string): string[] {
-	const existing = input.sessionId !== undefined;
-	const cwd = resolve(callerCwd, !existing && typeof input.cwd === "string" ? input.cwd : ".");
+function relativeSource(token: string): boolean {
+	return !isAbsolute(token) && !token.startsWith("~/");
+}
+
+function briefNeedsTargetDirectory(input: Record<string, unknown>): boolean {
+	return list(input.sources).some((entry) => {
+		const token = briefSourceToken(text(entry));
+		return token !== undefined && relativeSource(token);
+	});
+}
+
+export function briefCreationDirectory(
+	input: Record<string, unknown>,
+	callerCwd: string,
+	catalog?: AgentCatalog,
+): string {
+	const cwd = canonicalAgentCwd(callerCwd, typeof input.cwd === "string" ? input.cwd : undefined);
+	if (typeof input.handle !== "string") return cwd;
+	if (!catalog) throw new Error("Handle resolution requires the host catalog namespace");
+	const retained = catalog.readHandle(input.handle);
+	if (retained) assertHandleCwd(input.handle, cwd, retained.cwd);
+	return cwd;
+}
+
+export async function briefTargetDirectory(sessionId: string, catalog?: AgentCatalog): Promise<string> {
+	if (!catalog) throw new Error("Target directory lookup requires the host catalog namespace");
+	try {
+		return catalog.read(sessionId).cwd;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		const { readPrimaryEndpointDescriptor } = await import("./primary-channel.ts");
+		const primary = readPrimaryEndpointDescriptor(dirname(catalog.root), sessionId).info;
+		if (primary) return primary.cwd;
+		throw new Error(`No directory is retained for ${sessionId}`);
+	}
+}
+
+const MISSING_SOURCE = "Source path does not exist:";
+
+export function briefSourceProblems(input: Record<string, unknown>, cwd?: string): string[] {
 	return list(input.sources).flatMap((entry) => {
 		const token = briefSourceToken(text(entry));
-		if (token === undefined) return [];
-		const home = token.startsWith("~/");
-		if (existing && !home && !isAbsolute(token)) return [];
-		const path = home ? resolve(homedir(), token.slice(2)) : resolve(cwd, token);
-		return existsSync(path) ? [] : [`Source path does not exist: ${token} (resolved ${path})`];
+		if (token === undefined || (cwd === undefined && relativeSource(token))) return [];
+		const path = token.startsWith("~/") ? resolve(homedir(), token.slice(2)) : resolve(cwd ?? "/", token);
+		return existsSync(path) ? [] : [`${MISSING_SOURCE} ${token} (resolved ${path})`];
 	});
+}
+
+export async function checkBriefSources(
+	input: Record<string, unknown>,
+	directory: () => string | Promise<string>,
+): Promise<string[]> {
+	if (input.sessionId !== undefined && !briefNeedsTargetDirectory(input)) return briefSourceProblems(input);
+	let cwd: string;
+	try {
+		cwd = await directory();
+	} catch (error) {
+		return [
+			`Cannot resolve brief cwd: ${error instanceof Error ? error.message : String(error)}`,
+			...briefSourceProblems(input),
+		];
+	}
+	return briefSourceProblems(input, cwd);
 }
 
 export function briefRefusal(inputProblems: readonly string[], sourceProblems: readonly string[]): string {
 	return [
 		...inputProblems,
 		...sourceProblems,
-		...(sourceProblems.length
+		...(sourceProblems.some((problem) => problem.startsWith(MISSING_SOURCE))
 			? ["Correct each path, or move a path that does not exist yet from sources into context."]
 			: []),
 	].join("\n");

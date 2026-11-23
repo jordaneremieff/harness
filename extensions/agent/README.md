@@ -140,12 +140,14 @@ For example, `extensions/agent` is skipped but `./extensions/agent` is checked.
 The check uses the local filesystem; it does not read file contents, validate
 URLs, or check a line or fragment. It resolves `~/` against home and checks
 absolute paths directly.
-On creation it checks relative paths against the requested `cwd` resolved
-from the caller, or against the caller's directory when `cwd` is omitted.
-For an existing agent it skips relative paths because the target directory
-is not known before dispatch. A missing path refuses dispatch and reports the
-original token and resolved path. Move a path that does not exist yet to
-`context`. Native calls retain the path check for replay, so changes on disk
+Relative paths are checked in the recipient's directory. On creation this is
+the requested `cwd` resolved from the caller, or the caller's directory when
+`cwd` is omitted. Reuse by creation `handle` requires that directory to match
+the retained directory. With `sessionId`, relative paths use the target's
+retained directory; if it cannot be resolved, the brief refuses dispatch rather
+than checking the caller's files. A missing path refuses dispatch and reports
+the original token and resolved path. Move a path that does not exist yet to
+`context`. Native calls retain the source check for replay, so changes on disk
 do not change the decision for the same call.
 
 Without `sessionId`, the tool uses the creation fields, preset selection, and
@@ -2528,7 +2530,11 @@ claiming different agents. The result states `created`. Reuse
 never applies creation defaults to name, role, model, or reasoning. Supplied
 model, thinking, and role fields, including preset values, are reported as
 unapplied. A supplied name is ignored on reuse without an unapplied-name receipt.
-An explicit conflicting cwd refuses instead of changing the retained directory.
+Reuse with a prompt uses the caller's directory when `cwd` is omitted and
+refuses if it differs from the retained directory. An explicit conflicting
+`cwd` also refuses without a prompt. To dispatch across directories by design,
+pass the retained `cwd` or target `@handle` with `agent_send` or `agent_brief`
+using `sessionId`. Promptless lookup with no `cwd` works across directories.
 
 Resolve without a prompt to inspect the agent before assigning work. Reuse reads
 its retained profile without starting a host. During another caller's initial

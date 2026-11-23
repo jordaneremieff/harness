@@ -10,7 +10,7 @@ import {
 } from "./independent-launch.ts";
 import { REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
 import { readFleetStatus, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
-import { handleSlug, handleStorageId } from "./identity.ts";
+import { assertHandleCwd, canonicalAgentCwd, handleSlug, handleStorageId } from "./identity.ts";
 import { profileText, type AgentProfile } from "./profile-schema.ts";
 import { NativeListOutputSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
 import {
@@ -27,7 +27,7 @@ import {
 import { stopColdStorage } from "./cold-stop.ts";
 import { unconfirmedStopText } from "./control-result.ts";
 import { checkInMinutes } from "./check-in-options.ts";
-import { realpathSync, statSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
 	AgentCatalog,
@@ -729,20 +729,6 @@ export class AgentManager {
 		return selected;
 	}
 
-	private async handledRecord(
-		input: AgentSpawnInput,
-		caller: AgentCaller,
-		handle: string,
-	): Promise<{ record: CatalogRecord; created: boolean }> {
-		try {
-			return { record: this.catalog.read(handleStorageId(handle, this.catalog.root)), created: false };
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-		}
-		const metadata = await this.creationMetadata(input, caller);
-		return this.catalog.createHandled(metadata, handle, input.role ?? "");
-	}
-
 	private async retainedHandle(record: CatalogRecord, handle: string): Promise<unknown> {
 		const base = { sessionId: record.storageId, cwd: record.cwd, handle: `@${handle}`, created: false };
 		if (record.view?.profileSeed)
@@ -764,42 +750,38 @@ export class AgentManager {
 	}
 
 	private async selectedHandle(input: AgentSpawnInput & { handle: string }, caller: AgentCaller, handle: string) {
-		let previous: CatalogRecord | undefined;
-		try {
-			previous = this.catalog.read(handleStorageId(handle, this.catalog.root));
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		const previous = this.catalog.readHandle(handle);
+		const bindsCwd = input.cwd !== undefined || input.prompt !== undefined;
+		if (previous) {
+			if (bindsCwd) assertHandleCwd(handle, canonicalAgentCwd(caller.cwd, input.cwd), previous.cwd);
+			const selected = await this.reuseExecutionInput(input, caller, previous);
+			return { selected, retained: previous, created: false };
 		}
-		let selected = {
-			...(previous ? await this.reuseExecutionInput(input, caller, previous) : this.executionInput(input, caller)),
-			handle,
-		};
-		const { record: retained, created } = await this.handledRecord(selected, caller, handle);
-		if (!created && !previous)
-			selected = {
-				...(await this.reuseExecutionInput(
-					{ ...input, selection: undefined, preferenceSnapshot: selected.preferenceSnapshot },
-					caller,
-					retained,
-				)),
-				handle,
-			};
-		if (created) selected.selection = effectiveExecutionSelection(selected.selection, retained.thinkingLevel);
+		const selected = this.executionInput(input, caller);
+		const metadata = await this.creationMetadata(selected, caller);
+		const { record: retained, created } = this.catalog.createHandled(metadata, handle, selected.role ?? "");
+		if (!created) {
+			if (bindsCwd) assertHandleCwd(handle, metadata.cwd, retained.cwd);
+			const reused = await this.reuseExecutionInput(
+				{ ...input, selection: undefined, preferenceSnapshot: selected.preferenceSnapshot },
+				caller,
+				retained,
+			);
+			return { selected: reused, retained, created };
+		}
+		selected.selection = effectiveExecutionSelection(selected.selection, retained.thinkingLevel);
 		return { selected, retained, created };
 	}
 
 	private async spawnHandled(
-		input: AgentSpawnInput & { handle: string },
+		request: AgentSpawnInput & { handle: string },
 		caller: AgentCaller,
 		onCreated?: (row: AgentConversationSummary) => void,
 	): Promise<unknown> {
-		const handle = handleSlug(input.handle);
-		const { selected, retained, created } = await this.selectedHandle(input, caller, handle);
-		input = selected;
-		await caller.retainExecutionSelection?.(selected.selection);
+		const handle = handleSlug(request.handle);
+		const { selected: input, retained, created } = await this.selectedHandle(request, caller, handle);
+		await caller.retainExecutionSelection?.(input.selection);
 		const id = retained.storageId;
-		if (input.cwd !== undefined && retained.cwd !== realpathSync(resolve(caller.cwd, input.cwd)))
-			throw new Error("The retained handle has a different cwd; creation defaults cannot change it");
 		const row: AgentConversationSummary = {
 			id,
 			storageId: id,
@@ -840,8 +822,7 @@ export class AgentManager {
 		input: AgentSpawnInput,
 		caller: AgentCaller,
 	): Promise<Omit<HostMetadata, "storageId" | "storagePath">> {
-		const cwd = realpathSync(resolve(caller.cwd, input.cwd ?? "."));
-		if (!statSync(cwd).isDirectory()) throw new Error("Agent cwd must be a directory");
+		const cwd = canonicalAgentCwd(caller.cwd, input.cwd);
 		const separator = input.model?.indexOf("/") ?? -1;
 		const model =
 			input.model !== undefined && separator > 0

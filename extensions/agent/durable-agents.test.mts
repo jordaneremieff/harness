@@ -15,7 +15,7 @@ import { machineConfig } from "./settings-fixture.mts";
  * delivery, and reports do not duplicate.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import type { ExecutionSelection } from "./agent-preferences.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -767,8 +767,20 @@ it("dispatches a checked brief through native spawn and send, and retains its so
 	assert.equal(creation.selection.origins.model, "preset");
 	assert.deepEqual(creation.brief, renderBrief(initial).brief);
 	assert.deepEqual(await userTexts(harness, childId), [renderBrief(initial).text]);
+	const localMissing = await call({
+		...base,
+		objective: "Refuse a missing local source.",
+		sessionId,
+		sources: ["brief-source.md"],
+	});
+	assert.equal(localMissing.isError, true);
+	assert.match(localMissing.text, /Source path does not exist: brief-source\.md/u);
+	const followUpSource = "brief-follow-up.md";
+	const followUpPath = join(testCwd, followUpSource);
+	writeFileSync(followUpPath, "Follow-up source");
+	t.after(() => rmSync(followUpPath, { force: true }));
 	for (const mode of ["followUp", "steer"] as const) {
-		const args = { ...base, objective: `CONTRACT: reply ${mode}`, sessionId, mode, sources: ["brief-source.md"] };
+		const args = { ...base, objective: `CONTRACT: reply ${mode}`, sessionId, mode, sources: [followUpSource] };
 		const sent = await call(args);
 		assert.equal(sent.isError, false);
 		const details = sent.details as { result: ResultReference; placement: string; brief: unknown };
@@ -805,6 +817,59 @@ it("dispatches a checked brief through native spawn and send, and retains its so
 		`${missing}\nCorrect each path, or move a path that does not exist yet from sources into context.`,
 	);
 	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length, 1);
+});
+
+it("checks native brief sources in the retained foreign directory without admitting previews", async (t) => {
+	const sessions = join(testCwd, "brief-sessions");
+	const recipientCwd = join(testCwd, "brief-recipient");
+	mkdirSync(recipientCwd);
+	writeFileSync(join(recipientCwd, "recipient.md"), "Recipient source");
+	const callerSource = "brief-caller.md";
+	writeFileSync(join(testCwd, callerSource), "Caller source");
+	const catalog = new AgentCatalog(sessions);
+	const { record } = catalog.createHandled(
+		{ cwd: recipientCwd, model, thinkingLevel: "off", ownerId: storageId, agentDir: testAgentDir, packageDir: testCwd },
+		"reader",
+		"Read the source",
+	);
+	const resolveCalls: unknown[] = [];
+	const { registry } = buildRegistry(
+		async (method, params) => {
+			assert.equal(method, "resolve-target");
+			assert.equal(params.sessionId, "@reader");
+			resolveCalls.push(params);
+			return record.storageId;
+		},
+		true,
+		storageId,
+		catalog.root,
+	);
+	const route = createRoute();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	const base = { objective: "Read the source.", endCondition: "Stop after reading.", result: "Report what it says." };
+	const call = async (args: Durable.JsonObject) => {
+		route.script.push({ tool: "agent_brief", args: { ...base, ...args } });
+		await say(root, "Check a brief");
+		await settle(harness, root.id);
+		const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_brief");
+		assert.ok(outcome);
+		return outcome;
+	};
+	const preview = await call({ sessionId: "@reader", sources: ["recipient.md"], preview: true });
+	assert.deepEqual((preview.details as { problems: string[] }).problems, []);
+	const refused = await call({ sessionId: record.storageId, sources: [callerSource] });
+	assert.equal(refused.isError, true);
+	assert.ok(refused.text.includes(join(recipientCwd, callerSource)));
+	const mismatch = await call({ handle: "reader", sources: ["recipient.md"], preview: true });
+	assert.match(
+		(mismatch.details as { problems: string[] }).problems[0] ?? "",
+		/@reader is retained in a different cwd/u,
+	);
+	const explicit = await call({ handle: "reader", cwd: recipientCwd, sources: ["recipient.md"], preview: true });
+	assert.deepEqual((explicit.details as { problems: string[] }).problems, []);
+	assert.equal(resolveCalls.length, 1);
+	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length ?? 0, 0);
 });
 
 it("labels a spawn prompt and a send without a mode as new work, and only a steer as a correction", async (t) => {

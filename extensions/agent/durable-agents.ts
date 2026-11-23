@@ -71,13 +71,15 @@ import { admittedResult, dispatchFacts } from "./result-reference.ts";
 import { BriefOutputSchema, DispatchOutputSchema, type ResultReference } from "./result-schema.ts";
 import {
 	BRIEF_DESCRIPTION,
+	briefCreationDirectory,
 	briefCreationInput,
 	briefInputProblems,
 	briefParameters,
 	briefPreview,
 	briefPreviewText,
 	briefRefusal,
-	briefSourceProblems,
+	briefTargetDirectory,
+	checkBriefSources,
 	renderBrief,
 } from "./brief.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
@@ -2021,6 +2023,23 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			context,
 		);
 	};
+	const briefDirectory = async (
+		args: Static<typeof BriefParams>,
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+	): Promise<string> => {
+		if (args.sessionId === undefined) return briefCreationDirectory(args, host.cwd, effortCatalog);
+		const local = localConversation(args.sessionId, api.conversationId);
+		if (local !== undefined) {
+			const agent = await api.snapshot(durable.AgentDoc, local, context);
+			if (!agent) throw new Error(`No directory is retained for ${args.sessionId}`);
+			return agent.cwd ?? host.cwd;
+		}
+		if (!args.sessionId.startsWith("@")) return briefTargetDirectory(args.sessionId, effortCatalog);
+		const resolved = await dispatch?.("resolve-target", { sessionId: args.sessionId }, context);
+		if (typeof resolved !== "string") throw new Error(`Cannot resolve session ${args.sessionId}`);
+		return briefTargetDirectory(resolved, effortCatalog);
+	};
 	const briefTool = durable.defineTool<typeof BriefParams, ControlDetails>({
 		name: "agent_brief",
 		description: BRIEF_DESCRIPTION,
@@ -2028,9 +2047,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		replay: "safe",
 		execute: async (args: Static<typeof BriefParams>, api, context) => {
 			const inputProblems = briefInputProblems(args, spawnCreationKeys);
+			if (args.preview !== true && inputProblems.length) return errorResult(briefRefusal(inputProblems, []));
 			const sourceProblems =
 				(await api.memo<string[]>("brief-source-problems", context)) ??
-				(await api.memo("brief-source-problems", briefSourceProblems(args, host.cwd), context));
+				(await api.memo(
+					"brief-source-problems",
+					await checkBriefSources(args, () => briefDirectory(args, api, context)),
+					context,
+				));
 			const rendered = renderBrief(args);
 			if (args.preview === true) {
 				const preview = briefPreview(rendered, [...inputProblems, ...sourceProblems]);
