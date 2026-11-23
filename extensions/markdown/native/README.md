@@ -156,14 +156,19 @@ generation, and shows a fenced excerpt of its source lines, at most 120 characte
 side, with the selected text between marks that the excerpt does not otherwise contain. When
 the excerpts contain a mark of every candidate pair, each excerpt is followed by its selected
 text instead. A quote without a located range appears exactly in a fenced block, never as
-JSON. A follow-up names the earlier request that gave the passage and does not repeat it;
-until such a request is confirmed, a follow-up gives the passage again. Each quote permits
-8 KiB UTF-8 and each located selection 16 KiB. The composed message permits 32 KiB for a
-single comment or follow-up and 128 KiB for a batch. The page's text, quote and range of
-each comment, and a batch's overall comment, identify a request: the same request ID with other inputs is refused, and a
-retry with the same inputs sends the message of its first submission, even when the text has
-changed since. The live bridge accepts up to the
-batch limit. A bridge with a smaller limit refuses a larger request without submitting it.
+JSON. Each quote permits 8 KiB UTF-8 and each located selection 16 KiB. The composed body
+permits 32 KiB for a single comment or follow-up and 128 KiB for a batch.
+
+Native posts `workspace`, `document`, `operationId`, `text` and optional `follows` to the
+live bridge at `/prompt`. The body carries the question and its specific context, not the
+bridge's standing guidance. A follow-up links to the first confirmed request that supplied
+its context and does not repeat the passage or batch. Before a request with the passage
+is confirmed, the next comment in that thread gives the passage again and omits `follows`.
+A batch must reach the conversation before a follow-up can refer to it. The page's text,
+quote, range and authored revision of each comment, and a batch's overall comment and its
+authored revision, identify a request. The same request ID with other inputs is refused.
+A retry repeats the body and link of its first submission, even after the document changes.
+The live bridge accepts up to the batch limit.
 
 The running pane keeps unsent Ask text, threads, pending comments and the overall
 comment with the logical document across revision changes, switching away and back,

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { test } from "node:test";
-import { LiveBridge, LiveBridges, type PaneClosure } from "./live-bridge.ts";
+import { LiveBridge, LiveBridges, type LivePrompt, type PaneClosure } from "./live-bridge.ts";
 import {
 	readLiveAction,
 	readLiveConfig,
@@ -42,10 +42,10 @@ async function responseData(result: Response) {
 	};
 }
 test("the broker binds prompts and unsaved reads to one authenticated conversation", { timeout: 10000 }, async () => {
-	const calls: string[] = [];
+	const calls: LivePrompt[] = [];
 	const bridge = new LiveBridge({
-		submit: async (text) => {
-			calls.push(text);
+		submit: async (prompt) => {
+			calls.push(prompt);
 			return { status: "admitted", submissionId: "7" };
 		},
 	});
@@ -57,12 +57,18 @@ test("the broker binds prompts and unsaved reads to one authenticated conversati
 		const connected = await connect(config, pane);
 		const handle = connected.data.handle;
 		const operationId = randomUUID();
-		const prompt = { ...pane, operationId, text: "Fix this paragraph." };
+		const follows = randomUUID();
+		const prompt = { ...pane, operationId, follows, text: "Fix this paragraph." };
+		assert.equal((await post(config, "/prompt", { ...prompt, follows: "not a request ID" })).data.status, "rejected");
 		assert.deepEqual((await post(config, "/prompt", prompt)).data, { ok: true, status: "admitted", submissionId: "7" });
-		await post(config, "/prompt", prompt);
-		assert.equal(calls.length, 1);
-		assert.match(calls[0], new RegExp(handle));
+		assert.equal(
+			(await post(config, "/prompt", { ...prompt, operationId: operationId.toUpperCase() })).data.status,
+			"admitted",
+		);
+		assert.deepEqual(calls, [{ handle, operationId, follows, title: "Test pane", text: prompt.text }]);
+		assert.equal((await post(config, "/prompt", { ...prompt, follows: randomUUID() })).data.status, "rejected");
 		assert.equal((await post(config, "/prompt", { ...prompt, text: "Different" })).data.status, "rejected");
+		assert.equal(calls.length, 1);
 		const read = bridge.execute(handle, { op: "read" });
 		const command = (await post(config, "/poll", { ...pane, after: 0 })).data.command;
 		assert.equal(command.op, "read");
@@ -123,7 +129,7 @@ test("a new loader keeps the listener but fences unknown receipts until its read
 test("the broker forwards a large batch as one prompt and enforces the UTF-8 limit", { timeout: 10000 }, async () => {
 	const calls: string[] = [];
 	const bridge = new LiveBridge({
-		submit: async (text) => {
+		submit: async ({ text }) => {
 			calls.push(text);
 			return { status: "requested" };
 		},
@@ -137,7 +143,7 @@ test("the broker forwards a large batch as one prompt and enforces the UTF-8 lim
 		assert.equal((await post(config, "/prompt", request)).data.status, "requested");
 		assert.equal((await post(config, "/prompt", request)).data.status, "requested");
 		assert.equal(calls.length, 1);
-		assert.equal(calls[0].slice(-text.length), text);
+		assert.equal(calls[0], text);
 		const refusal = await post(config, "/prompt", { ...request, operationId: randomUUID(), text: `${text}!` });
 		assert.equal(refusal.data.status, "rejected");
 		assert.equal(calls.length, 1);
@@ -349,8 +355,8 @@ test("failed idempotent admission retries the same ID but ordinary uncertainty n
 		const ids: string[] = [];
 		const bridge = new LiveBridge({
 			retryFailedSubmission,
-			submit: async (_text, id) => {
-				ids.push(id);
+			submit: async ({ operationId }) => {
+				ids.push(operationId);
 				if (ids.length === 1) throw new Error("Admission response unavailable");
 				return { status: "admitted", submissionId: "7" };
 			},

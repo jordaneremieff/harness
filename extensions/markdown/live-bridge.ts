@@ -33,9 +33,27 @@ export interface PaneClosure {
 	connected: number;
 	panes: LivePane[];
 }
+export interface LivePrompt {
+	operationId: string;
+	handle: string;
+	title?: string;
+	follows?: string;
+	text: string;
+}
+function isPromptBody(body: Record<string, unknown>): body is Pick<LivePrompt, "operationId" | "follows" | "text"> {
+	return (
+		liveId(body.operationId) &&
+		(body.follows === undefined || liveId(body.follows)) &&
+		typeof body.text === "string" &&
+		!!body.text.trim() &&
+		validUnicode(body.text) &&
+		Buffer.byteLength(body.text) <= LIVE_PROMPT_BYTES
+	);
+}
+export type PromptReply = (status: "working" | "answer" | "error", text: string) => void;
 export interface LiveRoute {
 	checkAdmission?(): void;
-	submit(text: string, operationId: string): Promise<LivePromptReceipt>;
+	submit(prompt: LivePrompt, reply: PromptReply): Promise<LivePromptReceipt>;
 	/** Only a route with idempotent admission may repeat a failed submission. */
 	retryFailedSubmission?: boolean;
 	observe?(publish: LivePublisher): Promise<() => void>;
@@ -918,61 +936,59 @@ export class LiveBridge {
 	}
 	private async prompt(binding: LiveBinding, body: Record<string, unknown>): Promise<object> {
 		const rejected = (message: string) => ({ ok: true, status: "rejected", message });
-		if (
-			!liveId(body.operationId) ||
-			typeof body.text !== "string" ||
-			!body.text.trim() ||
-			!validUnicode(body.text) ||
-			Buffer.byteLength(body.text) > LIVE_PROMPT_BYTES
-		)
-			return rejected("Invalid live Markdown prompt; this request was not submitted.");
+		if (!isPromptBody(body)) return rejected("Invalid live Markdown prompt; this request was not submitted.");
 		const handle = liveHandle(binding);
-		const fingerprint = JSON.stringify({ handle, text: body.text });
-		if (this.fencedPrompts.has(body.operationId))
+		const { operationId: suppliedId, text, follows } = body;
+		// Receipts compare UUIDs without case, but a retry uses the exact ID that the route received.
+		const uuid = suppliedId.toLowerCase();
+		const operationId =
+			[...this.prompts.keys(), ...this.fencedPrompts.keys()].find((id) => id.toLowerCase() === uuid) ?? suppliedId;
+		const fingerprint = JSON.stringify({ handle, text, follows });
+		if (this.fencedPrompts.has(operationId))
 			return {
 				ok: true,
 				status: "uncertain",
 				retryable: false,
 				message: "Pi could not restore this admission receipt. Check the conversation before another request.",
 			};
-		let prior = this.prompts.get(body.operationId);
-		if (!prior && this.bindings.get(binding.workspace)?.document !== binding.document)
+		const prior = this.prompts.get(operationId);
+		const pane = this.bindings.get(binding.workspace);
+		if (!prior && pane?.document !== binding.document)
 			return rejected("This question's original buffer is no longer selected. Nothing was submitted.");
 		if (prior && prior.fingerprint !== fingerprint)
 			return rejected("The prompt ID already names a different request; the changed request was not submitted.");
-		if (!prior || (prior.result?.status === "uncertain" && prior.result.retryable)) {
-			try {
-				this.route.checkAdmission?.();
-			} catch {
-				throw new RequestFailure(503, "The conversation is unavailable. This prompt was not submitted.");
-			}
-			if (!prior && this.prompts.size + this.fencedPrompts.size >= 128)
-				return rejected("The live prompt receipt limit is reached; this request was not submitted.");
-			const operationId = body.operationId;
-			const text = `This question (${operationId}) comes from the live Markdown pane ${handle}. Answer in your final message; the Ask card shows it. Use markdown_live with this handle to read context or apply {find, replace} edits. Do not substitute a stored document, file write or new pane.\n\n${body.text}`;
-			const promise = Promise.resolve()
-				.then(() => {
-					if (this.closed) return { status: "rejected" as const, message: "The route closed before submission." };
-					return this.route.submit(text, operationId);
-				})
-				.catch(
-					(): LivePromptReceipt => ({
-						status: "uncertain",
-						retryable: this.route.retryFailedSubmission === true,
-						message: this.route.retryFailedSubmission
-							? "Admission is unconfirmed. Retry the same request ID to reconcile it."
-							: "Admission is unconfirmed and this route cannot safely resubmit. Check the conversation before another request.",
-					}),
-				);
-			const entry: NonNullable<typeof prior> = { handle, fingerprint, promise };
-			prior = entry;
-			this.prompts.set(operationId, entry);
-			this.publish("queued", "", operationId);
-			void promise.then((result) => {
-				entry.result = result;
-			});
+		if (prior && (prior.result?.status !== "uncertain" || !prior.result.retryable))
+			return { ok: true, ...(await prior.promise) };
+		try {
+			this.route.checkAdmission?.();
+		} catch {
+			throw new RequestFailure(503, "The conversation is unavailable. This prompt was not submitted.");
 		}
-		return { ok: true, ...(await prior.promise) };
+		if (!prior && this.prompts.size + this.fencedPrompts.size >= 128)
+			return rejected("The live prompt receipt limit is reached; this request was not submitted.");
+		const title = pane?.document === binding.document && pane.view.kind !== "loading" ? pane.view.title : undefined;
+		const prompt = { operationId, handle, title, follows, text };
+		const promise = Promise.resolve()
+			.then(() => {
+				if (this.closed) return { status: "rejected" as const, message: "The route closed before submission." };
+				return this.route.submit(prompt, (status, detail) => this.publish(status, detail, operationId));
+			})
+			.catch(
+				(): LivePromptReceipt => ({
+					status: "uncertain",
+					retryable: this.route.retryFailedSubmission === true,
+					message: this.route.retryFailedSubmission
+						? "Admission is unconfirmed. Retry the same request ID to reconcile it."
+						: "Admission is unconfirmed and this route cannot safely resubmit. Check the conversation before another request.",
+				}),
+			);
+		const entry: NonNullable<typeof prior> = { handle, fingerprint, promise };
+		this.prompts.set(operationId, entry);
+		this.publish("queued", "", operationId);
+		void promise.then((result) => {
+			entry.result = result;
+		});
+		return { ok: true, ...(await promise) };
 	}
 	private async dispatch(path: string, body: Record<string, unknown>, response: ServerResponse): Promise<object> {
 		if (this.closed || !this.config)
