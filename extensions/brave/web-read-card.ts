@@ -17,40 +17,40 @@ interface ReadCardContext extends Partial<KeybindingHints> {
 	state?: { read?: { sourceFacts: string[] } };
 }
 
-function record(value: unknown): Record<string, unknown> {
+export function record(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
-function safeText(text: string): string {
+export function safeText(text: string): string {
 	return stripTerminalSequences(text)
 		.replace(/\r\n/g, "\n")
 		.replace(/[\p{Cc}\p{Cf}]/gu, (char) => (char === "\n" || char === "\t" ? char : ""));
 }
 
-function oneLine(text: string): string {
+export function oneLine(text: string): string {
 	return safeText(text).replace(/\s+/gu, " ").trim();
 }
 
-function field(values: Record<string, unknown>, name: string): string {
+export function field(values: Record<string, unknown>, name: string): string {
 	const value = values[name];
 	return typeof value === "string" ? oneLine(value) : "";
 }
 
-function count(values: Record<string, unknown>, name: string): number | undefined {
+export function count(values: Record<string, unknown>, name: string): number | undefined {
 	const value = values[name];
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-function wordCount(n: number, noun: string): string {
+export function wordCount(n: number, noun: string): string {
 	return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
-function clipRow(text: string, width: number): string {
+export function clipRow(text: string, width: number): string {
 	// Pi's box owns the background. End only the row's text styles after a clipped ellipsis.
 	return truncateToWidth(text, width, "…").replace(/\x1b\[0m…\x1b\[0m$/u, "…\x1b[22;23;24;25;27;28;29;39m");
 }
 
-function hint(theme: Theme, keys: Partial<KeybindingHints>, skipped = 0): string {
+export function hint(theme: Theme, keys: Partial<KeybindingHints>, skipped = 0): string {
 	const key = keys.keyText?.("app.tools.expand");
 	const action = key
 		? (keys.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
@@ -61,7 +61,7 @@ function hint(theme: Theme, keys: Partial<KeybindingHints>, skipped = 0): string
 }
 
 /** Pi builds the two components before it draws either; resolve their rows at the content width. */
-function atWidth(draw: (width: number) => string[]): Component {
+export function atWidth(draw: (width: number) => string[]): Component {
 	let previousWidth: number | undefined;
 	let rows: string[] = [];
 	return {
@@ -97,14 +97,10 @@ function requestFacts(args: Record<string, unknown>): string[] {
 }
 
 function callDisclosure(args: Record<string, unknown>, facts: string, width: number): boolean {
-	return (
-		visibleWidth(`web_read ${field(args, "url")}`.trimEnd()) > width ||
-		visibleWidth(facts) > width ||
-		Object.keys(args).some((key) => key !== "url")
-	);
+	return visibleWidth(`web_read ${field(args, "url")}`.trimEnd()) > width || visibleWidth(facts) > width;
 }
 
-function enteredArguments(args: Record<string, unknown>): string {
+export function enteredArguments(args: Record<string, unknown>): string {
 	return Object.entries(args)
 		.map(([key, value]) => {
 			const readable = typeof value === "string" ? safeText(value) : JSON.stringify(value, null, 2);
@@ -114,7 +110,7 @@ function enteredArguments(args: Record<string, unknown>): string {
 		.replace(/\t/g, "   ");
 }
 
-function fieldRows(text: string, width: number, expanded: boolean): readonly string[] {
+export function fieldRows(text: string, width: number, expanded: boolean): readonly string[] {
 	if (!text) return [];
 	return expanded ? truncateToVisualLines(text, Infinity, width, 0, "start").visualLines : [clipRow(text, width)];
 }
@@ -144,10 +140,18 @@ function sourceFacts(details: Record<string, unknown>): string[] {
 	const finalUrl = field(details, "finalUrl");
 	const requested = field(details, "requestedUrl");
 	return [
-		finalUrl && finalUrl !== requested ? `final URL ${finalUrl}` : "",
+		finalUrl && finalUrl !== requested ? `final URL ${finalUrl}` : sourceDomain(details),
 		title,
 		source && `source ${source}`,
 	].filter(Boolean);
+}
+
+function sourceDomain(details: Record<string, unknown>): string {
+	try {
+		return new URL(field(details, "finalUrl") || field(details, "requestedUrl")).hostname;
+	} catch {
+		return "";
+	}
 }
 
 function excerptOutcome(details: Record<string, unknown>, matching: boolean): string | undefined {
@@ -175,18 +179,24 @@ function linkOutcome(details: Record<string, unknown>, matching: boolean): strin
 			? `No ${unit}s in this page of retained results`
 			: "No complete link returned";
 	const offset = count(details, "linkOffset");
-	const origin = offset ? ` from link offset ${offset}` : "";
+	const origin = offset ? ` at link offset ${offset}` : "";
 	return `Returned ${wordCount(n, unit)}${origin}`;
 }
 
 function readOutcome(details: Record<string, unknown>): string | undefined {
 	const links = details.view === "links";
 	const matching = typeof record(details.find).query === "string";
-	const outcome = links ? linkOutcome(details, matching) : excerptOutcome(details, matching);
-	if (!outcome) return undefined;
+	const summary = links ? linkOutcome(details, matching) : excerptOutcome(details, matching);
+	if (!summary) return undefined;
+	const domain = sourceDomain(details);
+	const recordCount = count(details, links ? "linkCount" : "excerptCount");
+	const outcome = domain && recordCount ? `${summary} from ${domain}` : summary;
 	const required = links ? count(details, "requiredMaxBytes") : undefined;
 	if (required !== undefined) return `${outcome}; retry with max_bytes ${required}.`;
-	return count(details, "nextOffset") === undefined ? `${outcome}.` : `${outcome}; more retained results follow.`;
+	const next = count(details, "nextOffset");
+	return next === undefined
+		? `${outcome}.`
+		: `${outcome}; more follow from ${links ? "link" : "excerpt"} offset ${next}.`;
 }
 
 function continuationCall(details: Record<string, unknown>, args: Record<string, unknown>): string {
@@ -197,22 +207,30 @@ function continuationCall(details: Record<string, unknown>, args: Record<string,
 	const links = details.view === "links";
 	const find = record(details.find).query;
 	const budget = count(details, "requiredMaxBytes") ?? count(args, "max_bytes");
-	return `web_read ${safeText(
-		JSON.stringify({
-			url,
-			...(links ? { view: "links", link_offset: next } : { excerpt_offset: next }),
-			expected_source_id: source,
-			...(typeof find === "string" ? { find } : {}),
-			...(budget === undefined ? {} : { max_bytes: budget }),
-		}),
-	)}`;
+	return `web_read ${callJson({
+		url,
+		...(links ? { view: "links", link_offset: next } : { excerpt_offset: next }),
+		expected_source_id: source,
+		...(typeof find === "string" ? { find } : {}),
+		...(budget === undefined ? {} : { max_bytes: budget }),
+	})}`;
 }
 
-function bodyText(text: string): string {
+/** Keep continuation arguments exact without emitting format controls into the terminal. */
+export function callJson(value: object): string {
+	return JSON.stringify(value).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
+		char
+			.split("")
+			.map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`)
+			.join(""),
+	);
+}
+
+export function bodyText(text: string): string {
 	return safeText(text).replace(/\t/g, "   ");
 }
 
-function splitDiagnostic(text: string): { outcome: string; body: string } {
+export function splitDiagnostic(text: string): { outcome: string; body: string } {
 	const lines = text.split("\n");
 	const first = lines.findIndex((line) => line.trim());
 	return first < 0
@@ -226,7 +244,7 @@ function splitDiagnostic(text: string): { outcome: string; body: string } {
 			};
 }
 
-function displayBound(text: string): { text: string; limit?: string } {
+export function displayBound(text: string): { text: string; limit?: string } {
 	if (text.length <= DISPLAY_LIMIT) return { text };
 	const chars = Array.from(text);
 	return chars.length > DISPLAY_LIMIT
@@ -257,6 +275,19 @@ function limitText(details: Record<string, unknown>, displayLimit?: string): str
 	return limits.length ? `[${limits.join("; ")}]` : "";
 }
 
+function firstRecord(raw: string, details: Record<string, unknown>): number {
+	const offset = count(details, "previewOffset");
+	if (offset !== undefined && offset <= raw.length) return offset;
+	const mode = details.view === "links" ? "L" : "E";
+	const source = field(details, "sourceId");
+	const id = /^[a-f0-9]{16}$/.test(source) ? source : "[a-f0-9]{16}";
+	const marker = new RegExp(`^\\[${id}:${mode}[1-9]\\d*\\] `, "m");
+	const framed = raw.search(marker);
+	if (framed >= 0) return framed;
+	const records = count(details, mode === "L" ? "linkCount" : "excerptCount");
+	return records === 0 || details.status === "no-readable-text" ? raw.length : 0;
+}
+
 export function renderReadResult(
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
@@ -280,9 +311,8 @@ export function renderReadResult(
 	const fromDetails = context.isError ? undefined : readOutcome(details);
 	const bounded = displayBound(bodyText(output).trimEnd());
 	const { outcome, body } = fromDetails ? { outcome: fromDetails, body: bounded.text } : splitDiagnostic(bounded.text);
-	const offset = fromDetails ? count(details, "previewOffset") : undefined;
-	// The producer locates records in the raw result, before display sanitisation changes its length.
-	const start = offset !== undefined && offset <= output.length ? bodyText(output.slice(0, offset)).length : 0;
+	// Record offsets refer to raw text, before display sanitisation changes its length.
+	const start = fromDetails ? bodyText(output.slice(0, firstRecord(output, details))).length : 0;
 	const bodyToDraw = options.expanded ? body : body.slice(start);
 	const supplemental = [expandedFetchFacts(details), continuationCall(details, args)].filter(Boolean).join("\n");
 	const limit = limitText(details, bounded.limit);

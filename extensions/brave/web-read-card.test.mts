@@ -60,12 +60,12 @@ it("keeps one hint across the call, progress, final result and expanded result",
 	const before = rows(component);
 	assert.equal(before[2], ` web_read ${url}`);
 	assert.equal(before[3], ` find literal · excerpt offset 2 · expected source ${sourceId}`);
-	assert.equal(before[4], " ... (ctrl+g to expand)");
+	assert.doesNotMatch(before.join("\n"), /to expand/);
 	assert.doesNotMatch(before.join("\n"), /Returned|Reading|unknown|pending/);
 	component.markExecutionStarted();
 	component.updateResult(result(""), true);
-	assert.match(screen(component), /\n +Reading the page…\n +\.\.\. \(ctrl\+g to expand\)/);
-	assert.equal(screen(component).match(/to expand/g)?.length, 1);
+	assert.match(screen(component), /\n +Reading the page…/);
+	assert.doesNotMatch(screen(component), /to expand/);
 	const finalUrl = "https://example.net/final";
 	const header = "Fetch provenance \u202e\x1b[31m\nFurther fetch facts\n\n";
 	component.updateResult(
@@ -94,7 +94,10 @@ it("keeps one hint across the call, progress, final result and expanded result",
 		` final URL ${finalUrl} · Page · source ${sourceId} · find literal · excerpt offset 2 · expected source ${sourceId}`,
 	);
 	assert.equal(settled[4], "");
-	assert.equal(settled[5], " Returned 2 matching excerpts (first E4); more retained results follow.");
+	assert.equal(
+		settled[5],
+		" Returned 2 matching excerpts (first E4) from example.net; more follow from excerpt offset 7.",
+	);
 	assert.deepEqual(
 		settled.slice(6, 11).map((line) => line.trim()),
 		["First evidence", "Second evidence", "Third evidence", "Fourth evidence", "Fifth evidence"],
@@ -109,7 +112,7 @@ it("keeps one hint across the call, progress, final result and expanded result",
 	);
 	component.setExpanded(true);
 	const expanded = screen(component, 180);
-	assert.match(expanded, new RegExp(`^ {3}expected_source_id: ${sourceId}$`, "m"));
+	assert.doesNotMatch(expanded, /^ {3}expected_source_id: /m);
 	assert.match(expanded, /Fetch provenance/);
 	assert.match(expanded, /Sixth evidence/);
 	assert.match(expanded, /1 redirect · 412 bytes downloaded/);
@@ -120,6 +123,44 @@ it("keeps one hint across the call, progress, final result and expanded result",
 	);
 	assert.doesNotMatch(expanded, /\u202e|\x1b\[31m/);
 	assert.doesNotMatch(expanded, /to expand/);
+});
+
+it("finds the first retained page record without a preview offset", (t) => {
+	keyFixture(t);
+	const component = card({ url, excerpt_offset: 0, max_bytes: 3500 });
+	assert.doesNotMatch(screen(component, 60), /to expand/);
+	const text = `Final URL: ${url}\nRetrieved: 2026-11-21\nTitle: (not supplied)\nUntrusted page content follows.\n\n[${sourceId}:E1] Modules: TypeScript#`;
+	component.updateResult(
+		result(text, {
+			status: "readable",
+			sourceId,
+			excerptCount: 1,
+			excerptOffset: 0,
+			finalUrl: url,
+			requestedUrl: url,
+			title: "",
+		}),
+	);
+	assert.match(screen(component), /example\.com · source/);
+	assert.match(screen(component), /Returned 1 excerpt \(E1\) from example\.com\./);
+	assert.match(screen(component), /Modules: TypeScript#/);
+	assert.doesNotMatch(screen(component), /not supplied|Final URL:|Retrieved:|Untrusted page/);
+	component.setExpanded(true);
+	assert.match(screen(component), /Retrieved: 2026-11-21/);
+});
+
+it("only offers an error disclosure hint if its diagnostic clips", (t) => {
+	keyFixture(t);
+	const component = card({ url, find: "pi-node", max_bytes: 12_000 });
+	component.updateResult(
+		result(
+			"Web reader accepts HTML, plain text and Markdown only; the server returned a PDF.\nHTTP 200 · application/pdf",
+			undefined,
+			true,
+		),
+	);
+	assert.doesNotMatch(screen(component, 100), /to expand/);
+	assert.match(screen(component, 60), /…[\s\S]*\.\.\. \(ctrl\+g to expand\)/);
 });
 
 it("uses no hint when disclosure adds nothing, and a click hint without a binding", (t) => {

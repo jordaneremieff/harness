@@ -427,9 +427,10 @@ the records. Expansion restores the fetch and coverage context, the bounded
 retained text, the exact continuation call, and counts for the bytes downloaded
 and redirects followed.
 
-The `web_search` card shows the query, any search controls, the first ranked
-sources, the returned result count, and any altered query, continuation or
-output bound. Expansion includes the retained search text and diagnostics.
+The `web_search` card shows the query, search controls, corrected query when
+reported, and the match count for the current page. Its preview starts at the
+first ranked match. Expansion carries the retained search text, the exact next
+call when available, and the diagnostic for a failed request.
 
 ## Dependencies
 

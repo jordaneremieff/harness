@@ -1,201 +1,156 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { createRequire } from "node:module";
+import { it, type TestContext } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import { renderSearchCall, renderSearchResult } from "./presentation.ts";
+import { defineTool, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { obj } from "@earendil-works/pi-schema";
+import { type KeyId, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { toolDisplay } from "./display.ts";
+import { formatSearchResults } from "./format.ts";
 
-const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
-const screen = (component: { render(width: number): readonly string[] }, width = 100) =>
-	component
-		.render(width)
-		.map((line) => stripVTControlCharacters(line).trimEnd())
-		.join("\n")
-		.replace(/^\n+/, "");
-const raw = (component: { render(width: number): readonly string[] }, width = 1000) =>
-	component.render(width).join("\n");
-const text = (value: string, details?: unknown) => ({ content: [{ type: "text" as const, text: value }], details });
-const collapsed = { expanded: false, isError: false };
-const expanded = { expanded: true, isError: false };
+const requirePi = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+const tui: typeof import("@earendil-works/pi-tui") = await import(requirePi.resolve("@earendil-works/pi-tui"));
+const ui = { requestRender() {} } as unknown as TUI;
+const display = toolDisplay().tools.find((tool) => tool.name === "web_search");
+assert.ok(display);
+const definition = defineTool({
+	...display,
+	label: "Brave web search",
+	description: "Display fixture",
+	parameters: obj({}, { open: true }),
+	async execute() {
+		throw new Error("Display fixture must not execute");
+	},
+});
 
-function assertFits(component: { render(width: number): readonly string[] }, widths: number[] = [20, 60, 100]): void {
-	for (const width of widths)
-		assert.ok(
-			component.render(width).every((line) => visibleWidth(line) <= width),
-			`width ${width}`,
-		);
+function theme(t: TestContext, keys: KeyId | KeyId[] = "ctrl+g") {
+	initTheme("dark", false);
+	const previous = tui.getKeybindings();
+	tui.setKeybindings(
+		new tui.KeybindingsManager({
+			...tui.TUI_KEYBINDINGS,
+			"app.tools.expand": { defaultKeys: keys, description: "Expand tool output" },
+		}),
+	);
+	t.after(() => tui.setKeybindings(previous));
 }
 
-describe("web_search call cards", () => {
-	it("names the query and adds one qualifier row for the search controls", () => {
-		assert.equal(
-			screen(renderSearchCall({ query: "pi coding agent" }, theme, collapsed)),
-			"web_search · pi coding agent",
-		);
-		const card = renderSearchCall(
-			{
-				query: "pi coding agent",
-				count: 20,
-				offset: 1,
-				country: "US",
-				search_lang: "en",
-				freshness: "pw",
-				safesearch: "strict",
-				extra_snippets: true,
-				spellcheck: false,
-			},
-			theme,
-			collapsed,
-		);
-		assert.equal(
-			screen(card, 400).split("\n")[1],
-			"count 20 · offset 1 · country US · lang en · freshness pw · safesearch strict · extra snippets · spellcheck off",
-		);
-	});
+function card(args: Record<string, unknown> = { query: "parsers" }) {
+	const component = new ToolExecutionComponent("web_search", "fixture", args, { outputPad: 1 }, definition, ui, ".");
+	component.setArgsComplete();
+	return component;
+}
 
-	it("omits non-default qualifiers that carry no information", () => {
-		const card = renderSearchCall(
-			{ query: "q", safesearch: "moderate", spellcheck: true, extra_snippets: false },
-			theme,
-			collapsed,
-		);
-		assert.equal(screen(card), "web_search · q");
-	});
+function screen(component: ToolExecutionComponent, width = 120): string {
+	return component
+		.render(width)
+		.map((row) => stripVTControlCharacters(row).trim())
+		.filter(Boolean)
+		.join("\n");
+}
 
-	it("hints expansion only when the query is clipped", () => {
-		const long = renderSearchCall({ query: "q".repeat(300) }, theme, collapsed);
-		assert.match(screen(long), /[Ee]xpand/);
-		assertFits(long);
-	});
+function result(text: string, details?: unknown, isError = false) {
+	return { content: [{ type: "text" as const, text }], details, isError };
+}
 
-	it("renders safely with missing and malformed arguments", () => {
-		for (const value of [undefined, {}, { query: 7 }, { query: null }, []]) {
-			const card = renderSearchCall(value, theme, collapsed);
-			assertFits(card);
-			assert.match(screen(card), /^web_search/);
-		}
-	});
+it("previews ranked search records, not request boilerplate or paging instructions", (t) => {
+	theme(t);
+	const request = { query: "parsers", count: 2, offset: 1, country: "US", spellcheck: false };
+	const component = card(request);
+	assert.equal(screen(component), "web_search parsers\ncount 2 · offset 1 · country US · spellcheck off");
+	const formatted = formatSearchResults(
+		{
+			originalQuery: "parsers",
+			alteredQuery: "parser",
+			moreResultsAvailable: true,
+			results: [
+				{ title: "Ranked first", url: "https://example.org/1", description: "First snippet", extraSnippets: [] },
+				{ title: "Ranked second", url: "https://example.org/2", description: "Second snippet", extraSnippets: [] },
+			],
+		},
+		request,
+	);
+	component.updateResult(result(formatted.text, { ...request, resultCount: 2, alteredQuery: "parser", nextOffset: 2 }));
+	const collapsed = screen(component);
+	assert.match(collapsed, /corrected query parser/);
+	assert.match(collapsed, /Found 2 matches on search page 2; more results follow\./);
+	assert.match(collapsed, /1\. Ranked first[\s\S]*First snippet[\s\S]*2\. Ranked second/);
+	assert.doesNotMatch(collapsed, /Brave Search used|Repeat the search|Second snippet/);
+	assert.equal(collapsed.match(/to expand/g)?.length, 1);
+	component.setExpanded(true);
+	const expanded = screen(component, 160);
+	assert.match(expanded, /Second snippet/);
+	assert.ok(expanded.includes(`web_search ${JSON.stringify({ ...request, offset: 2 })}`));
+	assert.doesNotMatch(expanded, /to expand/);
+	component.setExpanded(false);
+	component.updateResult(result(formatted.text));
+	assert.match(screen(component), /Search records are available\.\n1\. Ranked first/);
+	assert.doesNotMatch(screen(component), /Brave Search used|Repeat the search/);
 });
 
-describe("web_search result cards", () => {
-	it("counts results and marks more pages available", () => {
-		const card = renderSearchResult(
-			text("results", { resultCount: 10, moreResultsAvailable: true, nextOffset: 1 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			collapsed,
-		);
-		assert.match(screen(card), /^10 results · more available/);
-		assertFits(card);
-	});
-
-	it("uses the singular and reports an altered query and truncation", () => {
-		const one = renderSearchResult(
-			text("x", {
-				resultCount: 1,
-				moreResultsAvailable: false,
-				alteredQuery: "corrected query",
-				outputTruncated: true,
-			}),
-			{ expanded: false, isPartial: false },
-			theme,
-			collapsed,
-		);
-		assert.match(screen(one), /^1 result · altered query corrected query · output truncated/);
-	});
-
-	it("styles errors and partial results and shows a full result when expanded", () => {
-		const error = renderSearchResult(text("Brave search failed: 429"), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			isError: true,
-		});
-		assert.equal(screen(error), "web_search: Brave search failed: 429");
-		const partial = renderSearchResult(text(""), { expanded: false, isPartial: true }, theme, collapsed);
-		assert.equal(screen(partial), "Searching the web...");
-		const full = renderSearchResult(
-			text("1. Result title\n   https://example.com"),
-			{ expanded: true, isPartial: false },
-			theme,
-			expanded,
-		);
-		assert.match(screen(full, 400), /Result title/);
-	});
+it("distinguishes no matches, exhausted search pages, and actual producer errors", (t) => {
+	theme(t);
+	const component = card();
+	component.updateResult(
+		result("Brave Search results for parsers:\n\nNo web results found.", { resultCount: 0, offset: 0 }),
+	);
+	assert.match(screen(component), /No matches on search page 1\./);
+	assert.doesNotMatch(screen(component), /Brave Search results|to expand/);
+	component.updateResult(
+		result("Brave Search results:\n\n1. Match", { resultCount: 1, offset: 9, moreResultsAvailable: true }),
+	);
+	assert.match(screen(component), /Found 1 match on search page 10; search page limit reached\./);
+	assert.doesNotMatch(screen(component), /more results follow|to expand/);
+	component.updateResult(result("Brave Search returned HTTP 429", { resultCount: 0 }, true));
+	assert.match(screen(component), /Brave Search returned HTTP 429/);
+	assert.doesNotMatch(screen(component), /No matches|to expand/);
 });
 
-describe("source identity before extraction mechanics", () => {
-	it("lists ranked source identities before the web_search outcome row", () => {
-		const card = renderSearchResult(
-			text("results", {
-				resultCount: 5,
-				moreResultsAvailable: true,
-				offset: 1,
-				sources: [
-					{ rank: 11, title: "Alpha", domain: "a.com" },
-					{ rank: 12, title: "Beta \u65e5\u672c\u8a9e", domain: "b.org" },
-					{ rank: 13, title: "Gamma", domain: "c.io" },
-				],
-			}),
-			{ expanded: false, isPartial: false },
-			theme,
-			collapsed,
-		);
-		const lines = screen(card).split("\n");
-		assert.equal(lines[0], "#11 · Alpha · a.com");
-		assert.equal(lines[1], "#12 · Beta \u65e5\u672c\u8a9e · b.org");
-		assert.equal(lines[2], "#13 · Gamma · c.io");
-		assert.match(lines[3] ?? "", /^5 results · more available · 2 more sources in detail · page 2$/);
-		assertFits(card);
+it("clips to Pi width, uses one hint after progress, and bounds a single long body line", (t) => {
+	theme(t);
+	const component = card({
+		query: "parsers",
+		country: "US",
+		freshness: "2025-01-01to2026-01-01",
+		extra_snippets: true,
 	});
-
-	it("shows every source when the page is short and no result is omitted", () => {
-		const card = renderSearchResult(
-			text("results", {
-				resultCount: 2,
-				moreResultsAvailable: false,
-				sources: [
-					{ rank: 1, title: "One", domain: "one.dev" },
-					{ rank: 2, title: "Two", domain: "two.dev" },
-				],
-			}),
-			{ expanded: false, isPartial: false },
-			theme,
-			collapsed,
-		);
-		assert.doesNotMatch(screen(card), /more sources in detail/);
-		assert.match(screen(card).split("\n")[2] ?? "", /^2 results/);
-	});
+	assert.match(screen(component, 55), /…\n\.\.\. \(ctrl\+g to expand\)$/);
+	component.updateResult(result(""), true);
+	assert.match(screen(component, 55), /Searching the web…\n\.\.\. \(ctrl\+g to expand\)$/);
+	assert.equal(screen(component, 55).match(/to expand/g)?.length, 1);
+	component.updateResult(result(`Search header\n\n1. ${"X".repeat(32_001)}\u202e\x1b[31mTAIL`, { resultCount: 1 }));
+	assert.equal(
+		screen(component, 50)
+			.split("\n")
+			.filter((line) => /^(?:1\.(?: |$)|X)/.test(line)).length,
+		5,
+	);
+	for (const row of component.render(50)) {
+		assert.ok(visibleWidth(row) <= 50);
+		assert.doesNotMatch(row, /\x1b\[0m/);
+	}
+	component.setExpanded(true);
+	assert.match(screen(component), /\[Truncated: showing 32000 of/);
+	assert.doesNotMatch(screen(component), /TAIL|\u202e|\[31m|to expand/);
 });
 
-describe("retained error diagnostics", () => {
-	const hostile = `Brave search failed: 429\nsecond line \u202e with \x1b[31m controls\n\u65e5\u672c\u8a9e\u306e\u8a3a\u65ad https://example.com/very/long/path/that/keeps/going`;
-
-	it("collapses an error to its first line and expands the retained diagnostic", () => {
-		const collapsedError = renderSearchResult(text(hostile), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			isError: true,
-		});
-		const collapsedScreen = screen(collapsedError);
-		assert.equal(collapsedScreen.split("\n").length, 1);
-		assert.match(collapsedScreen, /^web_search: Brave search failed: 429$/);
-		assert.doesNotMatch(collapsedScreen, /second line/);
-		const expandedError = renderSearchResult(text(hostile), { expanded: true, isPartial: false }, theme, {
-			...expanded,
-			isError: true,
-		});
-		const expandedScreen = screen(expandedError, 400);
-		assert.match(expandedScreen, /^web_search: Brave search failed: 429$/m);
-		assert.match(expandedScreen, /second line \\u\{202e\} with \\x1b\[31m controls/);
-		assert.match(expandedScreen, /\u65e5\u672c\u8a9e\u306e\u8a3a\u65ad/);
-		assertFits(expandedError);
-	});
+it("escapes format controls without changing a continuation query", (t) => {
+	theme(t);
+	const query = "join👩‍💻";
+	const component = card({ query });
+	component.updateResult(result("1. Evidence", { query, resultCount: 1, nextOffset: 1, count: 10 }));
+	component.setExpanded(true);
+	const expanded = screen(component);
+	const call = expanded.split("\n").find((line) => line.startsWith("web_search {"));
+	assert.ok(call);
+	assert.equal(JSON.parse(call.slice("web_search ".length)).query, query);
+	assert.doesNotMatch(expanded, /\u200d/);
 });
 
-it("escapes bidi and C1 controls in expanded search arguments", () => {
-	const component = renderSearchCall({ query: "a\u202eb\u009bc" }, theme, expanded);
-	assert.doesNotMatch(raw(component), /\u202e|\u009b/u);
-});
-
-it("names the configured key when search arguments are clipped", () => {
-	const longQuery = renderSearchCall({ query: "q".repeat(300) }, theme, { ...collapsed, keyText: () => "ctrl+o" });
-	assert.match(screen(longQuery), /ctrl\+o to expand arguments/);
+it("does not offer a pre-result click without a bound key", (t) => {
+	theme(t, []);
+	const component = card({ query: "long ".repeat(40) });
+	assert.doesNotMatch(screen(component), /to expand/);
+	component.updateResult(result("Brave Search cancelled.", undefined, true));
+	assert.match(screen(component), /\.\.\. \(click to expand\)$/);
 });
