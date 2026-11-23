@@ -226,6 +226,19 @@ it("run command lists the host's commands, accepts a typed name when the host li
 	await until(mount("command", none.host).frame, /This agent's host lists no native commands\./);
 });
 
+it("a multiline native command answer opens a reader instead of a form notice", async () => {
+	const message = "first line\nsecond line";
+	const s = setup({ answer: async () => ({ text: message, kind: "success" }) });
+	const { frame, closes } = mount("command", s.host);
+	await until(frame, /Run a native command on Parser review/u);
+	act(frame, "Run");
+	await until(frame, /second line/u);
+	assert.equal(frame.viewTitle, "Command result");
+	assert.match(text(frame), /first line *\n/u);
+	assert.equal(closes(), 0);
+	assert.deepEqual(s.outcomes, [{ name: "command", result: { text: message, kind: "success" } }]);
+});
+
 it("schedule shows the exact instant, keeps its draft across close and refusal, and clears it after success", async (t) => {
 	const now = Date.parse("2026-10-03T10:00:00Z");
 	t.mock.method(Date, "now", () => now);

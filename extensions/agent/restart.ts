@@ -84,7 +84,7 @@ interface RestartOptions {
 }
 
 class RestartRefusal extends Error {}
-const cliRefusal = "Restart refused. This command requires an interactive Pi CLI process.";
+const cliRefusal = "Pi restart requires an interactive Pi CLI process.";
 
 function cliPath(host: RestartProcess, packageDir: () => string): string {
 	let cli: string;
@@ -98,17 +98,16 @@ function cliPath(host: RestartProcess, packageDir: () => string): string {
 	} catch {
 		throw new RestartRefusal(cliRefusal);
 	}
-	if (typeof host.execve !== "function")
-		throw new RestartRefusal("Restart refused. This runtime does not support process.execve.");
+	if (typeof host.execve !== "function") throw new RestartRefusal("Pi restart requires a runtime with process.execve.");
 	try {
 		accessSync(host.execPath, constants.X_OK);
 	} catch {
-		throw new RestartRefusal("Restart refused. The Node executable is unavailable or not executable.");
+		throw new RestartRefusal("Pi restart requires an executable Node binary.");
 	}
 	try {
 		accessSync(cli, constants.R_OK);
 	} catch {
-		throw new RestartRefusal("Restart refused. The Pi CLI file is not readable.");
+		throw new RestartRefusal("Pi restart requires a readable Pi CLI file.");
 	}
 	return cli;
 }
@@ -116,15 +115,14 @@ function cliPath(host: RestartProcess, packageDir: () => string): string {
 function savedFile(ctx: ExtensionContext) {
 	const sessionFile = ctx.sessionManager.getSessionFile();
 	if (!sessionFile || !isAbsolute(sessionFile))
-		throw new RestartRefusal("Restart refused. Pi has not saved this session to an absolute file yet.");
+		throw new RestartRefusal("Pi restart requires a saved session file with an absolute path.");
 	let file: ReturnType<typeof statSync>;
 	try {
 		file = statSync(sessionFile);
 	} catch {
-		throw new RestartRefusal("Restart refused. Pi has not saved this session to a file yet.");
+		throw new RestartRefusal("Pi restart requires a saved session file.");
 	}
-	if (!file.isFile() || file.size === 0)
-		throw new RestartRefusal("Restart refused. Pi has not saved this session to a non-empty file yet.");
+	if (!file.isFile() || file.size === 0) throw new RestartRefusal("Pi restart requires a non-empty session file.");
 	return { sessionFile, file };
 }
 
@@ -132,8 +130,8 @@ function notifyFailure(ctx: ExtensionContext, error: unknown): void {
 	ctx.ui.notify(
 		error instanceof RestartRefusal
 			? error.message
-			: `Restart failed before shutdown: ${safeCause(error)}. This session remains open.`,
-		"warning",
+			: `Pi remains open because restart did not reach shutdown: ${safeCause(error)}.`,
+		error instanceof RestartRefusal ? "warning" : "error",
 	);
 }
 
@@ -148,18 +146,16 @@ export function createRestartCommand(options: RestartOptions) {
 		const native = ctx.sessionManager;
 		// Pi omits primary Bash and retained TUI compaction messages from these accessors; confirmation covers their loss.
 		if (!ctx.isIdle() || ctx.hasPendingMessages())
-			throw new RestartRefusal(
-				"Restart refused. This session has active or queued work. Stop or finish that work, then use /restart.",
-			);
+			throw new RestartRefusal("Pi restart requires an idle session without queued work.");
 		const hosts = options.hosts();
-		if (hosts.refusal) throw new RestartRefusal(hosts.refusal);
+		if (hosts.refusal) throw new RestartRefusal(`Pi restart is unavailable: ${hosts.refusal}`);
 		const sessionDir = native.getSessionDir();
 		const launch = {
 			executable: host.execPath,
 			args: [host.execPath, ...host.execArgv, cli, "--session-dir", sessionDir, "--session", sessionFile],
 		};
 		if (launch.args.some((arg) => /[\x00-\x1f\x7f-\x9f]/u.test(arg)))
-			throw new RestartRefusal("Restart refused. A launch argument contains terminal control characters.");
+			throw new RestartRefusal("Pi restart requires launch arguments without terminal control characters.");
 		return {
 			launch,
 			identity: JSON.stringify([
@@ -178,11 +174,11 @@ export function createRestartCommand(options: RestartOptions) {
 		description: "Restart this Pi process and resume the saved session",
 		handler: async (args: string, ctx: ExtensionContext): Promise<void> => {
 			if (args.trim()) {
-				ctx.ui.notify("Usage: /restart", "warning");
+				ctx.ui.notify("Use /restart without arguments to restart Pi.", "warning");
 				return;
 			}
 			if (guard.pending) {
-				ctx.ui.notify("Restart refused. A restart is already pending.", "warning");
+				ctx.ui.notify("Pi already has a restart pending.", "warning");
 				return;
 			}
 			let before: ReturnType<typeof preflight>;
@@ -205,9 +201,7 @@ export function createRestartCommand(options: RestartOptions) {
 					return;
 				const after = preflight(ctx);
 				if (before.identity !== after.identity)
-					throw new RestartRefusal(
-						"Restart refused. The session or agent hosts changed during confirmation. Use /restart again.",
-					);
+					throw new RestartRefusal("Pi restart requires fresh confirmation after the session or agent hosts change.");
 				disarm = armRestart(after.launch, host, options.write);
 				ctx.shutdown();
 				committed = true;

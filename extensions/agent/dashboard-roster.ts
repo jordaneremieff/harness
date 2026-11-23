@@ -55,13 +55,12 @@ export function readableError(text: string): string {
 		return flat;
 	}
 }
-/** One label per agent: the display name, else the handle, else the quoted first input, else the folder. */
+/** One label per agent: the display name, else the handle, else the quoted first input, else the full identity. */
 export const titleOf = (row: AgentConversationSummary) =>
 	oneLine(
 		row.name?.trim() ||
 			row.profile?.handle ||
 			(row.firstMessage?.trim() ? `“${oneLine(row.firstMessage)}”` : "") ||
-			basename(row.cwd) ||
 			row.id,
 	);
 export function elapsed(ms: number): string {
@@ -205,18 +204,10 @@ export function dashboardText(snapshot: AgentDashboardSnapshot): string {
 	].join("\n");
 }
 
-/** The row label, with the shortest identity suffix that tells duplicate labels apart. */
+/** Duplicate labels carry their complete addresses; width is applied by the renderer. */
 function uniqueName(row: AgentConversationSummary, rows: readonly AgentConversationSummary[]): string {
 	const name = titleOf(row);
-	const duplicates = rows.filter((other) => titleOf(other) === name);
-	if (duplicates.length < 2) return name;
-	let length = 4;
-	while (
-		length < row.id.length &&
-		duplicates.some((other) => other.id !== row.id && other.id.slice(-length) === row.id.slice(-length))
-	)
-		length++;
-	return `${name} ${row.id.slice(-length)}`;
+	return rows.some((other) => other.id !== row.id && titleOf(other) === name) ? `${name} ${oneLine(row.id)}` : name;
 }
 /** Published arguments can end mid-JSON; extract a string value without displaying the serialized object. */
 export function argumentSummary(argument: string): string {

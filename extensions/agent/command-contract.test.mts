@@ -9,7 +9,7 @@ import { AgentManager } from "./manager.ts";
 import { PlaceBook } from "./places.ts";
 import { source, row, page, theme, keys, deferred } from "./dashboard-test-fixture.mts";
 import type { AgentDashboard } from "./dashboard.ts";
-import type { TUI } from "@earendil-works/pi-tui";
+import { visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 
 it("the production observation adapter forwards cancellation and releases late attachments", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "agent-adapter-contract-"));
@@ -96,7 +96,7 @@ it("the production observation adapter forwards cancellation and releases late a
 	assert.equal(signals[1]?.aborted, true);
 	assert.deepEqual(released, ["one", "two"]);
 });
-it("native agent commands retain their complete multiline result", async (t) => {
+it("the registered /agent opens native reports locally and preserves read and command data in RPC", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "agent-result-contract-"));
 	const previous = process.env.PI_AGENT_SESSIONS_DIR;
 	process.env.PI_AGENT_SESSIONS_DIR = root;
@@ -105,9 +105,17 @@ it("native agent commands retain their complete multiline result", async (t) => 
 		else process.env.PI_AGENT_SESSIONS_DIR = previous;
 		rmSync(root, { recursive: true, force: true });
 	});
+	const sessionId = "storage-123456789:conversation-456789";
 	const text = `first line\n${"界".repeat(180)}EXACT_COMMAND_END\nlast line`;
-	t.mock.method(AgentManager.prototype, "control", async () => ({ text }));
-	t.mock.method(AgentManager.prototype, "status", async () => ({ conversation: { name: "Agent" } }));
+	const status = { sessionId, state: "idle" };
+	t.mock.method(AgentManager.prototype, "control", async (method: string) => {
+		if (method === "timer-cancel") return { timerId: 7, outcome: "terminal", status: "fired" };
+		if (method === "configure") return { outcome: "failed", error: "Model unavailable" };
+		if (method === "attach") throw new Error("Host is busy");
+		return { text };
+	});
+	t.mock.method(AgentManager.prototype, "status", async () => status);
+	t.mock.method(AgentManager.prototype, "dashboardPage", async () => page([row(sessionId)]));
 	let command: Omit<RegisteredCommand, "name" | "sourceInfo"> | undefined;
 	await register({
 		events: { emit() {}, on: () => () => {} },
@@ -116,21 +124,76 @@ it("native agent commands retain their complete multiline result", async (t) => 
 		registerShortcut() {},
 		registerMessageRenderer() {},
 		registerToolRenderer() {},
+		sendMessage: () => assert.fail("a local command result does not enter chat"),
 		getThinkingLevel: () => "off",
 		getSettings: () => ({}),
 		registerCommand: (name: string, value: typeof command) => {
 			if (name === "agent") command = value;
 		},
 	} as unknown as ExtensionAPI);
-	const notices: string[] = [];
+	const notices: Array<[string, string]> = [];
 	const ctx = {
+		mode: "rpc",
+		hasUI: true,
 		cwd: root,
 		sessionManager: { getSessionId: () => "command-result-primary", getSessionName: () => "Command source" },
-		ui: { notify: (value: string) => notices.push(value) },
+		ui: { notify: (value: string, level: string) => notices.push([value, level]) },
 	} as unknown as ExtensionCommandContext;
 	assert.ok(command);
-	await command.handler("command target inspect", ctx);
-	assert.ok(notices[0]?.includes(text));
+	await command.handler(`command ${sessionId} inspect`, ctx);
+	assert.deepEqual(notices.pop(), [`Ran command inspect on “${sessionId}”: ${text}`, "info"]);
+	await command.handler(`status ${sessionId}`, ctx);
+	assert.deepEqual(notices.pop(), [JSON.stringify(status, null, 2), "info"]);
+	await command.handler("", ctx);
+	assert.deepEqual(notices.pop(), [
+		"The agent dashboard requires an interactive terminal (1 agent loaded).",
+		"warning",
+	]);
+	await command.handler(`configure ${sessionId} name Updated`, ctx);
+	assert.deepEqual(notices.pop(), [`Configuration for “${sessionId}” did not apply: Model unavailable`, "error"]);
+	await command.handler(`attach ${sessionId} fixture/model`, ctx);
+	assert.deepEqual(notices.pop(), [`Configuration for “${sessionId}” did not apply: Host is busy`, "error"]);
+	await command.handler(`timer-cancel ${sessionId} 7`, ctx);
+	assert.deepEqual(notices.pop(), [
+		`Timer #7 for “${sessionId}” already fired; no cancellation took effect.`,
+		"warning",
+	]);
+	assert.deepEqual(notices, []);
+
+	const mounted = deferred<Component>();
+	const tuiContext = {
+		...ctx,
+		mode: "tui",
+		ui: {
+			...ctx.ui,
+			custom: async (
+				factory: (tui: TUI, currentTheme: typeof theme, currentKeys: typeof keys, done: () => void) => Component,
+			) =>
+				new Promise<void>((resolve) =>
+					mounted.resolve(
+						factory(
+							{ terminal: { rows: 16, columns: 36 }, requestRender() {} } as unknown as TUI,
+							theme,
+							keys,
+							resolve,
+						),
+					),
+				),
+		},
+	} as unknown as ExtensionCommandContext;
+	const opened = command.handler(`command ${sessionId} inspect`, tuiContext);
+	const report = await mounted.promise;
+	const top = report.render(36);
+	assert.match(top.join("\n"), /\/agent command/u);
+	assert.doesNotMatch(top.join("\n"), /EXACT_COMMAND_END/u);
+	report.handleInput?.("\x1b[F");
+	const end = report.render(36);
+	assert.match(end.join("\n"), /EXACT_COMMAND_END/u);
+	assert.match(end.join("\n"), /last line/u);
+	assert.ok([...top, ...end].every((line) => visibleWidth(line) <= 36));
+	report.handleInput?.("\x1b");
+	await opened;
+	assert.deepEqual(notices, []);
 });
 it("preserves optional command inputs and resolves directory commands at the primary cwd", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "agent-command-contract-"));
@@ -151,11 +214,13 @@ it("preserves optional command inputs and resolves directory commands at the pri
 	const calls: Array<{ method: string; input: unknown }> = [];
 	AgentManager.prototype.control = async (method, input) => {
 		calls.push({ method, input });
+		if (method === "attach") return { recovery: "retained work resumes" };
+		if (method === "fork") return { identity: "branch:1" };
 		return {};
 	};
 	AgentManager.prototype.place = async (input) => {
 		calls.push({ method: "place", input });
-		return {};
+		return { sessionId: "placed:1", status: { name: "Placed" } };
 	};
 	PlaceBook.prototype.unbind = (area) => {
 		calls.push({ method: "unbind", input: area });

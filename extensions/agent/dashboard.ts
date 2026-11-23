@@ -22,7 +22,7 @@ import { HitMap } from "./view-hits.ts";
 import { keyInput, keyMatches, keyText, MORE_CHORD, MORE_KEY } from "./view-keys.ts";
 import type { Action, Notice, View, ViewHost, ViewTarget } from "./view-model.ts";
 import { ReaderView } from "./view-reader.ts";
-import { plainLine, wrap } from "./view-text.ts";
+import { plainLine, plainText, wrap } from "./view-text.ts";
 import { DashboardResize } from "./dashboard-resize.ts";
 import {
 	mergeAgentCoverage,
@@ -1257,10 +1257,11 @@ export class AgentDashboard implements Component, Focusable {
 	private actionOutcome(result: ActionResult, name: string, id: string, open: boolean): void {
 		const value = typeof result === "object" ? result : undefined;
 		const text = typeof result === "string" ? result : value?.text;
-		if (text) {
+		if (text && !/[\r\n]/u.test(text)) {
 			const state = agentState(this.state, id);
 			state.receipt = plainLine(text);
 			notifyAgentState(state);
+			if (open && (value?.kind === "warning" || value?.kind === "error")) this.show(text, value.kind);
 		}
 		const created = value?.sessionId;
 		if (open && created && created !== id && (name === "fork" || name === "rewind")) {
@@ -3220,7 +3221,11 @@ export async function showAgentDashboard(input: {
 	const { ctx } = input;
 	if (ctx.mode !== "tui") {
 		const page = await input.source.list();
-		ctx.ui.notify(`Agents need the interactive terminal. ${page.rows.length} loaded agents.`, "info");
+		const count = page.rows.length;
+		ctx.ui.notify(
+			`The agent dashboard requires an interactive terminal (${count} ${count === 1 ? "agent" : "agents"} loaded).`,
+			"warning",
+		);
 		return;
 	}
 	await ctx.ui.custom<void>((tui, theme, keys, done) => {
@@ -3238,4 +3243,22 @@ export async function showAgentDashboard(input: {
 		if (input.action) view.openNamedAction(input.action);
 		return view;
 	});
+}
+
+/** Use the editor slot for a local report. Nothing is sent to chat or retained as a message. */
+export async function showAgentCommandReport(ctx: ExtensionContext, action: string, report: string): Promise<void> {
+	const title = `/agent ${plainLine(action)}`;
+	const content = plainText(report);
+	await ctx.ui.custom<void>(
+		(tui, theme, _keys, done) =>
+			new Inspector({
+				theme,
+				target: { id: ctx.sessionManager.getSessionId(), label: title },
+				title,
+				open: (host) => new ReaderView(title, host, () => content),
+				rows: () => Math.max(4, Math.floor(tui.terminal.rows / 2)),
+				requestRender: () => tui.requestRender(),
+				close: () => done(),
+			}),
+	);
 }

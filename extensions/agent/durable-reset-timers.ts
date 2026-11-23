@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { str, opt, obj, type Static } from "@earendil-works/pi-schema";
 import type { AgentCommandAction } from "./command.ts";
+import type { ActionOutcome } from "./action-outcome.ts";
 import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
 import type { CancelTimerResult, ScheduleTimerResult, TimerListRow, TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
@@ -28,15 +29,12 @@ import { createAgentToolCards, type AgentToolCard } from "./tool-cards.ts";
 /** Host control caller: one method against the selected storage. */
 export interface ResetTimerDeps {
 	readonly control: (method: string, input: Record<string, unknown>) => Promise<unknown>;
-	/** Display label of one agent; a failed read falls back to the short identity. */
+	/** Display label of one agent; a failed read falls back to the full identity. */
 	readonly label: (sessionId: string) => Promise<string>;
 }
 
 /** One operator-facing outcome: display text plus the agent it acted on. */
-export interface ResetTimerOutcome {
-	readonly text: string;
-	readonly sessionId?: string;
-}
+export type ResetTimerOutcome = ActionOutcome;
 
 function requireSession(sessionId: string): string {
 	if (sessionId.trim() === "") throw new Error("An agent session is required");
@@ -52,7 +50,7 @@ async function labelOf(deps: ResetTimerDeps, sessionId: string): Promise<string>
 	try {
 		return await deps.label(sessionId);
 	} catch {
-		return sessionId.slice(0, 8);
+		return sessionId;
 	}
 }
 
@@ -62,7 +60,7 @@ type ResetDetails = Pick<ResetResult, "status" | "submissionId" | "entryId" | "r
 
 export async function resetAgentContext(
 	deps: ResetTimerDeps,
-	input: { readonly sessionId: string; readonly handoff?: string },
+	input: { readonly sessionId: string; readonly handoff?: string; readonly operatorNotice?: boolean },
 ): Promise<ResetTimerOutcome & { readonly details: ResetDetails }> {
 	const sessionId = requireSession(input.sessionId);
 	const handoff = input.handoff !== undefined && input.handoff.trim() !== "" ? input.handoff : undefined;
@@ -80,13 +78,28 @@ export async function resetAgentContext(
 		deduped,
 		...(typeof result.identity === "string" ? { identity: result.identity } : {}),
 	};
-	const text =
-		status === "placed"
-			? `Reset placed for “${label}”; the next input starts from the new context. History stays inspectable.`
-			: status === "queued"
-				? `Reset queued for “${label}”; it places at the next native boundary and starts no model turn.`
-				: `Reset did not place for “${label}”: ${reason ?? "unknown reason"}.`;
-	return { text, sessionId, details };
+	if (result.status === "placed")
+		return {
+			text: input.operatorNotice
+				? `Context reset applied for “${label}”; the next input starts from the new context.`
+				: `Reset placed for “${label}”; the next input starts from the new context. History stays inspectable.`,
+			sessionId,
+			details,
+			kind: "success",
+		};
+	if (result.status === "queued")
+		return {
+			text: `Reset queued for “${label}”; it places at the next native boundary and starts no model turn.`,
+			sessionId,
+			details,
+			kind: "info",
+		};
+	return {
+		text: `Reset did not place for “${label}”: ${result.reason ?? "unknown reason"}.`,
+		sessionId,
+		details,
+		kind: "error",
+	};
 }
 
 export async function scheduleAgentInput(
@@ -118,12 +131,14 @@ export async function scheduleAgentInput(
 	const kind = mode === "steer" ? "steering" : "follow-up";
 	if (result.disposition === "retained")
 		return {
-			text: `Retained timer #${result.timerId} for “${label}” is ${result.outcome?.status ?? result.status}. No new timer was created.`,
+			text: `Retained timer #${result.timerId} for “${label}” is ${result.outcome?.status ?? result.status}; no new timer was created.`,
 			sessionId,
+			kind: "info",
 		};
 	return {
-		text: `Scheduled timer #${result.timerId} for “${label}” at ${localTime(result.deadline)} (${kind}). The storage host must run at the deadline.`,
+		text: `Scheduled timer #${result.timerId} for “${label}” at ${localTime(result.deadline)} (${kind}); the storage host must run at the deadline.`,
 		sessionId,
+		kind: "success",
 	};
 }
 
@@ -134,10 +149,15 @@ export async function cancelAgentTimer(
 	const sessionId = requireSession(input.sessionId);
 	const result = (await deps.control("timer-cancel", { sessionId, timerId: input.timerId })) as CancelTimerResult;
 	const label = await labelOf(deps, sessionId);
-	if (result.status === "cancelled") return { text: `Cancelled timer #${result.timerId} for “${label}”.`, sessionId };
-	if (result.status === "fired")
-		return { text: `Timer #${result.timerId} for “${label}” already fired; nothing was cancelled.`, sessionId };
-	return { text: `Timer #${result.timerId} for “${label}” is ${result.status}; nothing was cancelled.`, sessionId };
+	if (result.status === "cancelled" && result.outcome === "marked")
+		return { text: `Cancelled timer #${result.timerId} for “${label}”.`, sessionId, kind: "success" };
+	if (result.status === "cancelled")
+		return { text: `Timer #${result.timerId} for “${label}” was already cancelled.`, sessionId, kind: "info" };
+	return {
+		text: `Timer #${result.timerId} for “${label}” ${result.status === "fired" ? "already fired" : `is ${result.status}`}; no cancellation took effect.`,
+		sessionId,
+		kind: "warning",
+	};
 }
 
 /** One line of a timer listing with its local deadline, state, target, and origin. */
@@ -163,9 +183,13 @@ export async function listAgentTimers(
 	const sessionId = requireSession(input.sessionId);
 	const result = (await deps.control("timer-list", { sessionId })) as { timers: TimerListRow[] };
 	const label = await labelOf(deps, sessionId);
-	if (result.timers.length === 0) return { text: `No scheduled inputs for “${label}”.`, sessionId };
+	if (result.timers.length === 0) return { text: `No scheduled inputs for “${label}”.`, sessionId, kind: "read" };
 	const lines = result.timers.map(timerLine);
-	return { text: `Scheduled inputs for “${label}” (${result.timers.length}):\n${lines.join("\n")}`, sessionId };
+	return {
+		text: `Scheduled inputs for “${label}” (${result.timers.length}):\n${lines.join("\n")}`,
+		sessionId,
+		kind: "read",
+	};
 }
 
 function sessionArgument(): AgentCommandAction["args"][number] {
@@ -182,8 +206,11 @@ export function createResetTimerActions(bind: (ctx: ExtensionContext) => ResetTi
 			confirm: "This starts a new active context for the selected agent. Retained history stays inspectable.",
 			args: [sessionArgument(), { name: "handoff", optional: true, rest: true }],
 			run: async ([sessionId, ...words], ctx) => {
-				const outcome = await resetAgentContext(bind(ctx), { sessionId: sessionId ?? "", handoff: words.join(" ") });
-				return { text: outcome.text, ...(outcome.sessionId === undefined ? {} : { sessionId: outcome.sessionId }) };
+				return resetAgentContext(bind(ctx), {
+					sessionId: sessionId ?? "",
+					handoff: words.join(" "),
+					operatorNotice: true,
+				});
 			},
 		},
 		{
@@ -192,12 +219,11 @@ export function createResetTimerActions(bind: (ctx: ExtensionContext) => ResetTi
 			help: "Use an ISO 8601 date-time with an offset, for example 2026-10-03T09:00:00+10:00, or epoch milliseconds. Follow-up is the busy mode. The input fires only while the storage host runs.",
 			args: [sessionArgument(), { name: "time" }, { name: "message", rest: true }],
 			run: async ([sessionId, when, ...words], ctx) => {
-				const outcome = await scheduleAgentInput(bind(ctx), {
+				return scheduleAgentInput(bind(ctx), {
 					sessionId: sessionId ?? "",
 					deliverAt: when ?? "",
 					message: words.join(" "),
 				});
-				return { text: outcome.text, ...(outcome.sessionId === undefined ? {} : { sessionId: outcome.sessionId }) };
 			},
 		},
 		{
@@ -206,8 +232,7 @@ export function createResetTimerActions(bind: (ctx: ExtensionContext) => ResetTi
 			help: "Shows deadline, target, mode, origin, and state. Cancel with timer-cancel and the timer ID.",
 			args: [sessionArgument()],
 			run: async ([sessionId], ctx) => {
-				const outcome = await listAgentTimers(bind(ctx), { sessionId: sessionId ?? "" });
-				return { text: outcome.text, ...(outcome.sessionId === undefined ? {} : { sessionId: outcome.sessionId }) };
+				return listAgentTimers(bind(ctx), { sessionId: sessionId ?? "" });
 			},
 		},
 		{
@@ -219,8 +244,7 @@ export function createResetTimerActions(bind: (ctx: ExtensionContext) => ResetTi
 				const parsed = Number(timerId);
 				if (!Number.isSafeInteger(parsed) || parsed <= 0)
 					throw new Error("A positive timer ID from /agent timers is required");
-				const outcome = await cancelAgentTimer(bind(ctx), { sessionId: sessionId ?? "", timerId: parsed });
-				return { text: outcome.text, ...(outcome.sessionId === undefined ? {} : { sessionId: outcome.sessionId }) };
+				return cancelAgentTimer(bind(ctx), { sessionId: sessionId ?? "", timerId: parsed });
 			},
 		},
 	];

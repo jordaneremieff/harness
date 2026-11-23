@@ -63,6 +63,7 @@ import {
 	registerResetTimerTools,
 	scheduleAgentInput,
 } from "./durable-reset-timers.ts";
+import { actionErrorCause, agentDisplayName, configureOutcome, type ActionOutcome } from "./action-outcome.ts";
 import { formatEffortAwareness } from "./effort-awareness.ts";
 import { EFFORT_PURPOSE_ENTRY, purposeExcerpt, retainedPurpose } from "./effort-purpose.ts";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
@@ -305,16 +306,26 @@ function controlToolResult(
 				: undefined;
 	return text === undefined ? output : { ...output, content: [{ type: "text", text }] };
 }
-function releaseCommandMessage(value: unknown, label: string): string {
-	const state = value as { retiring: boolean; blockers: string[]; writesPlaced: number };
-	const message = state.retiring
-		? `Released “${label}”; its host is retiring.`
-		: `Stopped “${label}”; the host stays up: ${state.blockers.join("; ")}.`;
-	const writes =
-		state.writesPlaced > 0
-			? ` Placed ${state.writesPlaced} leftover ${state.writesPlaced === 1 ? "write" : "writes"}.`
-			: "";
-	return `${message}${writes}`;
+function releaseCommandOutcome(value: unknown, label: string, sessionId: string): ActionOutcome {
+	const state = value as {
+		retiring?: boolean;
+		aborted?: { cold?: boolean };
+		blockers?: string[];
+		writesPlaced?: number;
+	} | null;
+	const writes = state?.writesPlaced ?? 0;
+	const placed = writes > 0 ? `; placed ${writes} leftover ${writes === 1 ? "write" : "writes"}` : "";
+	if (state?.retiring === true)
+		return {
+			text: `Release of “${label}”: ${state.aborted?.cold === true ? "no live host to retire" : "host retirement requested"}${placed}.`,
+			sessionId,
+			kind: "info",
+		};
+	return {
+		text: `The host of “${label}” stays open${state?.blockers?.length ? `: ${state.blockers.join("; ")}` : ""}${placed}`,
+		sessionId,
+		kind: "warning",
+	};
 }
 
 const observationSchemas: Partial<Record<AgentControlToolName, Schema>> = {
@@ -907,35 +918,35 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 
 	const sessionHelp = "Type part of a session name or directory, then press Tab to insert its ID.";
-	const outcome = (text: string, sessionId?: string): { text: string; sessionId?: string } =>
-		sessionId === undefined ? { text } : { text, sessionId };
-	const shortIdentity = (identity: string): string => {
-		const tail = identity.includes(":") ? identity.slice(identity.lastIndexOf(":") + 1) : identity;
-		return (tail === "" ? identity : tail).slice(0, 8);
-	};
+	const outcome = (text: string, sessionId?: string, kind: ActionOutcome["kind"] = "success"): ActionOutcome =>
+		sessionId === undefined ? { text, kind } : { text, sessionId, kind };
+	const read = (text: string, sessionId?: string) => outcome(text, sessionId, "read");
 	const excerpt = (value: string, limit = 48): string => {
 		const collapsed = value.replace(/\s+/g, " ").trim();
 		return collapsed.length > limit ? `${collapsed.slice(0, limit - 1)}…` : collapsed;
 	};
-	const failureDetail = (value: unknown): string => {
-		const error = (value as { error?: unknown } | null)?.error;
-		return typeof error === "string" && error !== "" ? `: ${excerpt(error, 80)}` : "";
-	};
-	/** Display label of one stored agent: name, else first-task excerpt, else short identity. */
-	const agentLabel = async (sessionId: string): Promise<string> => {
+	const readLabel = async (sessionId: string) => {
 		try {
 			const response = (await getManager().status(sessionId)) as {
-				conversation?: { name?: unknown; firstMessage?: unknown; identity?: unknown };
+				conversation?: { name?: string; firstMessage?: string; identity?: string };
 			};
-			const conversation = response?.conversation;
-			const name = typeof conversation?.name === "string" ? excerpt(conversation.name) : "";
-			if (name !== "") return name;
-			const first = typeof conversation?.firstMessage === "string" ? excerpt(conversation.firstMessage) : "";
-			if (first !== "") return first;
-			return shortIdentity(typeof conversation?.identity === "string" ? conversation.identity : sessionId);
+			return response?.conversation;
 		} catch {
-			return shortIdentity(sessionId);
+			return undefined;
 		}
+	};
+	const agentLabel = async (sessionId: string) => {
+		const conversation = await readLabel(sessionId);
+		return agentDisplayName({ ...conversation, id: conversation?.identity ?? sessionId });
+	};
+	// The reset tool retains its model-facing text independently of command labels.
+	const resetToolLabel = async (sessionId: string) => {
+		const conversation = await readLabel(sessionId);
+		const name = typeof conversation?.name === "string" ? excerpt(conversation.name) : "";
+		const first = typeof conversation?.firstMessage === "string" ? excerpt(conversation.firstMessage) : "";
+		const id = typeof conversation?.identity === "string" ? conversation.identity : sessionId;
+		const tail = id.slice(id.lastIndexOf(":") + 1);
+		return name || first || (tail || id).slice(0, 8);
 	};
 	const actions: AgentCommandAction[] = [
 		{
@@ -950,8 +961,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					cwd?: string;
 					status?: { name?: string };
 				};
-				const label =
-					created.status?.name ?? (prompt === undefined ? shortIdentity(created.sessionId) : excerpt(prompt));
+				const label = agentDisplayName({ id: created.sessionId, name: created.status?.name, firstMessage: prompt });
 				const place = basename(created.cwd ?? ctx.cwd);
 				return outcome(
 					prompt === undefined ? `Created idle agent “${label}” in ${place}` : `Started agent “${label}” in ${place}`,
@@ -964,14 +974,15 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			description: "List Durable agents",
 			args: [],
 			help: "Read saved agents without a writer. Use agent_list to continue bounded pages.",
-			run: async () => asText(await getManager().list()),
+			run: async () => read(asText(await getManager().list())),
 		},
 		{
 			name: "status",
 			description: "Show agent state",
 			args: [{ name: "session", optional: true, complete: "session" }],
 			help: `Without a session, show bounded native conversation state. ${sessionHelp}`,
-			run: async (args) => asText(await getManager().status(args[0], undefined, undefined, {})),
+			run: async ([sessionId]) =>
+				read(asText(await getManager().status(sessionId, undefined, undefined, {})), sessionId),
 		},
 		...["send", "steer"].map(
 			(name): AgentCommandAction => ({
@@ -998,13 +1009,13 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					);
 					const label = await agentLabel(sessionId);
 					// The receipt states whether the input is in the agent's context; an unplaced input waits for the next tool boundary.
-					const placement = (receipt as { placement?: unknown } | null)?.placement;
-					const placed =
-						placement === "placed"
-							? " (placed)"
-							: placement === "unplaced"
-								? " (unplaced: the agent reads it at its next tool boundary)"
-								: "";
+					const admission = receipt as { placement?: unknown; deduped?: boolean } | null;
+					if (admission?.deduped === true)
+						return outcome(`Input for “${label}” was already admitted.`, sessionId, "info");
+					const placement = admission?.placement;
+					let placed = "";
+					if (placement === "placed") placed = " (placed)";
+					if (placement === "unplaced") placed = " (unplaced: the agent reads it at its next tool boundary)";
 					return outcome(
 						`${name === "steer" ? `Sent a correction to “${label}”` : `Sent a task to “${label}”`}${placed}`,
 						sessionId,
@@ -1025,8 +1036,13 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				if (release !== undefined && release !== "release") throw new Error("Use release or omit the second argument");
 				const stopped = await control(release === "release" ? "release" : "abort", { sessionId }, ctx);
 				const label = await agentLabel(sessionId);
-				if (release !== "release") return outcome(`Requested stop for “${label}”`, sessionId);
-				return outcome(releaseCommandMessage(stopped, label), sessionId);
+				if (release === "release") return releaseCommandOutcome(stopped, label, sessionId);
+				const state = stopped as { settled?: boolean } | null;
+				return outcome(
+					state?.settled === true ? `Stop settled for “${label}”.` : `Stop requested for “${label}”.`,
+					sessionId,
+					"info",
+				);
 			},
 		},
 		{
@@ -1038,10 +1054,14 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				{ name: "model", optional: true },
 			],
 			run: async ([sessionId, model], ctx) => {
-				const attached = await control("attach", { sessionId, ...(model === undefined ? {} : { model }) }, ctx);
 				const label = await agentLabel(sessionId);
-				if ((attached as { outcome?: unknown } | null)?.outcome === "failed")
-					return outcome(`Configuration failed for “${label}”${failureDetail(attached)}`, sessionId);
+				if (model !== undefined) {
+					const configured = await configureOutcome(sessionId, label, async () => {
+						const attached = (await control("attach", { sessionId, model }, ctx)) as { recovery?: unknown } | null;
+						return typeof attached?.recovery === "string" ? { outcome: "applied" } : attached;
+					});
+					if (configured.kind === "error") return configured;
+				} else await control("attach", { sessionId }, ctx);
 				return outcome(
 					model === undefined ? `Connected to “${label}”` : `Connected to “${label}” with ${model}`,
 					sessionId,
@@ -1061,7 +1081,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					identity?: string;
 					status?: { name?: string };
 				};
-				const identity = forked.identity ?? sessionId;
+				const identity = forked.identity;
+				if (!identity) throw new Error("The host did not return a branch identity");
 				const label = forked.status?.name ?? (await agentLabel(identity));
 				return outcome(`Created branch “${label}”`, identity);
 			},
@@ -1085,6 +1106,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				return outcome(
 					status === "completed" ? `Compacted “${label}”` : `Compaction ${status} for “${label}”`,
 					sessionId,
+					status === "completed" ? "success" : "info",
 				);
 			},
 		},
@@ -1092,7 +1114,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			name: "inspect",
 			description: "Read retained conversation evidence",
 			args: [{ name: "session", complete: "session" }],
-			run: async ([sessionId], ctx) => asText(await control("inspect", { sessionId }, ctx)),
+			run: async ([sessionId], ctx) => read(asText(await control("inspect", { sessionId }, ctx)), sessionId),
 		},
 		{
 			name: "rewind",
@@ -1107,7 +1129,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					ctx,
 				)) as { identity?: string };
 				const label = await agentLabel(sessionId);
-				return outcome(`Rewound “${label}” before entry ${entryId}`, result.identity ?? sessionId);
+				if (!result.identity) throw new Error("The host did not return a rewind identity");
+				return outcome(`Rewound “${label}” before entry ${entryId}`, result.identity);
 			},
 		},
 		{
@@ -1119,13 +1142,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			],
 			run: async (args, ctx) => {
 				const parsed = parseConfigurationArguments(args);
-				const result = (await control("configure", { sessionId: parsed.sessionId, ...parsed.patch }, ctx)) as {
-					outcome?: string;
-				};
-				const label = await agentLabel(parsed.sessionId);
-				return result?.outcome === "failed"
-					? outcome(`Configuration failed for “${label}”${failureDetail(result)}`, parsed.sessionId)
-					: outcome(`Updated configuration for “${label}”`, parsed.sessionId);
+				return configureOutcome(parsed.sessionId, await agentLabel(parsed.sessionId), () =>
+					control("configure", { sessionId: parsed.sessionId, ...parsed.patch }, ctx),
+				);
 			},
 		},
 		{
@@ -1152,7 +1171,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					text?: string;
 				};
 				const label = await agentLabel(sessionId);
-				const commandText = typeof result?.text === "string" ? result.text : "";
+				if (result?.reloaded !== true && typeof result?.text !== "string")
+					throw new Error(`The host did not return a result for ${name}`);
+				const commandText = result.text;
 				return outcome(
 					result?.reloaded === true
 						? `Reloaded host registrations for “${label}”`
@@ -1176,11 +1197,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					sessionId: string;
 					status?: { name?: string };
 				};
-				const label = result.status?.name ?? (prompt === undefined ? shortIdentity(result.sessionId) : excerpt(prompt));
+				if (!result.sessionId) throw new Error("The host did not return an agent identity");
+				const label = result.status?.name || (await agentLabel(result.sessionId));
 				return outcome(
 					prompt === undefined
 						? `Using “${label}” in ${basename(resolved)}`
-						: `Sent a task to “${label}” in ${basename(resolved)}`,
+						: `Task admitted for “${label}” in ${basename(resolved)}`,
 					result.sessionId,
 				);
 			},
@@ -1189,7 +1211,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			name: "places",
 			description: "List directory bindings",
 			args: [],
-			run: async () => asText(getManager().places.read()),
+			run: async () => read(asText(getManager().places.read())),
 		},
 		{
 			name: "unbind",
@@ -1201,7 +1223,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				const resolved = resolve(ctx.cwd, area);
 				const removed = getManager().places.unbind(resolved);
 				return outcome(
-					removed ? `Removed the directory binding for ${resolved}` : `No directory binding for ${resolved}`,
+					removed ? `Removed the directory binding for ${resolved}.` : `No directory binding exists for ${resolved}.`,
+					undefined,
+					removed ? "success" : "info",
 				);
 			},
 		},
@@ -1214,7 +1238,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		pi,
 		(ctx) => ({
 			control: (method, input) => control(method, input, ctx),
-			label: agentLabel,
+			label: resetToolLabel,
 		}),
 		cards.agent_reset,
 	);
@@ -1238,8 +1262,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					caller(ctx, pi),
 					onCreated,
 				)) as { sessionId: string; cwd?: string; status?: { name?: string } };
-				const label =
-					created.status?.name ?? (prompt === undefined ? shortIdentity(created.sessionId) : excerpt(prompt));
+				const label = agentDisplayName({ id: created.sessionId, name: created.status?.name, firstMessage: prompt });
 				const place = basename(created.cwd ?? ctx.cwd);
 				return outcome(
 					prompt === undefined ? `Created idle agent “${label}” in ${place}` : `Started agent “${label}” in ${place}`,
@@ -1320,7 +1343,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				if (!inbox.hasRows() || !ctx.isIdle()) return;
 				inbox.flush((row, trigger) => sendPeer(row.text, row.details, trigger), wake);
 			} catch (error) {
-				ctx.ui.notify(`Primary inbox delivery paused: ${String(error)}`, "error");
+				ctx.ui.notify(`Primary inbox delivery paused: ${actionErrorCause(error)}`, "error");
 			}
 		};
 		primaryDeliveries.set(sessionId, { retention, inbox, flush });

@@ -27,18 +27,21 @@ async function invoke(args = "", mode: ExtensionContext["mode"] = "tui", copyFai
 }
 
 test("/id copies the bare ID and shows it in the confirmation", async () => {
-	assert.deepEqual(await invoke(), { copies: [id], notices: [[`Session ID ${id} copied`, "info"]] });
+	assert.deepEqual(await invoke(), { copies: [id], notices: [[`Session ID ${id} copied.`, "info"]] });
 });
 
 test("/id still shows the ID when the clipboard is unavailable", async () => {
 	assert.deepEqual(await invoke("", "tui", true), {
 		copies: [id],
-		notices: [[`Session ID ${id} not copied`, "warning"]],
+		notices: [[`Session ID ${id} was not copied: Clipboard unavailable`, "warning"]],
 	});
 });
 
 test("/id rejects arguments without changing the clipboard", async () => {
-	assert.deepEqual(await invoke("other"), { copies: [], notices: [["Usage: /id", "warning"]] });
+	assert.deepEqual(await invoke("other"), {
+		copies: [],
+		notices: [["Use /id without arguments to show the session ID.", "warning"]],
+	});
 });
 
 test("/id does nothing without a UI", async () => {
@@ -46,5 +49,5 @@ test("/id does nothing without a UI", async () => {
 });
 
 test("/id shows the ID in RPC without writing terminal escape sequences", async () => {
-	assert.deepEqual(await invoke("", "rpc"), { copies: [], notices: [[`Session ID ${id} not copied`, "warning"]] });
+	assert.deepEqual(await invoke("", "rpc"), { copies: [], notices: [[`Session ID ${id}`, "info"]] });
 });

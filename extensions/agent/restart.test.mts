@@ -31,7 +31,8 @@ function fixture() {
 	writeFileSync(session, "saved");
 	const events = new EventEmitter();
 	const calls: string[] = [],
-		notices: string[] = [];
+		notices: string[] = [],
+		levels: Array<string | undefined> = [];
 	const host: RestartProcess = Object.assign(events, {
 		argv: [process.execPath, cli, "--fork", "a prompt"],
 		execArgv: ["--title=Pi 'quoted'"],
@@ -68,7 +69,10 @@ function fixture() {
 				calls.push("confirm");
 				return true;
 			},
-			notify: (text: string) => notices.push(text),
+			notify: (text: string, level?: string) => {
+				notices.push(text);
+				levels.push(level);
+			},
 		},
 		shutdown: () => {
 			calls.push("shutdown");
@@ -91,6 +95,7 @@ function fixture() {
 		host,
 		calls,
 		notices,
+		levels,
 		state,
 		ctx,
 		options,
@@ -159,14 +164,14 @@ const refusals: Array<[string, (f: Fixture) => void, RegExp]> = [
 		(f) => {
 			f.host.execve = undefined;
 		},
-		/does not support process.execve/u,
+		/requires a runtime with process\.execve/u,
 	],
 	[
 		"missing executable",
 		(f) => {
 			f.host.execPath = join(f.root, "absent");
 		},
-		/not executable/u,
+		/requires an executable Node binary/u,
 	],
 	[
 		"non-executable runtime",
@@ -174,49 +179,49 @@ const refusals: Array<[string, (f: Fixture) => void, RegExp]> = [
 			f.host.execPath = f.session;
 			chmodSync(f.session, 0o600);
 		},
-		/not executable/u,
+		/requires an executable Node binary/u,
 	],
 	[
 		"unreadable CLI",
 		(f) => {
 			chmodSync(f.cli, 0);
 		},
-		/not readable/u,
+		/requires a readable Pi CLI file/u,
 	],
 	[
 		"missing session accessor",
 		(f) => {
 			f.ctx.sessionManager.getSessionFile = () => undefined;
 		},
-		/not saved/u,
+		/requires a saved session file/u,
 	],
 	[
 		"relative session path",
 		(f) => {
 			f.state.session = "relative.jsonl";
 		},
-		/absolute file/u,
+		/absolute path/u,
 	],
 	[
 		"missing session file",
 		(f) => {
 			unlinkSync(f.session);
 		},
-		/not saved/u,
+		/requires a saved session file/u,
 	],
 	[
 		"empty session file",
 		(f) => {
 			writeFileSync(f.session, "");
 		},
-		/non-empty file/u,
+		/requires a non-empty session file/u,
 	],
 	[
 		"session path is a directory",
 		(f) => {
 			f.state.session = f.root;
 		},
-		/non-empty file/u,
+		/requires a non-empty session file/u,
 	],
 	[
 		"terminal control argument",
@@ -230,14 +235,14 @@ const refusals: Array<[string, (f: Fixture) => void, RegExp]> = [
 		(f) => {
 			f.state.idle = false;
 		},
-		/active or queued work/u,
+		/requires an idle session without queued work/u,
 	],
 	[
 		"queued primary input",
 		(f) => {
 			f.state.queued = true;
 		},
-		/active or queued work/u,
+		/requires an idle session without queued work/u,
 	],
 	[
 		"busy agent hosts",
@@ -265,6 +270,7 @@ for (const [name, arrange, message] of refusals)
 			assert.equal(f.guard.pending, false);
 			assert.equal(f.notices.length, 1);
 			assert.match(f.notices[0], message);
+			assert.deepEqual(f.levels, ["warning"]);
 		} finally {
 			f.close();
 		}
@@ -277,7 +283,7 @@ test("restart refuses arguments without preflight", async () => {
 			throw new Error("preflight ran");
 		};
 		await f.command.handler("now", f.ctx);
-		assert.deepEqual(f.notices, ["Usage: /restart"]);
+		assert.deepEqual(f.notices, ["Use /restart without arguments to restart Pi."]);
 		assert.deepEqual(f.calls, []);
 	} finally {
 		f.close();
@@ -385,7 +391,10 @@ for (const [name, change] of [
 			assert.deepEqual(f.calls, ["confirm"]);
 			assert.equal(f.events.listenerCount("exit"), 0);
 			assert.equal(f.guard.pending, false);
-			assert.match(f.notices[0], /^Restart refused\./u);
+			assert.match(
+				f.notices[0],
+				/^Pi restart (?:requires (?:fresh confirmation|an idle session)|is unavailable: .*Agent sessions)/u,
+			);
 		} finally {
 			f.close();
 		}
@@ -435,7 +444,7 @@ test("restart excludes duplicate admission across registered command instances",
 		const first = command.handler("", f.ctx);
 		await duplicate.handler("", f.ctx);
 		assert.deepEqual(f.calls, ["confirm"]);
-		assert.match(f.notices[0], /already pending/u);
+		assert.match(f.notices[0], /already has a restart pending/u);
 		release(false);
 		await first;
 		assert.equal(f.events.listenerCount("exit"), 0);
@@ -511,7 +520,8 @@ test("shutdown rejection removes the listener and releases admission without uns
 		await f.command.handler("", f.ctx);
 		assert.equal(f.events.listenerCount("exit"), 0);
 		assert.equal(f.guard.pending, false);
-		assert.deepEqual(f.notices, ["Restart failed before shutdown: EACCES. This session remains open."]);
+		assert.deepEqual(f.notices, ["Pi remains open because restart did not reach shutdown: EACCES."]);
+		assert.deepEqual(f.levels, ["error"]);
 	} finally {
 		f.close();
 	}

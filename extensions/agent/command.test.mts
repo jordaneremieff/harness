@@ -488,18 +488,19 @@ describe("agent command discovery and help", () => {
 			["list unwanted", /Too many arguments/],
 			["new --help", /\/agent new \[task\]/],
 			["rewind -h", /Redo work from a mistaken entry/],
-			["console", /Unknown action "console"/],
-			["ls", /Unknown action "ls"/],
-			["help console", /Unknown action "console"/],
-			["help ls", /Unknown action "ls"/],
-			["help missing", /Unknown action "missing"/],
-			["missing", /Unknown action "missing"/],
+			["console", /no action “console”/],
+			["ls", /no action “ls”/],
+			["help console", /no action “console”/],
+			["help ls", /no action “ls”/],
+			["help missing", /no action “missing”/],
+			["missing", /no action “missing”/],
 		] as const) {
 			await command.handler(input, ctx);
-			assert.match(defined(notices.at(-1)).text, expected, input);
+			const notice = defined(notices.at(-1));
+			assert.match(notice.text, expected, input);
+			assert.equal(notice.type, /(?:--help|-h)$/u.test(input) ? "info" : "warning", input);
 		}
 		assert.equal(runtime.mock.callCount(), 0);
-		assert.ok(notices.every((notice) => notice.type === "info"));
 	});
 
 	it("leaves prompts, messages, directory arguments and entry IDs as text, not invented choices", async () => {
@@ -557,7 +558,7 @@ describe("agent command discovery and help", () => {
 		const { ctx, notices } = context();
 		await command.handler("new help with --help output", ctx);
 		assert.deepEqual(calls, [["help", "with", "--help", "output"]]);
-		assert.deepEqual(notices, [{ text: "trust denied", type: "error" }]);
+		assert.deepEqual(notices, [{ text: "/agent new: trust denied", type: "error" }]);
 	});
 });
 
@@ -609,13 +610,14 @@ describe("agent metadata completion", () => {
 
 	it("keeps duplicate and unnamed choices distinct", async () => {
 		const command = completionFixture(async () => [
-			{ ...rows[0], name: "\x1b[31mReview\nparser\x1b[0m", id: "sameprefix-one" },
-			{ ...rows[0], name: "Review parser", id: "sameprefix-two" },
+			{ ...rows[0], name: "\x1b[31mReview\nparser\x1b[0m", id: "storage-111:conversation-1" },
+			{ ...rows[0], name: "Review parser", id: "storage-222:conversation-2" },
 			{ ...rows[0], id: "unnamed" },
 		]);
 		const result = defined(await defined(command.getArgumentCompletions)("status "));
 		assert.equal(new Set(result.map((item) => item.label)).size, 3);
-		assert.ok(result.some((item) => item.label.includes("sameprefix-one")));
+		assert.ok(result.some((item) => item.label.includes("storage-111:conversation-1")));
+		assert.ok(result.some((item) => item.label.includes("storage-222:conversation-2")));
 		assert.ok(result.every((item) => !/[\x1b\n]/.test(item.label + item.description)));
 	});
 

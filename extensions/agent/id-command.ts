@@ -1,4 +1,5 @@
 import { copyToClipboard, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { actionErrorCause } from "./action-outcome.ts";
 
 export function createIdCommand(copy = copyToClipboard) {
 	return {
@@ -6,21 +7,21 @@ export function createIdCommand(copy = copyToClipboard) {
 		handler: async (args: string, ctx: ExtensionContext): Promise<void> => {
 			if (!ctx.hasUI) return;
 			if (args.trim()) {
-				ctx.ui.notify("Usage: /id", "warning");
+				ctx.ui.notify("Use /id without arguments to show the session ID.", "warning");
 				return;
 			}
 			const id = ctx.sessionManager.getSessionId();
 			// Pi's clipboard helper can write terminal escapes to stdout, which RPC reserves for JSON.
-			let copied = false;
-			if (ctx.mode === "tui") {
-				try {
-					await copy(id);
-					copied = true;
-				} catch {
-					// The ID remains available to copy by hand.
-				}
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify(`Session ID ${id}`, "info");
+				return;
 			}
-			ctx.ui.notify(`Session ID ${id} ${copied ? "copied" : "not copied"}`, copied ? "info" : "warning");
+			try {
+				await copy(id);
+				ctx.ui.notify(`Session ID ${id} copied.`, "info");
+			} catch (error) {
+				ctx.ui.notify(`Session ID ${id} was not copied: ${actionErrorCause(error)}`, "warning");
+			}
 		},
 	};
 }

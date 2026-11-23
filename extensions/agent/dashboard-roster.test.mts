@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
@@ -263,11 +264,18 @@ it("a time-like name stays an ordinary roster name", () => {
 	assert.equal(lines[4]?.trim(), "");
 });
 
-it("duplicate titles receive distinct shortest suffixes and coverage remains explicit", () => {
+it("duplicate titles keep complete addresses until the viewport clips them", () => {
 	const rows = [row("same-prefix-one", { name: "Audit" }), row("same-prefix-two", { name: "Audit" })];
 	const lines = rosterLines(rows, rows[0].id, 38, 12, 0, theme);
-	assert.match(lines.join("\n"), /Audit -one/);
-	assert.match(lines.join("\n"), /Audit -two/);
+	assert.match(lines.join("\n"), /Audit same-prefix-one/);
+	assert.match(lines.join("\n"), /Audit same-prefix-two/);
+	const narrow = rosterLines(rows, rows[0].id, 20, 12, 0, theme);
+	assert.match(stripVTControlCharacters(narrow[1] ?? ""), /Audit same-pref…/u);
+	assert.ok(narrow.every((line) => visibleWidth(line) <= 20));
+	assert.match(
+		rosterLines([row("unnamed-storage:4", { name: undefined })], undefined, 38, 12, 0, theme).join("\n"),
+		/unnamed-storage:4/u,
+	);
 	assert.match(
 		coverageText(rosterCoverage(rows, { complete: false, skipped: 1, omitted: 2, nextCursor: "more" })),
 		/skipped.*not loaded.*more records/,

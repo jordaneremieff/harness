@@ -8,7 +8,7 @@
 import { type Choice, type FieldSpec, Form } from "./view-form.ts";
 import type { View, ViewHost } from "./view-model.ts";
 import { LoadingView, ReaderView } from "./view-reader.ts";
-import { plainLine } from "./view-text.ts";
+import { plainLine, plainText } from "./view-text.ts";
 import type { AgentActionOutcome } from "./command.ts";
 import { AGENT_INPUT_KIND, isInputKind } from "./input-entry.ts";
 import type { AgentConversationEntry, AgentConversationSummary } from "./dashboard-types.ts";
@@ -129,10 +129,19 @@ export function deliveryText(value: string, now: number): string {
 	}
 }
 
-function finish(host: AgentFormHost, name: string, result: ActionResult) {
+function finish(host: AgentFormHost, name: string, result: ActionResult, view: ViewHost) {
 	host.outcome(result, name);
+	if (view.signal.aborted) return;
 	const message = text(result);
-	return { close: true, ...(message ? { notice: { text: message, kind: "success" as const } } : {}) };
+	const kind = typeof result === "object" ? result.kind : undefined;
+	if (message && /[\r\n]/u.test(message)) {
+		view.push((reader) => new ReaderView("Command result", reader, () => plainText(message)));
+		return;
+	}
+	return {
+		close: true,
+		...(message ? { notice: { text: message, kind: kind === "read" ? ("info" as const) : (kind ?? "info") } } : {}),
+	};
 }
 
 /** The host's models by exact identity; a current model the host does not list stays choosable. */
@@ -204,7 +213,7 @@ function configureView(host: AgentFormHost, view: ViewHost): View {
 			action: { label: "Apply" },
 			host: view,
 			submit: async (values) =>
-				finish(host, "configure", await host.configure(configurationPatch(host, values, current))),
+				finish(host, "configure", await host.configure(configurationPatch(host, values, current)), view),
 		});
 	});
 }
@@ -260,7 +269,7 @@ function branchForm(host: AgentFormHost, view: ViewHost, rewind: boolean, choice
 			const result = rewind
 				? await host.run("rewind", [entry, values.correction ?? ""])
 				: await host.run("fork", entry ? [entry] : []);
-			return finish(host, rewind ? "rewind" : "fork", result);
+			return finish(host, rewind ? "rewind" : "fork", result, view);
 		},
 	});
 }
@@ -301,6 +310,7 @@ function contextView(host: AgentFormHost, view: ViewHost, reset: boolean): View 
 				host,
 				reset ? "reset" : "compact",
 				await host.run(reset ? "reset" : "compact", value ? [value] : []),
+				view,
 			);
 		},
 	});
@@ -324,7 +334,7 @@ function commandView(host: AgentFormHost, view: ViewHost): View {
 			host: view,
 			validate: (values) => ((values.name ?? "").trim() ? undefined : "Choose or type a command."),
 			submit: async (values) =>
-				finish(host, "command", await host.run("command", [values.name ?? "", values.args ?? ""])),
+				finish(host, "command", await host.run("command", [values.name ?? "", values.args ?? ""]), view),
 		});
 	});
 }
@@ -376,8 +386,9 @@ function scheduleView(host: AgentFormHost, view: ViewHost): View {
 				deliverAt,
 				mode: values.mode === "steer" ? "steer" : "followUp",
 			});
-			record.schedule = undefined;
-			return finish(host, "schedule", result);
+			if (typeof result !== "object" || result.kind === undefined || result.kind === "success")
+				record.schedule = undefined;
+			return finish(host, "schedule", result, view);
 		},
 	});
 	return form;
@@ -400,7 +411,8 @@ function timersView(host: AgentFormHost, view: ViewHost): View {
 			action: { label: "Cancel scheduled message", tone: "danger" },
 			cancelLabel: "Back",
 			host: view,
-			submit: async (values) => finish(host, "timer-cancel", await host.run("timer-cancel", [values.timer ?? ""])),
+			submit: async (values) =>
+				finish(host, "timer-cancel", await host.run("timer-cancel", [values.timer ?? ""]), view),
 		});
 	});
 }
@@ -575,7 +587,7 @@ export function actionView(name: string, host: AgentFormHost, view: ViewHost): V
 	const run =
 		(action: string, args: string[] = []) =>
 		async () =>
-			finish(host, action, await host.run(action, args));
+			finish(host, action, await host.run(action, args), view);
 	switch (name) {
 		case "configure":
 			return configureView(host, view);

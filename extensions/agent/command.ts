@@ -14,10 +14,12 @@ import type { AgentFormHost, ActionResult } from "./agent-forms.ts";
 import type { ProfileDraft } from "./profile-dialog.ts";
 import type { TimerListRow, TimerMode } from "./durable-timers.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentObservationSources } from "./dashboard-types.ts";
-import { actionOutcomeText, agentDisplayName, outcomeSessionId } from "./action-outcome.ts";
+import { actionErrorCause, agentDisplayName, configureOutcome, type ActionOutcome } from "./action-outcome.ts";
+import { plainLine } from "./view-text.ts";
 
 interface DashboardRuntime {
 	readonly showAgentDashboard: typeof import("./dashboard.ts").showAgentDashboard;
+	readonly showAgentCommandReport: typeof import("./dashboard.ts").showAgentCommandReport;
 	readonly dashboardSessionState: typeof import("./dashboard-state.ts").dashboardSessionState;
 	readonly readAgentBranch: typeof import("./agent-git.ts").readAgentBranch;
 }
@@ -30,6 +32,7 @@ function loadDashboardRuntime(): Promise<DashboardRuntime> {
 		import("./agent-git.ts"),
 	]).then(([dashboard, state, git]) => ({
 		showAgentDashboard: dashboard.showAgentDashboard,
+		showAgentCommandReport: dashboard.showAgentCommandReport,
 		dashboardSessionState: state.dashboardSessionState,
 		readAgentBranch: git.readAgentBranch,
 	}));
@@ -49,11 +52,7 @@ interface CommandArgument {
 	complete?: "session" | "session-control" | "command";
 }
 
-/** One action outcome: display text plus the agent it acted on, when any. */
-export interface AgentActionOutcome {
-	text: string;
-	sessionId?: string;
-}
+export type AgentActionOutcome = ActionOutcome;
 
 /** Ordinary routes the work view uses beyond the text actions. */
 export interface AgentViewWiring {
@@ -98,15 +97,10 @@ const formName = (name: string) => (name === "timer-cancel" ? "timers" : name);
 
 /** A TUI command that names a target but not its other arguments opens that target's form instead. */
 function opensForm(action: AgentCommandAction, args: string[]): boolean {
-	if (!args[0] || !VIEW_ACTIONS.has(action.name)) return false;
-	return action.name === "profile" || argumentHelp(action, args) !== undefined;
-}
-
-/** The owner's stated reason for a refused request, bounded for one line. */
-function failureReason(result: { reason?: unknown; error?: unknown }): string {
-	const reason =
-		typeof result.reason === "string" ? result.reason : typeof result.error === "string" ? result.error : "";
-	return reason ? `: ${reason.slice(0, 200)}` : "";
+	if (!args[0] || helpFlag(args) || !VIEW_ACTIONS.has(action.name)) return false;
+	return action.name === "profile"
+		? args.length === 1
+		: args.length < action.args.filter((arg) => !arg.optional).length;
 }
 
 export interface AgentCommandAction {
@@ -160,12 +154,9 @@ function sessionChoice(
 ): SearchChoice {
 	const title = sessionLabel(row);
 	const duplicates = sessions.filter((other) => sessionLabel(other) === title);
-	const id = duplicates.some((other) => other.id !== row.id && other.id.slice(0, 8) === row.id.slice(0, 8))
-		? row.id
-		: row.id.slice(0, 8);
 	return {
 		value: `${before}${row.profile?.handle ?? row.id}${suffix}`,
-		label: duplicates.length > 1 || !row.name ? `${title} (${id})` : title,
+		label: duplicates.length > 1 || !row.name ? `${title} (${row.id})` : title,
 		description: `${row.profile?.role ? `${plain(row.profile.role)} · ` : ""}${sessionState(row)}${row.ownerLabel ? ` · ${plain(row.ownerLabel)}` : ""} · ${plain(row.cwd)} · ${new Date(row.modifiedAt).toISOString()}`,
 		search: `${row.id} ${title} ${plain(row.profile?.role ?? "")} ${plain(row.cwd)}`,
 	};
@@ -189,17 +180,20 @@ async function metadataChoices(
 		.flatMap((row) => {
 			const choice = sessionChoice(row, sessions, before, suffix);
 			return row.profile?.handle
-				? [choice, { ...choice, value: `${before}${row.id}${suffix}`, label: `${choice.label} (${row.id})` }]
+				? [choice, { ...choice, value: `${before}${row.id}${suffix}`, label: `${sessionLabel(row)} (${row.id})` }]
 				: [choice];
 		});
 }
 
-function argumentHelp(action: AgentCommandAction, args: string[]): string | undefined {
-	if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) return actionHelp(action);
+const helpFlag = (args: string[]) => args.length === 1 && (args[0] === "--help" || args[0] === "-h");
+
+function argumentHelp(action: AgentCommandAction, args: string[]): ActionOutcome | undefined {
+	if (helpFlag(args)) return { text: actionHelp(action), kind: "read" };
 	const required = action.args.filter((arg) => !arg.optional).length;
-	if (args.length < required) return `Missing ${action.args[args.length].name}.\n${actionHelp(action)}`;
+	if (args.length < required)
+		return { text: `Missing ${action.args[args.length].name}.\n${actionHelp(action)}`, kind: "warning" };
 	if (!action.args.some((arg) => arg.rest) && args.length > action.args.length)
-		return `Too many arguments.\n${actionHelp(action)}`;
+		return { text: `Too many arguments.\n${actionHelp(action)}`, kind: "warning" };
 	return undefined;
 }
 
@@ -213,27 +207,20 @@ export async function executeAgentAction(
 	return argumentHelp(action, args) ?? (await action.run(args, ctx, onCreated));
 }
 
-/** Human display text for one action result; legacy control JSON is summarized with the agent's display name. */
-async function displayResult(
-	result: string | AgentActionOutcome | undefined,
-	sources: AgentObservationSources,
-): Promise<string | undefined> {
-	if (result === undefined) return undefined;
-	if (typeof result === "object") return result.text;
-	const sessionId = outcomeSessionId(result);
-	let nameFor: ((id: string) => string | undefined) | undefined;
-	if (sessionId !== undefined) {
-		try {
-			const rows = (await sources.list()).rows;
-			nameFor = (id) => {
-				const row = rows.find((item) => item.id === id);
-				return row === undefined ? undefined : agentDisplayName(row);
-			};
-		} catch {
-			// A failed roster read leaves the short identity in the summary.
-		}
+async function presentActionResult(
+	ctx: ExtensionContext,
+	name: string,
+	result: string | ActionOutcome | undefined,
+): Promise<void> {
+	const text = typeof result === "string" ? result : result?.text;
+	if (!text) return;
+	if (ctx.hasUI && ctx.mode === "tui" && /[\r\n]/u.test(text)) {
+		const { showAgentCommandReport } = await loadDashboardRuntime();
+		await showAgentCommandReport(ctx, ["-h", "--help"].includes(name) ? "help" : name, text);
+		return;
 	}
-	return actionOutcomeText(result, nameFor);
+	const kind = typeof result === "object" ? result.kind : undefined;
+	ctx.ui.notify(ctx.mode === "tui" ? plainLine(text) : text, kind === "warning" || kind === "error" ? kind : "info");
 }
 
 /** The same actions own execution, argument validation, help, and native completion. */
@@ -257,8 +244,10 @@ export function createAgentCommand(
 	openDashboard(ctx: ExtensionContext, open?: { select?: string; action?: string }): Promise<void>;
 } {
 	const find = (name: string) => commands.find((action) => action.name === name);
-	const unknown = (name: string) =>
-		`Unknown action "${plain(name).slice(0, 80)}". Use /agent help, or type /agent and a space to choose an action.`;
+	const unknown = (name: string): ActionOutcome => ({
+		text: `/agent has no action “${plain(name).slice(0, 80)}”; use /agent help to see the available actions.`,
+		kind: "warning",
+	});
 	const overview = () =>
 		[
 			"/agent manages durable sessions. Choose an action below.",
@@ -347,15 +336,11 @@ export function createAgentCommand(
 					.getAvailable()
 					.map((model) => ({ identity: `${model.provider}/${model.id}`, name: model.name })),
 			configure: async (patch): Promise<ActionResult> => {
-				const result = (await wiring.control("configure", { sessionId: row.id, ...patch }, ctx)) as {
-					outcome?: string;
-					reason?: unknown;
-					error?: unknown;
-				};
-				const label = agentDisplayName(row);
-				if (result?.outcome === "failed")
-					throw new Error(`Configuration failed for “${label}”${failureReason(result)}`);
-				return { text: `Updated configuration for “${label}”`, sessionId: row.id };
+				const result = await configureOutcome(row.id, agentDisplayName(row), () =>
+					wiring.control("configure", { sessionId: row.id, ...patch }, ctx),
+				);
+				if (result.kind === "error") throw new Error(result.text);
+				return result;
 			},
 			commands: () => nativeCommands(row.id, ctx),
 			profile: (method, input) => wiring.control(method, input, ctx),
@@ -404,7 +389,8 @@ export function createAgentCommand(
 				...relationOperations(ctx),
 				submit: async ({ id, text, mode }) => {
 					const result = await executeAgentAction(requireAction(mode === "steer" ? "steer" : "send"), [id, text], ctx);
-					return { text: actionOutcomeText(result) ?? "Message admitted", sessionId: id };
+					const receipt = typeof result === "string" ? result : result?.text;
+					return { text: receipt ?? "Message admitted", sessionId: id };
 				},
 				newAgent: ({ onCreated, ...input }) => wiring.newAgent(input, ctx, onCreated),
 				newDefaults: () => wiring.newDefaults(ctx),
@@ -423,7 +409,7 @@ export function createAgentCommand(
 		}
 	};
 	/** Help, an action's result text, or a form in the work view when a TUI command names only its target. */
-	const dispatch = async (name: string, args: string[], ctx: ExtensionContext): Promise<string | undefined> => {
+	const dispatch = async (name: string, args: string[], ctx: ExtensionContext) => {
 		if (["--help", "-h"].includes(name)) name = "help";
 		const action = find(name);
 		if (!action) return unknown(name);
@@ -431,7 +417,7 @@ export function createAgentCommand(
 			await openDashboard(ctx, { select: await listedTarget(args[0] ?? ""), action: formName(action.name) });
 			return undefined;
 		}
-		return displayResult(await executeAgentAction(action, args, ctx), sources);
+		return executeAgentAction(action, args, ctx);
 	};
 	return {
 		openDashboard,
@@ -461,10 +447,9 @@ export function createAgentCommand(
 			try {
 				if (dashboardOpen && name === "help") return;
 				if (!name) return await openDashboard(ctx);
-				const text = await dispatch(name, args, ctx);
-				if (text !== undefined) ctx.ui.notify(text, "info");
+				await presentActionResult(ctx, name, await dispatch(name, args, ctx));
 			} catch (error) {
-				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				ctx.ui.notify(`${name ? `/agent ${plain(name)}` : "Agent dashboard"}: ${actionErrorCause(error)}`, "error");
 			}
 		},
 	};

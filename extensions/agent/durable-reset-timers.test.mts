@@ -111,7 +111,7 @@ it("shows a retained terminal timer without claiming a new pending schedule", as
 		},
 		{ sessionId: "storage-a", message: "later", deliverAt: Date.now() },
 	);
-	assert.match(result.text, /Retained timer #7.*aborted.*No new timer/u);
+	assert.match(result.text, /Retained timer #7.*aborted.*no new timer/u);
 	assert.doesNotMatch(result.text, /Scheduled timer|host must run/u);
 });
 
@@ -195,4 +195,20 @@ it("runs the operator reset, schedule, list, and cancel actions with operator or
 	assert.match(cancelled.text, /Cancelled timer #7/u);
 	assert.equal(calls.at(-1)?.method, "timer-cancel");
 	assert.equal(calls.at(-1)?.input.timerId, 7);
+});
+
+it("reports a fired timer unchanged and uses the whole identity when the label read fails", async () => {
+	const sessionId = "storage-123456789:conversation-456789";
+	const cancel = createResetTimerActions(() => ({
+		label: async () => {
+			throw new Error("roster unavailable");
+		},
+		control: async () => ({ timerId: 7, outcome: "terminal", status: "fired" }),
+	})).find((action) => action.name === "timer-cancel");
+	assert.ok(cancel);
+	assert.deepEqual(await cancel.run([sessionId, "7"], {} as never), {
+		text: `Timer #7 for “${sessionId}” already fired; no cancellation took effect.`,
+		sessionId,
+		kind: "warning",
+	});
 });
