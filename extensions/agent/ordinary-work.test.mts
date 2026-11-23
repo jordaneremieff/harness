@@ -12,7 +12,6 @@ import {
 import type { TUI } from "@earendil-works/pi-tui";
 import { createRequire } from "node:module";
 import type { ContinuityFact } from "./continuity-facts.ts";
-import { dashboardClock } from "./dashboard-time.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import {
 	ORDINARY_COMPLETE_ANSWER,
@@ -391,8 +390,8 @@ describe("the state note card", () => {
 		const streaming = call?.render(60) ?? [];
 		assert.deepEqual(
 			plain(streaming),
-			["", " agent_yield · ending turn", " Two workers run; their results follow.", ""],
-			"white space collapses, and an unsettled call shows no hint",
+			["", " agent_yield End turn", " Two workers run;", " their results follow.", ""],
+			"submitted line breaks stay visible, and a note that fits shows no hint",
 		);
 		assert.ok(
 			streaming.every((line) => line.startsWith("<customMessageBg>")),
@@ -423,20 +422,16 @@ describe("the state note card", () => {
 	it("says that the turn ended, which results are due and when, and shows three note lines with Pi's expansion hint", () => {
 		const { result } = row({});
 		const lines = plain(result?.render(100));
-		assert.equal(
-			lines[1],
-			` agent_yield · turn ended · 2 agent results due · 1 scheduled input · ${dashboardClock(at)}`,
-			"the title names the tool, then what happened",
-		);
-		assert.equal(lines.length, 1 + 1 + 3 + 1 + 1, "padding, title, three note lines, hint, padding");
+		assert.equal(lines[1], " agent_yield Turn ended");
 		assert.match(
-			lines[5] ?? "",
-			/^ \.\.\. \(\d+ more lines?, ctrl\+o to expand\)$/u,
-			"the hint of Pi's tool cards, without a click instruction",
+			lines[2] ?? "",
+			/^ 2 agent results due · 1 scheduled input · (?:\d{1,2} [A-Z][a-z]{2} )?\d{2}:\d{2}$/u,
 		);
+		assert.equal(lines.length, 1 + 1 + 1 + 3 + 1 + 1, "padding, title, facts, three note lines, hint, padding");
+		assert.match(lines[6] ?? "", /^ \.\.\. \(\d+ more lines?, ctrl\+o to expand\)$/u);
 		assert.ok(
-			lines.slice(2, 5).every((line) => !line.endsWith("…")),
-			"collapsed note lines end at word boundaries without a clipped tail",
+			lines.slice(3, 6).every((line) => !line.endsWith("…")),
+			"the note wraps instead of clipping",
 		);
 		assert.doesNotMatch(lines.join("\n"), /Parser review|starts the next turn/u, "details stay hidden until expansion");
 		const short = plain(row({}, { ...details, note: "Short note." }).result?.render(100));
@@ -445,7 +440,7 @@ describe("the state note card", () => {
 			row({ keyHint: (id: string, description: string) => `[${id}] ${description}` }).result?.render(100),
 		);
 		assert.match(
-			hinted[5] ?? "",
+			hinted[6] ?? "",
 			/^ \.\.\. \(\d+ more lines?, \[app\.tools\.expand\] to expand\)$/u,
 			"Pi's own key hint formats the key when the context supplies it",
 		);
@@ -459,7 +454,8 @@ describe("the state note card", () => {
 		assert.match(text, /Results due from:/u);
 		assert.match(text, /^ {3}Parser review · anthropic\/claude-opus-5-5 · high · now working$/mu);
 		assert.match(text, /^ {3}Lint sweep · now done$/mu);
-		assert.match(text, /^ {3}worker-z · scheduled input$/mu, "an unknown agent keeps its exact identity");
+		assert.match(text, /Scheduled inputs for:\n {3}worker-z$/mu, "an unknown agent keeps its exact identity");
+		assert.doesNotMatch(text.split("Scheduled inputs for:")[0], /worker-z/u, "scheduled inputs are not results due");
 		assert.match(
 			lines.join(" ").replace(/\s+/gu, " "),
 			/A result or message from an agent, or your input, starts the next turn\./u,
@@ -468,15 +464,64 @@ describe("the state note card", () => {
 		assert.doesNotMatch(text, /to expand/u);
 	});
 
+	it("does not report scheduled inputs or unconfirmed requests as results due", () => {
+		const pending = {
+			...details,
+			note: "Two requests remain open.",
+			waiting: [
+				{ sessionId: "worker-x", state: "scheduled" },
+				{ sessionId: "worker-y", state: "unconfirmed" },
+			],
+		};
+		const collapsed = plain(row({}, pending).result?.render(100)).join("\n");
+		assert.match(collapsed, /1 scheduled input · 1 unconfirmed request/u);
+		const expanded = plain(row({ expanded: true }, pending).result?.render(100)).join("\n");
+		assert.match(expanded, /Scheduled inputs for:\n {3}worker-x/u);
+		assert.match(expanded, /Admission not confirmed for:\n {3}worker-y/u);
+		assert.doesNotMatch(collapsed + expanded, /results? due/iu);
+	});
+
 	it("draws a failed call in the error background with its error", () => {
 		const { result } = row({ isError: true }, { note: "Short note." }, "agent_yield takes a note");
 		const drawn = result?.render(60) ?? [];
 		assert.ok(drawn.every((line) => line.startsWith("<toolErrorBg>")));
 		assert.deepEqual(
 			plain(drawn),
-			["", " agent_yield · could not end the turn", " Short note.", " agent_yield takes a note", ""],
+			["", " agent_yield Turn did not end", " Short note.", " agent_yield takes a note", ""],
 			"no expansion hint when nothing is hidden",
 		);
+	});
+
+	it("uses the key before settlement and only offers click for a finished card", () => {
+		const long = "One\nTwo\nThree\nFour";
+		const f = fixture();
+		const call = (options: Record<string, unknown>) =>
+			plain(
+				f.tool
+					.renderCall?.({ note: long } as never, theme, { ...base, argsComplete: true, ...options } as never)
+					?.render(70),
+			);
+		assert.match(call({}).join("\n"), /1 more line, ctrl\+o to expand/u);
+		assert.doesNotMatch(call({ keyText: () => "" }).join("\n"), /to expand/u);
+		assert.doesNotMatch(call({ argsComplete: false }).join("\n"), /to expand/u);
+		assert.equal(
+			plain(row({ keyText: () => "" }, { ...details, note: "Short note." }).result?.render(100)).at(-2),
+			" ... (click to expand)",
+		);
+		const machineReplay = plain(row({}, { note: "Short note." }).result?.render(100)).join("\n");
+		assert.doesNotMatch(machineReplay, /Turn ended|to expand/u);
+	});
+
+	it("keeps the diagnostic tail available on expansion", () => {
+		const diagnostic = "First cause\nMore context\nScope\nLast cause";
+		const collapsed = plain(row({ isError: true }, { note: "Short note." }, diagnostic).result?.render(100));
+		assert.match(collapsed.join("\n"), /First cause[\s\S]*1 more line, ctrl\+o to expand/u);
+		assert.doesNotMatch(collapsed.join("\n"), /Last cause/u);
+		const expanded = plain(
+			row({ isError: true, expanded: true }, { note: "Short note." }, diagnostic).result?.render(100),
+		);
+		assert.match(expanded.join("\n"), /First cause[\s\S]*Last cause/u);
+		assert.doesNotMatch(expanded.join("\n"), /to expand/u);
 	});
 
 	it("expands and collapses on a plain click anywhere on the card inside Pi's tool row", async (t) => {
@@ -529,7 +574,7 @@ describe("the state note card", () => {
 		assert.equal(click(noteRow)?.handled, true, "a click on the note text expands the card");
 		assert.match(lines().join("\n"), /Results due from:/u);
 		assert.doesNotMatch(lines().join("\n"), /to expand/u);
-		const titleRow = lines().findIndex((line) => line.includes("agent_yield · turn ended"));
+		const titleRow = lines().findIndex((line) => line.includes("agent_yield Turn ended"));
 		assert.equal(click(titleRow)?.handled, true, "a click on the title collapses it again");
 		assert.doesNotMatch(lines().join("\n"), /Results due from:/u);
 	});

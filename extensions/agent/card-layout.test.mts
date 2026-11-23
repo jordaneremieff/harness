@@ -117,54 +117,58 @@ function nativeTool(
 }
 
 it("all native tool rows share two-tier known headers, native padding and one hint", () => {
-	const args = {
-		results: [{ sessionId: identity, submissionId: 1 }],
-		sessionId: identity,
-		action: "read",
-		name: "reload",
-		message: "Task",
-		summary: "Keep facts",
-		view: "history",
+	const dependencies = [{ sessionId: identity, submissionId: 1 }];
+	const calls: Record<string, [Record<string, unknown>, string]> = {
+		agent_abort: [{ sessionId: identity }, "Parser review"],
+		agent_attach: [{ sessionId: identity }, "Parser review"],
+		agent_brief: [{ name: "Reader", objective: "Review source" }, "Reader"],
+		agent_collaborate: [{ action: "read", threadId: "storage/thread" }, "storage/thread"],
+		agent_command: [{ sessionId: identity, name: "reload" }, "reload"],
+		agent_compact: [{ sessionId: identity, instructions: "Keep source facts" }, "Parser review"],
+		agent_configure: [{ sessionId: identity, thinkingLevel: "low" }, "Parser review"],
+		agent_fork: [{ sessionId: identity, entryId: "4" }, "Parser review"],
+		agent_inspect: [{ sessionId: identity, view: "exact", entryId: 4 }, "entry 4"],
+		agent_intent: [{ action: "publish", purpose: "Review the parser" }, "Parser review"],
+		agent_list: [{ query: "parser" }, "parser"],
+		agent_place: [{ area: "/work", topic: "Parser" }, "/work"],
+		agent_profile: [{ sessionId: identity, action: "read" }, "Parser review"],
+		agent_reset: [{ sessionId: identity, handoff: "Review the other branch" }, "Parser review"],
+		agent_rewind: [{ sessionId: identity, entryId: "4", correction: "Review source" }, "Parser review"],
+		agent_send: [{ sessionId: identity, message: "Review source" }, "Parser review"],
+		agent_spawn: [{ name: "Reader", prompt: "Review source" }, "Reader"],
+		agent_status: [{ sessionId: identity }, "Parser review"],
+		agent_steer: [{ sessionId: identity, message: "Review source" }, "Parser review"],
+		agent_work: [
+			{ action: "continue", request: "request-1", results: dependencies, note: "Read the result" },
+			"request request-1",
+		],
 	};
 	const cards = createAgentToolCards(() => [row]);
 	for (const name of Object.keys(cards)) {
+		const [args, subject] = calls[name];
 		const component =
 			name === "agent_intent"
-				? nativeTool(
-						name,
-						{ action: "publish", purpose: "Review the parser" },
-						{
-							arbitrary: true,
-							published: {
-								id: identity,
-								name: row.name,
-								model,
-								thinkingLevel: model.thinkingLevel,
-								intentClaim: { purpose: "Review the parser" },
-							},
+				? nativeTool(name, args, {
+						arbitrary: true,
+						published: {
+							id: identity,
+							name: row.name,
+							model,
+							thinkingLevel: model.thinkingLevel,
+							intentClaim: { purpose: "Review the parser" },
 						},
-					)
-				: name === "agent_work"
-					? nativeTool(
-							name,
-							{ action: "continue", request: "request-1", results: args.results, note: "Read the result" },
-							{ arbitrary: true, sessionId: identity },
-						)
-					: nativeTool(name, args, { arbitrary: true, sessionId: identity });
+					})
+				: nativeTool(name, args, { arbitrary: true, sessionId: identity });
 		const lines = clean(component);
 		assert.equal(lines[0]?.trim(), "", name);
 		assert.equal(lines[1]?.trim(), "", name);
 		assert.equal(lines.at(-1)?.trim(), "", name);
 		const first = lines.findIndex((line) => line.trim());
-		assert.ok(lines[first]?.includes(name), name);
-		if (name === "agent_work") {
-			assert.match(lines[first] ?? "", /agent_work · continue/u);
-			assert.doesNotMatch(lines.slice(first, first + 2).join("\n"), /Parser review|provider\/model|xhigh/u);
-		} else if (name !== "agent_list") {
-			assert.ok(lines[first]?.includes("Parser review"), name);
-			assert.doesNotMatch(lines[first] ?? "", /provider\/model|xhigh/u, name);
-			assert.match(lines[first + 1]?.trim() ?? "", /^provider\/model · xhigh(?: ·|$)/u, name);
-		}
+		assert.equal(lines[first]?.trim(), `${name} ${subject}`);
+		assert.doesNotMatch(lines[first] ?? "", /provider\/model|xhigh/u, name);
+		if (args.sessionId || name === "agent_intent")
+			assert.match(lines[first + 1]?.trim() ?? "", /(?:^| · )provider\/model · xhigh(?: ·|$)/u, name);
+		else if (name === "agent_work") assert.equal(lines[first + 1]?.trim(), "continue · 1 result reference");
 		assert.equal(lines.filter((line) => /to expand|expand for full/u.test(line)).length, 1, name);
 		assert.doesNotMatch(
 			lines.join("\n"),
@@ -241,8 +245,8 @@ it("registered intent cards show observed publish and clear outcomes and expande
 		const before = structuredClone(details);
 		const component = nativeTool("agent_intent", args, details, [], tool);
 		const lines = clean(component).filter((line) => line.trim());
-		assert.equal(lines[0]?.trim(), "agent_intent · Parser review");
-		assert.equal(lines[1]?.trim(), `provider/model · xhigh · action ${action}`);
+		assert.equal(lines[0]?.trim(), "agent_intent Parser review");
+		assert.equal(lines[1]?.trim(), `provider/model · xhigh · ${action}`);
 		assert.ok(text(component).includes(`Intent ${action === "publish" ? "published" : "cleared"} · ${identity}`));
 		assert.doesNotMatch(
 			text(component),
@@ -270,13 +274,13 @@ it("intent cards omit absent endpoint facts and keep errors and pending outcomes
 	const before = text(
 		cards.agent_intent.renderCall({ action: "clear" }, theme, { ...cardKeys, expanded: false, argsComplete: true }),
 	);
-	assert.match(before, /^agent_intent · this session\naction clear/u);
+	assert.match(before, /^agent_intent this session\nclear/u);
 	assert.doesNotMatch(before, /provider|model|unknown|unavailable/u);
 	const read = nativeTool("agent_intent", { action: "read" }, { awareness: { self: { id: identity } } }, []);
 	assert.ok(text(read).includes(`Related efforts read · ${identity}`));
 	assert.doesNotMatch(text(read), /Intent published|Intent cleared/u);
 	const component = nativeTool("agent_intent", { action: "publish" }, { published: { id: identity } }, []);
-	assert.ok(text(component).includes(`agent_intent · ${identity}`));
+	assert.ok(text(component).includes(`agent_intent ${identity}`));
 	assert.ok(
 		text(component).includes(`Intent cleared · ${identity}`),
 		"the returned claim state, not the requested action, selects the outcome",
@@ -453,7 +457,7 @@ it("known metadata uses the muted subheading while absent metadata creates no pl
 		expanded: false,
 		argsComplete: true,
 	});
-	assert.equal(text(card).split("\n")[0], "agent_steer · Parser review");
+	assert.equal(text(card).split("\n")[0], "agent_steer Parser review");
 	assert.equal(text(card).split("\n")[1], "provider/model · xhigh");
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "provider/model · xhigh"));
 	const absent = createAgentToolCards().agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, {
@@ -461,7 +465,7 @@ it("known metadata uses the muted subheading while absent metadata creates no pl
 		expanded: false,
 		argsComplete: true,
 	});
-	assert.equal(text(absent).split("\n")[0], `agent_steer · ${identity}`);
+	assert.equal(text(absent).split("\n")[0], `agent_steer ${identity}`);
 	assert.equal(text(absent).split("\n")[1], "Task");
 	assert.doesNotMatch(text(absent), /unknown|unavailable|thinking/u);
 });
@@ -890,9 +894,9 @@ it("source observations update the native header without new discovery or repeat
 		[],
 	);
 	const lines = clean(component).filter((line) => line.trim());
-	assert.equal(lines[0]?.trim(), "agent_configure · Actual name");
+	assert.equal(lines[0]?.trim(), "agent_configure Actual name");
 	assert.match(lines[1] ?? "", /actual-provider\/actual-model · low/u);
-	assert.match(lines[1] ?? "", /Requested: xhigh/u);
+	assert.match(lines[1] ?? "", /requested xhigh/u);
 	assert.equal((text(component).match(/Actual name/gu) ?? []).length, 1);
 	assert.equal((text(component).match(/actual-provider\/actual-model/gu) ?? []).length, 1);
 	component.setExpanded(true);

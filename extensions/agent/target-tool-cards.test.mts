@@ -394,7 +394,8 @@ describe("human-readable agent targets", () => {
 				action: "read",
 			};
 			const collapsed = screen(card.renderCall(args, theme, context({ executionStarted: true })));
-			assert.match(collapsed, /Parser review\nprovider\/model · high/u, name);
+			assert.match(collapsed, /Parser review/u, name);
+			if (name !== "agent_collaborate") assert.match(collapsed, /provider\/model · high/u, name);
 			assert.doesNotMatch(collapsed, new RegExp(id), name);
 			assert.ok(screen(card.renderCall(args, theme, context({ ...cardKeys, expanded: true }))).includes(id), name);
 		}
@@ -409,8 +410,8 @@ describe("human-readable agent targets", () => {
 			note: "Read the result",
 		};
 		const collapsed = screen(card.renderCall(args, theme, context({ executionStarted: true })));
-		assert.match(collapsed, /agent_work · continue/u);
-		assert.match(collapsed, /request request-1 · 1 result reference/u);
+		assert.match(collapsed, /^agent_work request request-1$/mu);
+		assert.match(collapsed, /^continue · 1 result reference$/mu);
 		assert.doesNotMatch(collapsed, /Parser review|provider\/model|high/u);
 		const expanded = screen(card.renderCall(args, theme, context({ ...cardKeys, expanded: true })));
 		assert.ok(expanded.includes(id));

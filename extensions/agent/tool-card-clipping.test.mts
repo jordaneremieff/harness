@@ -208,13 +208,21 @@ for (const themeName of ["dark", "light"] as const) {
 					"clipped content uses the preview ellipsis",
 				);
 				if (width >= 40) {
-					for (const prefix of ["Call", "Result"]) {
+					assert.ok(
+						lines.some((value) => plain(value).startsWith("Call ")),
+						"code or prose wraps instead of clipping",
+					);
+					for (const prefix of ["agent_collaborate thread-", "Result"]) {
 						const line = lines.find((value) => plain(value).startsWith(prefix));
 						assert.ok(line);
 						const ellipsis = line.lastIndexOf("…");
 						assert.ok(ellipsis > 0);
 						assert.ok(foregroundAt(line, ellipsis), "the ellipsis retains a foreground");
-						assert.equal(foregroundAt(line, ellipsis), foregroundAt(line, line.indexOf(prefix) + prefix.length));
+						const colouredPrefix = prefix === "Result" ? prefix : "thread-";
+						assert.equal(
+							foregroundAt(line, ellipsis),
+							foregroundAt(line, line.indexOf(colouredPrefix) + colouredPrefix.length),
+						);
 						assert.equal(
 							foregroundAt(line, line.lastIndexOf("\x1b[49m")),
 							undefined,

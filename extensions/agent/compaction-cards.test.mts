@@ -96,12 +96,13 @@ it("captures self context once at execution and keeps it stable through native r
 	row.markExecutionStarted();
 	row.updateResult({ ...result, isError: false });
 	let rendered = screen(row);
-	assert.match(rendered, /this session · Parser session/u);
+	assert.match(rendered, new RegExp(`agent_compact ${identity}`));
 	assert.match(rendered, /provider\/model.*high/u);
 	assert.equal((rendered.match(/provider\/model/gu) ?? []).length, 1);
 	assert.equal((rendered.match(/Parser session/gu) ?? []).length, 1);
 	assert.match(rendered, /Before: 12000 tokens · 48000 window · 25\.0%/u);
-	assert.match(rendered, new RegExp(`Summary: ${args.summary.length} chars`, "u"));
+	assert.match(rendered, /supplied summary/u);
+	assert.ok(rendered.includes(args.summary));
 	assert.match(rendered, /Summary queued/u);
 	assert.doesNotMatch(rendered, /44000|91\.7|completed|After:|unknown|unavailable/u);
 	assert.doesNotMatch(rendered.split("\n").find((line) => line.includes("agent_compact")) ?? "", /…/u);
@@ -136,7 +137,8 @@ it("shows only observed other-agent configuration, context facts and retained su
 	const ctx = context({ args, state });
 	cards.agent_compact.renderResult(result, { ...cardKeys, expanded: false, isPartial: false }, theme, ctx);
 	const text = `${screen(cards.agent_compact.renderCall(args, theme, ctx))}\n${screen(cards.agent_compact.renderResult(result, { ...cardKeys, expanded: false, isPartial: false }, theme, ctx))}`;
-	assert.match(text, /agent_compact · Other parser/u);
+	assert.match(text, new RegExp(`agent_compact ${identity}`));
+	assert.match(text, /Target: Other parser/u);
 	assert.match(text, /provider\/model.*off/u);
 	assert.match(text, /Before: 48000 window/u);
 	assert.match(text, /Summary: 150 chars/u);
@@ -194,7 +196,7 @@ it("retains a completed compaction outcome when its optional summary-size read f
 it("keeps complete target, operation, thread and revision identities at wide widths", () => {
 	const cards = createAgentToolCards();
 	for (const [name, card] of Object.entries(cards)) {
-		if (name === "agent_list") continue;
+		if (name === "agent_list" || name === "agent_place") continue;
 		const args = {
 			results: [{ sessionId: `${identity}:12345678901234567890`, submissionId: 1 }],
 			sessionId: `${identity}:12345678901234567890`,
@@ -211,8 +213,8 @@ it("keeps complete target, operation, thread and revision identities at wide wid
 		const state = name === "agent_intent" ? { observation: { identity: args.sessionId } } : undefined;
 		const rendered = screen(card.renderCall(callArgs, theme, context({ state })), 600);
 		if (name === "agent_work") {
-			assert.match(rendered, /agent_work · continue/u);
-			assert.match(rendered, /request request-1 · 1 result reference/u);
+			assert.match(rendered, /^agent_work request request-1$/mu);
+			assert.match(rendered, /^continue · 1 result reference$/mu);
 			assert.equal(rendered.includes(args.sessionId), false, "a local work declaration does not target its dependency");
 		} else assert.ok(rendered.includes(args.sessionId), name);
 		assert.doesNotMatch(rendered.split("\n")[0] ?? "", /…/u, name);

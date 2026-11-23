@@ -95,16 +95,21 @@ it("shows the brief objective, section summary, and exact expanded source", () =
 		checks: ["Check the example."],
 	};
 	const collapsed = screen(card.renderCall(args, theme, context()), 200);
-	assert.match(collapsed, /agent_brief · @parser/u);
-	assert.match(collapsed, /review.*Requested: test\/other · high.*preset review.*preview/u);
+	assert.match(collapsed, /^agent_brief @parser\n.*test\/other · high.*preset review.*review · preview/u);
 	assert.match(collapsed, /Review the parser\./u);
-	assert.match(collapsed, /purpose · 1 operator decision · 2 sources · checks · end condition · result/u);
+	assert.match(collapsed, /1 operator decision · 2 sources/u);
 	assert.doesNotMatch(collapsed, /Find gaps before release|Original request/u);
 	const expanded = screen(card.renderCall(args, theme, context({ expanded: true })), 320);
-	for (const line of renderBrief(args).text.split("\n").filter(Boolean)) assert.ok(expanded.includes(line), line);
-	assert.match(expanded, /"handle": "parser"/u);
-	assert.match(expanded, /"thinkingLevel": "high"/u);
-	assert.doesNotMatch(expanded, /"objective"/u);
+	for (const line of [
+		"handle: parser",
+		"thinkingLevel: high",
+		"objective: Review the parser.",
+		"endCondition: Stop after review.",
+		'"quote": "Use the source."',
+		'"source": "Original request"',
+		'"docs/guide.md"',
+	])
+		assert.ok(expanded.includes(line), line);
 	const steer = screen(
 		card.renderCall(
 			{ ...fixtures.agent_brief.args, sessionId: targetId, mode: "steer" },
@@ -112,12 +117,10 @@ it("shows the brief objective, section summary, and exact expanded source", () =
 			context({ lookup: () => rows }),
 		),
 	);
-	assert.match(steer, /agent_brief · Parser review[\s\S]*mode steer/u);
-	assert.match(
-		screen(card.renderCall({ objective: "x".repeat(215) }, theme, context()), 250),
-		/agent_brief · new agent[\s\S]*x{175}…/u,
-	);
-	assert.doesNotMatch(screen(card.renderCall({ objective: "x".repeat(215) }, theme, context()), 250), /x{181}/u);
+	assert.match(steer, /agent_brief Parser review[\s\S]*mode steer/u);
+	const long = screen(card.renderCall({ objective: "x".repeat(380) }, theme, context()), 60);
+	assert.match(long, /^agent_brief\n(?:x+\n){5}\.\.\. \(2 more lines, ctrl\+o to expand\)$/u);
+	assert.doesNotMatch(long, /new agent|objective pending/u);
 });
 
 it("renders a brief creation or admission like its dispatch path and a preview like no dispatch", () => {
@@ -396,8 +399,8 @@ describe("agent call cards", () => {
 			),
 			160,
 		);
-		assert.match(spawn, /agent_spawn · Parser review/);
-		assert.match(spawn, /Requested: provider\/model · high/);
+		assert.match(spawn, /agent_spawn Parser review/);
+		assert.match(spawn, /^provider\/model · high$/m);
 		assert.doesNotMatch(spawn, /Model: |snapshot/);
 		assert.doesNotMatch(screen(renderAgentCall("agent_spawn", {}, theme, context())), /Requested:|unresolved/);
 		assert.doesNotMatch(
@@ -410,12 +413,12 @@ describe("agent call cards", () => {
 		);
 		assert.match(
 			screen(renderAgentCall("agent_configure", { sessionId: "target", model: "provider/model" }, theme, context())),
-			/Requested: provider\/model/,
+			/^provider\/model$/m,
 		);
 		assert.doesNotMatch(screen(renderAgentCall("agent_status", {}, theme, context())), /Requested:/);
 	});
 
-	it("renders a bare heading for missing arguments and reuses its component", () => {
+	it("renders a bare heading for missing arguments and the submitted arguments on redraw", () => {
 		const initial = renderAgentCall("agent_spawn", null, theme, context());
 		assert.match(screen(initial), /^agent_spawn/);
 		const final = renderAgentCall(
@@ -424,7 +427,7 @@ describe("agent call cards", () => {
 			theme,
 			context({ ...cardKeys, expanded: true, lastComponent: initial }),
 		);
-		assert.equal(initial, final);
+		assert.equal(screen(initial), "agent_spawn");
 		assert.match(screen(final), /project\/location/);
 	});
 
@@ -440,11 +443,11 @@ describe("agent call cards", () => {
 		assert.doesNotMatch(screen(renderAgentCall("agent_attach", { sessionId: "s" }, theme, context())), /to expand/u);
 		assert.match(
 			screen(renderAgentCall("agent_attach", { sessionId: "s", model: "p/m" }, theme, context())),
-			/Requested: p\/m/,
+			/^p\/m$/m,
 		);
 		assert.match(
-			screen(renderAgentCall("agent_spawn", { prompt: "p".repeat(400) }, theme, context())),
-			/\(ctrl\+o to expand\)/,
+			screen(renderAgentCall("agent_spawn", { prompt: "p".repeat(640) }, theme, context())),
+			/more lines, ctrl\+o to expand\)/,
 		);
 		assert.match(screen(renderListCall({ query: "q".repeat(400) }, theme, context())), /\(ctrl\+o to expand\)/);
 	});
@@ -482,20 +485,11 @@ describe("agent call cards", () => {
 			};
 			const before = structuredClone(args);
 			const collapsed = renderer(args, theme, context());
-			const send = name === "agent_send";
-			assert.match(screen(collapsed), new RegExp(`${name}${send ? " " : " · "}target-session`));
-			assert.match(screen(collapsed), /reply to message-reference/);
-			assert.match(
-				screen(collapsed),
-				send ? /First line\n\n\*\*literal Markdown\*\*/ : /First line \*\*literal Markdown\*\*/,
-			);
-			assert.match(screen(collapsed), /\(ctrl\+o to expand\)/);
+			assert.match(screen(collapsed), new RegExp(`^${name} target-session\nreply to message-reference`, "u"));
+			assert.match(screen(collapsed), /First line\n\n\*\*literal Markdown\*\*/u);
+			assert.doesNotMatch(screen(collapsed), /to expand/u, "all supplied values already fit");
 			const expanded = renderer(args, theme, context({ ...cardKeys, expanded: true, lastComponent: collapsed }));
-			if (send) assert.match(screen(expanded), /message: First line[\s\S]*\*\*literal Markdown\*\*[\s\S]*Last line/u);
-			else {
-				assert.equal(expanded, collapsed);
-				assert.ok(screen(expanded).includes(args.message));
-			}
+			assert.match(screen(expanded), /message: First line[\s\S]*\*\*literal Markdown\*\*[\s\S]*Last line/u);
 			assert.deepEqual(args, before);
 		}
 	});
@@ -519,22 +513,19 @@ describe("agent call cards", () => {
 		assert.equal(displayPreview("a😀b", 2), "a…");
 	});
 
-	it("marks a compact summary call as self and keeps the summary text hidden", () => {
-		const summary = "Objective: hand over the slice. Next: run the checks.";
-		const text = screen(renderCompactCall({ sessionId: "current-session", summary }, theme, context()));
-		assert.match(text, /agent_compact · this session · current-session/);
-		assert.match(text, new RegExp(`Summary: ${summary.length} chars`));
-		assert.doesNotMatch(text, /Objective: hand over/);
-		const plain = screen(renderCompactCall({ sessionId: "worker-session" }, theme, context()));
-		assert.match(plain, /Compacts after abort/);
-		assert.match(plain, /[Ii]nstructions: none/);
-		assert.match(
-			screen(renderCompactCall({ sessionId: "w", instructions: "Keep the API section" }, theme, context())),
-			/[Ii]nstructions: present/,
+	it("shows a compaction request without an abort or idle prediction", () => {
+		const summary = "Preserve the objective and next action.";
+		assert.equal(
+			screen(renderCompactCall({ sessionId: "target", summary }, theme, context())),
+			`agent_compact target\nsupplied summary\n${summary}`,
 		);
-		assert.doesNotMatch(
+		assert.equal(
+			screen(renderCompactCall({ sessionId: "worker-session" }, theme, context())),
+			"agent_compact worker-session",
+		);
+		assert.equal(
 			screen(renderCompactCall({ sessionId: "w", instructions: "Keep the API section" }, theme, context())),
-			/Keep the API section/,
+			"agent_compact w\nKeep the API section",
 		);
 	});
 
@@ -542,8 +533,8 @@ describe("agent call cards", () => {
 		const list = screen(
 			renderListCall({ query: "renderer", cwd: "/srv/work", limit: 5, cursor: "Y3Vyc29y" }, theme, context()),
 		);
-		assert.match(list, /agent_list · query renderer/);
-		assert.match(list, /cwd \/srv\/work · limit 5 · continuation page/);
+		assert.match(list, /^agent_list renderer/m);
+		assert.match(list, /in \/srv\/work · limit 5 · continuation page/);
 		const inspect = screen(
 			renderInspectCall(
 				{
@@ -557,33 +548,33 @@ describe("agent call cards", () => {
 				context(),
 			),
 		);
-		assert.match(inspect, /view search · query needle · source assistant · continuation/);
+		assert.match(inspect, /^agent_inspect needle\ns · search · source assistant · continuation page/u);
 		const activity = screen(renderInspectCall({ sessionId: "s", view: "activity" }, theme, context()));
-		assert.match(activity, /view activity/u);
+		assert.match(activity, /^activity$/mu);
 		assert.doesNotMatch(activity, /limit/u, "ordinary primary and Durable activity have different default limits");
 		const call = (args: Record<string, unknown>) =>
 			screen(renderInspectCall({ sessionId: "s", ...args }, theme, context()), 240);
-		assert.match(call({ view: "exact", entryId: 83, offset: 0 }), /view exact · entry 83 · offset 0/u);
+		assert.match(call({ view: "exact", entryId: 83, offset: 0 }), /^agent_inspect entry 83\ns · exact · offset 0/u);
 		assert.match(call({ view: "history", fromId: 64, limit: 2 }), /from 64 · limit 2/u);
 		assert.match(
 			call({ view: "result", submissionId: 23, requestId: "ask", finalReport: true, offset: 64 }),
-			/view result · final report · submission 23 · offset 64 · request ask/u,
+			/^agent_inspect submission 23\ns · result · request ask · offset 64 · final report/u,
 		);
 		assert.match(
 			call({ view: "result", operationId: "op", receiptCursor: "opaque" }),
-			/receipt references page · operation op/u,
+			/^agent_inspect operation op\ns · result · receipt references page/u,
 		);
 		assert.doesNotMatch(call({}), /view history/u, "the target determines the default view");
-		assert.match(screen(renderAbortCall({ sessionId: "s" }, theme, context())), /agent_abort · s/);
+		assert.match(screen(renderAbortCall({ sessionId: "s" }, theme, context())), /agent_abort s/);
 		assert.match(
 			screen(renderCommandCall({ sessionId: "s", name: "reload", args: "--force" }, theme, context())),
-			/agent_command · reload → s/,
+			/^agent_command reload\non s · args --force/u,
 		);
 		assert.match(
 			screen(renderCommandCall({ sessionId: "s", name: "reload", args: "--force" }, theme, context())),
 			/args --force/,
 		);
-		assert.match(screen(renderInspectCall({}, theme, context())), /\(target pending\)/);
+		assert.equal(screen(renderInspectCall({}, theme, context())), "agent_inspect this session");
 	});
 });
 
@@ -1284,7 +1275,7 @@ describe("agent result cards", () => {
 			180,
 		);
 		assert.match(call, /agent_work/u);
-		assert.match(call, /request request-1 · 1 result reference/u);
+		assert.match(call, /^agent_work request request-1\ncontinue · 1 result reference/mu);
 	});
 
 	it("shows admission receipts, fork, rewind, configure, abort, and command outcomes", () => {

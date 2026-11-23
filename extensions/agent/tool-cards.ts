@@ -7,6 +7,8 @@
  * Target labels use roster facts already observed by the primary footer.
  * Rendering opens no storage and changes no execution behavior.
  */
+import { homedir } from "node:os";
+import { sep } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { ProviderBlockFactSchema, providerBlockSummary, providerBlockText } from "./provider-block-facts.ts";
@@ -31,7 +33,7 @@ import { receiptContinuationLine, resultContinuationLines } from "./control-resu
 import { planningBudgetSelfFacts } from "./continuity-budget.ts";
 import { THREAD_NOTICE_DISPLAY_UNITS, threadEventTitle } from "./thread-notice-display.ts";
 import { threadRecoveryText, utcTime } from "./thread-notice-projection.ts";
-import { BRIEF_SECTIONS, renderBrief } from "./brief.ts";
+import { renderBrief } from "./brief.ts";
 import {
 	toolCallCard,
 	toolResultCard,
@@ -398,19 +400,6 @@ function findTarget(identity: string, rows: readonly AgentConversationSummary[])
 	return rows.find((item) => item.id === identity || (identity.startsWith("@") && item.profile?.handle === identity));
 }
 
-function appendExpandedTarget(
-	lines: string[],
-	args: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-): void {
-	if (!context.expanded) return;
-	const identity = text(args.sessionId) || (text(args.handle) ? `@${text(args.handle).replace(/^@/u, "")}` : "");
-	if (!identity) return;
-	const fullIdentity = findTarget(identity, context.lookup?.() ?? [])?.id ?? identity;
-	lines.push(theme.fg("dim", `Target: ${displayText(fullIdentity)}`));
-}
-
 function targetLabel(identity: string, context: AgentCardContext): string {
 	if (!identity) return "";
 	const rows = context.lookup?.() ?? [];
@@ -547,65 +536,6 @@ function headerHasModel(
 
 // --- Call cards ------------------------------------------------------------------
 
-const SUBJECT_KEYS = ["handle", "name", "topic", "area", "prompt", "correction", "sessionId"] as const;
-const MODEL_CALLS = new Set([
-	"agent_spawn",
-	"agent_brief",
-	"agent_attach",
-	"agent_place",
-	"agent_fork",
-	"agent_rewind",
-	"agent_configure",
-]);
-
-/** Requested configuration stays distinct from a resolved session snapshot. */
-function requestedConfiguration(
-	name: string,
-	args: Record<string, unknown>,
-	context: AgentCardContext,
-): string | undefined {
-	if (!MODEL_CALLS.has(name)) return undefined;
-	const observed = findTarget(text(args.sessionId), context.lookup?.() ?? [])?.model;
-	const model = text(args.model);
-	const thinking = text(args.thinkingLevel);
-	const parts: string[] = [];
-	if (model && model !== `${observed?.provider}/${observed?.modelId}`) parts.push(displayText(model));
-	if (thinking && thinking !== observed?.thinkingLevel) parts.push(displayPreview(thinking, 40));
-	return parts.length ? `Requested: ${parts.join(" · ")}` : undefined;
-}
-
-/** True when a collapsed call hides or clips an argument. */
-function argsHidden(args: Record<string, unknown>, subjectKey: string, subjectValue: string): boolean {
-	if (subjectValue.length > 120) return true;
-	const shown = new Set([subjectKey, "model", "thinkingLevel"].filter(Boolean));
-	return Object.entries(args).some(([key, item]) => item !== undefined && !shown.has(key));
-}
-
-function argumentCard(
-	name: string,
-	subject: string,
-	qualifier: string | undefined,
-	args: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-	hidden: boolean,
-): Component {
-	const lines: string[] = [];
-	appendExpandedTarget(lines, args, theme, context);
-	if (context.expanded) lines.push(theme.fg("toolOutput", boundedSource(JSON.stringify(args, null, 2))));
-	return cardLayout(
-		{
-			title: name,
-			label: subject,
-			metadata: [targetConfiguration(text(args.sessionId), context), qualifier ?? ""],
-			body: lines,
-			hint: hidden ? cardHint(context, "call", "arguments") : "",
-		},
-		theme,
-		{ expanded: context.expanded, previous: context.lastComponent },
-	);
-}
-
 function statusCallMode(args: Record<string, unknown>, identity: string): string {
 	if (args.view === "fleet") {
 		const provider = text(args.provider);
@@ -670,32 +600,6 @@ function renderStatusCall(
 	);
 }
 
-/** Generic call card for snapshot and control tools. */
-export function renderAgentCall(name: string, value: unknown, theme: Theme, context: AgentCardContext): Component {
-	const args = record(value);
-	const sessionId = text(args.sessionId);
-	if (name === "agent_status") return renderStatusCall(name, args, theme, context);
-	const subjectKey = sessionId ? "sessionId" : (SUBJECT_KEYS.find((key) => text(args[key]) !== "") ?? "");
-	const subjectValue = subjectKey ? text(args[subjectKey]) : "";
-	const identity =
-		subjectKey === "handle" ? `@${subjectValue.replace(/^@/u, "")}` : subjectKey === "sessionId" ? subjectValue : "";
-	const label = identity ? targetLabel(identity, context) : displayText(subjectValue);
-	const lines: string[] = [];
-	appendExpandedTarget(lines, args, theme, context);
-	if (context.expanded) lines.push(theme.fg("toolOutput", boundedSource(JSON.stringify(args, null, 2))));
-	return cardLayout(
-		{
-			title: name,
-			label,
-			metadata: [targetConfiguration(identity, context), requestedConfiguration(name, args, context) ?? ""],
-			body: lines,
-			hint: argsHidden(args, subjectKey, subjectValue) ? cardHint(context, "call", "arguments") : "",
-		},
-		theme,
-		{ expanded: context.expanded, previous: context.lastComponent },
-	);
-}
-
 function messageMetadata(args: Record<string, unknown>, context: AgentCardContext): string[] {
 	const reply = text(args.replyTo) ? targetLabel(text(args.replyTo), context) : "";
 	return [
@@ -703,37 +607,6 @@ function messageMetadata(args: Record<string, unknown>, context: AgentCardContex
 		reply ? `reply to ${reply}` : "",
 		text(args.mode) ? `mode ${displayText(text(args.mode))}` : "",
 	];
-}
-
-function renderMessageCall(name: string, value: unknown, theme: Theme, context: AgentCardContext): Component {
-	const args = record(value);
-	const target = targetLabel(text(args.sessionId), context);
-	const message = text(args.message);
-	const lines: string[] = [];
-	let hint = "";
-	appendExpandedTarget(lines, args, theme, context);
-	if (context.expanded) {
-		lines.push(theme.fg("muted", context.argsComplete === false ? "Message so far:" : "Message:"));
-		lines.push(theme.fg("toolOutput", boundedSource(message, MESSAGE_DISPLAY_LIMIT)));
-		const metadata = { ...args, sessionId: undefined, message: undefined };
-		if (Object.values(metadata).some((item) => item !== undefined))
-			lines.push(theme.fg("dim", boundedSource(JSON.stringify(metadata, null, 2))));
-	} else {
-		const preview = displayPreview(message, 180);
-		lines.push(
-			theme.fg(
-				"toolOutput",
-				preview || (context.argsComplete === false ? "(message pending)" : "(empty or whitespace-only message)"),
-			),
-		);
-		if ((preview !== message && message !== "") || target !== text(args.sessionId))
-			hint = cardHint(context, "call", "message");
-	}
-	return cardLayout(
-		{ title: name, label: target, metadata: messageMetadata(args, context), body: lines, hint },
-		theme,
-		{ expanded: context.expanded, previous: context.lastComponent },
-	);
 }
 
 function localToolTime(value: number): string {
@@ -780,151 +653,12 @@ export function renderSendCall(value: unknown, theme: Theme, context: AgentCardC
 	);
 }
 
-export function renderSteerCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
-	return renderMessageCall("agent_steer", value, theme, context);
-}
-
-function briefSectionSummary({ brief, counts }: ReturnType<typeof renderBrief>): string {
-	return brief.sections
-		.filter((section) => section !== "objective")
-		.map((section) => {
-			const count = counts[section] ?? 0;
-			if (section === "operator") return `${count} operator decision${count === 1 ? "" : "s"}`;
-			if (section === "sources") return `${count} source${count === 1 ? "" : "s"}`;
-			if (section === "endCondition") return "end condition";
-			return count > 1 ? `${section} (${count})` : section;
-		})
-		.join(" · ");
-}
-
-function briefCallBody(
-	args: Record<string, unknown>,
-	rendered: ReturnType<typeof renderBrief>,
-	theme: Theme,
-	context: AgentCardContext,
-): string[] {
-	const lines: string[] = [];
-	if (context.expanded) {
-		lines.push(theme.fg("toolOutput", boundedSource(rendered.text, MESSAGE_DISPLAY_LIMIT)));
-		appendExpandedTarget(lines, args, theme, context);
-		const fields = new Set<string>(["kind", ...BRIEF_SECTIONS]);
-		const targetAndOptions = Object.fromEntries(Object.entries(args).filter(([key]) => !fields.has(key)));
-		if (Object.keys(targetAndOptions).length)
-			lines.push(theme.fg("dim", boundedSource(JSON.stringify(targetAndOptions, null, 2))));
-	} else {
-		lines.push(theme.fg("toolOutput", displayPreview(text(args.objective), 180) || "(objective pending)"));
-		const sections = briefSectionSummary(rendered);
-		if (sections) lines.push(theme.fg("dim", sections));
-	}
-	return lines;
-}
-
-function renderBriefCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
-	const args = record(value);
-	const existing = text(args.sessionId);
-	const handle = text(args.handle);
-	const identity = existing || (handle ? `@${handle.replace(/^@/u, "")}` : "");
-	const label = existing ? targetLabel(existing, context) : identity || displayText(text(args.name)) || "new agent";
-	const rendered = renderBrief(args);
-	return cardLayout(
-		{
-			title: "agent_brief",
-			label,
-			metadata: [
-				rendered.brief.kind === "task" ? "" : rendered.brief.kind,
-				targetConfiguration(identity, context),
-				requestedConfiguration("agent_brief", args, context) ?? "",
-				text(args.preset) ? `preset ${displayPreview(text(args.preset), 80)}` : "",
-				args.mode === "steer" ? "mode steer" : "",
-				args.preview === true ? "preview" : "",
-			],
-			body: briefCallBody(args, rendered, theme, context),
-			hint: cardHint(context, "call", "brief"),
-		},
-		theme,
-		{ expanded: context.expanded, previous: context.lastComponent },
-	);
-}
-
-function compactCallTarget(args: Record<string, unknown>, context: AgentCardContext): string {
-	if (context.state?.compaction) return compactTarget(context.state.compaction);
-	const target = text(args.sessionId) ? targetLabel(text(args.sessionId), context) : "(target pending)";
-	return text(args.summary) ? `this session · ${target}` : target;
-}
-
-/** The summary argument selects the self path; execution refuses a mismatched session ID. */
-export function renderCompactCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
-	const args = record(value);
-	const facts = context.state?.compaction;
-	const summary = text(args.summary);
-	const lines: string[] = [];
-	if (context.state) context.state.compactFactsShown = facts !== undefined;
-	const configuration = facts ? compactConfiguration(facts) : targetConfiguration(text(args.sessionId), context);
-	if (summary)
-		lines.push(
-			theme.fg(
-				"muted",
-				context.expanded
-					? `Native compaction entry with the agent-authored summary (${summary.length} chars) at this tool batch's end`
-					: `Summary: ${summary.length} chars`,
-			),
-		);
-	else {
-		lines.push(
-			theme.fg(
-				"muted",
-				context.expanded
-					? "Native summarization of the named conversation; it aborts active work and does not resume"
-					: "Compacts after abort; leaves the agent idle",
-			),
-		);
-		lines.push(theme.fg("muted", `Summarizer instructions: ${text(args.instructions) ? "present" : "none"}`));
-	}
-	appendExpandedTarget(lines, args, theme, context);
-	if (context.expanded) lines.push(theme.fg("toolOutput", boundedSource(JSON.stringify(args, null, 2))));
-	return cardLayout(
-		{
-			title: "agent_compact",
-			label: compactCallTarget(args, context),
-			metadata: [configuration],
-			body: lines,
-			hint: summary || text(args.instructions) ? cardHint(context, "call", "arguments") : "",
-		},
-		theme,
-		{ expanded: context.expanded, previous: context.lastComponent },
-	);
-}
-
 function intentObservation(details: Record<string, unknown>): Record<string, unknown> | undefined {
 	const self = record(details.published ?? record(details.awareness).self);
 	const identity = text(self.id);
 	return identity
 		? { identity, name: self.name, agent: { model: self.model, thinkingLevel: self.thinkingLevel } }
 		: undefined;
-}
-
-function renderIntentCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
-	const args = record(value);
-	const identity = text(context.state?.observation?.identity);
-	const lines: string[] = [];
-	if (context.expanded) {
-		if (identity) lines.push(theme.fg("dim", `Target: ${displayIdentity(identity)}`));
-		lines.push(theme.fg("toolOutput", boundedSource(JSON.stringify(args, null, 2))));
-	} else if (text(args.purpose)) lines.push(theme.fg("toolOutput", displayPreview(text(args.purpose), 180)));
-	return cardLayout(
-		{
-			title: "agent_intent",
-			label: identity ? targetLabel(identity, context) : "this session",
-			metadata: [
-				targetConfiguration(identity, context),
-				text(args.action) ? `action ${displayText(text(args.action))}` : "",
-			],
-			body: lines,
-			hint: cardHint(context, "call", "arguments"),
-		},
-		theme,
-		{ expanded: context.expanded, previous: context.lastComponent },
-	);
 }
 
 function intentLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
@@ -939,117 +673,231 @@ function intentLines(details: Record<string, unknown>, theme: Theme, context: Ag
 	return [theme.fg("toolOutput", `${outcome} · ${displayIdentity(identity)}`)];
 }
 
-export function renderListCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
-	const args = record(value);
-	const query = text(args.query);
-	const cwd = text(args.cwd);
-	const subject = query
-		? `query ${displayPreview(query, 160)}`
-		: cwd
-			? `cwd ${displayPreview(cwd, 160)}`
-			: "stored conversations";
-	const qualifiers: string[] = [];
-	if (query && cwd) qualifiers.push(`cwd ${displayPreview(cwd, 160)}`);
-	const limit = count(args.limit);
-	if (limit !== undefined) qualifiers.push(`limit ${limit}`);
-	if (text(args.cursor)) qualifiers.push("continuation page");
-	return argumentCard(
-		"agent_list",
-		subject,
-		qualifiers.join(" · ") || undefined,
-		args,
-		theme,
-		context,
-		query.length > 160 || cwd.length > 160,
-	);
+function homePath(path: string): string {
+	const home = homedir();
+	return path === home || path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path;
 }
 
-export function renderAbortCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
-	const args = record(value);
-	const target = text(args.sessionId);
-	const interrupt = record(args.interrupt);
-	const qualifier = [
-		count(args.timerId) !== undefined ? `timer ${args.timerId}` : "",
-		count(interrupt.taskId) !== undefined ? `interrupt generation ${interrupt.taskId}` : "",
-		args.background === true ? "includes same-storage children and background tasks" : "",
-		args.release === true ? "release host" : "",
-	]
-		.filter(Boolean)
-		.join(" · ");
-	return argumentCard(
-		"agent_abort",
-		target ? targetLabel(target, context) : "(target pending)",
-		qualifier,
-		args,
-		theme,
-		context,
-		target.length > 300 || args.interrupt !== undefined || args.trust !== undefined,
-	);
+function briefSectionFacts(args: Record<string, unknown>): string[] {
+	const { counts } = renderBrief(args);
+	return [
+		counts.operator ? cardinal(counts.operator, "operator decision") : "",
+		counts.sources ? cardinal(counts.sources, "source") : "",
+	];
 }
 
-export function renderCommandCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
+/** Select the actual object of the action and the arguments already visible on the card. */
+export function renderAgentCall(name: string, value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
-	const name = text(args.name);
-	const target = text(args.sessionId);
-	const subject = `${name ? displayPreview(name, 120) : "(command pending)"} → ${target ? targetLabel(target, context) : "(target pending)"}`;
-	const commandArgs = text(args.args);
-	return argumentCard(
-		"agent_command",
-		subject,
-		commandArgs ? `args ${displayPreview(commandArgs, 200)}` : undefined,
-		args,
-		theme,
-		context,
-		name.length > 120 || target.length > 300 || commandArgs.length > 200,
-	);
-}
+	if (name === "agent_status") return renderStatusCall(name, args, theme, context);
 
-function inspectQualifier(args: Record<string, unknown>): { qualifier: string; hidden: boolean } {
-	const parts = [args.view ? `view ${text(args.view)}` : "default view"];
-	if (args.finalReport === true) parts.push("final report");
-	const receiptPage = Boolean(text(args.receiptCursor));
-	if (receiptPage) parts.push("receipt references page");
-	for (const [label, key] of [
-		["entry", "entryId"],
-		["submission", "submissionId"],
-		["from", "fromId"],
-		["offset", "offset"],
-		["limit", "limit"],
-	]) {
-		const value = count(args[key]);
-		if (value !== undefined) parts.push(`${label} ${value}`);
+	const shownArgs: string[] = [];
+	const facts: string[] = [];
+	const take = (key: string, prefix = "", format = (input: string) => input): string => {
+		const input = identifier(args[key]);
+		if (!input.trim()) return "";
+		shownArgs.push(key);
+		return prefix + format(input);
+	};
+	const flag = (key: string, label: string): string => {
+		if (args[key] !== true) return "";
+		shownArgs.push(key);
+		return label;
+	};
+	const bodyFor = (...keys: string[]) => {
+		const key = keys.find((key) => text(args[key]).trim());
+		return key ? { key, text: text(args[key]) } : undefined;
+	};
+	let body: ReturnType<typeof bodyFor>;
+	let expanded: string | undefined;
+	let subject = "";
+	const target = (key = "sessionId", format = (input: string) => input): string => {
+		const selector = text(args[key]);
+		if (!selector.trim()) return "";
+		const identity = format(selector);
+		const label = targetLabel(identity, context);
+		if (identity === label) shownArgs.push(key);
+		const extra = resolvedTargetFact(identity, context);
+		if (extra) expanded = [expanded, extra].filter(Boolean).join("\n");
+		return label;
+	};
+	const observedModel = () => targetConfiguration(callIdentity({ ...context, args }), context);
+	const configuration = () => {
+		const model = take("model");
+		const level = take("thinkingLevel");
+		const observed = observedModel();
+		const configuration = findTarget(callIdentity({ ...context, args }), context.lookup?.() ?? [])?.model;
+		const requested = [
+			model === `${configuration?.provider}/${configuration?.modelId}` ? "" : model,
+			level === configuration?.thinkingLevel ? "" : level,
+		]
+			.filter(Boolean)
+			.join(" · ");
+		facts.push(observed, requested && observed ? `requested ${requested}` : requested, take("preset", "preset "));
+	};
+	const creation = () => {
+		configuration();
+		const minutes = count(args.checkInMinutes);
+		if (minutes !== undefined) {
+			shownArgs.push("checkInMinutes");
+			facts.push(minutes === 0 ? "check-ins off" : `check-in ${minutes} min`);
+		}
+	};
+
+	switch (name) {
+		case "agent_spawn":
+		case "agent_brief": {
+			subject = target() || target("handle", (input) => `@${input.replace(/^@/u, "")}`) || take("name");
+			if (!shownArgs.includes("name")) facts.push(take("name", "name "));
+			creation();
+			facts.push(take("cwd", "in ", homePath));
+			if (name === "agent_brief") {
+				facts.push(take("kind"), take("mode", "mode "), flag("preview", "preview"), ...briefSectionFacts(args));
+				body = bodyFor("objective");
+			} else body = bodyFor("prompt", "role");
+			break;
+		}
+		case "agent_attach":
+		case "agent_configure":
+			subject = target();
+			configuration();
+			facts.push(take("name", "name "));
+			break;
+		case "agent_place":
+			subject = take("area", "", homePath) || "current directory";
+			creation();
+			facts.push(take("topic"));
+			body = bodyFor("prompt");
+			break;
+		case "agent_fork":
+		case "agent_rewind":
+			subject = target();
+			facts.push(observedModel(), take("entryId", "entry "), take("name", "name "));
+			body = bodyFor(name === "agent_fork" ? "prompt" : "correction");
+			break;
+		case "agent_profile":
+			subject = target() || "this session";
+			facts.push(observedModel(), take("action"), take("expectedRevision", "revision "));
+			body = bodyFor("role", "expertise");
+			break;
+		case "agent_steer": {
+			subject = target();
+			const reply = target("replyTo");
+			facts.push(observedModel(), reply ? `reply to ${reply}` : "");
+			body = bodyFor("message");
+			break;
+		}
+		case "agent_compact":
+			subject = target() || "this session";
+			facts.push(observedModel(), text(args.summary).trim() ? "supplied summary" : "");
+			body = bodyFor("summary", "instructions");
+			break;
+		case "agent_intent": {
+			const identity = text(context.state?.observation?.identity);
+			subject = args.action === "read" ? "related efforts" : identity ? targetLabel(identity, context) : "this session";
+			facts.push(targetConfiguration(identity, context), take("action"));
+			if (identity && identity !== subject) expanded = `  resolved session: ${identity}`;
+			body = bodyFor("purpose");
+			break;
+		}
+		case "agent_list":
+			subject = take("query");
+			if (subject) facts.push(take("cwd", "in ", homePath));
+			else subject = take("cwd", "", homePath) || "stored conversations";
+			facts.push(take("limit", "limit "), text(args.cursor) ? "continuation page" : "");
+			break;
+		case "agent_abort": {
+			subject = target();
+			const generation = count(record(args.interrupt).taskId);
+			facts.push(
+				observedModel(),
+				take("timerId", "timer "),
+				generation === undefined ? "" : `interrupt generation ${generation}`,
+				flag("background", "includes same-storage children and background tasks"),
+				flag("release", "release host"),
+			);
+			break;
+		}
+		case "agent_command": {
+			subject = take("name");
+			const recipient = target();
+			facts.push(recipient ? `on ${recipient}` : "", observedModel());
+			if (text(args.args).includes("\n")) body = bodyFor("args");
+			else facts.push(take("args", "args "));
+			break;
+		}
+		case "agent_inspect": {
+			const query = take("query");
+			const entry = take("entryId", "entry ");
+			const operation = take("operationId", "operation ");
+			const submission = take("submissionId", "submission ");
+			const request = take("requestId", "request ");
+			const recipient = target() || "this session";
+			const objects = [query, entry, operation, submission, request].filter(Boolean);
+			subject = objects.shift() || recipient;
+			facts.push(
+				subject === recipient ? "" : recipient,
+				observedModel(),
+				take("view"),
+				...objects,
+				take("source", "source "),
+				take("fromId", "from "),
+				take("offset", "offset "),
+				take("limit", "limit "),
+				flag("finalReport", "final report"),
+				text(args.receiptCursor) ? "receipt references page" : "",
+				args.cursor !== undefined ? "continuation page" : "",
+			);
+			break;
+		}
+		case "agent_collaborate": {
+			const thread = text(args.threadId);
+			const title = thread ? context.lookup?.threadTitle?.(thread)?.trim() : undefined;
+			const targetSession = target();
+			subject = title || take("threadId") || take("title") || take("query") || targetSession;
+			if (!subject && args.action === "list") subject = "threads";
+			facts.push(
+				take("action"),
+				targetSession === subject ? "" : targetSession,
+				shownArgs.includes("title") ? "" : take("title", "title "),
+				take("kind"),
+				take("replyTo", "reply to event "),
+				take("before", "before "),
+				take("after", "after "),
+				take("knownFrameRevision", "known frame "),
+				take("limit", "limit "),
+				text(args.cursor) ? "continuation page" : "",
+			);
+			body = bodyFor("message", "participation", "purpose");
+			break;
+		}
+		case "agent_work": {
+			subject = take("request", "request ") || "open work";
+			facts.push(
+				take("action"),
+				take("status"),
+				Array.isArray(args.results) && args.results.length ? cardinal(args.results.length, "result reference") : "",
+			);
+			if (Array.isArray(args.results) && !args.results.length) shownArgs.push("results");
+			body = bodyFor("message", "note");
+			break;
+		}
+		case "agent_reset":
+			subject = target();
+			facts.push(observedModel());
+			body = bodyFor("handoff");
+			break;
 	}
-	let hidden = receiptPage || args.cursor !== undefined;
-	for (const [label, key] of [
-		["query", "query"],
-		["source", "source"],
-		["request", "requestId"],
-		["operation", "operationId"],
-	]) {
-		const value = text(args[key]);
-		if (!value) continue;
-		const identity = key === "requestId" || key === "operationId";
-		parts.push(`${label} ${identity ? displayIdentity(value) : displayPreview(value, 120)}`);
-		hidden ||= value.length > 120;
-	}
-	if (args.cursor !== undefined) parts.push("continuation page");
-	return { qualifier: parts.join(" · "), hidden };
+	const presentation = { name, subject, facts, args, shownArgs, body, expanded };
+	return toolCallCard(presentation, theme, context);
 }
 
-export function renderInspectCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
-	const args = record(value);
-	const target = text(args.sessionId);
-	const { qualifier, hidden } = inspectQualifier(args);
-	return argumentCard(
-		"agent_inspect",
-		target ? targetLabel(target, context) : "(target pending)",
-		qualifier,
-		args,
-		theme,
-		context,
-		hidden || target.length > 300,
-	);
-}
+export const renderAbortCall = bindCall("agent_abort");
+export const renderCommandCall = bindCall("agent_command");
+export const renderCompactCall = bindCall("agent_compact");
+export const renderInspectCall = bindCall("agent_inspect");
+export const renderListCall = bindCall("agent_list");
+export const renderSteerCall = bindCall("agent_steer");
 
 // --- Result cards ----------------------------------------------------------------
 
@@ -2647,33 +2495,6 @@ function threadLabel(thread: string, context: AgentCardContext): string {
 	return title ? displayPreview(title, 100) : `thread ${displayIdentity(thread)}`;
 }
 
-function collaborationCallPreview(args: Record<string, unknown>): string | undefined {
-	if (args.action === "read")
-		return (
-			[
-				count(args.after) === undefined ? "" : `after ${String(args.after)}`,
-				count(args.knownFrameRevision) === undefined ? "" : `known frame ${String(args.knownFrameRevision)}`,
-			]
-				.filter(Boolean)
-				.join(" · ") || undefined
-		);
-	const message = args.action === "join" || args.action === "create" ? text(args.participation) : text(args.message);
-	return message ? displayPreview(message, 180) : undefined;
-}
-
-function renderCollaborateCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
-	const args = record(value);
-	const thread = text(args.threadId);
-	const source = text(args.sessionId) || thread.split("/")[0];
-	const topic = text(args.title) ? displayPreview(text(args.title), 100) : thread ? threadLabel(thread, context) : "";
-	// A known thread title already names the work; the storage label adds only an identity.
-	const named = Boolean(thread && context.lookup?.threadTitle?.(thread));
-	const subject = [text(args.action), topic, source && !named ? targetLabel(source, context) : ""]
-		.filter(Boolean)
-		.join(" · ");
-	return argumentCard("agent_collaborate", subject, collaborationCallPreview(args), args, theme, context, true);
-}
-
 function collaborationReceiptLines(
 	details: Record<string, unknown>,
 	theme: Theme,
@@ -2751,20 +2572,6 @@ function collaborationLines(
 		...details.items.slice(0, 3).map((value) => muted(theme, displayPreview(text(record(value).title), 100))),
 		...(details.nextCursor ? [muted(theme, "Next page available")] : []),
 	];
-}
-
-function renderResetCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
-	const args = record(value);
-	const handoff = text(args.handoff);
-	return argumentCard(
-		"agent_reset",
-		targetLabel(text(args.sessionId), context),
-		handoff ? `Handoff: ${displayPreview(handoff, 180)}` : undefined,
-		args,
-		theme,
-		context,
-		true,
-	);
 }
 
 function resetLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
@@ -3367,32 +3174,6 @@ function observeResult(result: AgentToolResult<unknown>, context: AgentCardConte
 	return snapshotFacts(context, snapshot);
 }
 
-function renderWorkCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
-	const args = record(value);
-	const request = text(args.request),
-		status = text(args.status),
-		results = array(args.results).length;
-	const qualifier = [
-		request ? `request ${displayText(request)}` : "",
-		status
-			? displayPreview(status, 20)
-			: Array.isArray(args.results)
-				? `${results} result reference${results === 1 ? "" : "s"}`
-				: "",
-	]
-		.filter(Boolean)
-		.join(" · ");
-	return argumentCard(
-		"agent_work",
-		displayPreview(text(args.action), 20) || "open work",
-		qualifier || undefined,
-		args,
-		theme,
-		context,
-		true,
-	);
-}
-
 const WORK_DEPENDENCY_ROWS = 4;
 
 function closedWorkLines(
@@ -3497,13 +3278,16 @@ type NoteCardFacts = {
 	settled: boolean;
 };
 
-/**
- * One state note as a card in the message background. The turn ended there, so the card is a message to
- * the operator, not a tool outcome. Its title names the tool and then what happened, as in
- * `agent_yield · turn ended · 2 agent results due`. Collapsed, it shows the title, at most three
- * note lines and Pi's expansion hint; expanded, the whole note, the agents whose results were due, and what
- * starts the next turn. Lines wrap at word boundaries and keep the background to the edge.
- */
+function noteRequestGroups(waiting: NoteCardFacts["waiting"]) {
+	const groups = { due: [] as typeof waiting, scheduled: [] as typeof waiting, unconfirmed: [] as typeof waiting };
+	for (const row of waiting) {
+		const key = row.state === "admitted" ? "due" : row.state === "scheduled" ? "scheduled" : "unconfirmed";
+		groups[key].push(row);
+	}
+	return groups;
+}
+
+/** The self-shelled note replaces its call when the result arrives. */
 class StateNoteCard implements Component {
 	private readonly name: string;
 	constructor(name: string) {
@@ -3522,22 +3306,22 @@ class StateNoteCard implements Component {
 	}
 	invalidate(): void {}
 	private title(theme: Theme): string {
-		const { waiting, waitingOmitted } = this.facts;
-		const due = waiting.filter((row) => row.state !== "scheduled").length;
-		const scheduled = waiting.length - due;
-		const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
-		const parts: string[] = [];
-		if (waitingOmitted > 0) parts.push(plural(waiting.length + waitingOmitted, "open agent request"));
-		else {
-			if (due > 0) parts.push(`${plural(due, "agent result")} due`);
-			if (scheduled > 0) parts.push(plural(scheduled, "scheduled input"));
-		}
-		const head =
-			this.facts.error !== undefined ? "could not end the turn" : this.facts.settled ? "turn ended" : "ending turn";
-		const clock = this.facts.at === undefined ? "" : theme.fg("muted", ` · ${dashboardClock(this.facts.at)}`);
-		return (
-			theme.fg("toolTitle", theme.bold(this.name)) + theme.fg("accent", ` · ${[head, ...parts].join(" · ")}`) + clock
-		);
+		const { error, at, settled } = this.facts;
+		const head = error !== undefined ? "Turn did not end" : at !== undefined ? "Turn ended" : settled ? "" : "End turn";
+		const title = theme.fg("toolTitle", theme.bold(this.name));
+		return head ? title + " " + theme.fg(error === undefined ? "toolOutput" : "error", head) : title;
+	}
+	private metadata(groups: ReturnType<typeof noteRequestGroups>): string {
+		const { at, waiting, waitingOmitted } = this.facts;
+		const counts =
+			waitingOmitted > 0
+				? [cardinal(waiting.length + waitingOmitted, "open agent request")]
+				: [
+						groups.due.length ? `${cardinal(groups.due.length, "agent result")} due` : "",
+						groups.scheduled.length ? cardinal(groups.scheduled.length, "scheduled input") : "",
+						groups.unconfirmed.length ? cardinal(groups.unconfirmed.length, "unconfirmed request") : "",
+					];
+		return [...counts, at === undefined ? "" : localToolTime(at)].filter(Boolean).join(" · ");
 	}
 	/** One open request: the agent's name and configuration from the roster, then its state now. */
 	private waitingRow(item: Record<string, unknown>, rows: readonly AgentConversationSummary[]): string {
@@ -3546,26 +3330,33 @@ class StateNoteCard implements Component {
 		const parts = [row && this.context ? targetLabel(identity, this.context) : displayIdentity(identity)];
 		const model = row ? modelCaption(row.model) : "";
 		if (model) parts.push(displayText(model));
-		if (item.state === "unconfirmed") parts.push("admission unconfirmed");
-		if (item.state === "scheduled") parts.push("scheduled input");
 		if (row?.state) parts.push(`now ${displayText(row.state)}`);
 		return parts.join(" · ");
 	}
-	private waitingLines(theme: Theme, width: number): string[] {
-		if (this.facts.waiting.length === 0) return [];
+	private expandedLines(theme: Theme, width: number, groups: ReturnType<typeof noteRequestGroups>): string[] {
+		const { waitingOmitted, at, error } = this.facts;
 		const rows = this.context?.lookup?.() ?? [];
-		const lines = [theme.fg("muted", "Results due from:")];
-		for (const item of this.facts.waiting)
-			lines.push(clipCardLine(`  ${theme.fg("text", this.waitingRow(item, rows))}`, width));
-		if (this.facts.waitingOmitted > 0) lines.push(theme.fg("muted", `  ${this.facts.waitingOmitted} more not listed`));
-		return lines;
-	}
-	/** The agents whose results were due and, for a turn that ended, what starts the next one. */
-	private expandedLines(theme: Theme, width: number): string[] {
 		const lines: string[] = [];
-		const waiting = this.waitingLines(theme, width);
-		if (waiting.length > 0) lines.push("", ...waiting);
-		if (this.facts.settled && this.facts.error === undefined)
+		for (const [heading, items] of [
+			["Results due from:", groups.due],
+			["Scheduled inputs for:", groups.scheduled],
+			["Admission not confirmed for:", groups.unconfirmed],
+		] as const) {
+			if (!items.length) continue;
+			lines.push("", ...wrapTextWithAnsi(heading, width).map((line) => theme.fg("muted", line)));
+			for (const item of items)
+				lines.push(
+					...wrapTextWithAnsi(`  ${this.waitingRow(item, rows)}`, width).map((line) => theme.fg("text", line)),
+				);
+		}
+		if (waitingOmitted > 0)
+			lines.push(
+				"",
+				...wrapTextWithAnsi(`${cardinal(waitingOmitted, "open agent request")} not listed`, width).map((line) =>
+					theme.fg("muted", line),
+				),
+			);
+		if (at !== undefined && error === undefined)
 			lines.push(
 				"",
 				...wrapTextWithAnsi("A result or message from an agent, or your input, starts the next turn.", width).map(
@@ -3574,32 +3365,47 @@ class StateNoteCard implements Component {
 			);
 		return lines;
 	}
-	/**
-	 * Pi's tool card hint: `... (2 more lines, ctrl+o to expand)`, or `... (ctrl+o to expand)` when only the
-	 * details are hidden. A click anywhere on the card toggles it, as on every tool card.
-	 */
-	private hint(theme: Theme, width: number, hiddenLines: number): string[] {
+	private hint(theme: Theme, width: number, hiddenLines: number, details: boolean): string[] {
 		const context = this.context;
-		const expandable = hiddenLines > 0 || this.facts.error === undefined;
-		if (!this.facts.settled || !expandable || context?.hideExpansionHint) return [];
+		if ((!hiddenLines && !details) || context?.hideExpansionHint) return [];
+		if (!this.facts.settled && (context?.argsComplete === false || context?.executionStarted)) return [];
 		const key = context?.keyText("app.tools.expand") ?? "";
+		if (!key && !this.facts.settled) return [];
 		const action = !key
-			? theme.fg("muted", "expand for full details")
+			? theme.fg("muted", "click to expand")
 			: (context?.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"));
-		const more = hiddenLines > 0 ? `${hiddenLines} more line${hiddenLines === 1 ? "" : "s"}, ` : "";
+		const more = hiddenLines > 0 ? `${cardinal(hiddenLines, "more line")}, ` : "";
 		return [clipCardLine(theme.fg("muted", `... (${more}`) + action + theme.fg("muted", ")"), width)];
 	}
 	private body(theme: Theme, width: number): string[] {
 		const expanded = this.context?.expanded === true;
 		const lines = wrapTextWithAnsi(this.title(theme), width);
+		const groups = noteRequestGroups(this.facts.waiting);
+		const metadata = this.metadata(groups);
+		if (metadata) lines.push(...wrapTextWithAnsi(metadata, width).map((line) => theme.fg("muted", line)));
 		const note = this.facts.note ? wrapTextWithAnsi(this.facts.note, width) : [];
-		const shown = expanded ? note : note.slice(0, STATE_NOTE_LINES);
-		lines.push(...shown.map((line) => theme.fg("text", line)));
-		if (this.facts.error !== undefined)
-			lines.push(...wrapTextWithAnsi(this.facts.error, width).map((line) => theme.fg("error", line)));
+		const error = this.facts.error ? wrapTextWithAnsi(this.facts.error, width) : [];
+		const shownNote = expanded ? note : note.slice(0, STATE_NOTE_LINES);
+		const shownError = expanded ? error : error.slice(0, STATE_NOTE_LINES);
+		lines.push(...shownNote.map((line) => theme.fg("text", line)));
+		lines.push(...shownError.map((line) => theme.fg("error", line)));
+		const extras = expanded ? this.expandedLines(theme, width, groups) : [];
+		const hasDetails =
+			this.facts.waiting.length > 0 ||
+			this.facts.waitingOmitted > 0 ||
+			(this.facts.at !== undefined && this.facts.error === undefined);
+		const hiddenNote = note.length - shownNote.length;
+		const hiddenError = error.length - shownError.length;
 		return [
 			...lines,
-			...(expanded ? this.expandedLines(theme, width) : this.hint(theme, width, note.length - shown.length)),
+			...(expanded
+				? extras
+				: this.hint(
+						theme,
+						width,
+						hiddenNote && hiddenError ? 0 : hiddenNote + hiddenError,
+						hasDetails || Boolean(hiddenNote && hiddenError),
+					)),
 		];
 	}
 	render(width: number): string[] {
@@ -3619,17 +3425,10 @@ class StateNoteCard implements Component {
 
 function noteText(args: unknown): string {
 	return displayText(text(record(args).note))
-		.replace(/\s+/gu, " ")
+		.replace(/\t/gu, "   ")
 		.trim();
 }
 
-/**
- * The card of an ordinary session's `agent_yield`: the state note, which this card alone shows to the
- * operator. The title names the call's tool. Pi draws the
- * row without its tool outcome background; the card draws the message background itself. The call slot shows the note while it arrives. Once the result exists, the result slot draws
- * the whole card with the time the turn ended and the requests that were due, and the call slot draws
- * nothing. A failed call shows its error in the error background.
- */
 export function ordinaryWorkCard(name: string, lookup: AgentCardLookup = () => []): AgentToolCard {
 	return {
 		renderShell: "self",
@@ -3665,7 +3464,7 @@ export function ordinaryWorkCard(name: string, lookup: AgentCardLookup = () => [
 							? details.waitingOmitted
 							: 0,
 					...(typeof at === "number" && Number.isSafeInteger(at) && at >= 0 ? { at } : {}),
-					...(context.isError === true ? { error: resultPreview(resultText(result)) } : {}),
+					...(context.isError === true ? { error: displayText(resultText(result)).replace(/\t/gu, "   ").trim() } : {}),
 					settled: true,
 				},
 				theme,
@@ -3681,11 +3480,11 @@ export function ordinaryWorkCard(name: string, lookup: AgentCardLookup = () => [
 export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readonly<Record<string, AgentToolCard>> {
 	const cards: Record<string, AgentToolCard> = {
 		agent_spawn: { renderCall: bindCall("agent_spawn"), renderResult: renderAgentResult },
-		agent_brief: { renderCall: renderBriefCall, renderResult: renderBriefResult },
+		agent_brief: { renderCall: bindCall("agent_brief"), renderResult: renderBriefResult },
 		agent_attach: { renderCall: bindCall("agent_attach"), renderResult: renderAgentResult },
 		agent_place: { renderCall: bindCall("agent_place"), renderResult: renderAgentResult },
 		agent_intent: {
-			renderCall: renderIntentCall,
+			renderCall: bindCall("agent_intent"),
 			renderResult: (result, options, theme, context) =>
 				outcomeCard(
 					result,
@@ -3697,7 +3496,7 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 				),
 		},
 		agent_collaborate: {
-			renderCall: renderCollaborateCall,
+			renderCall: bindCall("agent_collaborate"),
 			renderResult: (result, options, theme, context) =>
 				outcomeCard(
 					result,
@@ -3722,7 +3521,7 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 		agent_send: { renderCall: renderSendCall, renderResult: renderSendResult },
 		agent_steer: { renderCall: renderSteerCall, renderResult: renderSteerResult },
 		agent_work: {
-			renderCall: renderWorkCall,
+			renderCall: bindCall("agent_work"),
 			renderResult: (result, options, theme, context) =>
 				outcomeCard(result, options, theme, context, { error: "Work error", partial: "Work pending" }, workLines),
 		},
@@ -3741,7 +3540,7 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 		agent_inspect: { renderCall: renderInspectCall, renderResult: renderInspectResult },
 		agent_compact: { renderCall: renderCompactCall, renderResult: renderCompactResult },
 		agent_reset: {
-			renderCall: renderResetCall,
+			renderCall: bindCall("agent_reset"),
 			renderResult: (result, options, theme, context) =>
 				outcomeCard(result, options, theme, context, { error: "Reset error", partial: "Reset pending" }, resetLines),
 		},
@@ -3751,7 +3550,6 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 			name,
 			{
 				renderCall(args: unknown, theme: Theme, context: AgentCardContext) {
-					if (context.state) context.state.callHint = false;
 					const observed = { ...context, lookup };
 					let component = card.renderCall(args, theme, snapshotFacts(observed, context.state?.observation));
 					if (!context.state) return component;
