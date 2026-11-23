@@ -26,7 +26,7 @@ delete process.env.PI_HARNESS_FILE;
 after(() => {
 	if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride;
 });
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { awaitWithContext, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	getCurrentSystemPrompt,
 	type AssistantMessage,
@@ -76,7 +76,7 @@ import {
 import { AwaitDoc } from "./awaited-results.ts";
 
 import { DurableHost, stopLiveConversation } from "./durable-host.ts";
-import { fixtureRegistry } from "./durable-host-fixture.mts";
+import { deferred, fixtureRegistry } from "./durable-host-fixture.mts";
 import { ContinuityDoc } from "./continuity-native.ts";
 import { NATIVE_COMPACTION_SEED, REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
 import { modelFailureText } from "./provider-block-facts.ts";
@@ -2395,6 +2395,120 @@ it("applies a self-compaction after the whole tool batch and continues the run",
 		!postBatch.some((message) => message.role === "user" && messageText(message).includes("SELFTEST")),
 		"the dropped prefix is gone",
 	);
+});
+
+it("records a self-compaction failure and refuses a second request while it runs", async (t) => {
+	const route = createRoute();
+	route.batch.push([
+		{ tool: "agent_compact", args: {} },
+		{ tool: "agent_compact", args: { instructions: "Do not duplicate the first compaction." } },
+	]);
+	const { registry } = buildRegistry();
+	const toolsFinished = deferred();
+	let results = 0;
+	registry.install(
+		Durable.defineExtension({
+			name: "test.compaction-gate",
+			hooks: [
+				Durable.hook(Durable.CompactionTask, {
+					beforeCompact: async (_compaction, _api, ctx) => {
+						await awaitWithContext(toolsFinished.promise, ctx);
+						return undefined;
+					},
+				}),
+				Durable.hook(Durable.ToolTask, {
+					afterTool: (call) => {
+						if (call.name === "agent_compact" && ++results === 2) toolsFinished.resolve();
+						return undefined;
+					},
+				}),
+			],
+		}),
+	);
+	let summaries = 0;
+	const models = createTestModels((...args) => {
+		if (args[0].messages.some((message) => messageText(message).includes("conversation to summarize"))) {
+			summaries++;
+			return fauxAssistantMessage("", { stopReason: "error", errorMessage: "prompt is too long" });
+		}
+		return route.route(...args);
+	});
+	const storage = new Durable.MemoryStorage();
+	const { harness, root } = await openHarness(storage, registry, models, { compaction: { keepRecentTokens: 1 } });
+	t.after(() => harness.close(context));
+	await say(root, "SELFTEST");
+
+	const tasks = (await storage.scanTasks({ kind: Durable.CompactionTask.definition.name }, 10, undefined, context))
+		.items;
+	assert.equal(tasks.length, 1);
+	assert.equal(summaries, 1);
+	const live = await harness.snapshot(Durable.LiveDoc, root.id, context);
+	assert.equal(live?.compactions, undefined);
+	assert.deepEqual(live?.compactionFailure, {
+		taskId: tasks[0].id,
+		trigger: "manual",
+		error: "Summarization failed: prompt is too long",
+	});
+	const rejected = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.isError);
+	assert.match(rejected?.text ?? "", /already has a compaction in progress/u);
+});
+
+it("reopens a self-compaction admitted before its tool result and clears its slot without duplicate work", async (t) => {
+	const route = createRoute();
+	route.batch.push([{ tool: "agent_compact", args: {} }]);
+	const { registry } = buildRegistry();
+	const beforeToolResult = deferred();
+	const hold = new Promise<void>(() => {});
+	registry.install(
+		Durable.defineExtension({
+			name: "test.compaction-interrupt",
+			hooks: [
+				Durable.hook(Durable.CompactionTask, {
+					beforeCompact: async (_compaction, _api, ctx) => {
+						await awaitWithContext(hold, ctx);
+						return undefined;
+					},
+				}),
+				Durable.hook(Durable.ToolTask, {
+					afterTool: async (call, _result, _api, ctx) => {
+						if (call.name !== "agent_compact") return undefined;
+						beforeToolResult.resolve();
+						await awaitWithContext(hold, ctx);
+						return undefined;
+					},
+				}),
+			],
+		}),
+	);
+	const storage = new Durable.MemoryStorage();
+	t.mock.method(storage, "close", () => Promise.resolve());
+	const settings = { compaction: { keepRecentTokens: 1 } };
+	const models = createTestModels(route.route);
+	const first = await openHarness(storage, registry, models, settings);
+	t.after(() => first.harness.close(context));
+	const submission = await first.root.submit({ type: "input", content: "SELFTEST" }, context);
+	await beforeToolResult.promise;
+	assert.equal((await toolOutcomes(first.harness, first.root.id)).length, 0);
+	const before = await first.harness.snapshot(Durable.LiveDoc, first.root.id, context);
+	const [compaction] = before?.compactions ?? [];
+	assert.ok(compaction);
+	assert.equal(compaction.trigger, "manual");
+	assert.equal(compaction.blocking, true);
+	await first.harness.close(context);
+
+	const second = await openHarness(storage, buildRegistry().registry, models, settings);
+	t.after(() => second.harness.close(context));
+	assert.equal((await (await second.harness.submission(submission.id, context))?.wait(context))?.status, "done");
+	const tasks = (await storage.scanTasks({ kind: Durable.CompactionTask.definition.name }, 10, undefined, context))
+		.items;
+	assert.deepEqual(
+		tasks.map((task) => [task.id, task.state.status]),
+		[[compaction.taskId, "terminal"]],
+	);
+	assert.equal((await second.harness.snapshot(Durable.LiveDoc, second.root.id, context))?.compactions, undefined);
+	const tool = (await toolOutcomes(second.harness, second.root.id)).find((outcome) => outcome.name === "agent_compact");
+	assert.equal(tool?.isError, true);
+	assert.match(tool?.text ?? "", /interrupted/u);
 });
 
 it("spawns a native child through the existing temporary-directory alias", async (t) => {

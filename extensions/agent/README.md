@@ -3716,7 +3716,22 @@ and `continuity-native.ts` (`freezeContinuityWork`).
 
 ### Compaction and reset guidance
 
-Native compaction gives the summariser one fixed text first, then the caller's
+The Durable host uses Pi's effective `compaction` settings. Valid
+`reserveTokens` and `keepRecentTokens` overrides reach Durable under their exact
+`provider/modelId` keys. They do not turn automatic compaction on or off.
+
+A native self-compaction refuses if the conversation already has a live
+compaction. Its task and status are committed together, so a summarisation
+failure reaches the same status and child continuity readers as other native
+compaction failures. The tool's receipt confirms admission, not a summary.
+
+An overflow that native compaction cannot resolve ends the input without an
+answer. Inspect the retained error before another send. If a summariser also
+rejects the context as too large, `agent_reset` with a handoff gives the agent a
+fresh context without a summariser request. A reset does not run the failed
+input again. Use a new input to resume the work.
+
+Native manual compaction gives the summariser one fixed text first, then the caller's
 instructions unchanged. This applies to compaction of another conversation and
 to self-compaction. The fixed text names the current purpose, consequential
 operator corrections and their effect, qualified evidence, and unresolved

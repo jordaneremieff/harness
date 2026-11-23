@@ -1104,6 +1104,25 @@ function providerStreamSettings(settings: SettingsManager): NonNullable<Durable.
 	};
 }
 
+function nativeCompactionSettings(settings: SettingsManager): Durable.CompactionSettings {
+	const defaults = settings.getCompactionSettings();
+	const configured = settings.getSettings().compaction?.modelOverrides;
+	if (configured === undefined) return defaults;
+	const valid = (tokens: unknown): tokens is number =>
+		typeof tokens === "number" && Number.isSafeInteger(tokens) && tokens >= 0;
+	const overrides = Object.entries(configured ?? {}).flatMap(([model, entry]) => {
+		const reserveTokens = entry?.reserveTokens;
+		const keepRecentTokens = entry?.keepRecentTokens;
+		// Missing fields must stay absent so a harness override does not hide a conversation setting.
+		const fields = {
+			...(valid(reserveTokens) ? { reserveTokens } : {}),
+			...(valid(keepRecentTokens) ? { keepRecentTokens } : {}),
+		};
+		return Object.keys(fields).length === 0 ? [] : [[model, fields] as const];
+	});
+	return overrides.length === 0 ? defaults : { ...defaults, modelOverrides: Object.fromEntries(overrides) };
+}
+
 const defaultAgentEntrypoint = realpathSync(fileURLToPath(new URL("./index.ts", import.meta.url)));
 
 function realpathOrExact(path: string): string {
@@ -1310,7 +1329,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 				return services.settingsManager.getRetrySettings();
 			},
 			get compaction() {
-				return services.settingsManager.getCompactionSettings();
+				return nativeCompactionSettings(services.settingsManager);
 			},
 			/** One tool boundary places every queued steer input; the Pi setting does not select this. */
 			steeringMode: "all",

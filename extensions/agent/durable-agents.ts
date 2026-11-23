@@ -2353,17 +2353,19 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 						reason: "manual",
 						instructions: seededCompactionInstructions(args.instructions),
 					};
-					// The compaction is a child of this tool task. The tool task stays
-					// `completing` until the summary entry is appended, so the generation
-					// round finishes only after the whole batch and before the next request.
-					const taskId = await api.commit(
-						(tx) =>
-							tx.createTask(durable.CompactionTask, input, {
-								ownership: { kind: "task", taskId: api.taskId },
-								conversationId: api.conversationId,
-							}),
-						context,
-					);
+					// The tool task holds the next model request until its child compaction settles.
+					const taskId = await api.commit(async (tx) => {
+						const live = await tx.doc(durable.LiveDoc, api.conversationId);
+						if (live.compactions?.length) return undefined;
+						const id = await tx.createTask(durable.CompactionTask, input, {
+							ownership: { kind: "task", taskId: api.taskId },
+							conversationId: api.conversationId,
+						});
+						// Native retry and failure handling need the slot even if the tool result never commits.
+						live.compactions = [{ taskId: id, trigger: "manual", blocking: true, attempt: 1 }];
+						return id;
+					}, context);
+					if (taskId === undefined) return errorResult("This conversation already has a compaction in progress.");
 					return textResult(
 						"Self-compaction requested for the end of this tool batch. The summary applies after the whole batch, and this run continues. This receipt does not establish that compaction occurred.",
 						{ taskId },

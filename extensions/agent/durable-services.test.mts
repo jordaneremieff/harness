@@ -500,6 +500,45 @@ for (const sample of [
 		}
 	});
 
+it("passes exact-model compaction token overrides without changing enablement or filling absent fields", async (t) => {
+	const f = fixture(t, {
+		projectSettings: { compaction: { modelOverrides: { "test/small": { keepRecentTokens: 0 } } } },
+	});
+	writeFileSync(
+		join(f.agentDir, "settings.json"),
+		JSON.stringify({
+			cacheWarming: "off",
+			compaction: {
+				enabled: false,
+				reserveTokens: 16_000,
+				keepRecentTokens: 20_000,
+				modelOverrides: {
+					"test/small": { reserveTokens: 8_000, enabled: true },
+					"test/wide": { keepRecentTokens: 48_000 },
+					"test/invalid": { reserveTokens: -1, keepRecentTokens: "400" },
+				},
+			},
+		}),
+	);
+	const services = await createDurableServices({
+		cwd: f.cwd,
+		agentDir: f.agentDir,
+		storageId: "fixture-compaction-options",
+		extensionPaths: [f.silentPath],
+		trusted: true,
+	});
+	t.after(() => services.close());
+	assert.deepEqual(services.settings.compaction, {
+		enabled: false,
+		reserveTokens: 16_000,
+		keepRecentTokens: 20_000,
+		modelOverrides: {
+			"test/small": { reserveTokens: 8_000, keepRecentTokens: 0 },
+			"test/wide": { keepRecentTokens: 48_000 },
+		},
+	});
+});
+
 it("installs native built-in extras from buildBuiltin before contributions", async (t) => {
 	const f = fixture(t);
 	let observedInventory: unknown;
