@@ -341,6 +341,13 @@
   .batch-overall-sent { padding: 6px 8px; border-radius: 8px; background: var(--sunk); overflow-wrap: anywhere; }
   .batch-list-body, .batch-sent { margin: 0; padding: 0; min-width: 0; list-style: none; display: grid; gap: 4px; }
   .batch-list-body li { display: flex; align-items: center; gap: 5px; }
+  .comment-state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; }
+  .comment-state small { color: var(--ink-3); }
+  .batch-sent .comment-state { grid-column: 2; }
+  .batch-sent .batch-text, .batch-sent .batch-quote { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .review-filters { display: flex; gap: 12px; padding: 8px 10px; }
+  .review-filters [aria-pressed="true"] { font-weight: 700; text-decoration: underline; }
+  #activity .review-text, #activity blockquote { margin: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .batch-entry {
     min-width: 0; display: grid; grid-template-columns: 2ch minmax(0, 1fr); align-items: start; gap: 6px;
     padding: 6px; border-radius: 8px; background: var(--sunk);

@@ -100,6 +100,31 @@ declare global {
 		sourceAnchor?: ReaderPassageAnchor;
 		range?: ReaderRange;
 	}
+	type ReaderCommentState = "open" | "closed";
+	interface ReaderReviewComment {
+		commentId: string;
+		threadId: string;
+		ordinal: number;
+		kind: "question" | "annotation" | "overall";
+		anchorDigest?: string;
+		passageAnchor?: ReaderPassageAnchor;
+		text: string;
+		quote?: string;
+		sourceAnchor?: string;
+		start?: number;
+		end?: number;
+		madeOnRevision?: number;
+		commentState: ReaderCommentState;
+		version: number;
+	}
+	interface ReaderReviewCollection {
+		readonly rows: ReadonlyMap<string, ReaderReviewComment>;
+		readonly privateOnly: boolean;
+		readonly readFailed: boolean;
+		refresh(): Promise<void>;
+		set(row: ReaderReviewComment, state: ReaderCommentState): Promise<void>;
+		dispose(): void;
+	}
 	interface ReaderThread {
 		authoredRevision?: number;
 		draftRevision?: number;
@@ -292,6 +317,12 @@ declare global {
 		setRenderedHTML(element: HTMLElement, html: string): void;
 		uiLogic: ReaderUILogic;
 		uiDOM: ReaderUIHelpers;
+		createReviewCollection(
+			host: ReaderCoreHost,
+			key: () => string | null,
+			changed: () => void,
+			warn: (text: string) => void,
+		): ReaderReviewCollection;
 		createNavigation(context: ReaderUIContext): ReaderNavigation;
 		createAskUI(context: ReaderUIContext, navigation: ReaderNavigation): ReaderAskUI;
 		createAskSessions(): ReaderAskSessions;

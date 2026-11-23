@@ -10,7 +10,8 @@
 		const sessions = api.createAskSessions(),
 			batchLimit = 50,
 			utf8 = new TextEncoder();
-		let session = sessions.shown;
+		let session = sessions.shown,
+			disposed = false;
 		function revision() {
 			const value = controller.payload?.meta.revision;
 			return typeof value === "number" ? value : undefined;
@@ -52,44 +53,50 @@
 			},
 		});
 		api.flushReviewDrafts = async () =>
-			!controller.compositionTarget && (await recovering.flush()) && !controller.compositionTarget;
+			!disposed &&
+			!controller.compositionTarget &&
+			(await recovering.flush()) &&
+			!disposed &&
+			!controller.compositionTarget;
 		function showRecoveryWarning(owner: ReaderAskDocument) {
+			if (disposed) return;
 			const warning = warnings.get(owner);
 			if (owner === session && warning) ctx.notice(warning.text, "warn", [warning.action], "batch-recovery");
 		}
 		function persistedComment(owner: ReaderAskDocument, item: ReaderComment): ReaderComment {
-			const { text, quote, authoredRevision } = item;
-			const copy: ReaderComment = {
-				text,
-				...(quote ? { quote } : {}),
-				...(authoredRevision === undefined ? {} : { authoredRevision }),
-			};
-			if (item.sourceAnchor && utf8.encode(item.sourceAnchor.text).length <= 16384) {
-				copy.sourceAnchor = structuredClone(item.sourceAnchor);
-				if (item.range) copy.range = { ...item.range };
-			}
-			if (copy.range && copy.sourceAnchor && owner.digest && /^sha256:[0-9a-f]{64}$/u.test(owner.digest))
+			const { text, quote, authoredRevision, sourceAnchor, range } = item;
+			const copy: ReaderComment = { text };
+			if (quote) copy.quote = quote;
+			if (authoredRevision !== undefined) copy.authoredRevision = authoredRevision;
+			if (!sourceAnchor || utf8.encode(sourceAnchor.text).length > 16384) return copy;
+			copy.sourceAnchor = structuredClone(sourceAnchor);
+			if (range && owner.digest && /^sha256:[0-9a-f]{64}$/u.test(owner.digest)) {
+				copy.range = { ...range };
 				copy.anchorDigest = owner.digest;
-			else delete copy.range;
+			}
 			return copy;
 		}
 		function pendingSnapshot(owner: ReaderAskDocument, parkedOnly = false): ReaderReviewDraft | undefined {
-			const comments = parkedOnly ? [] : owner.comments.map((item) => persistedComment(owner, item));
-			const overall = parkedOnly ? "" : owner.overall;
-			const parked = owner.parked?.map((item) =>
-				item.comment
-					? { ...item, text: item.comment.text, comment: persistedComment(owner, item.comment) }
-					: { ...item },
-			);
-			if (!comments.length && !overall && !parked?.length) return undefined;
+			const snapshot: ReaderReviewDraft = { comments: [], overall: "" };
+			if (!parkedOnly) {
+				snapshot.comments = owner.comments.map((item) => persistedComment(owner, item));
+				snapshot.overall = owner.overall;
+				if (owner.overallRevision !== undefined) snapshot.overallRevision = owner.overallRevision;
+			}
+			if (owner.parked?.length) snapshot.parked = owner.parked.map((item) => persistedParked(owner, item));
+			return snapshot.comments.length || snapshot.overall || snapshot.parked ? snapshot : undefined;
+		}
+		function persistedParked(owner: ReaderAskDocument, item: ReaderParkedComment) {
+			if (item.comment)
+				return { index: item.index, text: item.comment.text, comment: persistedComment(owner, item.comment) };
 			return {
-				comments,
-				overall,
-				...(!parkedOnly && owner.overallRevision !== undefined ? { overallRevision: owner.overallRevision } : {}),
-				...(parked?.length ? { parked } : {}),
+				index: item.index,
+				text: item.text,
+				...(item.authoredRevision !== undefined ? { authoredRevision: item.authoredRevision } : {}),
 			};
 		}
 		function restorePending(owner: ReaderAskDocument, draft?: ReaderReviewDraft) {
+			if (disposed) return;
 			if (owner.current?.pendingComment) {
 				owner.current = null;
 				owner.visible = false;
@@ -110,6 +117,9 @@
 		function pendingChanged(owner: ReaderAskDocument) {
 			recovering.changed(owner);
 		}
+		function hasPendingBatch() {
+			return session.comments.length > 0 || hasText(session.overall);
+		}
 		function batchLabel() {
 			const count = commentCount(session.comments.length);
 			return hasText(session.overall) ? `${count} + overall` : count;
@@ -119,6 +129,133 @@
 		let mounted: { panel: HTMLElement; entry: ReviewEntry; target: DiffTarget; conflicted: boolean } | null = null;
 		let changeIndex = 0,
 			review: ReviewEntry[] = [];
+		type Parked = ReaderParkedComment;
+		const privateClosed = new WeakMap<ReaderThread, Set<number>>();
+		let collection: ReaderCommentState = "open",
+			inspected: ReaderReviewComment | Parked | null = null;
+		const saved = api.createReviewCollection(
+			host,
+			() => {
+				const payload = controller.payload;
+				return payload?.live && typeof payload.meta.documentKey === "string" ? payload.meta.documentKey : null;
+			},
+			refreshReview,
+			(text) => ctx.notice(text, "warn"),
+		);
+		function parkedItems() {
+			session.parked ??= [];
+			return session.parked;
+		}
+		function park(comment?: ReaderComment) {
+			if (!comment) return parkOverallDraft();
+			const index = session.comments.indexOf(comment);
+			if (index < 0) return;
+			parkedItems().push({ comment, text: comment.text, index });
+			session.comments.splice(index, 1);
+			if (session.current?.pendingComment === comment) {
+				session.current = null;
+				session.visible = false;
+			}
+			pendingChanged(session);
+			ask.refresh();
+		}
+		function parkOverallDraft() {
+			const text = session.overall;
+			if (!hasText(text)) return;
+			parkedItems().push({ text, index: -1, authoredRevision: session.overallRevision });
+			setOverall("");
+			pendingChanged(session);
+			ask.refresh();
+		}
+		function restoreParked(item: Parked) {
+			if (!item.comment) {
+				if (session.overall) return "Close or remove the current overall comment before reopening this one.";
+				session.overall = item.text;
+				session.overallRevision = item.authoredRevision;
+				return;
+			}
+			if (session.comments.length >= batchLimit) return "The batch is full. Make room before reopening this comment.";
+			session.comments.splice(Math.min(item.index, session.comments.length), 0, item.comment);
+		}
+		function unpark(item: Parked) {
+			const items = parkedItems(),
+				i = items.indexOf(item);
+			if (i < 0) return;
+			const problem = restoreParked(item);
+			if (problem) return ctx.notice(problem, "warn");
+			items.splice(i, 1);
+			inspected = null;
+			pendingChanged(session);
+			ask.refresh();
+		}
+		function savedRow(thread: ReaderThread, ordinal: number) {
+			return saved.rows.get(`${thread.threadId.toLowerCase()}:${ordinal}`);
+		}
+		function closed(thread: ReaderThread, ordinal: number) {
+			const row = savedRow(thread, ordinal);
+			return row ? row.commentState === "closed" : !!privateClosed.get(thread)?.has(ordinal);
+		}
+		function toggleLocal(thread: ReaderThread, ordinal: number) {
+			const set = privateClosed.get(thread) ?? new Set<number>();
+			privateClosed.set(thread, set);
+			if (!set.delete(ordinal)) {
+				set.add(ordinal);
+				if (!thread.messages.length && session.current === thread) {
+					session.visible = false;
+					session.current = null;
+				}
+			}
+			refreshReview();
+			if (!thread.messages.length) draw();
+		}
+		function unavailableReason(thread: ReaderThread, row?: ReaderReviewComment) {
+			if (pending(thread)) return "Wait for delivery confirmation.";
+			if (saved.readFailed && thread.messages.length) return "Refresh saved comments before changing their status.";
+			if (!row && !saved.privateOnly && thread.messages.some((m) => m.state !== "failed"))
+				return "No saved comment is available yet.";
+			return "";
+		}
+		function revisionLabel(revision?: number) {
+			return revision ? `Made on revision ${revision}` : "";
+		}
+		function itemRevision(thread: ReaderThread, ordinal: number) {
+			if (ordinal) return thread.comments?.[ordinal - 1]?.authoredRevision;
+			return (
+				thread.messages[0]?.authoredRevision ??
+				thread.pendingComment?.authoredRevision ??
+				thread.authoredRevision ??
+				thread.draftRevision
+			);
+		}
+		function stateControl(thread: ReaderThread, ordinal: number) {
+			const row = savedRow(thread, ordinal),
+				state = closed(thread, ordinal) ? "open" : "closed";
+			const label = state === "open" ? "Reopen comment" : "Close comment";
+			const reason = unavailableReason(thread, row);
+			const b = action(row || reason ? label : `${label} in pane`, () => {
+				if (row) void saved.set(row, state);
+				else toggleLocal(thread, ordinal);
+			});
+			b.disabled = !!reason;
+			b.title = reason || b.textContent || label;
+			return el(
+				"span",
+				{ class: "comment-state" },
+				el("small", {}, revisionLabel(row?.madeOnRevision ?? itemRevision(thread, ordinal))),
+				b,
+			);
+		}
+		function refreshReview() {
+			if (activity.matches(":popover-open")) drawActivity();
+			if (session.visible && session.current) {
+				const batch = card.querySelector(".batch-request");
+				if (batch) batch.replaceWith(sentBatch(session.current));
+				const control = card.querySelector(".single-comment-state");
+				if (control) control.replaceChildren(stateControl(session.current, 0));
+				position();
+			}
+			paintPassage();
+		}
 		function operations(thread = session.current) {
 			return [...controller.agentOperations.values()].filter((op) => !thread || op.threadId === thread.threadId);
 		}
@@ -183,7 +320,7 @@
 			return api.sourceModel.point(node, display);
 		}
 		function threadRange() {
-			if (!session.current || session.current.comments) return undefined;
+			if (!session.current || session.current.comments || closed(session.current, 0)) return undefined;
 			return (session.current.pendingComment ?? session.current).range ?? operations(session.current).at(-1)?.edits[0];
 		}
 		function rangeFor(range?: ReaderRange) {
@@ -229,7 +366,7 @@
 		// way to the passage highlight.
 		type Mark = {
 			kind: "comment" | "asked";
-			owner: ReaderComment | ReaderThread;
+			owner: ReaderComment | ReaderThread | ReaderReviewComment;
 			ranges: Range[];
 			open: () => void;
 		};
@@ -240,37 +377,53 @@
 			return range ? [{ kind: "comment", owner: comment, ranges: [range], open: () => editComment(comment) }] : [];
 		}
 		function threadRanges(thread: ReaderThread) {
-			if (thread.comments) return passageRanges(thread.comments);
+			if (thread.comments) return passageRanges(thread.comments.filter((_, i) => !closed(thread, i + 1)));
+			if (closed(thread, 0)) return [];
 			const range = rangeFor(thread.range);
 			return range ? [range] : [];
 		}
 		function askedMark(thread: ReaderThread): Mark[] {
 			// A question that the conversation refused was not asked; the Ask menu still lists its card.
 			if (!thread.messages.some((message) => message.state !== "failed")) return [];
+			if (thread.comments)
+				return thread.comments.flatMap((comment, i) => {
+					const ordinal = i + 1;
+					const r = !closed(thread, ordinal) && rangeFor(comment.range);
+					return r
+						? [{ kind: "asked", owner: comment, ranges: [r], open: () => openThread(thread, true, ordinal) }]
+						: [];
+				});
 			const ranges = threadRanges(thread);
 			return ranges.length ? [{ kind: "asked", owner: thread, ranges, open: () => openThread(thread) }] : [];
 		}
 		function isOpen(mark: Mark) {
+			const selectedOrdinal = session.current && selectionByThread.get(session.current);
 			return (
 				session.visible &&
 				!!session.current &&
-				(mark.owner === session.current || mark.owner === session.current.pendingComment)
+				(mark.owner === session.current ||
+					mark.owner === session.current.pendingComment ||
+					(typeof selectedOrdinal === "number" && mark.owner === session.current.comments?.[selectedOrdinal - 1]))
 			);
+		}
+		function activePassages(range: Range | null) {
+			const thread = session.current;
+			if (!session.visible || !thread?.comments) return range ? [range] : [];
+			const selectedOrdinal = selectionByThread.get(thread);
+			if (selectedOrdinal === undefined) return threadRanges(thread);
+			return passageRanges(thread.comments.filter((_, i) => i + 1 === selectedOrdinal && !closed(thread, i + 1)));
 		}
 		function paintPassage() {
 			const range = session.visible ? rangeFor(threadRange()) : null;
 			// In the order that clicks open them: comments as listed, then questions, newest first.
-			marks = [...session.comments.flatMap(commentMark), ...session.threads.flatMap(askedMark)];
+			marks = [...session.comments.flatMap(commentMark), ...session.threads.flatMap(askedMark), ...restoredMarks()];
 			const shown = marks.filter((mark) => !isOpen(mark));
 			for (const kind of ["comment", "asked"])
 				editor.highlight(
 					kind,
 					shown.filter((mark) => mark.kind === kind).flatMap((mark) => mark.ranges),
 				);
-			editor.highlight(
-				"passage",
-				session.visible && session.current?.comments ? passageRanges(session.current.comments) : range ? [range] : [],
-			);
+			editor.highlight("passage", activePassages(range));
 			// The hover highlights paint after the marks they strengthen.
 			hovered = null;
 			paintHover();
@@ -323,7 +476,161 @@
 			item.disabled = !selection;
 			return item;
 		}
+		function restoredRows() {
+			const local = new Set(session.threads.map((t) => t.threadId.toLowerCase()));
+			return [...saved.rows.values()].filter((row) => !local.has(row.threadId.toLowerCase()));
+		}
+		function originalRange(row: ReaderReviewComment) {
+			if (!row.anchorDigest || row.anchorDigest !== session.digest) return;
+			if (row.start !== undefined && row.end !== undefined) return { start: row.start, end: row.end };
+		}
+		function restoredMarks(): Mark[] {
+			const source = controller.doc?.source ?? "";
+			return restoredRows().flatMap((row) => {
+				if (row.commentState === "closed") return [];
+				const original = originalRange(row);
+				const verified =
+					original && source.slice(original.start, original.end) === row.sourceAnchor
+						? original
+						: api.uiLogic.reanchorPassage(source, row.passageAnchor, currentView());
+				const range = rangeFor(verified);
+				return range
+					? [
+							{
+								kind: "asked",
+								owner: row,
+								ranges: [range],
+								open: () => {
+									activity.showPopover();
+									collection = "open";
+									inspected = row;
+									drawActivity();
+								},
+							},
+						]
+					: [];
+			});
+		}
+		function entryButton(title: string, detail: string, open: () => void) {
+			const b = button("", "spark", open, { className: "thread" });
+			b.append(el("span", { class: "tx" }, el("b", {}, title), el("span", {}, detail)));
+			return b;
+		}
+		function inspectButton(item: ReaderReviewComment | Parked) {
+			return () => {
+				inspected = item;
+				drawActivity();
+			};
+		}
+		function detailHead(text: string, quote?: string) {
+			activity.replaceChildren(
+				action("Back to comments", () => {
+					inspected = null;
+					drawActivity();
+				}),
+				el("p", { class: "sec" }, text),
+			);
+			if (quote) activity.append(el("blockquote", {}, quote));
+		}
+		function drawSavedInspection(row: ReaderReviewComment) {
+			const open = row.commentState === "open";
+			detailHead(
+				[open ? "Open" : "Closed", row.kind, revisionLabel(row.madeOnRevision)].filter(Boolean).join(" · "),
+				row.quote,
+			);
+			const toggle = action(
+				open ? "Close comment" : "Reopen comment",
+				() => void saved.set(row, open ? "closed" : "open"),
+			);
+			toggle.disabled = saved.readFailed;
+			activity.append(
+				el("p", { class: "review-text" }, row.text),
+				el("p", { class: "sec" }, "Read the reply in the original conversation."),
+				toggle,
+			);
+		}
+		function drawInspection(item: ReaderReviewComment | Parked) {
+			if ("commentId" in item) {
+				const row = saved.rows.get(item.commentId);
+				if (!row) return false;
+				drawSavedInspection(row);
+			} else {
+				if (!parkedItems().includes(item)) return false;
+				detailHead(
+					["Closed draft", revisionLabel(item.comment?.authoredRevision ?? item.authoredRevision)]
+						.filter(Boolean)
+						.join(" · "),
+					item.comment?.quote,
+				);
+				activity.append(
+					el("p", { class: "review-text" }, item.text),
+					action("Reopen comment", () => unpark(item)),
+				);
+			}
+			return true;
+		}
+		type ActivityEntry = { state: ReaderCommentState; title: string; detail: string; open: () => void };
+		function liveEntry(thread: ReaderThread, ordinal: number, title: string): ActivityEntry {
+			return {
+				state: closed(thread, ordinal) ? "closed" : "open",
+				title,
+				detail: [
+					latestState(thread),
+					revisionLabel(savedRow(thread, ordinal)?.madeOnRevision ?? itemRevision(thread, ordinal)),
+				]
+					.filter(Boolean)
+					.join(" · "),
+				open: () => {
+					activity.hidePopover();
+					openThread(thread, true, ordinal);
+				},
+			};
+		}
+		function threadEntries(thread: ReaderThread) {
+			if (!thread.comments) return [liveEntry(thread, 0, thread.messages[0]?.text ?? (thread.draft || "New question"))];
+			const entries = thread.comments.map((item, i) => liveEntry(thread, i + 1, `${i + 1}. ${item.text}`));
+			if (thread.overall) entries.unshift(liveEntry(thread, 0, `Overall: ${thread.overall}`));
+			return entries;
+		}
+		function activityEntries(): ActivityEntry[] {
+			const entries = session.threads.flatMap(threadEntries);
+			for (const row of restoredRows())
+				entries.push({
+					state: row.commentState,
+					title: row.text,
+					detail: revisionLabel(row.madeOnRevision) || row.kind,
+					open: inspectButton(row),
+				});
+			for (const item of parkedItems())
+				entries.push({
+					state: "closed",
+					title: item.text,
+					detail: item.comment ? "Pending comment" : "Pending overall",
+					open: inspectButton(item),
+				});
+			return entries;
+		}
+		function drawFilters(entries: ActivityEntry[]) {
+			const nClosed = entries.filter((e) => e.state === "closed").length;
+			if (!nClosed) collection = "open";
+			if (nClosed)
+				activity.append(
+					el(
+						"div",
+						{ class: "review-filters" },
+						...(["open", "closed"] as const).map((state) => {
+							const b = action(state === "open" ? "Open" : `Closed (${nClosed})`, () => {
+								collection = state;
+								drawActivity();
+							});
+							b.setAttribute("aria-pressed", String(collection === state));
+							return b;
+						}),
+					),
+				);
+		}
 		function drawActivity() {
+			if (inspected && drawInspection(inspected)) return;
 			activity.replaceChildren(
 				button(
 					"Ask about this document",
@@ -337,7 +644,9 @@
 				selectionAction(),
 				el("div", { class: "sep" }),
 			);
-			if (session.comments.length)
+			const entries = activityEntries();
+			drawFilters(entries);
+			if (collection === "open" && hasPendingBatch())
 				activity.append(
 					button(
 						`Pending batch · ${batchLabel()}`,
@@ -349,28 +658,9 @@
 						{ className: "item" },
 					),
 				);
-			else if (!session.threads.length)
-				activity.append(el("div", { class: "sec" }, "Select a passage and choose Ask."));
-			for (const thread of session.threads) {
-				const b = button(
-					"",
-					"spark",
-					() => {
-						activity.hidePopover();
-						openThread(thread);
-					},
-					{ className: "thread" },
-				);
-				b.append(
-					el(
-						"span",
-						{ class: "tx" },
-						el("b", {}, thread.messages[0]?.text ?? "New question"),
-						el("span", {}, latestState(thread)),
-					),
-				);
-				activity.append(b);
-			}
+			else if (!entries.length) activity.append(el("div", { class: "sec" }, "Select a passage and choose Ask."));
+			for (const entry of entries.filter((e) => e.state === collection))
+				activity.append(entryButton(entry.title, entry.detail, entry.open));
 		}
 		function composerActions(thread: ReaderThread, followUp: boolean) {
 			const send = () => {
@@ -467,13 +757,12 @@
 			return thread.quote ? "Ask about this passage" : "Ask about this document";
 		}
 		function drawHead(thread: ReaderThread) {
-			const comment = thread.pendingComment;
 			return el(
 				"div",
 				{ class: "ask-head" },
 				el("span", { class: "kind" }, icon("spark")),
 				el("span", { class: "who" }, threadTitle(thread)),
-				button(comment ? "Close comment" : "Close question", "x", () => ask.close(), { iconOnly: true, key: "esc" }),
+				button("Dismiss card", "x", () => ask.close(), { iconOnly: true, key: "esc" }),
 			);
 		}
 		function commentCount(count: number) {
@@ -499,9 +788,11 @@
 		});
 		const listBody = el("ol", { class: "batch-list-body", role: "list" }),
 			listFoot = el("div", { class: "batch-list-foot" });
+		const parkOverall = action("Close overall comment", () => park());
 		batchList.replaceChildren(
 			el("h2", {}, "Pending batch"),
 			el("label", { class: "batch-overall" }, el("span", {}, "Overall comment"), overallField),
+			parkOverall,
 			listBody,
 			listFoot,
 		);
@@ -514,6 +805,7 @@
 			}
 			setOverall(overallField.value);
 			pendingChanged(session);
+			parkOverall.hidden = !hasText(overallField.value);
 			refreshTray();
 		});
 		// Text returned ahead of the text being typed keeps the caret on the same characters.
@@ -536,6 +828,7 @@
 		});
 		function drawBatchList() {
 			syncOverallField();
+			parkOverall.hidden = !hasText(session.overall);
 			listBody.replaceChildren();
 			for (const [index, comment] of session.comments.entries()) {
 				const open = button(
@@ -556,6 +849,7 @@
 						"li",
 						{},
 						open,
+						action("Close", () => park(comment)),
 						button(`Remove comment ${index + 1}`, "x", () => removeComment(comment), {
 							iconOnly: true,
 							className: "btn-i batch-row-remove",
@@ -565,13 +859,17 @@
 			}
 			listFoot.replaceChildren(
 				button("Remove all", "", removeAll, { className: "batch-secondary" }),
-				button(`Send ${commentCount(session.comments.length)}`, "", () => void sendBatch(), {
-					className: "batch-primary",
-				}),
+				...(session.comments.length
+					? [
+							button(`Send ${commentCount(session.comments.length)}`, "", () => void sendBatch(), {
+								className: "batch-primary",
+							}),
+						]
+					: [el("span", { class: "hint" }, "Add a passage comment to send this batch.")]),
 			);
 		}
 		function openBatchList() {
-			if (!session.comments.length) return;
+			if (!session.comments.length && !hasText(session.overall)) return;
 			batchList.togglePopover();
 		}
 		function editComment(comment: ReaderComment) {
@@ -587,14 +885,15 @@
 		traySend.id = "ask-batch-send";
 		tray.append(trayOpen, traySend);
 		function refreshTray() {
-			tray.hidden = !session.comments.length;
+			tray.hidden = !session.comments.length && !hasText(session.overall);
+			traySend.disabled = !session.comments.length;
 			const count = commentCount(session.comments.length);
 			const described = hasText(session.overall) ? `${count} and an overall comment` : count;
 			trayOpen.setAttribute("aria-label", `Pending batch: ${described}`);
 			trayCount.textContent = batchLabel();
 		}
 		function refreshBatch() {
-			if (!session.comments.length) batchList.hidePopover();
+			if (!session.comments.length && !hasText(session.overall)) batchList.hidePopover();
 			refreshTray();
 			if (batchList.matches(":popover-open")) drawBatchList();
 		}
@@ -611,7 +910,15 @@
 		// A question card closed before anything was typed or sent leaves no entry in the Ask menu.
 		function discardEmptyQuestion() {
 			const thread = session.current;
-			if (!thread || thread.pendingComment || thread.comments || thread.messages.length || thread.draft.trim()) return;
+			if (
+				!thread ||
+				closed(thread, 0) ||
+				thread.pendingComment ||
+				thread.comments ||
+				thread.messages.length ||
+				thread.draft.trim()
+			)
+				return;
 			const index = session.threads.indexOf(thread);
 			if (index >= 0) session.threads.splice(index, 1);
 			session.current = null;
@@ -637,7 +944,7 @@
 			void recovering.prepare(
 				owner,
 				pendingSnapshot(owner, true),
-				() => owner === session && controller.payload?.presentation === presentation,
+				() => !disposed && owner === session && controller.payload?.presentation === presentation,
 				() => removedBatch(owner),
 			);
 		}
@@ -665,7 +972,6 @@
 			authoredRevision: number | undefined,
 			base: ReaderPromptVersion,
 		) {
-			if (!items.length) return;
 			if (owner !== session) owner.digest = undefined;
 			else if (
 				base.presentation !== controller.payload?.presentation ||
@@ -774,6 +1080,7 @@
 				return;
 			}
 			const stillCurrent = () =>
+				!disposed &&
 				session === owner &&
 				controller.payload?.presentation === base.presentation &&
 				controller.doc?.generation === base.generation;
@@ -831,24 +1138,37 @@
 				el("span", {}, label),
 			);
 		}
-		function sentComments(items: ReaderComment[]) {
+		function sentComments(thread: ReaderThread) {
 			return el(
 				"ol",
 				{ class: "batch-sent", role: "list" },
-				...items.map((item, index) => el("li", { class: "batch-entry" }, commentNumber(index), commentPreview(item))),
+				...(thread.comments ?? []).flatMap((item, index) => {
+					const ordinal = index + 1;
+					if (closed(thread, ordinal) && selectionByThread.get(thread) !== ordinal) return [];
+					return [
+						el(
+							"li",
+							{ class: "batch-entry", "data-comment-ordinal": String(ordinal) },
+							commentNumber(index),
+							commentPreview(item),
+							stateControl(thread, ordinal),
+						),
+					];
+				}),
 			);
 		}
 		// A sent batch shows its overall comment above the numbered comments, in the order the agent reads them.
 		function sentBatch(thread: ReaderThread) {
-			const list = sentComments(thread.comments ?? []);
-			if (!thread.overall) return list;
+			const list = sentComments(thread);
+			if (!thread.overall || (closed(thread, 0) && selectionByThread.get(thread) !== 0))
+				return el("div", { class: "batch-request" }, list);
 			return el(
 				"div",
 				{ class: "batch-request" },
 				el(
 					"div",
-					{ class: "ask-question batch-overall-sent" },
-					el("span", { class: "from" }, "Overall comment"),
+					{ class: "ask-question batch-overall-sent", "data-comment-ordinal": "0" },
+					el("span", { class: "from" }, "Overall comment", stateControl(thread, 0)),
 					thread.overall,
 				),
 				list,
@@ -942,14 +1262,27 @@
 					),
 				);
 		}
+		function drawComposer(thread: ReaderThread) {
+			if (!thread.comments)
+				card.append(
+					thread.pendingComment
+						? action("Close pending comment", () => park(thread.pendingComment))
+						: el("div", { class: "single-comment-state" }, stateControl(thread, 0)),
+				);
+			if (thread.messages.length || !closed(thread, 0)) card.append(composer(thread, !!activeMessage(thread)));
+			else card.append(el("p", { class: "review-text" }, thread.draft));
+		}
+		function cardIsComposing() {
+			const target = controller.compositionTarget;
+			return target instanceof Node && card.contains(target);
+		}
 		function draw() {
 			if (!session.current || !session.visible) {
 				card.removeAttribute("data-open");
 				paintPassage();
 				return;
 			}
-			const target = controller.compositionTarget;
-			if (target instanceof Node && card.contains(target)) return;
+			if (cardIsComposing()) return;
 			const thread = session.current,
 				focused = focusedComposer();
 			card.replaceChildren();
@@ -958,7 +1291,7 @@
 			card.append(drawHead(thread));
 			drawQuote(thread);
 			drawConversation(thread);
-			card.append(composer(thread, !!activeMessage(thread)));
+			drawComposer(thread);
 			revealLatest(thread);
 			position();
 			paintPassage();
@@ -1091,7 +1424,10 @@
 			review = [];
 			clearDiff();
 		}
-		function openThread(thread: ReaderThread, focus = true) {
+		const selectionByThread = new WeakMap<ReaderThread, number>();
+		function openThread(thread: ReaderThread, focus = true, ordinal?: number) {
+			if (ordinal === undefined) selectionByThread.delete(thread);
+			else selectionByThread.set(thread, ordinal);
 			closeReview();
 			if (session.current !== thread) {
 				discardEmptyComment();
@@ -1102,6 +1438,11 @@
 			refreshBatch();
 			draw();
 			if (focus) card.querySelector("textarea")?.focus({ preventScroll: true });
+			if (ordinal !== undefined && thread.comments) {
+				const log = card.querySelector(".ask-messages"),
+					item = card.querySelector(`[data-comment-ordinal="${ordinal}"]`);
+				if (log && item) log.scrollTop += item.getBoundingClientRect().top - log.getBoundingClientRect().top;
+			}
 		}
 		function visitChange(index: number, focusLabel?: string) {
 			changeIndex = index;
@@ -1333,7 +1674,9 @@
 				visitChange(review.findIndex((entry) => entry.operation === selected));
 			},
 			dispose() {
+				disposed = true;
 				for (const fn of off) fn();
+				saved.dispose();
 				observer.disconnect();
 			},
 		};
@@ -1348,16 +1691,8 @@
 				sessions.change(change.edits, controller.doc.source);
 				if (hasPendingPassages(session)) pendingChanged(session);
 			}),
-			controller.on("ack", (ack) => {
-				const { payload, doc } = controller;
-				if (!payload || !doc) return;
-				if (payload.meta.documentKey !== session.documentKey)
-					installSession(payload, doc.source, ack.generation === doc.generation ? ack.digest : undefined);
-				if (ack.generation === doc.generation && typeof ack.digest === "string") {
-					session.digest = ack.digest;
-					if (hasPendingPassages(session)) pendingChanged(session);
-				}
-			}),
+			controller.on("ack", onAck),
+
 			controller.on("agentOperations", () => ask.refresh()),
 			controller.on("view", () => {
 				markers();
@@ -1380,9 +1715,25 @@
 			}),
 			controller.on("document", (payload) => installSession(payload, payload.source, payload.meta.digest)),
 		);
+		function onAck(ack: Record<string, unknown>) {
+			const { payload, doc } = controller;
+			if (!payload) return;
+			if (!doc) return;
+			const digest = ack.generation === doc.generation ? ack.digest : undefined;
+			if (payload.meta.documentKey !== session.documentKey) installSession(payload, doc.source, digest);
+			if (typeof digest !== "string") return;
+			updateDigest(digest);
+		}
+		function updateDigest(digest: string) {
+			session.digest = digest;
+			if (hasPendingPassages(session)) pendingChanged(session);
+			paintPassage();
+		}
 		function installSession(payload: ReaderCoreDocument, source: string, digest: unknown) {
 			closeReview();
 			if (session.documentKey !== payload.meta.documentKey) {
+				inspected = null;
+				collection = "open";
 				batchList.hidePopover();
 				activity.hidePopover();
 				// Never carry a focused field or its selection to a different document.
@@ -1393,6 +1744,7 @@
 			syncOverallField();
 			const owner = session;
 			void recovering.open(owner).then(() => showRecoveryWarning(owner));
+			void saved.refresh();
 			ask.refresh();
 		}
 		// The final input event commits marked text before the postponed card redraw.
@@ -1406,6 +1758,8 @@
 			card.removeEventListener("compositionend", finishCardInput);
 			cancelAnimationFrame(compositionFrame);
 		});
+		off.push(host.on("reviewChanged", () => void saved.refresh()));
+		if (controller.payload) void saved.refresh();
 		const onBatchToggle = (event: ToggleEvent) => {
 			const open = event.newState === "open";
 			trayOpen.setAttribute("aria-expanded", String(open));
@@ -1414,7 +1768,11 @@
 		batchList.addEventListener("beforetoggle", onBatchToggle);
 		off.push(() => batchList.removeEventListener("beforetoggle", onBatchToggle));
 		const onToggle = (event: ToggleEvent) => {
-			if (event.newState === "open") drawActivity();
+			if (event.newState === "open") {
+				inspected = null;
+				collection = "open";
+				drawActivity();
+			}
 		};
 		activity.addEventListener("beforetoggle", onToggle);
 		off.push(() => activity.removeEventListener("beforetoggle", onToggle));
