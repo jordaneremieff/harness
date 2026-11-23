@@ -532,7 +532,7 @@ class Projector implements TabLabelProjector {
 		this.warned = true;
 		const detail = sanitizeDiagnostic(error instanceof Error ? error.message : String(error));
 		try {
-			ctx.ui.notify(`Rex tab label update failed: ${detail || "Unknown error"}`, "warning");
+			ctx.ui.notify(detail ? `Rex tab label update failed: ${detail}` : "Rex tab label update failed.", "warning");
 		} catch {
 			// A diagnostic must not interrupt the host lifecycle.
 		}

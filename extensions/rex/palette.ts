@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 
 /** One command that an extension offers in the Rex palette, as docs/conventions/palette-commands.md defines it. */
 export interface PaletteCommand {
@@ -289,8 +290,11 @@ export function createPaletteCollector(options: {
 		} catch (error) {
 			if (warned) return;
 			warned = true;
+			const message = `Pi could not record its commands for the Rex palette in ${path}: ${error instanceof Error ? error.message : String(error)}`;
 			active.ui.notify(
-				`Pi could not record its commands for the Rex palette in ${path}: ${error instanceof Error ? error.message : String(error)}`,
+				stripTerminalSequences(message)
+					.replace(/[\p{Cc}\p{Cf}\p{Cs}\s]+/gu, " ")
+					.trim(),
 				"warning",
 			);
 		}

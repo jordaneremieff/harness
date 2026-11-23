@@ -1,5 +1,5 @@
 /** The version of the configuration block. Setup recognises only the exact block of this version. */
-export const BLOCK_VERSION = 4;
+export const BLOCK_VERSION = 5;
 const BEGIN = /^-- pi-harness: pi actions v(\d+) begin\r?$/gm;
 const END = /^-- pi-harness: pi actions end\r?$/gm;
 const MARKER = /^-- pi-harness: .*$/gm;
@@ -38,8 +38,20 @@ function pi_harness.read_registry()
   return value
 end
 
+function pi_harness.one_line(text)
+  return (text:gsub("[%c%s]+", " "):gsub("^ +", ""):gsub(" +$", ""))
+end
+
+function pi_harness.feedback(title, text)
+  rex.ui.pick{ title = title, items = { { id = "ok", title = "OK", subtitle = pi_harness.one_line(text) } } }
+end
+
 function pi_harness.say(text)
-  rex.ui.pick{ title = text, items = { { id = "ok", title = "OK" } } }
+  pi_harness.feedback("Pi command notice", text)
+end
+
+function pi_harness.problem(text)
+  pi_harness.feedback("Pi command failed", text)
 end
 
 function pi_harness.require_ui()
@@ -48,10 +60,10 @@ end
 
 function pi_harness.open(ctx, registry, show)
   if type(show.argv) ~= "table" or #show.argv == 0 or type(show.label) ~= "string" then
-    return pi_harness.say("The command asked for a pane without a program.")
+    return pi_harness.problem("The command asked for a pane without a program.")
   end
   if ctx.block_id == nil then
-    return pi_harness.say("Run this command from a pane, so Pi knows where to open it.")
+    return pi_harness.problem("Run this command from a pane, so Pi knows where to open it.")
   end
   local command = {}
   if type(registry.paneStacking) == "table" then
@@ -65,14 +77,14 @@ function pi_harness.open(ctx, registry, show)
   if show.placement == "float" then
     local described = rex.call("session.describe_block", { session_id = ctx.session_id, block_id = ctx.block_id })
     local window = described and described.block and described.block.window_id
-    if window == nil then return pi_harness.say("Pi could not find the window of this pane.") end
+    if window == nil then return pi_harness.problem("Pi could not find the window of this pane.") end
     placed, err = rex.session.new_layer{ window_id = window, bounds = { 0.1, 0.06, 0.8, 0.88 }, layout = layout, focus = false }
   else
     local direction = "horizontal"
     if show.placement == "below" then direction = "vertical" end
     placed, err = rex.session.new_split{ anchor_id = ctx.block_id, direction = direction, side = "after", ratio = 0.5, layout = layout, focus = false }
   end
-  if placed == nil then pi_harness.say("Pi could not open the pane: " .. tostring(err)) end
+  if placed == nil then pi_harness.problem("Pi could not open the pane: " .. tostring(err)) end
 end
 
 function pi_harness.request(entry, ctx, answers)
@@ -88,12 +100,15 @@ function pi_harness.step(entry, ctx, answers)
   for _, word in ipairs(entry.argv) do argv[#argv + 1] = word end
   argv[#argv + 1] = pi_harness.request(entry, ctx, answers)
   local result, err = rex.exec(argv, { timeout = 20 })
-  if result == nil then return nil, entry.title .. " could not start: " .. tostring(err) end
+  if result == nil then
+    return nil, entry.title .. " could not start" .. (#answers == 0 and ": " .. tostring(err) or ".")
+  end
   local stdout = result.stdout or ""
   if #stdout > 1048576 then return nil, entry.title .. " printed a reply larger than Pi allows." end
   local ok, reply = pcall(rex.json.decode, stdout)
   if result.ok and ok and pi_harness.valid_reply(reply) then return reply end
-  local why = (tostring(result.stderr or ""):gsub("%s+$", ""))
+  -- A process diagnostic can contain the request argument, including answers.
+  local why = #answers == 0 and (tostring(result.stderr or ""):gsub("%s+$", "")) or ""
   if why == "" then why = "it printed no valid reply" end
   return nil, entry.title .. " failed: " .. why:sub(-300)
 end
@@ -117,19 +132,19 @@ end
 function pi_harness.run_id(ctx, id)
   pi_harness.require_ui()
   local registry, problem = pi_harness.read_registry()
-  if registry == nil then return pi_harness.say(problem) end
+  if registry == nil then return pi_harness.problem(problem) end
   for _, candidate in ipairs(registry.commands) do
     if candidate.id == id then return pi_harness.run(ctx, registry, candidate) end
   end
-  pi_harness.say("Pi has no command " .. tostring(id) .. ". Start Pi in a Rex pane, then try again.")
+  pi_harness.problem("Pi has no command " .. tostring(id) .. ". Start Pi in a Rex pane, then try again.")
 end
 
 function pi_harness.run(ctx, registry, entry)
   local answers = {}
   for _ = 1, 8 do
     local reply, failure = pi_harness.step(entry, ctx, answers)
-    if reply == nil then return pi_harness.say(failure) end
-    if reply.error ~= nil then return pi_harness.say(reply.error) end
+    if reply == nil then return pi_harness.problem(failure) end
+    if reply.error ~= nil then return pi_harness.problem(reply.error) end
     if reply.ask ~= nil then
       local ask = rex.ui.input
       if reply.ask.kind == "pick" then ask = rex.ui.pick end
@@ -143,7 +158,7 @@ function pi_harness.run(ctx, registry, entry)
       return
     end
   end
-  pi_harness.say(entry.title .. " asked more questions than Pi allows.")
+  pi_harness.problem(entry.title .. " asked more questions than Pi allows.")
 end
 
 rex.action{

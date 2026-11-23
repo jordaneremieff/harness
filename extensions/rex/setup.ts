@@ -3,6 +3,7 @@ import { readFileSync, realpathSync, renameSync } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { showCommandReport, type ReportLine } from "./command-report.ts";
 import { BLOCK_VERSION, configBlock, findConfigBlock, withConfigBlock, withoutConfigBlock } from "./config-block.ts";
 import { readPaletteRegistry } from "./palette.ts";
 import { CliTransport, type RexTransport } from "./transport.ts";
@@ -85,19 +86,19 @@ async function readConfig(path: string): Promise<Config> {
 }
 
 interface ServerFacts {
-	version: string;
-	revision: number;
-	actions: Map<string, string>;
-	apps: string[];
+	version?: string;
+	revision?: number;
+	actions?: Map<string, string>;
+	apps?: string[];
 }
 async function serverFacts(deps: SetupDeps): Promise<ServerFacts | undefined> {
 	const identity = await rexJson(deps, ["whoami", "--json"]);
 	if (!identity) return undefined;
 	const actions = await rexJson(deps, ["actions", "--json"]);
 	const clients = await rexJson(deps, ["api", "call", "client.list", "{}"]);
-	const listed = Array.isArray(actions?.actions) ? (actions.actions as Array<Record<string, unknown>>) : [];
-	const apps = (Array.isArray(clients?.clients) ? (clients.clients as Array<Record<string, unknown>>) : [])
-		.map((client) => (client.info ?? {}) as Record<string, unknown>)
+	const listed = Array.isArray(actions?.actions) ? (actions.actions as Array<Record<string, unknown>>) : undefined;
+	const apps = (Array.isArray(clients?.clients) ? (clients.clients as Array<Record<string, unknown>>) : undefined)
+		?.map((client) => (client?.info ?? {}) as Record<string, unknown>)
 		.filter((info) => info.kind === "app")
 		.map((info) =>
 			[info.name, info.version, info.label ? `on ${info.label}` : undefined]
@@ -105,13 +106,15 @@ async function serverFacts(deps: SetupDeps): Promise<ServerFacts | undefined> {
 				.join(" "),
 		);
 	return {
-		version: typeof identity.rex_version === "string" ? identity.rex_version : "unknown version",
-		revision: typeof identity.api_revision === "number" ? identity.api_revision : 0,
-		actions: new Map(
-			listed
-				.filter((action) => action.kind === "lua" && typeof action.name === "string")
-				.map((action) => [action.name as string, typeof action.description === "string" ? action.description : ""]),
-		),
+		version: typeof identity.rex_version === "string" ? identity.rex_version : undefined,
+		revision: Number.isInteger(identity.api_revision) ? (identity.api_revision as number) : undefined,
+		actions:
+			listed &&
+			new Map(
+				listed
+					.filter((action) => action?.kind === "lua" && typeof action.name === "string")
+					.map((action) => [action.name as string, typeof action.description === "string" ? action.description : ""]),
+			),
 		apps,
 	};
 }
@@ -128,41 +131,50 @@ function commandActions(deps: SetupDeps): Array<{ action: string; title: string 
  * Actions of the block that the server has not loaded: `pi_command` and each recorded command. `pi_command` names the
  * registry that its block reads, so a loaded block of another agent directory counts as not loaded.
  */
-function missingActions(deps: SetupDeps, facts: ServerFacts): string[] {
-	const stale = !facts.actions.get("pi_command")?.endsWith(`Pi records its commands in ${deps.registryPath}.`);
+function missingActions(deps: SetupDeps, actions: Map<string, string>): string[] {
+	const stale = !actions.get("pi_command")?.endsWith(`Pi records its commands in ${deps.registryPath}.`);
 	return ["pi_command", ...commandActions(deps).map((command) => command.action)].filter(
-		(action) => !facts.actions.has(action) || (action === "pi_command" && stale),
+		(action) => !actions.has(action) || (action === "pi_command" && stale),
 	);
 }
 
-function serverLines(deps: SetupDeps, facts: ServerFacts | undefined): Array<[string, "info" | "warning"]> {
-	if (!facts) return [["The Rex server did not answer. Start Rex, then run /rex status again.", "warning"]];
-	const ready = facts.revision >= PROMPT_API_REVISION;
-	const commands = commandActions(deps);
-	const missing = missingActions(deps, facts);
+type ServerLine = [string, "info" | "warning"];
+function actionLine(missing: string[] | undefined): ServerLine {
+	if (!missing) return ["Rex did not return its loaded actions.", "warning"];
+	if (missing.length === 0) return ["The server has loaded every Pi action.", "info"];
 	return [
-		[
-			`Rex server ${facts.version}, API revision ${facts.revision}: ${ready ? "it can run Pi commands" : `Pi commands need API revision ${PROMPT_API_REVISION} or later; update Rex and restart its server`}.`,
-			ready ? "info" : "warning",
-		],
+		`The server has not loaded these actions: ${missing.join(", ")}. /rex setup reloads the configuration after you confirm.`,
+		"warning",
+	];
+}
+function appLine(apps: string[] | undefined): ServerLine {
+	if (!apps) return ["Rex did not return its connected apps.", "warning"];
+	if (apps.length === 0) return ["No Rex app is connected.", "warning"];
+	return [
+		`Connected Rex apps: ${apps.join("; ")}. Each app must be as new as the server to show the questions of Pi commands.`,
+		"info",
+	];
+}
+function serverLines(deps: SetupDeps, facts: ServerFacts | undefined): ServerLine[] {
+	if (!facts) return [["The Rex server did not answer. Start Rex, then run /rex status again.", "warning"]];
+	const ready = facts.revision !== undefined && facts.revision >= PROMPT_API_REVISION;
+	const commands = commandActions(deps);
+	const missing = facts.actions && missingActions(deps, facts.actions);
+	const server = `Rex server${facts.version ? ` ${facts.version}` : ""}`;
+	const readiness =
+		facts.revision === undefined
+			? `${server} did not report an API revision; support for Pi commands is not established.`
+			: `${server}, API revision ${facts.revision}: ${ready ? "meets the minimum revision for Pi commands" : `Pi commands need API revision ${PROMPT_API_REVISION} or later; update Rex and restart its server`}.`;
+	return [
+		[readiness, ready ? "info" : "warning"],
 		[
 			commands.length
 				? `Pi commands for the palette: ${commands.map((command) => command.title).join(", ")}.`
 				: "No Pi command is recorded for the palette yet; Pi records them when an interactive session starts.",
 			commands.length ? "info" : "warning",
 		],
-		[
-			missing.length
-				? `The server has not loaded these actions: ${missing.join(", ")}. /rex setup reloads the configuration after you confirm.`
-				: "The server has loaded every Pi action.",
-			missing.length ? "warning" : "info",
-		],
-		[
-			facts.apps.length
-				? `Connected Rex apps: ${facts.apps.join("; ")}. Each app must be as new as the server to show the questions of Pi commands.`
-				: "No Rex app is connected.",
-			facts.apps.length ? "info" : "warning",
-		],
+		actionLine(missing),
+		appLine(facts.apps),
 	];
 }
 
@@ -264,9 +276,9 @@ const CHANGES = {
  */
 async function reloadWhenMissing(deps: SetupDeps, path: string): Promise<void> {
 	const facts = await serverFacts(deps);
-	if (!facts || facts.revision < PROMPT_API_REVISION) return;
-	const missing = missingActions(deps, facts);
-	if (missing.length === 0) return;
+	if (facts?.revision === undefined || facts.revision < PROMPT_API_REVISION) return;
+	const missing = facts.actions && missingActions(deps, facts.actions);
+	if (!missing?.length) return;
 	const reload = await deps.confirm(
 		"Reload the Rex configuration?",
 		`${path} holds Pi's actions, but the Rex server has not loaded ${missing.join(", ")}. Pi runs "rex config reload", which makes the server read the whole file again, including any other change in it.`,
@@ -293,7 +305,7 @@ async function change(verb: "setup" | "remove", deps: SetupDeps, path: string, c
 		return true;
 	}
 	if (!(await deps.confirm(words.title, words.message(path, deps.registryPath)))) {
-		deps.report("Nothing changed.");
+		deps.report("The Rex configuration did not change.");
 		return false;
 	}
 	if (!(await install(deps, path, current, next))) return false;
@@ -309,6 +321,7 @@ export function registerRexCommand(
 		description: "Set up, check or remove Pi's actions in Rex (palette commands): /rex setup | status | remove",
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			const transport = options.transport ?? new CliTransport(options.executable, process.env);
+			const lines: ReportLine[] = [];
 			try {
 				await rexCommand(args, {
 					transport,
@@ -316,13 +329,20 @@ export function registerRexCommand(
 					cwd: ctx.cwd,
 					registryPath: options.registryPath,
 					confirm: (title, message) => (ctx.hasUI ? ctx.ui.confirm(title, message) : Promise.resolve(false)),
-					report: (line, level) => ctx.ui.notify(line, level ?? "info"),
+					report: (text, level = "info") => lines.push({ text, level }),
 				});
 			} catch (error) {
-				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				lines.push({ text: error instanceof Error ? error.message : String(error), level: "error" });
 			} finally {
 				if (!options.transport) transport.dispose();
 			}
+			const title =
+				args.trim() === "setup"
+					? "Rex palette setup"
+					: args.trim() === "remove"
+						? "Rex palette removal"
+						: "Rex palette status";
+			await showCommandReport(ctx, title, lines);
 		},
 	});
 }

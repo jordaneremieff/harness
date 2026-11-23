@@ -1,560 +1,342 @@
 import assert from "node:assert/strict";
-import test, { beforeEach } from "node:test";
-import type { ThemeColor } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { createRequire } from "node:module";
+import { it, type TestContext } from "node:test";
+import { stripVTControlCharacters } from "node:util";
+import { defineTool, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { obj } from "@earendil-works/pi-schema";
+import { type KeyId, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { resultChannels } from "./config.ts";
 import type { RexResult } from "./core.ts";
-import { createRexToolDisplay } from "./presentation.ts";
+import { toolDisplay } from "./display.ts";
 
+const requirePi = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+const nativeTui: typeof import("@earendil-works/pi-tui") = await import(requirePi.resolve("@earendil-works/pi-tui"));
+const ui = { requestRender() {} } as unknown as TUI;
 const block = "block:33333333-3333-4333-8333-333333333333";
 const server = { endpoint: "unix:///test-rex", hostId: "host", instanceId: "instance", selection: "test" };
-const theme = { fg: (_colour: ThemeColor, text: string) => text };
-/** The host injects keyText with the configured bindings; tests set the configured expansion key here. */
-let expandKey = "ctrl+o";
-const keyText = () => expandKey;
-beforeEach(() => {
-	expandKey = "ctrl+o";
-});
-function fixture(changes: Partial<RexResult> = {}): RexResult {
-	return {
-		ok: true,
-		outcome: "input_delivered",
-		target: { server, source: "explicit", blockId: block },
-		effects: { state: "confirmed", recordId: "complete-operation-identity" },
-		coverage: { bounded: true },
-		...changes,
-	};
-}
-function render(name: string, value: RexResult, args: unknown, expanded = false, width = 120): readonly string[] {
-	return createRexToolDisplay(name)
-		.renderResult(resultChannels(value), { expanded, isPartial: false }, theme, { args, isError: !value.ok, keyText })
-		.render(width);
-}
+const target = { server, source: "explicit" as const, blockId: block };
+const effectRecord = "full-effect-record-identity";
 
-test("cards retain meaningful uncertainty, delivery and observer qualifications at narrow and normal widths", () => {
-	for (const width of [24, 72, 120]) {
-		const unknown = render(
-			"rex_terminal",
-			fixture({
-				ok: false,
-				outcome: "cli_failure",
-				effects: { state: "unknown", recordId: "complete-operation-identity" },
-				error: "Connection ended after input.",
-			}),
-			{ op: "input" },
-			false,
-			width,
-		);
-		assert.match(unknown.join(" "), /UNKNOWN\s+EFFECTS/);
-		assert.match(unknown.join(" "), /Input delivery is not application\s+execution/);
-		assert.ok(!unknown.join("").includes("complete-operation-identity"), "the effect record waits in Details");
-		assert.ok(
-			render(
-				"rex_terminal",
-				fixture({
-					ok: false,
-					outcome: "cli_failure",
-					effects: { state: "unknown", recordId: "complete-operation-identity" },
-				}),
-				{ op: "input" },
-				true,
-				width,
-			)
-				.join("")
-				.includes("complete-operation-identity"),
-		);
-		const delivered = render("rex_terminal", fixture(), { op: "input" }, false, width);
-		assert.match(
-			delivered.join(" "),
-			/block\s+\u00b7\s+input\s+delivered/,
-			"the lead names the plain subject and the outcome",
-		);
-		assert.match(delivered.join(" "), /not application\s+execution/);
-		const deadline = render(
-			"rex_wait",
-			fixture({ ok: false, outcome: "timeout", effects: { state: "none" } }),
-			{ op: "wait", condition: "child_exit" },
-			false,
-			width,
-		);
-		assert.match(deadline.join(" "), /Observer deadline/);
-		assert.match(deadline.join(" "), /terminal work remains\s+independent/);
-		for (const row of [...unknown, ...delivered, ...deadline])
-			assert.ok(visibleWidth(row) <= width, JSON.stringify(row));
-	}
-	const collapsed = render("rex_terminal", fixture(), { op: "input" }).join("\n");
-	assert.ok(
-		!collapsed.includes(block) && !collapsed.includes(server.endpoint),
-		"collapsed cards keep exact identities and endpoints out of the lead",
+function keyFixture(t: TestContext, keys: KeyId | KeyId[] = "ctrl+g"): void {
+	initTheme("dark", false);
+	const previous = nativeTui.getKeybindings();
+	nativeTui.setKeybindings(
+		new nativeTui.KeybindingsManager({
+			...nativeTui.TUI_KEYBINDINGS,
+			"app.tools.expand": { defaultKeys: keys, description: "Expand tool output" },
+		}),
 	);
-	assert.doesNotMatch(collapsed, /effects confirmed|no effects/, "a routine effect state is not a collapsed fact");
-	const expanded = render("rex_terminal", fixture(), { op: "input" }, true).join("\n");
-	assert.ok(expanded.includes(block) && expanded.includes(server.endpoint), "full identifiers fit without shortening");
-	assert.match(expanded, /Details\n.*target block:.*explicit target.*unix:/s);
-	assert.match(expanded, /record complete-operation-identity/);
-	assert.match(expanded, /effects confirmed/);
-});
-
-test("cards expose omissions and complete bounded JSON without changing canonical channels", () => {
-	const value = fixture({
-		data: { content: `visible capture\n${"x".repeat(2048)}END-OF-BOUNDED-CAPTURE` },
-		effects: { state: "none" },
-		coverage: {
-			bounded: true,
-			truncated: true,
-			dataOmitted: true,
-			truncatedFields: ["error"],
-			totalRecords: 4,
-			returnedRecords: 4,
-			omittedRecords: 0,
-			omittedRecordRefs: 2,
-			nextOffset: 0,
+	t.after(() => nativeTui.setKeybindings(previous));
+}
+function card(name: string, args: unknown): ToolExecutionComponent {
+	const display = toolDisplay().tools.find((entry) => entry.name === name);
+	assert.ok(display);
+	const definition = defineTool({
+		...display,
+		label: "Display fixture",
+		description: "Display fixture",
+		parameters: obj({}, { open: true }),
+		async execute() {
+			throw new Error("A display fixture must not execute");
 		},
 	});
-	const channels = resultChannels(value);
-	const before = JSON.stringify(channels);
-	const display = createRexToolDisplay("rex_terminal");
-	const context = { args: { op: "inspect", view: "capture" }, isError: false, keyText };
-	const collapsed = display
-		.renderResult(channels, { expanded: false, isPartial: false }, theme, context)
-		.render(72)
-		.join("\n");
-	assert.match(collapsed, /Bounded capture, not a complete transcript/);
-	assert.match(collapsed, /bulk data omitted/);
-	assert.match(collapsed, /diagnostics shortened/);
-	assert.match(collapsed, /2 record references omitted/);
-	assert.match(collapsed, /next offset 0/);
-	assert.match(collapsed, /to expand/);
-	assert.ok(!collapsed.includes("END-OF-BOUNDED-CAPTURE"));
-	const expanded = display
-		.renderResult(channels, { expanded: true, isPartial: false }, theme, context)
-		.render(72)
-		.join("");
-	assert.match(expanded, /END-OF-BOUNDED-CAPTURE/);
-	assert.match(expanded, /"bounded": true/);
-	assert.match(expanded, /to collapse/);
-	assert.equal(JSON.stringify(channels), before);
-	assert.deepEqual(channels.details, { outcome: value.outcome, effects: "none" });
+	const component = new ToolExecutionComponent(name, "fixture", args, { outputPad: 1 }, definition, ui, ".");
+	component.setArgsComplete();
+	return component;
+}
+function rows(component: ToolExecutionComponent, width = 120): string[] {
+	return component.render(width).map((row) => {
+		assert.ok(visibleWidth(row) <= width);
+		return stripVTControlCharacters(row).trimEnd();
+	});
+}
+function screen(component: ToolExecutionComponent, width = 120): string {
+	return rows(component, width).join("\n");
+}
+function receipt(outcome: string, fields: Partial<RexResult> = {}) {
+	return resultChannels({ ok: true, outcome, effects: { state: "none" }, coverage: { bounded: true }, ...fields });
+}
+
+it("moves one disclosure hint from the Lua call to the partial and final result", (t) => {
+	keyFixture(t);
+	const component = card("rex_native", { op: "native", kind: "lua", code: `return "${"界".repeat(150)}END-LUA"` });
+	const before = screen(component, 40);
+	assert.match(before, /rex_native lua/);
+	assert.match(before, /\(\d+ more lines, ctrl\+g to expand\)/);
+	assert.doesNotMatch(before, /END-LUA|acknowledged/);
+	assert.equal(rows(component, 40).filter((row) => /界/.test(row)).length, 5);
+	component.markExecutionStarted();
+	component.updateResult({ content: [], details: undefined, isError: false }, true);
+	assert.match(screen(component, 40), /Waiting for the Rex CLI…\n +\.\.\. \(\d+ more lines, ctrl\+g to expand\)/);
+	assert.doesNotMatch(screen(component), /to expand/);
+	const result = receipt("acknowledged", {
+		data: { value: { ok: false, message: "Inner action refused" }, meaning: "Raw model guidance" },
+	});
+	const beforeResult = JSON.stringify(result);
+	component.updateResult(result);
+	const settled = screen(component);
+	assert.match(settled, /CLI acknowledged.*application success is not established/);
+	assert.match(settled, /Inner action refused/);
+	assert.doesNotMatch(settled, /Raw model guidance/);
+	assert.equal(settled.match(/to expand/g)?.length, 1);
+	assert.match(settled, /Inner action refused[\s\S]*\.\.\. \(ctrl\+g to expand\)\s*$/);
+	component.setExpanded(true);
+	assert.match(screen(component), /END-LUA/);
+	assert.match(screen(component), /Raw model guidance/);
+	assert.doesNotMatch(screen(component), /to expand|to collapse/);
+	assert.equal(JSON.stringify(result), beforeResult);
 });
 
-test("child-exit cards expose the exit code and recent diagnosis without opening JSON", () => {
-	for (const width of [24, 48, 120]) {
-		for (const code of [0, 7]) {
-			const value = fixture({
-				ok: code === 0,
-				outcome: code === 0 ? "child_completed" : "child_failed",
-				effects: { state: "none" },
-				data: {
-					process: { last_exit: { exit_code: code } },
-					capture: {
-						content: "early build output\nlast build phase\nERROR: result absent\n",
-						total: 70,
-						start: 0,
-						end: 70,
+it("shows exact requested and returned IDs until the available width clips them", (t) => {
+	keyFixture(t);
+	const recordId = `record-${"id".repeat(66)}-last`;
+	const component = card("rex_owned", { op: "observe", recordId, target: { block, server: server.endpoint } });
+	const narrow = rows(component, 32);
+	assert.match(narrow[2], /^ rex_owned record-id.*…$/);
+	assert.equal(rows(component, 230)[2], ` rex_owned ${recordId}`);
+	assert.match(screen(component, 230), new RegExp(block));
+	assert.doesNotMatch(screen(component, 230), /one record|to expand/);
+	component.updateResult(
+		receipt("observed", {
+			target,
+			effects: { state: "none", recordId: effectRecord },
+			data: {
+				reports: [
+					{
+						recordId,
+						phase: "confirmed",
+						complete: true,
+						observations: [
+							{
+								resource: { blockId: block },
+								presence: "present",
+								childState: "exited",
+								process: { last_exit: { exit_code: 7 } },
+							},
+						],
 					},
-				},
-			});
-			const rows = render("rex_wait", value, { op: "wait", condition: "child_exit" }, false, width);
-			assert.match(rows.join(" "), new RegExp(`exit ${code}`));
-			assert.match(rows.join("\n"), /last build phase\nERROR: result absent/);
-			assert.doesNotMatch(rows.join("\n"), /early build output/);
-			assert.ok(rows.every((row) => visibleWidth(row) <= width));
-		}
-	}
-	const timeout = fixture({
-		ok: false,
-		outcome: "timeout",
-		effects: { state: "none" },
-		data: { process: { last_exit: { exit_code: 7 } } },
-	});
-	assert.doesNotMatch(render("rex_wait", timeout, { op: "wait", condition: "child_exit" }).join("\n"), /exit 7/);
-	const unavailable = fixture({
-		outcome: "child_completed",
-		data: { process: { last_exit: { exit_code: 0 } }, captureError: "Tail read timed out" },
-	});
-	const text = render("rex_wait", unavailable, { op: "wait", condition: "child_exit" }).join("\n");
-	assert.match(text, /child completed · exit 0/);
-	assert.match(text, /Capture: Tail read timed out/);
+				],
+			},
+		}),
+	);
+	const wide = screen(component, 230);
+	assert.match(wide, new RegExp(`Record ${recordId} · stored confirmed`));
+	assert.match(wide, new RegExp(`${block} · present · child exited · exit 7`));
+	assert.match(wide, new RegExp(`effect record ${effectRecord}`));
+	assert.match(screen(component, 32), /target block:33333333-.*…/);
+	component.setExpanded(true);
+	assert.ok(screen(component, 32).replaceAll(/\n +/gu, "").includes(recordId));
 });
 
-test("capture cards preview the end of the bounded output and preserve full expanded output", () => {
-	const value = fixture({
-		outcome: "capture",
-		data: { content: "early build output\nlast build phase\nFINAL DIAGNOSIS\n\n" },
+it("does not disclose literal input, key values, echoed payloads or optional capture content", (t) => {
+	keyFixture(t);
+	const component = card("rex_terminal", {
+		op: "input",
+		target: { block },
+		text: "SECRET-CONTENT",
+		keys: ["ctrl+x"],
+		observe: true,
 	});
-	const args = { op: "inspect", view: "capture" };
-	const text = render("rex_terminal", value, args).join("\n");
-	assert.match(text, /last build phase\nFINAL DIAGNOSIS/);
-	assert.doesNotMatch(text, /early build output/);
-	assert.match(render("rex_terminal", value, args, true).join("\n"), /early build output/);
+	component.updateResult(
+		receipt("input_delivered", {
+			target,
+			effects: { state: "confirmed", recordId: effectRecord },
+			data: {
+				delivery: { delivered: ["SECRET-CONTENT", { key: "ctrl+x" }] },
+				observation: { ok: true, data: { content: "SECRET-CONTENT" } },
+			},
+		}),
+	);
+	assert.match(screen(component), /Input delivered; application execution is not established/);
+	assert.match(screen(component), /separate snapshot was returned/);
+	component.setExpanded(true);
+	assert.match(screen(component), /text: 14 characters/);
+	assert.match(screen(component), /keys: 1 key/);
+	assert.doesNotMatch(screen(component), /SECRET-CONTENT|ctrl\+x/);
+	component.updateResult(
+		receipt("cli_failure", {
+			ok: false,
+			error: "Connection ended: SECRET-CONTENT",
+			effects: { state: "unknown", recordId: effectRecord },
+		}),
+	);
+	assert.match(screen(component), /Native effects are not established/);
+	assert.doesNotMatch(screen(component), /SECRET-CONTENT/);
 });
 
-test("call and result text escape terminal controls and preserve safe row colours", () => {
-	const hostile = "label\u001b]52;c;clipboard\u0007\r\u009b2J\u202e\ud800";
-	const args = {
-		op: "create",
-		kind: "session",
-		label: hostile,
-		text: hostile,
-		target: { server: server.endpoint, block },
-		command: ["application", hostile],
-	};
-	const display = createRexToolDisplay("rex_terminal");
-	const value = fixture({
-		ok: false,
-		outcome: "cli_failure",
-		error: hostile,
-		data: { content: hostile },
-		effects: { state: "unknown", note: hostile },
-		coverage: { bounded: true, note: hostile },
-	});
-	for (const expanded of [false, true]) {
-		const call = display.renderCall(args, theme, { expanded, isPartial: true });
-		const result = display.renderResult(resultChannels(value), { expanded, isPartial: false }, theme, {
-			args,
-			isError: true,
-		});
-		for (const width of [24, 72, 120]) {
-			const rows = [...call.render(width), ...result.render(width)];
-			for (const row of rows) {
-				assert.ok(visibleWidth(row) <= width);
-				assert.equal(
-					/[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]|\p{Cs}/u.test(row),
-					false,
-					JSON.stringify(row),
-				);
+it("fails closed on echoed private data in bare and structured failures with malformed requests", (t) => {
+	keyFixture(t);
+	const secret = "DONOTDISCLOSE\\a\nλ";
+	const prepared = [
+		["rex_terminal", secret],
+		["rex_native", [secret]],
+		["rex_terminal", { text: secret, keys: [secret] }],
+		["rex_terminal", { kind: "split", text: secret }],
+		["rex_native", { args: { nested: [secret] } }],
+		["rex_native", { kind: "lua", code: secret }],
+		["rex_native", { op: "native", kind: "lua", code: secret, target: { extra: secret } }],
+		["rex_native", { op: "native", kind: "api", method: "pane.list", args: { nested: [secret] } }],
+	] as const;
+	for (const [name, args] of prepared) {
+		const component = card(name, args);
+		assert.doesNotMatch(screen(component), /DONOTDISCLOSE/);
+		for (const result of [
+			{ content: [{ type: "text", text: `Argument error: ${JSON.stringify(args)}` }], isError: true },
+			receipt("invalid_request", {
+				ok: false,
+				error: secret,
+				effects: { state: "unknown", recordId: effectRecord, note: secret },
+				data: { captureError: secret, content: secret, value: secret },
+				coverage: { bounded: true, note: secret },
+			}),
+		]) {
+			const before = JSON.stringify(result);
+			component.updateResult(result);
+			for (const expanded of [false, true]) {
+				component.setExpanded(expanded);
+				const display = screen(component);
+				assert.match(display, /The diagnostic is withheld/);
+				if ("details" in result) assert.match(display, /Native effects are not established/);
+				assert.doesNotMatch(display, /DONOTDISCLOSE/);
 			}
+			assert.equal(JSON.stringify(result), before);
 		}
-		assert.match(result.render(120).join("\n"), /\\u001b/);
 	}
-	const preview = display.renderCall({ op: "input", text: "界🙂".repeat(100) }, theme, {
-		expanded: false,
-		isPartial: false,
-	});
-	assert.ok(preview.render(24).some((row) => row.endsWith("…")));
-	assert.equal(
-		preview.render(24).some((row) => row.includes("\u001b[0m")),
-		false,
-		"plain clipping must not cancel the host's row background",
-	);
-	assert.deepEqual(preview.render(0), []);
 });
 
-test("result summaries preserve native, stored-phase and status meaning without absent-fact placeholders", () => {
-	const native = render("rex_native", fixture({ outcome: "acknowledged" }), { op: "native", kind: "lua" }).join("\n");
-	assert.match(native, /CLI success is not inner application success/);
-	const owned = render(
-		"rex_owned",
-		fixture({
-			target: undefined,
-			outcome: "owned",
-			effects: { state: "none" },
-			coverage: { bounded: true, totalRecords: 0, returnedRecords: 0 },
+it("separates a child exit, a missed condition, a refusal and a thrown cancellation", (t) => {
+	keyFixture(t);
+	const child = card("rex_wait", { op: "wait", condition: "child_exit", target: { block } });
+	const tail = `before retained preview\n${"x".repeat(370)}TAIL`;
+	child.updateResult(
+		receipt("child_failed", {
+			ok: false,
+			target,
+			data: { process: { last_exit: { exit_code: 7 } }, capture: { content: tail, start: 18, end: 413, total: 413 } },
 		}),
-		{ op: "owned" },
-	).join("\n");
-	assert.match(owned, /Stored phase is not live presence or cleanup permission/);
-	assert.match(owned, /0 of 0 records/);
-	assert.doesNotMatch(owned, /unknown|unavailable/i);
-	const status = render("rex_status", fixture({ outcome: "host_status" }), { op: "snapshot" }).join("\n");
-	assert.match(status, /Reported status is not permission or task acceptance/);
-	const partial = createRexToolDisplay("rex_wait")
-		.renderResult(
-			{ content: [{ type: "text", text: "pending\u001b[2J" }], details: undefined },
-			{ expanded: false, isPartial: true },
-			theme,
-			{ args: {}, isError: false },
-		)
-		.render(72)
-		.join("\n");
-	assert.match(partial, /partial result/);
-	assert.doesNotMatch(partial, /no effects|UNKNOWN EFFECTS|\u001b/);
-});
-
-test("owned observation cards separate stored phase, current child evidence and partial errors", () => {
-	const value = fixture({
-		outcome: "observation_incomplete",
+	);
+	assert.match(screen(child, 72), /The direct child exited with code 7/);
+	assert.match(screen(child, 72), /TAIL\n +\[Terminal capture retained bytes/);
+	assert.doesNotMatch(screen(child, 72), /before retained preview/);
+	child.setExpanded(true);
+	assert.match(screen(child, 72), /before retained preview/);
+	const wait = card("rex_wait", { op: "wait", condition: "text", text: "never-shown" });
+	const missed = receipt("not_observed", {
 		ok: false,
-		effects: { state: "none" },
-		data: {
-			reports: [
-				{
-					recordId: "retained-call",
-					phase: "confirmed",
-					observations: [
-						{
-							presence: "present",
-							childState: "exited",
-							process: { last_exit: { exit_code: 7 } },
-							capture: { content: "early output\nFINAL-MARKER" },
-							statusError: "Status unavailable.",
-						},
-					],
-				},
-				{ recordId: "pending-call", phase: "pending", observations: [], error: "No acknowledged resource IDs." },
-			],
-		},
+		data: { ending: "snapshot_limit", snapshot: { content: "still working\nnever-shown" } },
 	});
-	const rows = render("rex_owned", value, { op: "observe" }).join("\n");
-	assert.match(rows, /#1 · stored confirmed · present · child exited · exit 7/);
-	assert.match(rows, /#2 · stored pending · unresolved/);
-	assert.doesNotMatch(rows, /retained-call|pending-call/, "record identities wait in Details");
-	const expandedRows = render("rex_owned", value, { op: "observe" }, true).join("\n");
-	assert.match(expandedRows, /#1 record retained-call/);
-	assert.match(expandedRows, /#2 record pending-call/);
-	assert.match(rows, /FINAL-MARKER/);
-	assert.match(rows, /Status unavailable/);
-	assert.match(rows, /Observation does not stop work or establish task success/);
-	assert.match(rows, /Stored phase is not live presence/);
+	assert.equal(missed.isError, false);
+	wait.updateResult(missed);
+	assert.match(screen(wait), /snapshot limit ended the wait without an observed condition/);
+	assert.match(screen(wait), /does not stop terminal work/);
+	assert.doesNotMatch(screen(wait), /child exited|never-shown/);
+	wait.setExpanded(true);
+	assert.doesNotMatch(screen(wait), /never-shown/);
+	wait.setExpanded(false);
+	wait.updateResult(receipt("condition_observed", { data: { condition: "text" } }));
+	assert.match(screen(wait), /The requested condition was observed/);
+	child.updateResult(
+		receipt("child_completed", {
+			data: { process: { last_exit: { exit_code: 0 } }, captureError: "Tail read timed out: deadline" },
+		}),
+	);
+	assert.match(screen(child), /The direct child exited with code 0/);
+	assert.match(screen(child), /Tail read timed out: deadline/);
+	assert.doesNotMatch(screen(child), /Capture:/);
+	const inspect = card("rex_terminal", { op: "inspect", view: "process" });
+	inspect.updateResult(receipt("invalid_or_unavailable", { ok: false, error: "Select an exact block." }));
+	assert.match(screen(inspect), /Select an exact block\./);
+	inspect.updateResult(receipt("cancelled", { ok: false, error: "Transport cancelled." }));
+	assert.match(screen(inspect), /^ Cancelled$/m);
+	inspect.updateResult({
+		content: [{ type: "text", text: "Request cancelled by caller.\nPreserve this diagnostic." }],
+		details: undefined,
+		isError: true,
+	});
+	assert.match(screen(inspect), /Request cancelled by caller/);
+	assert.doesNotMatch(screen(inspect), /^ Cancelled$/m);
 });
 
-test("collapsed cards lead with observed facts: status host activity, reported states, binding, subject label, and wait deadline", () => {
-	const binding = {
-		ownerId: "owner",
-		verifiedAt: "2026-11-04T00:00:00.000Z",
-		target: {
-			server,
-			source: "explicit" as const,
-			sessionId: "session:33333333-3333-4333-8333-333333333333",
-			blockId: block,
-		},
-	};
-	const status = render(
-		"rex_status",
-		fixture({
-			outcome: "snapshot",
-			data: {
-				hostActivity: {
-					host: "durable",
-					state: "idle",
-					observedAt: "2026-11-04T00:00:00.000Z",
-					source: "Harness.inspect() current conversation tasks",
-					omittedTasks: 70,
-					note: "No live task does not prove completion.",
-				},
-				reportedStatus: { blocks: [{ block_id: block, status: { state: "working", app: "pi" } }] },
-				binding,
-				terminalProjection: "projection limit",
+it("marks bounded omissions and gives the exact continuation for an owned page, including zero", (t) => {
+	keyFixture(t);
+	const component = card("rex_owned", { op: "owned", phase: "confirmed", limit: 4 });
+	component.updateResult(
+		receipt("owned", {
+			coverage: {
+				bounded: true,
+				truncated: true,
+				totalRecords: 4,
+				returnedRecords: 2,
+				emittedRecordRefs: 0,
+				omittedRecordRefs: 2,
+				omittedRecordIds: [effectRecord],
+				nextOffset: 0,
 			},
 		}),
-		{ op: "snapshot" },
-	).join("\n");
-	assert.match(status, /Host durable · idle/);
-	assert.match(status, /tasks outside snapshot/);
-	assert.match(status, /Reported: working/);
-	assert.match(status, /Binding: block bound/);
-	assert.ok(
-		!status.includes(block) && !status.includes("2026-11-04T00:00:00.000Z"),
-		"the bound block identity and verification time wait in Details",
 	);
-	assert.match(status, /Reported status is not permission or task acceptance/);
-	const unbound = render(
-		"rex_status",
-		fixture({
-			outcome: "host_status",
-			data: {
-				hostActivity: {
-					host: "ordinary",
-					state: "active",
-					observedAt: "2026-11-04T00:00:00.000Z",
-					source: "ExtensionContext.isIdle()",
-					note: "",
-				},
-			},
+	assert.match(screen(component), /Selected 2 of 4 records; a continuation is available/);
+	assert.doesNotMatch(screen(component), /0 record IDs retained/);
+	assert.match(screen(component), /\[2 record IDs omitted by the Rex result byte limit\]/);
+	assert.match(screen(component), /\(ctrl\+g to expand\)/);
+	component.setExpanded(true);
+	assert.match(screen(component), /Next call: rex_owned \{"op":"owned","phase":"confirmed","limit":1,"offset":0\}/);
+	assert.match(screen(component), new RegExp(effectRecord));
+	const catalog = card("rex_native", { op: "native", kind: "catalog", query: "pane", limit: 1 });
+	catalog.updateResult(
+		receipt("catalog", {
+			data: { methods: ["pane.list"], matchedMethods: 5, returnedMethods: 1, nextOffset: 1 },
+			coverage: { bounded: true, truncated: true },
 		}),
-		{ op: "snapshot" },
-	).join("\n");
-	const statusDetails = render(
-		"rex_status",
-		fixture({
-			outcome: "snapshot",
-			data: {
-				hostActivity: { host: "durable", state: "idle", observedAt: "x", source: "y", note: "z" },
-				binding,
-				terminalProjection: "",
-			},
-		}),
-		{ op: "snapshot" },
-		true,
-		240,
-	).join("\n");
-	assert.ok(
-		statusDetails.includes(
-			`binding ${block} · explicit target · ${server.endpoint} · verified 2026-11-04T00:00:00.000Z · owner owner`,
-		),
-		statusDetails,
 	);
-	const call = createRexToolDisplay("rex_owned")
-		.renderCall({ op: "reconcile", recordId: "exact-record-identity" }, theme, { expanded: false, isPartial: false })
-		.render(120)
-		.join("\n");
-	assert.match(call, /rex_owned · reconcile/);
-	assert.match(call, /one record/);
-	assert.doesNotMatch(call, /exact-record-identity/, "a supplied record identity is not a collapsed call fact");
+	assert.match(screen(catalog), /Returned 1 of 5 matching methods; a continuation is available/);
+	assert.doesNotMatch(screen(catalog), /\[.*(limit|partial)/);
+	catalog.setExpanded(true);
 	assert.match(
-		createRexToolDisplay("rex_owned")
-			.renderCall({ op: "reconcile", recordId: "exact-record-identity" }, theme, { expanded: true, isPartial: false })
-			.render(120)
-			.join("\n"),
-		/exact-record-identity/,
+		screen(catalog),
+		/Next call: rex_native \{"op":"native","kind":"catalog","query":"pane","limit":1,"offset":1\}/,
 	);
-	assert.match(unbound, /Host ordinary · active/);
-	assert.match(unbound, /Binding: none/);
-	const wait = render("rex_wait", fixture({ outcome: "observed" }), {
-		op: "wait",
-		condition: "text",
-		timeoutMs: 25000,
-	}).join("\n");
-	assert.match(wait, /deadline 25000 ms/);
-	const created = render("rex_terminal", fixture({ outcome: "created", data: { label: "build pane" } }), {
-		op: "create",
-		kind: "session",
-		label: "build pane",
-	}).join("\n");
-	assert.match(created, /^build pane \u00b7 created/m, "the label leads, then the outcome");
-	assert.match(
-		render("rex_terminal", fixture({ outcome: "created" }), { op: "create", kind: "window" }).join("\n"),
-		/^new window \u00b7 created/m,
-		"without a label the plain resource kind leads",
-	);
-	assert.match(
-		render("rex_wait", fixture({ ok: false, outcome: "timeout", effects: { state: "none" } }), {
-			op: "wait",
-			condition: "child_exit",
-		}).join("\n"),
-		/^wait for child exit \u00b7 timeout/m,
-	);
-	assert.doesNotMatch(render("rex_terminal", fixture(), { op: "input" }).join("\n"), /explicit target/);
-	assert.match(render("rex_terminal", fixture(), { op: "input" }, true).join("\n"), /explicit target/);
-	for (const width of [24, 72]) {
-		const rows = createRexToolDisplay("rex_status")
-			.renderResult(
-				resultChannels(
-					fixture({
-						outcome: "snapshot",
-						data: {
-							hostActivity: { host: "durable", state: "idle", observedAt: "x", source: "y", note: "z" },
-							reportedStatus: { blocks: [{ status: { state: "working" } }] },
-							binding,
-							terminalProjection: "",
-						},
-					}),
-				),
-				{ expanded: false, isPartial: false },
-				theme,
-				{ args: { op: "snapshot" }, isError: false },
-			)
-			.render(width);
-		for (const row of rows) assert.ok(visibleWidth(row) <= width, JSON.stringify(row));
-	}
+	catalog.setExpanded(false);
+	catalog.updateResult(receipt("catalog", { data: { methods: [], matchedMethods: 0, returnedMethods: 0 } }));
+	assert.match(screen(catalog), /No matching methods/);
+	assert.doesNotMatch(screen(catalog), /0 of 0/);
 });
 
-test("cards use the host-injected expansion key and invent no mouse fallback when it is unbound or absent", () => {
-	expandKey = "ctrl+g";
-	assert.match(render("rex_terminal", fixture(), { op: "input" }).join("\n"), /ctrl\+g to expand/);
-	expandKey = "";
-	const unbound = render("rex_terminal", fixture(), { op: "input" }).join("\n");
-	assert.doesNotMatch(unbound, /click|to expand/);
-	assert.match(unbound, /input delivered/);
-	const withoutHints = createRexToolDisplay("rex_terminal")
-		.renderResult(resultChannels(fixture()), { expanded: false, isPartial: false }, theme, {
-			args: { op: "input" },
-			isError: false,
-		})
-		.render(120)
-		.join("\n");
-	assert.doesNotMatch(withoutHints, /to expand/);
-});
-
-test("a create sent without op renders as the create that validation and policy see", () => {
-	const args = {
+it("reads status facts, omits absent values and sanitises operator text without cutting IDs early", (t) => {
+	keyFixture(t);
+	const component = card("rex_status", { op: "snapshot" });
+	component.updateResult(
+		receipt("host_status", {
+			data: {
+				hostActivity: { host: "ordinary", omittedTasks: 4 },
+				reportedStatus: { blocks: [{ status: { state: "working" } }] },
+				binding: { target, ownerId: "owner", verifiedAt: "2026-11-04T00:00:00.000Z" },
+			},
+		}),
+	);
+	const status = screen(component);
+	assert.match(status, /Host ordinary/);
+	assert.match(status, /program reported working/);
+	assert.match(status, /bound to block:33333333/);
+	assert.match(status, /4 tasks outside the host snapshot/);
+	assert.doesNotMatch(status, /unknown|Binding:|Reported program state:|verifiedAt/);
+	const create = card("rex_terminal", {
 		kind: "split",
+		label: "build\n\u001b[31mred\u202e\ud800path",
 		direction: "right",
-		focus: false,
-		keepOpen: false,
-		label: "Reader",
-		command: ["reader"],
-	};
-	const display = createRexToolDisplay("rex_terminal");
-	const collapsed = display.renderCall(args, theme, { expanded: false, isPartial: false }).render(120).join("\n");
-	assert.match(collapsed, /^rex_terminal \u00b7 create split$/m);
-	assert.match(collapsed, /^Reader$/m);
-	const expanded = display.renderCall(args, theme, { expanded: true, isPartial: false }).render(120).join("\n");
-	assert.match(expanded, /"op": "create"/);
-	const partial = display
-		.renderCall({ kind: "fl" }, theme, { expanded: false, isPartial: true })
-		.render(120)
-		.join("\n");
-	assert.match(partial, /^rex_terminal \u00b7 create fl$/m);
-	const created = render("rex_terminal", fixture({ outcome: "created", effects: { state: "confirmed" } }), {
-		kind: "window",
-	}).join("\n");
-	assert.match(created, /^new window \u00b7 created/m, "the result card reads the prepared create too");
-	const wait = createRexToolDisplay("rex_wait")
-		.renderCall({ kind: "split" }, theme, { expanded: false, isPartial: false })
-		.render(120)
-		.join("\n");
-	assert.match(wait, /^rex_wait \u00b7 split$/m, "other tools render their arguments unchanged");
+	});
+	assert.match(screen(create), /^ rex_terminal build red path$/m);
+	assert.match(screen(create), /^ create · split$/m);
+	assert.doesNotMatch(screen(create), /\u001b|\u202e|\ud800/);
 });
 
-test("a wait that did not observe its condition reads as a budget ending, not an error", () => {
-	const colours: Array<[ThemeColor, string]> = [];
-	const recording = {
-		fg: (colour: ThemeColor, text: string) => {
-			colours.push([colour, text]);
-			return text;
-		},
-	};
-	const value = fixture({
-		ok: false,
-		outcome: "not_observed",
-		effects: { state: "none" },
-		data: { condition: "text", ending: "deadline", snapshot: { content: "still building\n" } },
-	});
-	const rows = createRexToolDisplay("rex_wait")
-		.renderResult(resultChannels(value), { expanded: false, isPartial: false }, recording, {
-			args: { op: "wait", condition: "text", text: "READY" },
-			isError: false,
-			keyText,
-		})
-		.render(120);
-	const text = rows.join("\n");
-	assert.match(text, /^wait for text \u00b7 not observed$/m);
-	assert.match(text, /Condition not observed within this wait's budget; terminal work continues\./);
-	assert.match(text, /still building/);
-	const lead = colours.find(([, row]) => row.startsWith("wait for text"));
-	assert.equal(lead?.[0], "warning");
-	colours.length = 0;
-	createRexToolDisplay("rex_wait")
-		.renderResult(
-			resultChannels(fixture({ ok: false, outcome: "observation_failed", effects: { state: "none" } })),
-			{ expanded: false, isPartial: false },
-			recording,
-			{ args: { op: "wait", condition: "text", text: "READY" }, isError: true, keyText },
-		)
-		.render(120);
-	assert.equal(colours.find(([, row]) => row.startsWith("wait for text"))?.[0], "error");
-});
-
-test("an observed finished record without resources reads as complete, not unresolved", () => {
-	const value = fixture({
-		outcome: "observed",
-		effects: { state: "none" },
-		data: {
-			reports: [
-				{
-					recordId: "finished-input",
-					phase: "confirmed",
-					observedAt: "2026-11-22T00:00:00.000Z",
-					complete: true,
-					observations: [],
-					note: "This finished record holds no owned resources to observe.",
-				},
-			],
-		},
-	});
-	const text = render("rex_owned", value, { op: "observe", recordId: "finished-input" }).join("\n");
-	assert.match(text, /^stored confirmed \u00b7 no owned resources$/m);
-	assert.match(text, /holds no owned resources to observe/);
-	assert.doesNotMatch(text, /unresolved/);
+it("does not claim a clickable call before the result or an expandable one-line answer", (t) => {
+	keyFixture(t, []);
+	const component = card("rex_environment", { op: "resolve", kind: "block", query: "long-".repeat(40) });
+	assert.doesNotMatch(screen(component), /click to expand|to expand/);
+	component.updateResult(receipt("resolved", { target }));
+	assert.match(screen(component), /\(click to expand\)/);
+	const simple = card("rex_status", { op: "unbind" });
+	simple.updateResult(receipt("status_unbound"));
+	assert.match(screen(simple), /Removed the Rex binding/);
+	assert.doesNotMatch(screen(simple), /to expand/);
 });

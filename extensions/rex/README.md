@@ -98,54 +98,26 @@ inspection; request a smaller view instead of replaying an effect. Presentation
 details contain only a short outcome and effect state, not a second machine-result
 channel.
 
-## Ordinary tool cards
+## Tool cards
 
-A collapsed card leads with one line: the human subject and the precise outcome
-(`build pane · created`, `block · input delivered`, `wait for text ·
-not observed`). The subject is the resolved label when the result or request carries
-one, otherwise the plain resource kind (`new session`, `block`, `window`,
-`observation`, `status`), never an identifier. Cards render the prepared request,
-so a create sent without `op` reads as a create. A failed outcome leads in the
-error colour; a wait that did not observe its condition within its budget leads
-in the warning colour and adds that terminal work continues. `UNKNOWN EFFECTS` stays on that
-line; a confirmed or absent effect is routine and waits in Details. `rex_status`
-then leads with host activity, the program states reported inside the payload,
-and whether the caller is bound (`Binding: block bound` or `Binding: none`).
-`rex_owned observe` rows lead with the stored phase and the current child
-evidence (`#1 · stored confirmed · present · child exited · exit 7`), numbered
-when there is more than one, or `no owned resources` for a finished record without
-resources; a call that names a record says `one record`. The
-expanded view adds a Details block with the exact target (block, window, session
-or client identity, target source and server endpoint), the effect record, the
-bound target with its verification time and owner, each observed record
-identity, and the effect state before the complete bounded result. Full IDs wrap when needed rather than receive fixed short forms. Pi's default tool shell supplies padding, background and expansion.
-The expansion hint uses your configured Pi key, read through the `keyText`
-function that the host passes in the tool render context. An unbound key, or a
-render context without keybinding hints, produces no hint and no invented mouse
-instruction.
+Rex follows the [emissions convention](../../docs/conventions/emissions.md).
+Cards show the prepared request, including a create sent without `op`, and
+preserve exact target and record identities at widths where they fit. Expansion
+shows the safe retained evidence and the exact continuation call for a paged
+result. The byte range on a truncated terminal capture describes what Rex
+retained, not a display slice or a complete transcript.
 
-Child-exit wait cards show the direct child's exit code and the last two non-trailing-blank
-output lines. Capture cards also preview the end of their bounded output, not its beginning.
-A failed tail read stays visible beside the established child outcome. Expansion retains the
-complete bounded result, including earlier captured lines.
+A Rex acknowledgement does not establish inner application success. Input
+delivery does not establish application execution, and a returned snapshot is
+separate from the delivery receipt. The input card withholds typed text, key
+values, native delivery payloads and optional snapshot content. An expanded
+text wait shows the size of its predicate rather than the predicate itself.
 
-Collapsed cards keep these distinctions visible:
-
-- **UNKNOWN EFFECTS** remains meaningful even when other facts are absent.
-- Input delivery does not establish application execution.
-- An observer deadline or end does not stop independent terminal work.
-- Capture is bounded, not a complete transcript.
-- Bulk omission, shortened diagnostics, omitted references and page continuation
-  remain explicit, including a continuation offset of zero.
-- CLI success does not establish an inner application outcome. Stored phase and
-  reported program status grant neither permission nor task acceptance.
-
-Expansion exposes the request and complete bounded canonical result as JSON.
-It does not recover source data already omitted by the semantic result bound.
-Labels, request text, captures and errors escape terminal controls and directional
-format controls in both views. Previews clip safely without cancelling Pi's row
-background. These renderers do not change model text, structured output, native
-results or the small presentation metadata.
+A child-exit wait shows the direct child's exit code and a recent tail. A
+missed text or status condition is not a child exit, an application failure or
+an interruption of independent terminal work. Ownership cards separate stored
+phase from current resource observations. Status cards separate host activity,
+program reports and the saved binding. Neither grants authority.
 
 The factory publishes the same registered renderer references through the public
 [tool display contract](../../docs/conventions/tool-display.md). It emits during
@@ -364,6 +336,10 @@ the ordinary session that created it, even when another session sends it work.
 
 ## Set up palette commands in Rex
 
+In interactive Pi, a multi-line `/rex` report opens a scrollable local view.
+Single receipts use Pi notifications. Neither adds a message to the model's
+context, and non-TUI hosts retain the command's notice output.
+
 Rex lets only an action that the server configuration defines show a question; a Lua script that
 `rex do` runs, including a `rex_native` Lua call, receives `unsupported`. The runtime of
 [palette commands](#palette-commands), which asks with `rex.ui`, therefore lives in a block of
@@ -382,7 +358,7 @@ the Rex configuration that `/rex setup` writes.
   a file with several hard links or a file of another kind is refused. Pi keeps the previous file
   beside the configured path, with `.before-pi-setup` added to its name, and runs
   `rex config reload`.
-- Setup and remove recognise only the exact version 4 block for this agent directory. They
+- Setup and remove recognise only the exact current block for this agent directory. They
   refuse any other block, including a partial or repeated block, and leave the file untouched.
   If the file holds a block of another version, remove that block by hand before you run
   `/rex setup`.
@@ -428,8 +404,9 @@ publishes no command of its own. The [Explorer extension](../explorer/README.md)
   only well-formed recorded commands, runs at most eight steps of 20 seconds
   each (the time that a person takes to answer does not count), and accepts a reply of at most
   1 MiB that holds exactly one of `ask`, `show`, `done` or `error` in the contract's shape. A
-  question without an answer ends the run quietly. A failed step, a malformed reply, an error
-  reply or a notice shows as a one-row message in the palette.
+  question without an answer ends the run quietly. A failed step, a malformed reply or an error
+  reply opens a native failure dialog with the cause on the dismiss row. The Rex app controls
+  that row's available width. A completion notice uses the native acknowledgement dialog.
 - A pane that a command opens splits the focused pane evenly to the right or below, or floats over
   the middle of its window, without moving focus. It receives the
   [pane stacking feed](#pane-stacking-feed) offer that the record names, closes when its program

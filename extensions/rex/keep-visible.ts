@@ -466,7 +466,8 @@ class Keeper implements ConversationKeeper {
 			.replace(/\s+/gu, " ")
 			.trim()
 			.slice(0, 300);
-		ctx.ui.notify(`Rex could not move a floating pane off this conversation: ${detail || "Unknown error"}`, "warning");
+		const subject = "Rex could not move a floating pane off this conversation";
+		ctx.ui.notify(detail ? `${subject}: ${detail}` : `${subject}.`, "warning");
 	}
 }
 

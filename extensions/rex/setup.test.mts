@@ -3,8 +3,10 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { type Component, visibleWidth } from "@earendil-works/pi-tui";
 import { BLOCK_VERSION, configBlock, findConfigBlock, withConfigBlock, withoutConfigBlock } from "./config-block.ts";
-import { rexCommand, type SetupDeps } from "./setup.ts";
+import { registerRexCommand, rexCommand, type SetupDeps } from "./setup.ts";
 
 const REGISTRY = "/agent/rex/palette.json";
 const piBlock = () => configBlock(REGISTRY);
@@ -19,15 +21,16 @@ test("setup adds and removes only its own exact block, leaving every other byte 
 	assert.equal(findBlock(operatorConfig), undefined);
 	const added = withBlock(operatorConfig);
 	assert.equal(added, `${operatorConfig}${piBlock()}\n`);
-	assert.match(added, /-- pi-harness: pi actions v4 begin/);
+	assert.match(added, new RegExp(`-- pi-harness: pi actions v${BLOCK_VERSION} begin`));
 	assert.deepEqual(
 		[...added.matchAll(/^ {2}name = "([^"]+)"/gm)].map((match) => match[1]),
 		["pi_command"],
 	);
 	assert.ok(findBlock(added));
-	const otherVersion = added.replace(`pi actions v${BLOCK_VERSION} begin`, "pi actions v3 begin");
-	assert.throws(() => withBlock(otherVersion), /differs from the version 4 block/);
-	assert.throws(() => withoutBlock(otherVersion), /differs from the version 4 block/);
+	const otherVersion = added.replace(`pi actions v${BLOCK_VERSION} begin`, `pi actions v${BLOCK_VERSION - 1} begin`);
+	const versionDiagnostic = new RegExp(`differs from the version ${BLOCK_VERSION} block`);
+	assert.throws(() => withBlock(otherVersion), versionDiagnostic);
+	assert.throws(() => withoutBlock(otherVersion), versionDiagnostic);
 	assert.equal(withBlock(added), added, "a configuration that holds the block stays as it is");
 	assert.equal(withoutBlock(added), operatorConfig, "removal restores the text before setup");
 	const spaced = "x = 1\n\n\n";
@@ -211,7 +214,7 @@ test("a refused check, a declined confirmation or a broken block leaves the conf
 	try {
 		await rexCommand("setup", declined.deps);
 		assert.equal(await readFile(declined.path, "utf8"), operatorConfig);
-		assert.ok(declined.lines.includes("info: Nothing changed."));
+		assert.ok(declined.lines.includes("info: The Rex configuration did not change."));
 	} finally {
 		await declined.done();
 	}
@@ -392,6 +395,99 @@ test("an earlier Pi block is refused, and a loaded block of another agent direct
 		await rexCommand("setup", f.deps);
 		assert.match(f.asked.at(-1) ?? "", /^Reload the Rex configuration\?/);
 		assert.equal(f.transport.registry, REGISTRY, "the reload loads the block of this agent directory");
+	} finally {
+		await f.done();
+	}
+});
+
+test("the managed native dialog separates command errors from notices without putting process answers in its diagnostic", () => {
+	const lua = piBlock();
+	assert.match(
+		lua,
+		/rex\.ui\.pick\{ title = title, items = \{ \{ id = "ok", title = "OK", subtitle = pi_harness\.one_line\(text\)/,
+	);
+	assert.match(lua, /pi_harness\.feedback\("Pi command failed", text\)/);
+	assert.match(lua, /pi_harness\.feedback\("Pi command notice", text\)/);
+	assert.match(lua, /if reply\.error ~= nil then return pi_harness\.problem\(reply\.error\) end/);
+	assert.match(lua, /if type\(reply\.done\.notice\) == "string" then pi_harness\.say\(reply\.done\.notice\) end/);
+	assert.match(lua, /#answers == 0 and (?:\(tostring\(result\.stderr|": " \.\. tostring\(err\))/);
+});
+
+test("the registered Rex command shows a scrollable local report in the TUI and forwards original notices headlessly", async () => {
+	const f = await fixture(operatorConfig);
+	let handler: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
+	const notices: Array<[string, string]> = [];
+	const opened: (readonly string[])[] = [];
+	try {
+		registerRexCommand(
+			{
+				registerCommand: (_name, command) => {
+					handler = command.handler;
+				},
+			} as Pick<ExtensionAPI, "registerCommand">,
+			{
+				executable: "unused",
+				registryPath: REGISTRY,
+				transport: f.transport,
+			},
+		);
+		assert.ok(handler);
+		const ui = {
+			notify: (text: string, level: string) => notices.push([text, level]),
+			async custom(factory: (...args: unknown[]) => Component) {
+				let closed = false;
+				const component = factory(
+					{ terminal: { rows: 8 }, requestRender() {} },
+					{
+						fg: (_tone: string, row: string) => row,
+						bold: (row: string) => row,
+					},
+					{},
+					() => {
+						closed = true;
+					},
+				);
+				for (let i = 0; i < 5; i++) {
+					const rows = component.render(56);
+					assert.ok(rows.length <= 6);
+					assert.ok(rows.every((row) => visibleWidth(row) <= 56));
+					opened.push(rows);
+					component.handleInput?.("\u001b[6~");
+				}
+				component.handleInput?.("\u001b");
+				assert.ok(closed);
+			},
+		};
+		await handler("status", { cwd: f.dir, hasUI: true, mode: "tui", ui } as unknown as ExtensionCommandContext);
+		assert.equal(notices.length, 0);
+		assert.equal(opened[0][0], "Rex palette status");
+		assert.match(opened.flat().join(" "), /has no Pi block/);
+		assert.match(opened.flat().join(" "), /Connected Rex apps/);
+		await handler("status", { cwd: f.dir, hasUI: false, mode: "print", ui } as unknown as ExtensionCommandContext);
+		assert.equal(notices.length, 5);
+		assert.match(notices[4][0], /Connected Rex apps/);
+		await handler("wrong-verb", { cwd: f.dir, hasUI: true, mode: "tui", ui } as unknown as ExtensionCommandContext);
+		assert.deepEqual(notices.at(-1), ["Usage: /rex setup | status | remove", "warning"]);
+	} finally {
+		await f.done();
+	}
+});
+
+test("an absent action or client read is not a negative observation", async () => {
+	const f = await fixture(withBlock(operatorConfig));
+	try {
+		const run = f.transport.run.bind(f.transport);
+		f.transport.run = async (args, call) => {
+			if (args.includes("whoami")) return ok('{"rex_version":"0.1.0-test"}');
+			if (args.includes("actions") || args.includes("api")) return { ...ok(""), exitCode: 1 };
+			return run(args, call);
+		};
+		await rexCommand("status", f.deps);
+		const report = f.lines.join("\n");
+		assert.match(report, /did not report an API revision/);
+		assert.match(report, /did not return its loaded actions/);
+		assert.match(report, /did not return its connected apps/);
+		assert.doesNotMatch(report, /revision 0|has not loaded these actions|No Rex app is connected/);
 	} finally {
 		await f.done();
 	}
