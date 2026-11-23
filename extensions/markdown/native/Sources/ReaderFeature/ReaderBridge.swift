@@ -181,6 +181,7 @@ public enum ReaderBridgeCodec {
     public static let sourceLimit = 2 * 1024 * 1024
     public static let renderedLimit = 16 * 1024 * 1024
     public static let editListLimit = 5 * 1024 * 1024
+    public static let reviewDraftLimit = 4 * 1024 * 1024
     public static let editLimit = 4096
     public static let maxInteger = 9_007_199_254_740_991
 
@@ -198,7 +199,13 @@ public enum ReaderBridgeCodec {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ReaderBridgeError.invalid("object")
         }
-        if object["type"] as? String != "edits", data.count > messageLimit { throw ReaderBridgeError.oversized }
+        if data.count > messageLimit, object["type"] as? String != "edits" {
+            guard object["type"] as? String == "command", object["name"] as? String == "setReviewDraft",
+                  let args = object["args"] as? [String: Any], let draft = args["draft"] as? [String: Any],
+                  data.count <= reviewDraftLimit + messageLimit + 9 else { throw ReaderBridgeError.oversized }
+            let draftBytes = try JSONSerialization.data(withJSONObject: draft, options: [.withoutEscapingSlashes]).count
+            guard data.count <= draftBytes + messageLimit + 9 else { throw ReaderBridgeError.oversized }
+        }
         return try decodeObject(object)
     }
 
@@ -208,7 +215,13 @@ public enum ReaderBridgeCodec {
             throw ReaderBridgeError.invalid("type")
         }
         if type == .edits { try validateArrayGroup(object, key: "edits", limit: editListLimit) }
-        else { try validateJSONSize(object, limit: messageLimit) }
+        else if type == .command, object["name"] as? String == "setReviewDraft" {
+            var metadata = object
+            var args = try BridgeField.object(object, "args")
+            args.removeValue(forKey: "draft")
+            metadata["args"] = args
+            try validateJSONSize(metadata, limit: messageLimit)
+        } else { try validateJSONSize(object, limit: messageLimit) }
         let id = try BridgeField.optionalString(object, "id", limit: 256)
         var fields = object
         fields.removeValue(forKey: "v"); fields.removeValue(forKey: "type"); fields.removeValue(forKey: "id")
@@ -246,7 +259,7 @@ public enum ReaderBridgeCodec {
             try BridgeField.choice(fields, "lock", values: ["reading", "writing"])
             _ = try BridgeField.bool(fields, "copy")
         case .prompt:
-            try BridgeField.keys(fields, allowed: ["documentKey", "presentation", "authoredRevision", "requestId", "threadId", "quote", "quoteRange", "text", "annotations", "overall", "generation"])
+            try BridgeField.keys(fields, allowed: ["documentKey", "presentation", "authoredRevision", "requestId", "threadId", "quote", "quoteRange", "passageAnchor", "text", "annotations", "overall", "generation"])
             try validateIdentity(fields, "documentKey")
             try validateIdentity(fields, "presentation")
             _ = try BridgeField.string(fields, "requestId", limit: 256)
@@ -258,12 +271,12 @@ public enum ReaderBridgeCodec {
                         throw ReaderBridgeError.invalid("authoredRevision")
                     }
                 }
-                guard fields["text"] == nil, fields["quote"] == nil, fields["quoteRange"] == nil,
+                guard fields["text"] == nil, fields["quote"] == nil, fields["quoteRange"] == nil, fields["passageAnchor"] == nil,
                       let annotations = value as? [[String: Any]], (1...50).contains(annotations.count) else {
                     throw ReaderBridgeError.invalid("annotations")
                 }
                 for annotation in annotations {
-                    try BridgeField.keys(annotation, allowed: ["text", "quote", "quoteRange", "authoredRevision"])
+                    try BridgeField.keys(annotation, allowed: ["text", "quote", "quoteRange", "passageAnchor", "authoredRevision"])
                     try validateAnnotation(annotation, nonblank: true)
                 }
                 // The overall comment of a batch, when the page sends one, has text.
@@ -302,7 +315,11 @@ public enum ReaderBridgeCodec {
             throw ReaderBridgeError.invalid("text")
         }
         _ = try BridgeField.optionalString(fields, "quote", limit: 64 * 1024, empty: true)
-        _ = try BridgeField.optionalRange(fields, "quoteRange")
+        let range = try BridgeField.optionalRange(fields, "quoteRange")
+        if fields["passageAnchor"] != nil {
+            guard let range else { throw ReaderBridgeError.invalid("quoteRange") }
+            try validatePassageAnchor(BridgeField.object(fields, "passageAnchor"), quote: fields["quote"], range: range)
+        }
     }
 
     /// Validates a complete native-to-page envelope before WebKit receives it.
@@ -323,6 +340,8 @@ public enum ReaderBridgeCodec {
             try validateArrayGroup(fields, key: "blocks", limit: renderedLimit)
         case "agentApply":
             try validateArrayGroup(fields, key: "edits", limit: editListLimit)
+        case "reviewChanged":
+            try BridgeField.keys(fields, allowed: ["v", "type"])
         case "documentMetadata", "ack", "refused", "claim", "release", "promptState", "connectionState", "saveState", "command", "notice":
             try validateJSONSize(fields, limit: messageLimit)
         default: throw ReaderBridgeError.invalid("type")
@@ -346,6 +365,30 @@ public enum ReaderBridgeCodec {
             var metadata = fields
             metadata.removeValue(forKey: "text")
             try validateJSONSize(metadata, limit: messageLimit)
+        } else if request.type == .query, request.fields["kind"] as? String == "reviewDraft" {
+            try BridgeField.keys(fields, allowed: ["v", "type", "ok", "id", "available", "version", "draft"])
+            let available = try BridgeField.bool(fields, "available"), version = try BridgeField.integer(fields, "version")
+            guard available || version == 0 else { throw ReaderBridgeError.invalid("version") }
+            var metadata = fields
+            if metadata.removeValue(forKey: "draft") != nil {
+                guard available, version > 0 else { throw ReaderBridgeError.invalid("draft") }
+                try validateReviewDraft(BridgeField.object(fields, "draft"))
+            }
+            try validateJSONSize(metadata, limit: messageLimit)
+        } else if request.type == .command, request.fields["name"] as? String == "setReviewDraft" {
+            try validateJSONSize(fields, limit: messageLimit)
+            try BridgeField.keys(fields, allowed: ["v", "type", "ok", "id", "status", "version", "message"])
+            try BridgeField.choice(fields, "status", values: ["stored", "stale", "busy", "error"])
+            _ = try BridgeField.optionalString(fields, "message", limit: 8192)
+            if fields["version"] != nil { _ = try BridgeField.integer(fields, "version") }
+            if fields["status"] as? String == "stored" {
+                let args = try BridgeField.object(request.fields, "args")
+                guard try BridgeField.integer(fields, "version") == BridgeField.integer(args, "expectedVersion") + 1 else {
+                    throw ReaderBridgeError.invalid("version")
+                }
+            }
+        } else if request.type == .query, request.fields["kind"] as? String == "reviewComments" {
+            try validateArrayGroup(fields, key: "comments", limit: renderedLimit)
         } else if request.type == .query, ["review", "markdown"].contains(request.fields["kind"] as? String) {
             guard let html = fields["html"] as? String else { throw ReaderBridgeError.invalid("html") }
             guard html.utf8.count <= renderedLimit else { throw ReaderBridgeError.oversized }
@@ -371,9 +414,89 @@ public enum ReaderBridgeCodec {
         guard data.count <= limit else { throw ReaderBridgeError.oversized }
     }
 
+    private static func validatePassageAnchor(_ a: [String: Any], quote: Any?, range: ReaderBridgeRange?) throws {
+        try BridgeField.keys(a, allowed: ["text", "contexts", "headings", "rendered"])
+        let text = try BridgeField.string(a, "text", limit: 16 * 1024)
+        guard let quote = quote as? String, !quote.isEmpty, quote.utf8.count <= 8192,
+              let contexts = a["contexts"] as? [[String: Any]], contexts.count <= 2,
+              range.map({ $0.end - $0.start == text.utf16.count }) ?? true else { throw ReaderBridgeError.invalid("passageAnchor") }
+        for c in contexts {
+            try BridgeField.keys(c, allowed: ["before", "after"])
+            let before = try BridgeField.string(c, "before", limit: 192, empty: true)
+            let after = try BridgeField.string(c, "after", limit: 192, empty: true)
+            guard before.utf16.count <= 64, after.utf16.count <= 64,
+                  (before + after).unicodeScalars.contains(where: { !$0.properties.isWhitespace && $0.value != 0xFEFF }) else { throw ReaderBridgeError.invalid("contexts") }
+        }
+        if a["headings"] != nil {
+            guard let headings = a["headings"] as? [String], headings.count <= 6,
+                  headings.allSatisfy({ $0.utf16.count <= 256 }) else { throw ReaderBridgeError.invalid("headings") }
+        }
+        if a["rendered"] != nil {
+            let r = try BridgeField.object(a, "rendered")
+            try BridgeField.keys(r, allowed: ["before", "text", "after"])
+            let rendered = try BridgeField.string(r, "text", limit: 8192)
+            guard rendered.utf8.elementsEqual(quote.utf8) else { throw ReaderBridgeError.invalid("rendered text") }
+            for key in ["before", "after"] {
+                let side = try BridgeField.string(r, key, limit: 768, empty: true)
+                guard side.utf16.count <= 256 else { throw ReaderBridgeError.invalid(key) }
+            }
+        }
+    }
+
+    private static func optionalRevision(_ fields: [String: Any], _ key: String) throws {
+        if fields[key] != nil, try BridgeField.integer(fields, key) == 0 { throw ReaderBridgeError.invalid(key) }
+    }
+
+    private static func validateDraftComment(_ c: [String: Any]) throws -> String {
+        try BridgeField.keys(c, allowed: ["text", "quote", "authoredRevision", "range", "sourceAnchor", "anchorDigest"])
+        let text = try BridgeField.string(c, "text", limit: 64 * 1024, empty: true)
+        _ = try BridgeField.optionalString(c, "quote", limit: 8192)
+        try optionalRevision(c, "authoredRevision")
+        if let digest = try BridgeField.optionalString(c, "anchorDigest", limit: 71) {
+            guard digest.utf8.count == 71, digest.hasPrefix("sha256:"),
+                  digest.utf8.dropFirst(7).allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                throw ReaderBridgeError.invalid("anchorDigest")
+            }
+        }
+        if c["range"] is NSNull { throw ReaderBridgeError.invalid("range") }
+        let range = try BridgeField.optionalRange(c, "range")
+        if c["sourceAnchor"] != nil { try validatePassageAnchor(BridgeField.object(c, "sourceAnchor"), quote: c["quote"], range: range) }
+        return text
+    }
+
+    /// Only definitely unsent batch fields cross the private recovery boundary.
+    public static func validateReviewDraft(_ draft: [String: Any]) throws {
+        try validateJSONSize(draft, limit: reviewDraftLimit)
+        try BridgeField.keys(draft, allowed: ["comments", "overall", "overallRevision", "parked"])
+        let overall = try BridgeField.string(draft, "overall", limit: 64 * 1024, empty: true)
+        try optionalRevision(draft, "overallRevision")
+        let parkedValue: Any = draft["parked"] ?? []
+        guard let comments = draft["comments"] as? [[String: Any]], let parked = parkedValue as? [[String: Any]],
+              comments.count + parked.count <= 512, !comments.isEmpty || !parked.isEmpty || !overall.isEmpty else {
+            throw ReaderBridgeError.invalid("draft")
+        }
+        for c in comments { _ = try validateDraftComment(c) }
+        for p in parked {
+            let text = try BridgeField.string(p, "text", limit: 64 * 1024, empty: true)
+            if p["comment"] != nil {
+                try BridgeField.keys(p, allowed: ["text", "index", "comment"])
+                _ = try BridgeField.integer(p, "index", max: 511)
+                let commentText = try validateDraftComment(BridgeField.object(p, "comment"))
+                guard commentText.utf8.elementsEqual(text.utf8) else { throw ReaderBridgeError.invalid("parked text") }
+            } else {
+                try BridgeField.keys(p, allowed: ["text", "index", "authoredRevision"])
+                guard try BridgeField.number(p, "index", magnitude: 1) == -1 else { throw ReaderBridgeError.invalid("index") }
+                try optionalRevision(p, "authoredRevision")
+            }
+        }
+    }
+
     private static func validateQuery(_ fields: [String: Any]) throws {
         let kind = try BridgeField.string(fields, "kind", limit: 32)
         switch kind {
+        case "reviewComments", "reviewDraft":
+            try BridgeField.keys(fields, allowed: ["kind", "documentKey"])
+            _ = try BridgeField.string(fields, "documentKey", limit: 36)
         case "details":
             try BridgeField.keys(fields, allowed: ["kind"])
         case "review":
@@ -402,6 +525,17 @@ public enum ReaderBridgeCodec {
         let args: [String: Any]
         if fields["args"] != nil { args = try BridgeField.object(fields, "args") } else { args = [:] }
         switch name {
+        case "setReviewDraft":
+            try BridgeField.keys(args, allowed: ["documentKey", "expectedVersion", "draft"])
+            _ = try BridgeField.string(args, "documentKey", limit: 36)
+            _ = try BridgeField.integer(args, "expectedVersion", max: maxInteger - 1)
+            if args["draft"] != nil { try validateReviewDraft(BridgeField.object(args, "draft")) }
+        case "setReviewComment":
+            try BridgeField.keys(args, allowed: ["documentKey", "commentId", "commentState", "expectedVersion"])
+            _ = try BridgeField.string(args, "documentKey", limit: 36)
+            _ = try BridgeField.string(args, "commentId", limit: 39)
+            try BridgeField.choice(args, "commentState", values: ["open", "closed"])
+            guard try BridgeField.integer(args, "expectedVersion") > 0 else { throw ReaderBridgeError.invalid("expectedVersion") }
         case "returnFocus", "close", "showOriginal", "details", "newDraft", "chooseStore", "readClipboard", "showLatest":
             try BridgeField.keys(args, allowed: [])
         case "pickImage":

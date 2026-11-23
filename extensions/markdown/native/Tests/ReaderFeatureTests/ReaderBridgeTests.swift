@@ -33,6 +33,58 @@ import Testing
         #expect(throws: (any Error).self) { try ReaderBridgeCodec.decode(data: Data("not JSON".utf8)) }
     }
 
+    @Test func privateReviewDraftHasAnIndependentBoundOnlyForTheMatchingGroup() throws {
+        let args: [String: Any] = ["documentKey": "doc", "expectedVersion": 0]
+        func set(_ body: [String: Any]) -> [String: Any] {
+            envelope("command", ["name": "setReviewDraft", "args": args.merging(["draft": body]) { _, v in v }])
+        }
+        let comment = ["text": String(repeating: "x", count: 65536)]
+        var comments = Array(repeating: comment, count: 64)
+        var draft: [String: Any] = ["comments": comments, "overall": "", "parked": [["index": -1, "text": "notes", "authoredRevision": 3]]]
+        let excess = try JSONSerialization.data(withJSONObject: draft).count - ReaderBridgeCodec.reviewDraftLimit
+        comments[0] = ["text": String(repeating: "x", count: 65536 - excess)]
+        draft["comments"] = comments
+        let encoded = try JSONSerialization.data(withJSONObject: set(draft))
+        #expect(try ReaderBridgeCodec.decode(data: encoded).type == .command)
+        let req = try ReaderBridgeCodec.decode(body: envelope("query", ["kind": "reviewDraft", "documentKey": "doc", "id": "q"]))
+        var reply = envelope("reply", ["ok": true, "id": "q", "available": true, "version": 1, "draft": draft])
+        try ReaderBridgeCodec.validateReply(reply, request: req)
+        let other = try ReaderBridgeCodec.decode(body: envelope("query", ["kind": "details", "id": "q"]))
+        #expect(throws: ReaderBridgeError.oversized) { try ReaderBridgeCodec.validateReply(reply, request: other) }
+        var padded = set(draft)
+        padded["padding"] = String(repeating: "p", count: ReaderBridgeCodec.messageLimit)
+        #expect(throws: ReaderBridgeError.oversized) { try ReaderBridgeCodec.decode(body: padded) }
+        comments[0]["text"]?.append("x")
+        draft["comments"] = comments
+        reply["draft"] = draft
+        #expect(throws: ReaderBridgeError.oversized) { try ReaderBridgeCodec.decode(body: set(draft)) }
+        #expect(throws: ReaderBridgeError.oversized) { try ReaderBridgeCodec.validateReply(reply, request: req) }
+        let clear = try ReaderBridgeCodec.decode(body: envelope("command", ["name": "setReviewDraft", "args": args]))
+        try ReaderBridgeCodec.validateReply(envelope("reply", ["ok": true, "status": "stored", "version": 1]), request: clear)
+        #expect(throws: ReaderBridgeError.invalid("version")) {
+            try ReaderBridgeCodec.validateReply(envelope("reply", ["ok": true, "status": "stored", "version": 3]), request: clear)
+        }
+    }
+
+    @Test func recoveryOnlyAcceptsPrivateBatchFieldsAndBoundedPassageEvidence() throws {
+        let proof: [String: Any] = ["text": "**hi**", "contexts": [["before": "In ", "after": ""]], "headings": ["A"],
+                                    "rendered": ["before": "", "text": "hi", "after": "."]]
+        let item: [String: Any] = ["text": "explain", "quote": "hi", "sourceAnchor": proof,
+                                   "range": ["start": 0, "end": 6], "authoredRevision": 1]
+        let draft: [String: Any] = ["comments": [item], "overall": "reader notes", "parked": [["comment": item, "text": "explain", "index": 0]]]
+        try ReaderBridgeCodec.validateReviewDraft(draft)
+        for patch: [String: Any] in [
+            ["threadId": "private"], ["comments": [item.merging(["requestId": "private"]) { _, v in v }]],
+            ["comments": [item.merging(["sourceAnchor": proof.merging(["token": "private"]) { _, v in v }]) { _, v in v }]],
+            ["comments": [item.merging(["range": NSNull()]) { _, v in v }]],
+            ["parked": [["comment": item, "text": "different", "index": 0]]], ["parked": [["index": -1, "text": "a", "authoredRevision": false]]],
+            ["comments": Array(repeating: ["text": "x"], count: 513)],
+        ] {
+            let bad = draft.merging(patch) { _, v in v }
+            #expect(throws: ReaderBridgeError.self) { try ReaderBridgeCodec.validateReviewDraft(bad) }
+        }
+    }
+
     @Test func encodedMessageAndFieldBounds() throws {
         let base = try JSONSerialization.data(withJSONObject: envelope("render", ["generation": 0]))
         var atLimit = base

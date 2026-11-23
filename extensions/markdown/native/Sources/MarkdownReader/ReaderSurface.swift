@@ -26,6 +26,7 @@ final class ReaderSurface: NSView {
     private var shownSave: SaveState?
     private var shownConnection: String?
     private var shownNotice: UInt64?
+    private var reviewedBinding: (presentation: String, document: UUID)?
     private var observation = 0
     private var applying = false
     private var changeTail: Task<Void, Never>?
@@ -99,6 +100,25 @@ final class ReaderSurface: NSView {
         }
     }
 
+    private func signalReviewChange() {
+        Task { [weak self] in _ = try? await self?.model.sendEnvelope(["v": 1, "type": "reviewChanged"]) }
+    }
+
+    private func reviewPresentationReady(_ workspace: EditorWorkspace) {
+        guard model.live, pageMatchesWorkspace, let presentation = model.page.presentation,
+              let key = workspace.logicalDocumentKey,
+              reviewedBinding?.presentation != presentation || reviewedBinding?.document != key else { return }
+        reviewedBinding = (presentation, key)
+        signalReviewChange()
+    }
+
+    private func retainReview(_ request: ReaderReviewComments.Request, in workspace: EditorWorkspace) async {
+        do { try await workspace.reviewComments.confirmed(request) }
+        catch {
+            workspace.notice = "The conversation received your comment, but the reader could not save its review state. Open comments to try the local save again."
+        }
+    }
+
     private func connect(_ workspace: EditorWorkspace) {
         model.live = workspace.collaboration != nil
         if workspace.webHostModel !== model {
@@ -147,7 +167,21 @@ final class ReaderSurface: NSView {
         workspace.webRelease = { [weak self] id in
             Task { _ = try? await self?.model.sendEnvelope(["v": 1, "type": "release", "claimId": id]) }
         }
-        workspace.collaboration?.onDocumentPromptState = { [weak self] key, id, thread, status, detail in
+        if workspace.collaboration != nil {
+            workspace.reviewComments.onChange = { [weak self, weak workspace] identity in
+                guard let self, let workspace, self.workspace === workspace, let scope = workspace.reviewScope,
+                      workspace.reviewComments.identity(scope) == identity else { return }
+                self.signalReviewChange()
+            }
+            reviewPresentationReady(workspace)
+        }
+        workspace.collaboration?.onDocumentPromptState = { [weak self, weak workspace] key, id, thread, status, detail in
+            if let self, let workspace, let uuid = UUID(uuidString: id) {
+                let request = ReaderReviewComments.Request(document: key, id: uuid)
+                if ["sent", "admitted", "working", "answered", "unanswered"].contains(status) {
+                    Task { await self.retainReview(request, in: workspace) }
+                } else if status == "failed" { workspace.reviewComments.refused(request) }
+            }
             var message: [String: Any] = ["v": 1, "type": "promptState", "documentKey": key.uuidString, "requestId": id, "threadId": thread, "state": status]
             if let detail { message["detail"] = detail }
             Task { _ = try? await self?.model.sendEnvelope(message) }
@@ -233,6 +267,12 @@ final class ReaderSurface: NSView {
                 if structure == nil { structure = SourceStructure.scan(source) }
                 return PassageExcerpt(source: source, start: range.location, end: NSMaxRange(range), structure: structure)
             }
+            let reviewRequest = workspace.logicalDocumentKey.flatMap { key in
+                UUID(uuidString: request).map { ReaderReviewComments.Request(document: key, id: $0) }
+            }
+            if client.isFreshPrompt(requestId: request), let scope = workspace.reviewScope, let reviewRequest {
+                workspace.reviewComments.prepare(reviewRequest, scope: scope, message: message, source: source)
+            }
             let result: CollaborationClient.PromptSubmission
             if let records = message["annotations"] as? [[String: Any]] {
                 let annotations = try records.map { record in
@@ -250,11 +290,21 @@ final class ReaderSurface: NSView {
                                                        range: range, passage: passage(range), generation: generation, authoredRevision: message["authoredRevision"] as? Int)
             }
             switch result {
-            case .submitted: return ["accepted": true]
+            case .submitted:
+                if let reviewRequest { await retainReview(reviewRequest, in: workspace) }
+                return ["accepted": true]
             case .unknown(let retryable): return ["accepted": false, "uncertain": true, "retryable": retryable]
-            case .refused(let detail): return ["accepted": false, "fresh": client.isFreshPrompt(requestId: request), "detail": detail]
+            case .refused(let detail):
+                let fresh = client.isFreshPrompt(requestId: request)
+                if fresh, let reviewRequest { workspace.reviewComments.refused(reviewRequest) }
+                return ["accepted": false, "fresh": fresh, "detail": detail]
             }
         case "query":
+            if message["kind"] as? String == "reviewDraft" {
+                guard let workspace else { return ["available": false, "version": 0] }
+                return try await workspace.reviewDraftPage(message)
+            }
+            if message["kind"] as? String == "reviewComments", let workspace { return try await workspace.reviewPage(message) }
             if message["kind"] as? String == "library", message["collection"] as? String == "drafts" { return try await draftLibrary(message) }
             guard message["kind"] as? String == "review", message["against"] as? String == "base",
                   let workspace, pageMatchesWorkspace, let document = workspace.active else { throw BridgeFailure.invalid }
@@ -267,7 +317,10 @@ final class ReaderSurface: NSView {
         case "command":
             await waitForPendingChanges()
             guard let name = message["name"] as? String else { throw BridgeFailure.invalid }
-            return try await command(name, args: message["args"] as? [String: Any] ?? [:])
+            let args = message["args"] as? [String: Any] ?? [:]
+            if name == "setReviewDraft", let workspace { return await workspace.reviewDraftSet(args) }
+            if name == "setReviewComment", let workspace { return await workspace.reviewPageSet(args) }
+            return try await command(name, args: args)
         default: break
         }
         return [:]
@@ -541,6 +594,7 @@ final class ReaderSurface: NSView {
             _ = try? await model.sendEnvelope(["v": 1, "type": "notice", "tone": "warn", "text": notice, "actions": []])
         }
         await updateDestination(in: workspace)
+        reviewPresentationReady(workspace)
         guard pageMatchesWorkspace, let presentation = model.page.presentation, let document = workspace.active else { return }
         let session = document.session
         let state: String, detail: String?

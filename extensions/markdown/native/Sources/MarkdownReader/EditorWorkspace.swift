@@ -190,6 +190,7 @@ final class EditorWorkspace {
         didSet { for document in documents { document.annotationsEnabled = collaboration != nil } }
     }
     let drafts: DraftStore
+    let reviewComments: ReaderReviewComments
     let assetDirectory: URL
     var documents: [WorkingDocument] = []
     var selected: UUID?
@@ -253,6 +254,7 @@ final class EditorWorkspace {
     init(directory: URL, store: String?, automaticallySaves: Bool = false) {
         self.automaticallySaves = automaticallySaves
         drafts = DraftStore(directory: directory); selectedStore = store
+        reviewComments = ReaderReviewComments(directory: directory.deletingLastPathComponent().appendingPathComponent("Reviews"))
         assetDirectory = directory.deletingLastPathComponent().appendingPathComponent("EditorAssets")
     }
 

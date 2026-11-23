@@ -584,6 +584,7 @@ public final class ReaderModel {
             return ["generation": sourceGeneration, "blocks": blocks]
         case .query:
             if page.onMessage != nil {
+                if ["reviewComments", "reviewDraft"].contains(message.fields["kind"] as? String) { return nil }
                 if message.fields["kind"] as? String == "library", message.fields["collection"] as? String == "drafts" { return nil }
                 if message.fields["kind"] as? String == "review", message.fields["against"] as? String == "base" { return nil }
             }

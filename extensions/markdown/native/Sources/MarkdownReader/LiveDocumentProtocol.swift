@@ -45,6 +45,10 @@ struct LiveCommand: Codable, Sendable {
     var ranges: [LiveClaimRange]?
     var label: String?
     var claimId: String?
+    var commentId: String?
+    var commentState: String?
+    var expectedVersion: Int?
+    var offset: Int?
 }
 
 struct LiveAssetIdentity: Codable, Sendable { var reference: String; var digest: String }
@@ -65,6 +69,13 @@ struct LiveResult: Codable, Sendable {
     var claimId: String?
     var expiresAt: Double?
     var reason: String?
+    var commentId: String?
+    var commentState: String?
+    var version: Int?
+    var comments: [LiveReviewComment]?
+    var total: Int?
+    var offset: Int?
+    var nextOffset: Int?
 }
 
 struct WebPageChange: Sendable {
@@ -315,6 +326,7 @@ extension EditorWorkspace {
         let confirmed = webHostModel == nil || livePaneView.kind != "loading"
         let notReady = LiveResult(status: "busy", message: "The document page has not confirmed this buffer.")
         if command.op == "read" { return confirmed ? await readLive(command) : notReady }
+        if command.op == "comments" || command.op == "setComment" { return confirmed ? await handleReview(command) : notReady }
         guard let (source, generation, digest) = visibleText else { return LiveResult(status: "busy", message: "The document has not opened yet.") }
         if command.op == "claim" {
             guard confirmed else { return notReady }
