@@ -10,10 +10,10 @@ Without a paste, use `agent_inspect` on the resolved `sessionId`, in history vie
 
 ## Send once
 
-Use `agent_send` only for an explicit request to send, including an applicable standing instruction in this conversation. Send the complete challenge as a peer, not as the operator. Use `followUp` for a challenge that asks for an answer. A `report` is informational and has no answer route. Do not use steering, scheduling or editor input to deliver an argument. Keep the normal route and records.
+Use `agent_send` only for an explicit request to send, including an applicable standing instruction in this conversation. Send the complete challenge in your own voice. If the reader could mistake it for the operator's instruction, identify yourself as a peer in the message. Use `followUp` for a challenge that asks for an answer. A `report` is informational and has no answer route. Do not use steering, scheduling or editor input to deliver an argument. Keep the normal route and records.
 
 - **Durable session:** retain the exact result reference the send returns (`sessionId`, `submissionId`, and `requestId` when present). Use it for a requested result readback. `unplaced` is queued; `placed` means in the transcript; `withdrawn` means in neither the queue nor the transcript.
-- **Ordinary session:** use its registered, reachable endpoint. Keep the returned receipt. This is not a native result reference. Use bounded history for a requested readback; attribute an answer only if the actual exchange connects it to the message.
+- **Ordinary session:** use its registered, reachable endpoint. Keep the returned receipt. This is not a native result reference. Use bounded history for a requested readback; connect the answer to the actual message in that exchange. A later reply on the same topic is not enough on its own.
 
 Report the state the receipt establishes. Retained for delivery is not necessarily admitted; admitted is not necessarily placed; placed is not read or acted on.
 

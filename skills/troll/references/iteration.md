@@ -6,7 +6,9 @@ Read this for a reply, an outcome request or report, or an explicitly sustained 
 
 A new reply to the last challenge opens follow-up triage. Use the operator's paste when supplied, including an excerpt they edited. For a direct message, use a reply through the existing route. If the operator requests a readback, use the exact result reference when one exists. You can also read back an operator-carried message when the operator names the session and you can tie a reply to what was actually pasted. A copy alone proves no paste. Use the named-session procedure from the main skill; read only the relevant exchange. If you cannot identify the reply, ask for the excerpt rather than attribute an unrelated answer. Unrelated activity, a send receipt and elapsed time are not replies.
 
-If no reply is visible, pause and say what you know: no reply in the available record, or no access to check. Resume triage when the reply arrives or the operator supplies it. Still give a requested readback. Do not poll, set a timer, retry the send, or assume an exited host resumes. An instruction to check again permits one check, not another send without a reply.
+If no reply is visible, give any requested readback and say whether there is no reply in the available record or no access to check. Do not poll, set a timer or retry the send. An instruction to check again permits one check, not another send.
+
+For a requested continuation, tell the operator who brings back the reply. After a clipboard handoff, that is the operator unless they ask for a named-session readback. For a direct request with a result due here, follow the host's own controls: a live ordinary session can yield the turn with `agent_yield`; a Durable agent with a routed request can retain it with `agent_work` and the exact result reference. A one-shot process that exits will not resume on its own. Without a live return route, ask the operator to bring back the reply rather than promise automatic follow-up.
 
 ## Decide what changed
 
