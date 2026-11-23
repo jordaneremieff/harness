@@ -781,6 +781,83 @@ test("searches full source, cues, and slugs while retaining superseded notes", a
 	assert.match(string(slug.digest), /^[a-f0-9]{64}$/);
 });
 
+test("unquoted search uses subject values, while phrases give literal frontmatter evidence", async () => {
+	const metadataOnly =
+		"\uFEFF---\r\nreview_policy: before-use\r\nstatus: active\r\nsuperseded_by: null\r\nverified: true\r\nreview_after: 2041-05-06\r\nreview_flag: {reason: driftmarker}\r\nother: hiddenmarker\r\n---\r\n# Example 😀\r\n";
+	const title = "---\ntitle: Editorial policy\n---\n";
+	const tags = '---\ntags: ["garden policy", "paper, ink stamp"] # commentmarker\n---\n';
+	const links = '---\nsupersedes: ["copper-policy"]\nsuperseded_by: "nickel-standard"\n---\n';
+	const body = "```md\n# A policy example\n```\n";
+	const decoded = '---\ntitle: "P\\u006Flicy for releases"\n---\n';
+	const root = corpus({
+		"README.md": README,
+		"metadata.md": metadataOnly,
+		"title.md": title,
+		"tags.md": tags,
+		"links.md": links,
+		"sequences.md": "---\ntags:\n  - oakleaf\nsupersedes:\n  - willow-stand\n---\n",
+		"body.md": body,
+		"slug-policy.md": "",
+		"decoded.md": decoded,
+	});
+	const result = notes(await detailedSearch(root, { query: "policy", limit: 10 }));
+	assert.deepEqual(result.map((note) => note.slug).sort(), [
+		"body",
+		"decoded",
+		"links",
+		"slug-policy",
+		"tags",
+		"title",
+	]);
+	const bySlug = new Map(result.map((note) => [note.slug, note]));
+	for (const [slug, field, source] of [
+		["body", "body", body],
+		["links", "frontmatter", links],
+		["tags", "tags", tags],
+		["title", "title", title],
+	] as const) {
+		const note = object(bySlug.get(slug));
+		assert.deepEqual(note.matched, [{ term: "policy", fields: [field] }]);
+		sourceLocation(note, source, "policy");
+	}
+	assert.equal(bySlug.get("slug-policy")?.sourceMatch, null);
+	assert.equal(bySlug.get("decoded")?.title, "Policy for releases");
+	assert.equal(bySlug.get("decoded")?.sourceMatch, null);
+	for (const query of [
+		"review_policy",
+		"before-use",
+		"active",
+		"true",
+		"2041-05-06",
+		"driftmarker",
+		"hiddenmarker",
+		"commentmarker",
+		"supersedes",
+		"null",
+		"policy-paper",
+	])
+		assert.equal((await search(root, { query })).totalMatches, 0, query);
+	for (const [query, slug] of [
+		["copper-policy", "links"],
+		["nickel-standard", "links"],
+		["ink-stamp", "tags"],
+		["oakleaf", "sequences"],
+		["willow-stand", "sequences"],
+	])
+		assert.deepEqual(
+			notes(await search(root, { query })).map((note) => note.slug),
+			[slug],
+		);
+
+	const mixed = notes(await detailedSearch(root, { query: 'policy "review_policy"' }))[0];
+	assert.equal(mixed.slug, "metadata");
+	assert.deepEqual(mixed.missing, ["policy"]);
+	assert.deepEqual(mixed.matched, [{ term: "review_policy", fields: ["frontmatter"] }]);
+	sourceLocation(mixed, metadataOnly, "review_policy");
+	const raw = notes(await detailedSearch(root, { query: '"review_policy: before-use"' }))[0];
+	sourceLocation(raw, metadataOnly, "review_policy: before-use");
+});
+
 test("fenced comments retain body evidence and Unicode source positions without title rank inflation", async () => {
 	for (const [open, close, newline = "\r\n"] of [
 		["```sh", "```"],
@@ -825,16 +902,28 @@ test("string and single-formulation array queries return the same body-first sou
 	assert.doesNotMatch(string(object(plain.sourceMatch).excerpt), /title:|status:/);
 });
 
-test("malformed headers expose qualified raw cues without metadata title weights or active pointers", async () => {
-	for (const suffix of ["other: [unclosed\n", "---suffix\ntitle: hidden-title\n"]) {
-		const source = `---\nstatus: active\n${suffix}---\nBody sentinel\n`;
+test("malformed headers keep literal evidence separate from trustworthy body and title matches", async () => {
+	for (const suffix of ["other: [unclosed\n", "---suffix\n"]) {
+		const source = `---\nstatus: active\nreview_policy: before-use\ntitle: hidden-title\n${suffix}---\n# Body sentinel\n`;
 		const root = corpus({ "README.md": README, "subject.md": source });
 		const cue = notes(await detailedSearch(root))[0];
 		assert.equal(cue.status, "active");
 		assert.match(string(cue.cueProblem), /invalid or ambiguous frontmatter/);
-		const found = notes(await detailedSearch(root, { query: suffix.startsWith("---") ? "hidden-title" : "active" }))[0];
-		assert.match(string(found.cueProblem), /invalid or ambiguous frontmatter/);
-		for (const match of array(found.matched)) assert.deepEqual(object(match).fields, ["body"]);
+		for (const query of ["policy", "review_policy", "hidden-title", "active"]) {
+			const missed = await detailedSearch(root, { query });
+			assert.equal(missed.totalMatches, 0, query);
+			assert.deepEqual(issues(missed), ["note.metadata"]);
+		}
+		const quoted = notes(await detailedSearch(root, { query: '"hidden-title"' }))[0];
+		assert.equal(quoted.title, "Body sentinel");
+		assert.deepEqual(quoted.matched, [{ term: "hidden-title", fields: ["frontmatter"] }]);
+		sourceLocation(quoted, source, "hidden-title");
+		const mixed = notes(await detailedSearch(root, { query: 'sentinel "review_policy"' }))[0];
+		assert.deepEqual(mixed.matched, [
+			{ term: "sentinel", fields: ["title"] },
+			{ term: "review_policy", fields: ["frontmatter"] },
+		]);
+		sourceLocation(mixed, source, "sentinel");
 		const index = await memoryIndex(root);
 		assert.match(index ?? "", /Unknown status: 1/);
 		assert.doesNotMatch(index ?? "", /^subject:/m);
@@ -1495,10 +1584,13 @@ test("separates coverage gaps from misses and cue warnings", async () => {
 	assert.equal(object(miss.search).complete, false);
 	assert.equal((await search(root, { query: "large" })).totalMatches, 0);
 	assert.ok(notes(await search(root)).some((note) => note.slug === "large"));
-	const complete = await search(corpus({ "README.md": README, "note.md": "---\ntitle: Unclosed\n\nneedle" }), {
-		query: "needle",
-	});
+	const unclosed = corpus({ "README.md": README, "note.md": "---\ntitle: Unclosed\n\nneedle" });
+	const withheld = await detailedSearch(unclosed, { query: "needle" });
+	assert.equal(withheld.totalMatches, 0);
+	assert.deepEqual(issues(withheld), ["note.metadata"]);
+	const complete = await search(unclosed, { query: '"needle"' });
 	assert.equal(object(complete.search).complete, true);
+	assert.equal(notes(complete)[0].title, "note");
 	assert.match(string(notes(complete)[0].cueProblem), /no closing delimiter/);
 	assert.equal(object(complete.search).unavailableNotes, 0);
 });

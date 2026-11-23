@@ -20,7 +20,7 @@ import { setImmediate } from "node:timers/promises";
 import { promisify } from "node:util";
 import { assertKnownArgumentKeys } from "./argument-keys.ts";
 import { findMarkdownHeading, markdownHeadings } from "./headings.ts";
-import { findFrontmatterClose, memorySourceCache, type ParsedMemoryHeader } from "./source-cache.ts";
+import { memorySourceCache, type ParsedMemoryHeader } from "./source-cache.ts";
 import {
 	addressableSlug,
 	MAX_SLUG_CHARS,
@@ -373,24 +373,108 @@ function pointOffsets(text: string): number[] {
 }
 
 type Region = { start: number; end: number; field: Field };
-function sourceBodyStart(text: string, note: NoteCue): number {
-	if (note.header.metadata !== "ok") return 0;
-	const open = /^\uFEFF?---[ \t]*\r?\n/.exec(text);
-	const close = open === null ? undefined : findFrontmatterClose(text.slice(open[0].length));
-	return open !== null && close !== undefined ? open[0].length + close.end : 0;
+type ValueField = "title" | "tags" | "supersedes" | "superseded_by";
+type SearchValue = { text: string; field: Field; start?: number };
+
+function declaredValue(header: ParsedMemoryHeader, key: ValueField): unknown {
+	return header.metadata === "ok" && header.parsed && Object.hasOwn(header.parsed, key)
+		? header.parsed[key]
+		: undefined;
 }
-function sourceRegions(text: string, note: NoteCue): Region[] {
-	const regions: Region[] = [];
-	const bodyStart = sourceBodyStart(text, note);
-	const headings = new Set(Array.from(markdownHeadings(text.slice(bodyStart)), (heading) => bodyStart + heading.start));
-	for (const line of text.matchAll(/[^\r\n]+/g)) {
-		let field: Field = "body";
-		if (line.index < bodyStart) {
-			field = /^title:/.test(line[0]) ? "title" : /^tags:/.test(line[0]) ? "tags" : "frontmatter";
-		} else if (headings.has(line.index)) field = "title";
-		regions.push({ start: line.index, end: line.index + line[0].length, field });
+
+function rawHeaderField(line: string, header: ParsedMemoryHeader): Field {
+	if (header.metadata === "ok") {
+		if (line.startsWith("title:")) return "title";
+		if (line.startsWith("tags:")) return "tags";
 	}
-	return regions;
+	return "frontmatter";
+}
+
+function sourceRegions(text: string, note: NoteCue): Region[] {
+	const { bodyStart } = note.header;
+	const headings = new Set(Array.from(markdownHeadings(text.slice(bodyStart)), (heading) => bodyStart + heading.start));
+	return Array.from(text.matchAll(/[^\r\n]+/g), (line) => ({
+		start: line.index,
+		end: line.index + line[0].length,
+		field: line.index < bodyStart ? rawHeaderField(line[0], note.header) : headings.has(line.index) ? "title" : "body",
+	}));
+}
+
+function linkValue(value: unknown): value is string {
+	return typeof value === "string" && value.length <= MAX_SLUG_CHARS && SLUG.test(value) && value !== "readme";
+}
+
+function parsedSearchValues(header: ParsedMemoryHeader, key: ValueField): string[] | undefined {
+	const value = declaredValue(header, key);
+	switch (key) {
+		case "title":
+			return typeof value === "string" ? [value] : undefined;
+		case "tags":
+			if (typeof value === "string") return [value];
+			return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : undefined;
+		case "supersedes":
+			return Array.isArray(value) && value.every(linkValue) ? value : undefined;
+		case "superseded_by":
+			return linkValue(value) ? [value] : undefined;
+	}
+}
+
+function literalValueAt(line: string, at: number, value: string): { start: number; end: number } | undefined {
+	const quote = line[at] === '"' || line[at] === "'" ? line[at] : undefined;
+	const start = quote === undefined ? at : at + 1;
+	const end = start + value.length;
+	if (!line.startsWith(value, start)) return undefined;
+	if (quote !== undefined && line[end] !== quote) return undefined;
+	return { start, end: quote === undefined ? end : end + 1 };
+}
+
+function literalValueStarts(line: string, values: string[], sequence: boolean): number[] {
+	// The parser decides what matched. Offsets are evidence only when the whole value has an exact raw spelling.
+	const starts: number[] = [];
+	let at = line.indexOf(":") + 1;
+	const space = () => {
+		while (line[at] === " " || line[at] === "\t") at++;
+	};
+	const take = (char: string) => {
+		if (line[at] !== char) return false;
+		at++;
+		return true;
+	};
+	space();
+	if (sequence && !take("[")) return [];
+	for (const [index, value] of values.entries()) {
+		if (index > 0 && !take(",")) return [];
+		space();
+		const literal = literalValueAt(line, at, value);
+		if (!literal) return [];
+		starts.push(literal.start);
+		at = literal.end;
+		space();
+	}
+	if (sequence && !take("]")) return [];
+	return /^\s*(?:#.*)?$/.test(line.slice(at)) ? starts : [];
+}
+
+function searchValues(header: ParsedMemoryHeader): SearchValue[] {
+	const values: SearchValue[] = [];
+	for (const [key, field] of [
+		["title", "title"],
+		["tags", "tags"],
+		["supersedes", "frontmatter"],
+		["superseded_by", "frontmatter"],
+	] as const) {
+		const parsed = parsedSearchValues(header, key);
+		if (!parsed) continue;
+		// A block sequence can supply parsed subject terms without a single-line cue to locate them.
+		const line = header.unusable.has(key) ? undefined : header.lines.get(key);
+		const lineStart = line === undefined ? 0 : header.header.indexOf(`\n${line}`) + 1;
+		const starts = line === undefined ? [] : literalValueStarts(line, parsed, Array.isArray(header.parsed?.[key]));
+		for (const [index, text] of parsed.entries()) {
+			const start = lineStart !== 0 && starts[index] !== undefined ? lineStart + starts[index] : undefined;
+			values.push({ text, field, start });
+		}
+	}
+	return values;
 }
 
 function termEnd(input: string, words: Token[], start: number, term: Term): number | undefined {
@@ -433,25 +517,29 @@ function analyze(text: string, note: NoteCue, query: Query, signal?: AbortSignal
 		while (regionIndex + 1 < regions.length && regions[regionIndex].end <= start) regionIndex += 1;
 		return regions[regionIndex]?.field ?? "body";
 	};
-	const add = (term: number, field: Field, offset: number, endOffset: number) => {
+	const add = (term: number, field: Field, offset?: number, endOffset?: number) => {
 		counts[term].set(field, (counts[term].get(field) ?? 0) + 1);
-		if (field !== "slug") hits.push({ term, field, offset, endOffset });
+		if (offset !== undefined && endOffset !== undefined) hits.push({ term, field, offset, endOffset });
 	};
-	const sourceTokens = tokens(text);
-	for (const [input, wordList, isSlug] of [
-		[text, sourceTokens, false],
-		[note.slug, tokens(note.slug), true],
-	] as const) {
-		for (let i = 0; i < wordList.length; i += 1) {
+	const matchWords = (input: string, base: number | undefined, valueField?: Field): number => {
+		const words = tokens(input);
+		for (const [index, word] of words.entries()) {
 			checkAbort(signal);
-			const word = wordList[i];
-			const field = isSlug ? "slug" : fieldAt(word.start);
-			query.terms.forEach((term, index) => {
-				const end = termEnd(input, wordList, i, term);
-				if (end !== undefined) add(index, field, isSlug ? 0 : positions[word.start], isSlug ? 0 : positions[end]);
+			const field = valueField ?? fieldAt((base ?? 0) + word.start);
+			query.terms.forEach((term, termIndex) => {
+				const end = termEnd(input, words, index, term);
+				if (end === undefined) return;
+				if (base === undefined) add(termIndex, field);
+				else add(termIndex, field, positions[base + word.start], positions[base + end]);
 			});
 		}
-	}
+		return words.length;
+	};
+	const { bodyStart } = note.header;
+	// Keep the original document-length normalisation; raw header tokens supply no unquoted hits.
+	const length = matchWords(text.slice(bodyStart), bodyStart) + tokens(note.header.header).length;
+	for (const value of searchValues(note.header)) matchWords(value.text, value.start, value.field);
+	matchWords(note.slug, undefined, "slug");
 	const folded = query.terms.some((term) => term.kind === "phrase") ? foldedRanges(text) : null;
 	query.terms.forEach((term, index) => {
 		if (term.kind !== "phrase" || folded === null) return;
@@ -460,7 +548,7 @@ function analyze(text: string, note: NoteCue, query: Query, signal?: AbortSignal
 			.split(" ")
 			.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
 			.join("\\s+");
-		if (new RegExp(pattern).test(note.slug.toLowerCase())) add(index, "slug", 0, 0);
+		if (new RegExp(pattern).test(note.slug.toLowerCase())) add(index, "slug");
 		regionIndex = 0;
 		for (const match of text.toLowerCase().matchAll(new RegExp(pattern, "g"))) {
 			checkAbort(signal);
@@ -470,7 +558,7 @@ function analyze(text: string, note: NoteCue, query: Query, signal?: AbortSignal
 		}
 	});
 	hits.sort((a, b) => a.offset - b.offset || a.endOffset - b.endOffset || a.term - b.term);
-	return { text, hits, counts, length: sourceTokens.length };
+	return { text, hits, counts, length };
 }
 
 function rankNotes(notes: NoteCue[], query: Query): { notes: NoteCue[]; idf: number[]; df: number[] } {
@@ -540,7 +628,7 @@ function bestPassage(analysis: Analysis, idf: number[], minOffset = 0): SourceMa
 }
 
 function passageCandidate(analysis: Analysis, note: NoteCue): { analysis: Analysis; bodyStart: number; body: boolean } {
-	const bodyStart = codePointCount(analysis.text.slice(0, sourceBodyStart(analysis.text, note)));
+	const bodyStart = codePointCount(analysis.text.slice(0, note.header.bodyStart));
 	const bodyHits = analysis.hits.filter((hit) => hit.offset >= bodyStart);
 	return {
 		analysis: bodyHits.length ? { ...analysis, hits: bodyHits } : analysis,
@@ -617,6 +705,10 @@ function readSearchNote(
 	const text = decodeUtf8(source.buffer);
 	if (text === undefined) return { ok: false, reason: `note is not valid UTF-8: ${file}` };
 	const cue = buildNoteCue(root, file, slug, text, false, source.buffer.length);
+	const title = parsedSearchValues(cue.header, "title")?.[0]?.trim();
+	const heading = title ? undefined : findHeading(text.slice(cue.header.bodyStart));
+	cue.title = title || heading || slug;
+	cue.titleSource = title ? "frontmatter" : heading ? "heading" : "filename";
 	const digest = sha256(source.buffer);
 	cue.sourceEvidence = digest;
 	const formulations = queries.map((query) => {

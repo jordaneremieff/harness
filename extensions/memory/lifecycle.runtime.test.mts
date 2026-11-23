@@ -274,9 +274,10 @@ return {
   type: typeof page,
   selected: page.notes.filter(note => note.lifecycle.status === "active").map(note => ({
     slug: note.slug, digest: note.digest, deadline: note.freshness.deadline,
-    rank: note.rank, matched: note.matched
+    rank: note.rank, hasCompactMatches: "matched" in note
   })),
-  detailed: { policy: detailed.notes[0].freshness.policy, formulations: detailed.notes[0].formulations.length },
+  detailed: { policy: detailed.notes[0].freshness.policy, formulations: detailed.notes[0].formulations.length,
+    matched: detailed.notes[0].formulations[0].matched.map(item => item.term) },
   browseHasDigest: "digest" in browse.notes[0],
   scope: page.countScope, snapshot: page.coverage.frozenSnapshot,
   privateState: "details" in page || "sourceEvidence" in page.notes[0] || "analysis" in page.notes[0],
@@ -287,10 +288,8 @@ return {
 		);
 		assert.deepEqual(composed, {
 			type: "object",
-			selected: [
-				{ slug: input.slug, digest: firstDigest, deadline: "due", rank: 1, matched: ["api_key", "configuration"] },
-			],
-			detailed: { policy: "before-use", formulations: 2 },
+			selected: [{ slug: input.slug, digest: firstDigest, deadline: "due", rank: 1, hasCompactMatches: false }],
+			detailed: { policy: "before-use", formulations: 2, matched: ["api_key", "configuration"] },
 			browseHasDigest: false,
 			scope: "source-window",
 			snapshot: false,
