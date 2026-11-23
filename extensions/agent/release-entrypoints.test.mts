@@ -112,13 +112,15 @@ it("the ordinary abort tool dispatches release and rejects timer combinations", 
 	} as never;
 	await command.handler("abort target release", commandContext);
 	assert.deepEqual(calls.at(-1), { method: "release", input: { sessionId: "target" } });
-	assert.equal(messages.at(-1), "Released “target”; its host is retiring.");
+	assert.equal(messages.at(-1), "Release of “target”: host retirement requested.");
+	assert.equal(levels.at(-1), "info");
 	response = { retiring: false, blockers: ["pending timer", "active work"], writesPlaced: 2 };
 	await command.handler("abort target release", commandContext);
 	assert.equal(
 		messages.at(-1),
-		"Stopped “target”; the host stays up: pending timer; active work. Placed 2 leftover writes.",
+		"The host of “target” stays open: pending timer; active work; placed 2 leftover writes",
 	);
+	assert.equal(levels.at(-1), "warning");
 	const attachmentError = new Error("Fixture host attachment is unavailable");
 	controlError = attachmentError;
 	await assert.rejects(
@@ -134,7 +136,7 @@ it("the ordinary abort tool dispatches release and rejects timer combinations", 
 	assert.deepEqual(calls.at(-1), { method: "release", input: { sessionId: "target" } });
 	await command.handler("abort target release", commandContext);
 	assert.deepEqual(calls.at(-1), { method: "release", input: { sessionId: "target" } });
-	assert.equal(messages.at(-1), attachmentError.message);
+	assert.equal(messages.at(-1), `/agent abort: ${attachmentError.message}`);
 	assert.equal(levels.at(-1), "error");
 	assert.doesNotMatch(messages.at(-1) ?? "", /not running/u);
 });

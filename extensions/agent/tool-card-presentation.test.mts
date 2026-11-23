@@ -364,6 +364,39 @@ it("place receipts omit labels and models already shown in the card", () => {
 	assert.equal(rendered.split("provider/model").length - 1, 1);
 });
 
+it("labels an observed configuration without claiming the request changed it", () => {
+	const status = {
+		identity: targetId,
+		conversationId: 1,
+		agent: { model: { provider: "provider", modelId: "model" }, thinkingLevel: "high" },
+	};
+	const row = nativeRow(
+		"agent_configure",
+		{ sessionId: targetId, thinkingLevel: "low" },
+		{ identity: targetId, conversationId: 1, status },
+		[],
+	);
+	const collapsed = screen(row);
+	assert.match(collapsed, /provider\/model · high · requested low/u);
+	assert.match(collapsed, /^Configuration observed$/mu);
+	assert.doesNotMatch(collapsed, /Configuration applied|^\{$/mu);
+	row.setExpanded(true);
+	assert.match(screen(row), /"thinkingLevel": "high"/u);
+});
+
+it("a retained continue receipt shows the state note rather than the model instruction", () => {
+	const args = { action: "continue", note: "The source check is still running." };
+	const row = nativeRow("agent_work", args, undefined);
+	const source = "The state note is shown to the operator. The turn ends here: write no chat text.";
+	row.updateResult({ content: [{ type: "text", text: source }], details: args, isError: false });
+	const collapsed = screen(row);
+	assert.match(collapsed, /^State note recorded$/mu);
+	assert.equal(collapsed.split(args.note).length - 1, 1);
+	assert.doesNotMatch(collapsed, /write no chat text|Work declared/u);
+	row.setExpanded(true);
+	assert.ok(screen(row).includes(source));
+});
+
 it("new fork facts survive an incomplete roster and applied settings preserve host adjustments", () => {
 	const fork = nativeRow("agent_fork", fixtures.agent_fork.args, fixtures.agent_fork.details, rows.slice(0, 1));
 	const forkText = screen(fork);

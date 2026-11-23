@@ -1496,6 +1496,19 @@ function mutationPlacement(admission: Record<string, unknown>): string {
 			: "";
 }
 
+function configurationOutcome(
+	details: Record<string, unknown>,
+	snapshot: Record<string, unknown> | undefined,
+	suffix: string,
+): string | undefined {
+	if (details.outcome === "applied") return `Configuration applied${suffix}`;
+	const agent = record(snapshot?.agent);
+	const model = record(agent.model);
+	if (text(agent.thinkingLevel) || text(model.provider) || text(model.modelId))
+		return `Configuration observed${suffix}`;
+	return undefined;
+}
+
 function configurationFacts(details: Record<string, unknown>, identity: string, context: AgentCardContext): string[] {
 	const before = record(details.before);
 	const after = record(details.after);
@@ -1646,7 +1659,7 @@ function mutationPresentation(
 	}
 	if (name === "agent_configure") {
 		return {
-			outcome: details.outcome === "applied" ? `Configuration applied${suffix}` : undefined,
+			outcome: configurationOutcome(details, snapshot, suffix),
 			body: [...new Set([...configurationFacts(details, identity, context), ...facts])].join("\n"),
 		};
 	}
@@ -2947,7 +2960,13 @@ function workPresentation(
 ): ToolResultPresentation | undefined {
 	const item = record(details.item),
 		request = text(item.requestId) || text(details.requestId);
-	if (!request) return undefined;
+	if (!request) {
+		if (details.action !== "continue" || typeof details.note !== "string") return undefined;
+		return {
+			outcome: "State note recorded",
+			body: details.note === record(context.args).note ? undefined : details.note,
+		};
+	}
 	if (details.action === "complete") return completedWorkPresentation(details, item, request, context);
 	if (details.action !== "continue") return undefined;
 	const state = text(item.state),
