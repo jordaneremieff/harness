@@ -5,7 +5,7 @@ declare global {
 		accepted: boolean;
 		uncertain?: true;
 		retryable?: boolean;
-		fresh?: true;
+		fresh?: boolean;
 		detail?: string;
 	}
 	interface ReaderPromptEvent {

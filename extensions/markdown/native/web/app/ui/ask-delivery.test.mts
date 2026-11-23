@@ -65,18 +65,21 @@ test("a switched document neither rebases a fresh refusal nor submits a stale ca
 	assert.equal(f.packets[1].presentation, "three");
 });
 
-test("transport loss and cached refusal keep the original packet until delivery is known", async () => {
+test("a refused replay does not recreate an unconfirmed batch or change its packet", async () => {
 	const f = fixture((i) => {
 		if (i === 1) throw Error("Lost response");
-		return { accepted: false, detail: "Refused" };
+		return i === 2
+			? { accepted: false, fresh: false, detail: "Changed document" }
+			: { accepted: false, detail: "No connection" };
 	});
 	await f.send();
 	assert.equal(f.message.state, "unknown");
 	assert.equal(f.message.retryable, true);
 	f.version.generation++;
 	await f.send();
-	assert.equal(f.message.state, "failed");
+	assert.equal(f.message.state, "unknown");
 	await f.send();
+	assert.equal(f.message.state, "unknown");
 	assert.equal(f.packets.length, 3);
 	assert.ok(f.packets.every((p) => p === f.packets[0]));
 });

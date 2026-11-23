@@ -17,10 +17,12 @@
 		if (detail !== undefined || old !== next) message.detail = detail;
 		if (next !== "unknown") message.retryable = false;
 	}
-	function receiveReceipt(message: ReaderAskMessage, receipt: ReaderPromptReceipt) {
-		if (receipt.uncertain) {
+	function receiveReceipt(message: ReaderAskMessage, receipt: ReaderPromptReceipt, replay: boolean) {
+		// A refusal of a replay is not a rejection of its original submission.
+		const previouslyTried = receipt.fresh === false || (replay && receipt.fresh !== true);
+		if (!receipt.accepted && (receipt.uncertain || previouslyTried)) {
 			evidence(message, "unknown", receipt.detail);
-			if (message.state === "unknown") message.retryable = receipt.retryable === true;
+			if (message.state === "unknown") message.retryable = receipt.uncertain ? receipt.retryable === true : true;
 		} else evidence(message, receipt.accepted ? "sent" : "failed", receipt.detail);
 	}
 	function transportError(message: ReaderAskMessage, error: unknown) {
@@ -44,6 +46,7 @@
 			delivery: ReaderAskDelivery,
 			base: ReaderPromptVersion,
 			allowRebase: boolean,
+			replay: boolean,
 		): Promise<void> {
 			const { owner, thread, message } = delivery;
 			const packet = sessions.packet(thread, message, base);
@@ -53,9 +56,9 @@
 			if (receipt.fresh && allowRebase && ["sending", "unknown"].includes(message.state)) {
 				const next = current(owner);
 				if (next && (packet.presentation !== next.presentation || packet.generation !== next.generation))
-					return attempt(delivery, next, false);
+					return attempt(delivery, next, false, false);
 			}
-			receiveReceipt(message, receipt);
+			receiveReceipt(message, receipt, replay);
 		}
 		async function submit(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
 			const registered = sessions.delivery(message.requestId, thread.threadId);
@@ -63,10 +66,11 @@
 			const base = current(owner);
 			if (!base || !ready(message) || inFlight.has(message) || !owner.threads.includes(thread)) return;
 			inFlight.add(message);
+			const replay = message.state === "unknown";
 			message.state = "sending";
 			message.retryable = undefined;
 			try {
-				await attempt(registered, base, true);
+				await attempt(registered, base, true, replay);
 			} catch (error) {
 				transportError(message, error);
 			} finally {

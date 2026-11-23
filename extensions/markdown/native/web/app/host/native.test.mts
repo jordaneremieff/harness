@@ -374,6 +374,7 @@ test("a fresh prompt refusal distinguishes a known non-delivery from an uncertai
 		detail: "The document changed.",
 	};
 	assert.equal(reply(response, "r", "prompt", {}).fresh, true);
+	assert.equal(reply({ ...response, fresh: false }, "r", "prompt", {}).fresh, false);
 	for (const patch of [
 		{ accepted: true },
 		{ detail: undefined },

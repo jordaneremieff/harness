@@ -730,7 +730,7 @@
 	function promptReply(m: Fields) {
 		ensure(typeof m.accepted === "boolean" && optional(m.detail, (v) => string(v, 8192, true)));
 		if (m.fresh !== undefined)
-			ensure(m.fresh === true && !m.accepted && m.uncertain === undefined && string(m.detail, 8192));
+			ensure(typeof m.fresh === "boolean" && !m.accepted && m.uncertain === undefined && string(m.detail, 8192));
 		if (m.uncertain === undefined) ensure(m.retryable === undefined);
 		else ensure(m.uncertain === true && !m.accepted && typeof m.retryable === "boolean");
 	}
