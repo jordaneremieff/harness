@@ -74,8 +74,10 @@ The receiver refuses a message whose fields break these limits:
 - `extension` is 1 to 32 lowercase letters, digits and hyphens, starting with a
   letter.
 - `application` is one line of 1 to 48 characters without `[` or `]`.
-- `id` and `follows` are UUIDs. The message's reference is `#` and the first
-  eight hexadecimal digits of `id`, in lowercase.
+- `id` and `follows` are UUIDs in either letter case. The message's reference
+  is `#` and the first eight hexadecimal digits of `id`, in lowercase. Replies
+  carry `id` exactly as delivered, and repeated delivery compares IDs without
+  regard to case.
 - `subject` and `place` are one line of 1 to 200 characters.
 - `guidance` is 1 to 2000 characters.
 - `text` is nonblank, well-formed Unicode and at most 128 KiB in UTF-8.
