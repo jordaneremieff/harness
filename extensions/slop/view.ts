@@ -10,7 +10,8 @@ import {
 	type TUI,
 	type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import { scopes, type Scope } from "./catalog.ts";
+import type { Scope } from "./catalog.ts";
+import { scopes } from "./vocabulary.ts";
 import { searchEntry, stateLabel } from "./operations.ts";
 import { singleLine, terminalText } from "./presentation-text.ts";
 import type { CatalogEntry } from "./store.ts";

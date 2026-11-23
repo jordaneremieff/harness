@@ -8,19 +8,21 @@ import {
 	catalogSection,
 	check,
 	CHECK_DESCRIPTION,
-	type CheckArgs,
-	CheckParams,
 	inspectCatalog,
 	record,
 	RECORD_DESCRIPTION,
 	RECORD_GUIDELINES,
-	type RecordArgs,
-	RecordParams,
 	SNIPPETS,
 	VIEW_DESCRIPTION,
+} from "./operations.ts";
+import {
+	type CheckArgs,
+	CheckParams,
+	type RecordArgs,
+	RecordParams,
 	type ViewArgs,
 	ViewParams,
-} from "./operations.ts";
+} from "./tool-contract.ts";
 import { singleLine } from "./presentation-text.ts";
 import { publishSettings, readSettings } from "./settings.ts";
 import { type Identity, readCatalog, setDisabled } from "./store.ts";

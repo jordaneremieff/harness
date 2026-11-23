@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { proseKinds } from "./detect.ts";
+import { proseKinds } from "./vocabulary.ts";
 import { readRegular } from "./files.ts";
 import { fileInput } from "./input.ts";
 import { check, runCheck } from "./operations.ts";

@@ -1,5 +1,5 @@
-export const scopes = ["reply", "document", "commit", "comment", "code"] as const;
-export const domains = ["prose", "code", "ui"] as const;
+import { domains, idPattern, scopes } from "./vocabulary.ts";
+
 export type Scope = (typeof scopes)[number];
 export type Domain = (typeof domains)[number];
 export type Example = { kind: string; verdict: "slop" | "better"; text: string };
@@ -37,7 +37,6 @@ export type Entry = Required<EntryFields> & {
 
 export const entryLimit = 128 * 1024;
 
-export const idPattern = "^[a-z0-9]+(?:-[a-z0-9]+)*$";
 const idRegex = new RegExp(idPattern);
 export function requireId(value: string): string {
 	if (typeof value !== "string" || !idRegex.test(value) || value.length > 128)

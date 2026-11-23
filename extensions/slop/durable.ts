@@ -5,15 +5,12 @@ import {
 	catalogSection,
 	check,
 	CHECK_DESCRIPTION,
-	CheckOutput,
-	CheckParams,
 	inspectCatalog,
 	record,
 	RECORD_DESCRIPTION,
-	RecordParams,
 	VIEW_DESCRIPTION,
-	ViewParams,
 } from "./operations.ts";
+import { CheckOutput, CheckParams, RecordParams, ViewParams } from "./tool-contract.ts";
 import { publishSettings, type SettingsBus } from "./settings.ts";
 
 interface Host {

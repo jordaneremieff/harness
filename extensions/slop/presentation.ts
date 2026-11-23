@@ -3,9 +3,8 @@ import { sep } from "node:path";
 import { type Theme, type ToolDefinition, truncateToVisualLines } from "@earendil-works/pi-coding-agent";
 import { compile } from "@earendil-works/pi-schema";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { idPattern, scopes } from "./catalog.ts";
-import { proseKinds } from "./detect.ts";
-import { catalogPreviewRows, CheckParams, RecordParams, ViewParams } from "./operations.ts";
+import { catalogPreviewRows, CheckParams, RecordParams, ViewParams } from "./tool-contract.ts";
+import { idPattern, proseKinds, scopes } from "./vocabulary.ts";
 import { bodyText, singleLine } from "./presentation-text.ts";
 
 export type SlopTool = "slop" | "slop_check" | "slop_record";

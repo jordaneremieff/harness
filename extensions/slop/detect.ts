@@ -8,9 +8,9 @@ import {
 	firstSentence,
 	openingFence,
 } from "./catalog.ts";
+import { proseKinds } from "./vocabulary.ts";
 
 export type ProseKind = "reply" | "document" | "commit";
-export const proseKinds = ["reply", "document", "commit"] as const;
 export type ScopedLine = { scope: Scope; path?: string; line: number; text: string; commit?: string; part?: number };
 export type Input = { kind: ProseKind; text: string; path?: string } | { kind: "file"; text: string; path: string };
 
