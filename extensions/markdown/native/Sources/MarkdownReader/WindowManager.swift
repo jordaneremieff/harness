@@ -25,6 +25,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
     private var editorWindow: NSWindow?
     private(set) var editor: EditorWorkspace?
     private var closeAllowed: Set<ObjectIdentifier> = []
+    private var preparingWindows: Set<ObjectIdentifier> = []
 
     init(state: ReadingStateStore, platform: ReaderPlatform, defaultRoots: [String]) {
         self.state = state; self.platform = platform; self.defaultRoots = defaultRoots
@@ -135,10 +136,22 @@ final class WindowManager: NSObject, NSWindowDelegate {
         for reader in readers.values { await reader.model.close() }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard !closeAllowed.contains(ObjectIdentifier(sender)), let workspace = surfaces[ObjectIdentifier(sender)]?.workspace else { return true }
+        let id = ObjectIdentifier(sender)
+        guard !closeAllowed.contains(id), let workspace = surfaces[id]?.workspace else { return true }
+        guard preparingWindows.insert(id).inserted else { return false }
         Task {
-            guard await workspace.prepareToClose() else { return }
-            closeAllowed.insert(ObjectIdentifier(sender)); sender.close()
+            defer { preparingWindows.remove(id) }
+            let saved = Flag(), deadline = DispatchTime.now() + PaneHost.saveAllowance
+            let finished = await PaneHost.run(until: deadline) {
+                saved.value = await workspace.prepareToClose(saveDeadline: deadline)
+            }
+            guard finished else {
+                workspace.resumeEdits()
+                workspace.notice = "The reader did not confirm draft recovery in time. This window remains open."
+                return
+            }
+            guard saved.value, workspace.closing else { return }
+            closeAllowed.insert(id); sender.close()
         }
         return false
     }

@@ -93,9 +93,14 @@ import MarkdownCore
         workspace.flushReviewDrafts = { false }
         #expect(!(await workspace.prepareToClose()) && !workspace.closing)
         #expect(workspace.notice?.contains("review draft") == true)
+        var paused = false
+        workspace.pauseWindowInput = { paused = true; return { paused = false } }
         workspace.flushReviewDrafts = { !workspace.closing }
-        #expect(await workspace.prepareToClose() && workspace.closing)
+        #expect(!(await workspace.prepareToClose()) && !workspace.closing && !paused)
+        workspace.flushReviewDrafts = { workspace.closing == paused }
+        #expect(await workspace.prepareToClose() && workspace.closing && paused)
         await workspace.closeViews()
+        #expect(!paused)
     }
 
     @Test func failedRecoveryKeepsTheDocumentOpen() async throws {

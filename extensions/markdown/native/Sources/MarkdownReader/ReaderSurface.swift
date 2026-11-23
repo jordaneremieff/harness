@@ -87,6 +87,7 @@ final class ReaderSurface: NSView {
     func waitForPendingChanges() async { await changeTail?.value }
 
     func sendCommand(_ name: String, args: [String: Any] = [:]) {
+        guard workspace?.closing != true else { return }
         Task { await model.sendCommand(name, args: args) }
     }
 
@@ -130,6 +131,17 @@ final class ReaderSurface: NSView {
             if previousKey != workspace.logicalDocumentKey { workspace.collaboration?.bind(document: workspace.liveDocumentID) }
         }
         workspace.drainPageChanges = { [weak self] in await self?.waitForPendingChanges() }
+        workspace.pauseWindowInput = { [weak self] in
+            guard let window = self?.window else { return nil }
+            // Stop new input to this window between the final page flush and teardown without changing focus.
+            let events: NSEvent.EventTypeMask = [.keyDown, .keyUp, .leftMouseDown, .leftMouseUp, .leftMouseDragged,
+                .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp]
+            guard let monitor = NSEvent.addLocalMonitorForEvents(matching: events, handler: { [weak window] event in
+                if let window, event.window === window { return nil }
+                return event
+            }) else { return nil }
+            return { NSEvent.removeMonitor(monitor) }
+        }
         workspace.flushReviewDrafts = { [weak self] in
             guard let self, self.model.live, self.pageReady else { return true }
             return (try? await self.model.page.callJavaScript("return await reader.flushReviewDrafts();")) as? Bool == true

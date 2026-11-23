@@ -178,6 +178,8 @@ final class EditorWorkspace {
     @ObservationIgnored var webHeldRefusal: (() -> Void)?
     @ObservationIgnored var drainPageChanges: (() async -> Void)?
     @ObservationIgnored var flushReviewDrafts: (() async -> Bool)?
+    @ObservationIgnored var pauseWindowInput: (() -> (() -> Void)?)?
+    @ObservationIgnored private var restoreWindowInput: (() -> Void)?
     @ObservationIgnored var pageChangeInProgress = false
     @ObservationIgnored var liveApplyInProgress = false
     @ObservationIgnored var observedPageChanges: [String: WebObservedChange] = [:]
@@ -388,6 +390,7 @@ final class EditorWorkspace {
         collaboration?.stop()
         for document in documents { document.setVisible(false); await document.close() }
         await reading?.close()
+        releaseWindowInput()
     }
 
     func newScratchpad() { add(DraftRecord()) }
@@ -668,6 +671,7 @@ final class EditorWorkspace {
             notice = "Finish composing text before closing the workspace."
             return false
         }
+        restoreWindowInput = pauseWindowInput?()
         closing = true
 
         guard await retainAll(), closePreparation == attempt, closing, !Task.isCancelled else {
@@ -675,7 +679,7 @@ final class EditorWorkspace {
             return false
         }
         let pending = documents.filter(needsDestinationSaveBeforeClose)
-        guard !pending.isEmpty else { return true }
+        guard !pending.isEmpty else { return await confirmClose(attempt) }
         let saved = Flag(), proceed = Flag(true)
         let finished = await PaneHost.run(until: saveDeadline) {
             for document in pending {
@@ -696,6 +700,17 @@ final class EditorWorkspace {
             refuseClose("The destination save did not finish. Your edits are in Drafts. This window remains open.")
             return false
         }
+        return await confirmClose(attempt)
+    }
+
+    private func confirmClose(_ attempt: UUID) async -> Bool {
+        // A late first-send refusal can restore a batch while a destination write is in flight.
+        let flushed = await flushReviewDrafts?() ?? true
+        guard closePreparation == attempt, closing else { return false }
+        guard flushed, !Task.isCancelled, !pageBusy, !pageChangeInProgress, !liveApplyInProgress else {
+            refuseClose("An edit or review draft is not saved. This window remains open. Retry Close after the draft is saved.")
+            return false
+        }
         return true
     }
 
@@ -708,7 +723,9 @@ final class EditorWorkspace {
         resumeEdits()
     }
 
-    func resumeEdits() { closePreparation = nil; closing = false }
+    private func releaseWindowInput() { restoreWindowInput?(); restoreWindowInput = nil }
+
+    func resumeEdits() { closePreparation = nil; closing = false; releaseWindowInput() }
 
     func retainAll() async -> Bool {
         var result = true
