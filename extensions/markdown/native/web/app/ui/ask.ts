@@ -480,20 +480,9 @@
 			const local = new Set(session.threads.map((t) => t.threadId.toLowerCase()));
 			return [...saved.rows.values()].filter((row) => !local.has(row.threadId.toLowerCase()));
 		}
-		function originalRange(row: ReaderReviewComment) {
-			if (!row.anchorDigest || row.anchorDigest !== session.digest) return;
-			if (row.start !== undefined && row.end !== undefined) return { start: row.start, end: row.end };
-		}
 		function restoredMarks(): Mark[] {
-			const source = controller.doc?.source ?? "";
 			return restoredRows().flatMap((row) => {
-				if (row.commentState === "closed") return [];
-				const original = originalRange(row);
-				const verified =
-					original && source.slice(original.start, original.end) === row.sourceAnchor
-						? original
-						: api.uiLogic.reanchorPassage(source, row.passageAnchor, currentView());
-				const range = rangeFor(verified);
+				const range = rangeFor(api.reviewMarkRange(sessions, session, row));
 				return range
 					? [
 							{

@@ -1,5 +1,19 @@
 (() => {
 	const api = (globalThis as unknown as { reader: ReaderCoreAPI }).reader;
+	api.reviewMarkRange = (sessions, owner, row) => {
+		const sourceAnchor = row.passageAnchor ?? (row.sourceAnchor ? { text: row.sourceAnchor, contexts: [] } : undefined);
+		if (!sourceAnchor) return;
+		const range = row.start !== undefined && row.end !== undefined ? { start: row.start, end: row.end } : undefined;
+		// Closed comments still follow edits. Reopening changes only the visibility of the tracked passage.
+		const mark = sessions.trackReview(owner, row.commentId, {
+			text: row.text,
+			quote: row.quote,
+			sourceAnchor,
+			anchorDigest: row.anchorDigest,
+			range,
+		});
+		return row.commentState === "open" ? mark.range : undefined;
+	};
 	type Sheet = { available: boolean; comments: ReaderReviewComment[] };
 	class Collection implements ReaderReviewCollection {
 		readonly rows = new Map<string, ReaderReviewComment>();

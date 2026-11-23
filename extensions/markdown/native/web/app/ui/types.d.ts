@@ -318,6 +318,11 @@ declare global {
 		setRenderedHTML(element: HTMLElement, html: string): void;
 		uiLogic: ReaderUILogic;
 		uiDOM: ReaderUIHelpers;
+		reviewMarkRange(
+			sessions: ReaderAskSessions,
+			owner: ReaderAskDocument,
+			row: ReaderReviewComment,
+		): ReaderRange | undefined;
 		createReviewCollection(
 			host: ReaderCoreHost,
 			key: () => string | null,

@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import { setImmediate } from "node:timers/promises";
-import { runInNewContext } from "node:vm";
-const reader = {} as ReaderCoreAPI;
-runInNewContext(stripTypeScriptTypes(readFileSync(new URL("./review-comments.ts", import.meta.url), "utf8")), {
-	reader,
-});
+import { plain, scripts } from "../../test/load.mts";
+const { reader } = scripts(
+	["app/core/exact.ts", "app/ui/logic.ts", "app/ui/ask-state.ts", "app/ui/review-comments.ts"],
+	{ reader: {} },
+);
 const row: ReaderReviewComment = {
 	commentId: "thread:1",
 	threadId: "thread",
@@ -17,6 +15,37 @@ const row: ReaderReviewComment = {
 	commentState: "open",
 	version: 1,
 };
+test("a restored closed comment does not mark a later lookalike when reopened", () => {
+	const sessions = reader.createAskSessions();
+	const source = "# Scope\nStatus ready today.\n\nEnd.",
+		start = source.indexOf("ready"),
+		end = start + 5;
+	const view = (text: string): ReaderPassageView => ({
+		blocks: [
+			{ key: "heading", type: "heading1", start: 0, end: 7 },
+			{ key: "body", type: "paragraph", start: 8, end: text.length },
+		],
+	});
+	const owner = sessions.show("doc", source, "digest"),
+		originalView = view(source);
+	sessions.render(originalView);
+	const passageAnchor = reader.uiLogic.capturePassage(source, { start, end }, originalView),
+		original = { ...row, start, end, quote: "ready", sourceAnchor: "ready", passageAnchor, anchorDigest: "digest" };
+	// The first row read from storage is already closed. No previous open card seeded a mark.
+	assert.equal(reader.reviewMarkRange(sessions, owner, { ...original, commentState: "closed", version: 2 }), undefined);
+	const erased = source.replace("ready", "gone");
+	sessions.change([{ start, end, expected: "ready", text: "gone" }], erased);
+	sessions.render(view(erased));
+	const appended = "\n\nStatus ready today.",
+		revised = erased + appended;
+	sessions.change([{ start: erased.length, end: erased.length, expected: "", text: appended }], revised);
+	sessions.render(view(revised));
+	assert.deepEqual(plain(reader.uiLogic.reanchorPassage(revised, passageAnchor, view(revised))), {
+		start: revised.indexOf("ready"),
+		end: revised.indexOf("ready") + 5,
+	});
+	assert.equal(reader.reviewMarkRange(sessions, owner, { ...original, commentState: "open", version: 3 }), undefined);
+});
 function fixture() {
 	let key: string | null = "A";
 	const calls: {
