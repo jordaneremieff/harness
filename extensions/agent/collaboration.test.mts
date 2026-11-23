@@ -1169,7 +1169,7 @@ it("discovers bounded purpose hints without opening hosts and names omitted stor
 		await mutateCollaboration(
 			f.host.harness,
 			record.storageId,
-			mutation("create", `create-${n}`, { ...frame, title: `Thread ${n}` }),
+			mutation("create", `create-${n}`, { ...frame, title: `Thread ${n}`, purpose: `${"p".repeat(159)}🧭` }),
 			context,
 		);
 	const projection = await projectCollaboration(f.host.harness, context);
@@ -1181,6 +1181,7 @@ it("discovers bounded purpose hints without opening hosts and names omitted stor
 	const page = await discoverCollaboration(catalog, { limit: 2 });
 	assert.equal(page.items.length, 2);
 	assert.equal(page.coverage.omitted, 2);
+	assert.equal(page.items[0].purpose, "p".repeat(159));
 	assert.equal(page.sources[0].sessionId, record.storageId);
 	assert.ok(page.nextCursor);
 	const next = await discoverCollaboration(catalog, { limit: 2, cursor: page.nextCursor });

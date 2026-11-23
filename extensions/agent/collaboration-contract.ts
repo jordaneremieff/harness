@@ -1,5 +1,6 @@
 import { str, int, arr, opt, obj, lit, union, type Schema } from "@earendil-works/pi-schema";
 import { matchesSchema } from "./schema-check.ts";
+import { textPrefix } from "./text-prefix.ts";
 
 export const MAX_COLLABORATION_THREADS = 256;
 export const MAX_COLLABORATION_MEMBERS = 64;
@@ -379,7 +380,7 @@ export function collaborationSummary(thread: CollaborationThread): Collaboration
 	return {
 		id: thread.id,
 		title: thread.title,
-		purpose: thread.purpose.slice(0, 160),
+		purpose: textPrefix(thread.purpose, 160),
 		updatedAt: thread.updatedAt,
 		closed: thread.closed,
 		members: thread.members.length,

@@ -277,7 +277,7 @@ it("never emits observed competitors with declared intent, including compact pro
 	assert.ok(prompt.includes("PEER-DECLARED-PURPOSE"));
 	assert.ok(prompt.includes("Declared purpose takes precedence"));
 	const largeClaim = {
-		...claim("COMPACT-PURPOSE"),
+		...claim(`${"p".repeat(127)}🧭`),
 		authority: "😀".repeat(512),
 		integration: "😀".repeat(512),
 		scope: {
@@ -295,6 +295,8 @@ it("never emits observed competitors with declared intent, including compact pro
 	};
 	const shortPrompt = formatEffortAwareness(compact);
 	assert.ok(shortPrompt.includes("Self detail shortened"));
+	assert.ok(shortPrompt.includes(`"purposeClaim":"${"p".repeat(127)}"`));
+	assert.doesNotMatch(shortPrompt, /\\ud83e/iu);
 	assert.ok(shortPrompt.includes("Effort detail shortened"));
 	assert.equal(shortPrompt.includes(observedPurpose.text), false);
 	assert.ok(Buffer.byteLength(shortPrompt) <= EFFORT_AWARENESS_PROMPT_BYTES);

@@ -1,4 +1,5 @@
 import { matchesSchema } from "./schema-check.ts";
+import { textPrefix } from "./text-prefix.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
 import { readRecentCollaboration, type RecentCollaborationPage } from "./collaboration-discovery.ts";
@@ -87,9 +88,9 @@ export async function readEffortAwareness(
 	};
 	if (Buffer.byteLength(JSON.stringify(projection)) > EFFORT_AWARENESS_SELF_BYTES) {
 		projection = {
-			id: self.id.slice(0, 256),
-			cwd: location.cwd.slice(0, 512),
-			...(location.repository === undefined ? {} : { repository: location.repository.slice(0, 512) }),
+			id: textPrefix(self.id, 256),
+			cwd: textPrefix(location.cwd, 512),
+			...(location.repository === undefined ? {} : { repository: textPrefix(location.repository, 512) }),
 			...(location.repositoryState === undefined ? {} : { repositoryState: location.repositoryState }),
 			omitted: true,
 		};
@@ -111,10 +112,10 @@ export async function readEffortAwareness(
 function shortSelf(self: EffortAwareness["self"]): object {
 	const origin = observedPurposeFallback(self).observedPurpose;
 	return {
-		id: self.id.slice(0, 64),
-		cwd: self.cwd.slice(0, 64),
-		...(self.intentClaim === undefined ? {} : { purposeClaim: self.intentClaim.purpose.slice(0, 128) }),
-		...(origin === undefined ? {} : { observedPurpose: { source: origin.source, text: origin.text.slice(0, 128) } }),
+		id: textPrefix(self.id, 64),
+		cwd: textPrefix(self.cwd, 64),
+		...(self.intentClaim === undefined ? {} : { purposeClaim: textPrefix(self.intentClaim.purpose, 128) }),
+		...(origin === undefined ? {} : { observedPurpose: { source: origin.source, text: textPrefix(origin.text, 128) } }),
 		omitted: "Self detail shortened; use agent_intent read for the bounded published claim.",
 	};
 }
@@ -125,8 +126,8 @@ function shortEffort(effort: RelatedEffort): object {
 		id: effort.id,
 		liveness: effort.liveness,
 		relationship: effort.relationship,
-		...(purpose === undefined ? {} : { purposeClaim: purpose.slice(0, 128) }),
-		...(origin === undefined ? {} : { observedPurpose: { source: origin.source, text: origin.text.slice(0, 128) } }),
+		...(purpose === undefined ? {} : { purposeClaim: textPrefix(purpose, 128) }),
+		...(origin === undefined ? {} : { observedPurpose: { source: origin.source, text: textPrefix(origin.text, 128) } }),
 		sharedSubstrates: effort.sharedSubstrates,
 		omitted: "Effort detail shortened; use agent_intent read for the bounded published claim.",
 	};
