@@ -300,6 +300,25 @@ struct Context {
         return await condition()
     }
 
+    /// ReaderSurface installs the active draft; opening the model's file reference competes with that install.
+    @discardableResult
+    private func prepareActiveDraft(_ editor: EditorWorkspace, on model: ReaderModel, source: String) async throws -> WorkingDocument {
+        guard let draft = editor.active else { throw CheckRunner.CheckError.unavailable("The check did not select a draft.") }
+        let key = editor.documentKey(for: draft).uuidString
+        guard await wait(seconds: 5, until: {
+            guard editor.active === draft, editor.webHostModel === model, editor.webReady,
+                  model.isDraft, model.phase == .ready, model.sourceGeneration == draft.text.generation,
+                  model.source.utf8.elementsEqual(source.utf8),
+                  model.page.isReady, model.page.documentReady, model.page.documentKey == key,
+                  let presentation = model.page.presentation else { return false }
+            return model.displayedPresentation == presentation
+        }) else {
+            throw CheckRunner.CheckError.unavailable("The check's active draft did not install on the reader page.")
+        }
+        try await CheckRunner.preparePageForCheck(model)
+        return draft
+    }
+
     func openFile(_ name: String, _ source: String, keep: inout [NSWindow]) async throws -> ReaderModel {
         let url = workspace.appendingPathComponent(name)
         try Data(source.utf8).write(to: url)
@@ -750,10 +769,7 @@ struct Context {
             let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
             defer { withExtendedLifetime(surface) {} }
             keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
-            await model.open(origin: nil)
-            try await CheckRunner.preparePageForCheck(model)
-            _ = await wait(seconds: 5) { editor.webReady && model.source == source }
-            guard let document = editor.active else { return .init(name: name, pass: false, detail: "the draft did not open") }
+            let document = try await prepareActiveDraft(editor, on: model, source: source)
             let code = await js(model, "const f = document.querySelector('figure.code'); return f ? [f.querySelectorAll('[data-role=\"code-copy\"]').length, f.querySelectorAll('a.copy').length, f.querySelector('figcaption').dataset.label] : [];") as? [Any] ?? []
             let closedLayersInert = await js(model, "return [...document.querySelectorAll('[popover]:not(:popover-open)')].every(p => getComputedStyle(p).display === 'none');") as? Bool == true
             let oneCopy = code.count == 3 && code[0] as? Int == 1 && code[1] as? Int == 0 && code[2] as? String == "swift"
@@ -1293,10 +1309,7 @@ struct Context {
             let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
             defer { withExtendedLifetime(surface) {} }
             keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
-            await model.open(origin: nil)
-            try await CheckRunner.preparePageForCheck(model)
-            _ = await wait(seconds: 5) { editor.webReady && model.source == source }
-            guard let document = editor.active else { return .init(name: name, pass: false, detail: "the draft did not open") }
+            let document = try await prepareActiveDraft(editor, on: model, source: source)
             let forward = model.page.onMessage
             var prompts: [(request: String, thread: String, text: String)] = []
             model.page.onMessage = { message in
@@ -1438,10 +1451,7 @@ struct Context {
                 let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
                 defer { withExtendedLifetime(surface) {} }
                 keep.append(CheckRunner.offscreenWindow(page: model.page, width: scenario.0, height: 760))
-                await model.open(origin: nil)
-                try await CheckRunner.preparePageForCheck(model)
-                _ = await wait(seconds: 5) { editor.webReady && model.source == source }
-                guard let document = editor.active else { results.append("\(index): no draft"); pass = false; continue }
+                let document = try await prepareActiveDraft(editor, on: model, source: source)
                 let forward = model.page.onMessage
                 model.page.onMessage = { message in
                     if message["type"] as? String == "prompt" { return ["accepted": true] }
@@ -1701,10 +1711,7 @@ struct Context {
                 let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
                 defer { withExtendedLifetime(surface) {} }
                 keep.append(CheckRunner.offscreenWindow(page: model.page, width: width, height: 760))
-                await model.open(origin: nil)
-                try await CheckRunner.preparePageForCheck(model)
-                _ = await wait(seconds: 5) { editor.webReady && model.source == source }
-                guard let document = editor.active else { pass = false; results.append("\(Int(width)): no draft"); continue }
+                let document = try await prepareActiveDraft(editor, on: model, source: source)
                 // Native: whatever WebKit would show is emptied.
                 let menu = NSMenu()
                 for identifier in ["WKMenuItemIdentifierCopy", "WKMenuItemIdentifierLookUp", "WKMenuItemIdentifierPaste"] {
@@ -1859,9 +1866,7 @@ struct Context {
                 NotificationCenter.default.addObserver(forName: notification, object: nil, queue: .main) { _ in focusTaken.increment() }
             }
             defer { observers.forEach(NotificationCenter.default.removeObserver) }
-            await model.open(origin: nil)
-            try await CheckRunner.preparePageForCheck(model)
-            _ = await wait(seconds: 5) { editor.webReady && model.source == source }
+            try await prepareActiveDraft(editor, on: model, source: source)
             await model.sendCommand("toggleLock", args: ["lock": "reading"])
             window.makeFirstResponder(model.page.webView)
             let view = model.page.webView
@@ -1980,9 +1985,7 @@ struct Context {
                 defer { withExtendedLifetime(surface) {} }
                 let window = CheckRunner.offscreenWindow(page: model.page, width: width, height: 760, focused: true)
                 keep.append(window)
-                await model.open(origin: nil)
-                try await CheckRunner.preparePageForCheck(model)
-                _ = await wait(seconds: 5) { editor.webReady && model.source == source }
+                try await prepareActiveDraft(editor, on: model, source: source)
                 window.makeFirstResponder(model.page.webView)
                 let view = model.page.webView
                 func click(_ x: Double, _ y: Double, down: NSEvent.EventType, up: NSEvent.EventType, count: Int = 1) async {
@@ -2068,9 +2071,7 @@ struct Context {
             defer { withExtendedLifetime(surface) {} }
             let window = CheckRunner.offscreenWindow(page: model.page, width: 775, height: 880, focused: true)
             keep.append(window)
-            await model.open(origin: nil)
-            try await CheckRunner.preparePageForCheck(model)
-            _ = await wait(seconds: 5) { editor.webReady && model.source == source }
+            try await prepareActiveDraft(editor, on: model, source: source)
             await model.sendCommand("toggleLock", args: ["lock": "reading"])
             window.makeFirstResponder(model.page.webView)
             let view = model.page.webView
@@ -2175,8 +2176,7 @@ struct Context {
                 let owner = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
                 defer { withExtendedLifetime(owner) {} }
                 keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
-                await model.open(origin: nil)
-                try await CheckRunner.preparePageForCheck(model)
+                try await prepareActiveDraft(editor, on: model, source: source)
                 await model.sendCommand("toggleLock", args: ["lock": "writing"])
                 let inserted = await js(model, """
                 const block = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.trim() === 'alpha');
@@ -2636,8 +2636,7 @@ struct Context {
                 let owner = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
                 defer { withExtendedLifetime(owner) {} }
                 keep.append(CheckRunner.offscreenWindow(page: model.page, width: width, height: 800))
-                await model.open(origin: nil)
-                try await CheckRunner.preparePageForCheck(model)
+                try await prepareActiveDraft(editor, on: model, source: source)
                 let shape = await js(model, geometry) as? [String: Any] ?? [:]
                 let p = shape["paragraph"] as? [Double] ?? [], long = shape["long"] as? [Double] ?? [], short = shape["short"] as? [Double] ?? []
                 let table = shape["table"] as? [Double] ?? [], page = shape["page"] as? [Double] ?? []
