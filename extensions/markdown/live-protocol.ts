@@ -3,16 +3,39 @@ import { SOURCE_BYTES, responseDigest, validUnicode } from "./responses.ts";
 export const LIVE_WIRE_BYTES = 32 * 1024 * 1024;
 export const LIVE_PROMPT_BYTES = 128 * 1024;
 /** Runtime ownership never enters the native JSON configuration. */
-export const LIVE_LIFETIME = Symbol("markdown-live-lifetime");
+export const LIVE_LIFETIME = Symbol.for("pi.markdown.live.lifetime.v3");
+export const PANE_PROTOCOL = 3;
 export interface LiveConfig {
 	version: 1;
 	endpoint: string;
 	token: string;
+	live?: typeof PANE_PROTOCOL;
+	conversation?: string;
+	hostPid?: number;
 	[LIVE_LIFETIME]?: AbortSignal;
 }
 export interface LiveBinding {
 	workspace: string;
 	document: string;
+}
+export interface LivePaneView {
+	kind: "published" | "response" | "file" | "scratchpad" | "copy" | "local-file" | "loading";
+	title: string;
+	mode: "reading" | "writing";
+	dirty: boolean;
+	conflict: boolean;
+	storeId?: string;
+	documentId?: string;
+	revision?: number;
+	digest?: string;
+}
+export interface LivePane extends LiveBinding {
+	handle: string;
+	live: typeof PANE_PROTOCOL;
+	pid: number;
+	origin: "agent" | "operator";
+	view: LivePaneView;
+	reportedAt: number;
 }
 export type LivePromptReceipt =
 	| { status: "requested" | "admitted"; submissionId?: string }
@@ -28,6 +51,7 @@ export interface LiveEdit extends LiveRange {
 }
 export type LiveAction =
 	| { op: "read" }
+	| { op: "navigate"; storeId: string; documentId: string; revision?: number; digest?: string }
 	| { op: "apply"; operationId: string; baseGeneration: number; baseDigest: string; edits: LiveEdit[] }
 	| { op: "claim"; baseGeneration: number; baseDigest: string; ranges: LiveRange[]; label?: string }
 	| { op: "release"; claimId: string };
@@ -40,6 +64,7 @@ export type LiveResult =
 			digest: string;
 			assets: { reference: string; digest: string }[];
 	  }
+	| ({ status: "navigated"; handle: string; view: LivePaneView } & LiveBinding)
 	| { status: "applied"; operationId: string; generation: number; digest: string; retained: true }
 	| { status: "claimed"; claimId: string; expiresAt: number }
 	| { status: "released"; claimId: string }
@@ -50,6 +75,7 @@ export interface LiveState {
 	text: string;
 	truncated: boolean;
 	operationId?: string;
+	document?: string;
 }
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
 	value !== null && typeof value === "object" && !Array.isArray(value);
@@ -58,6 +84,42 @@ export const liveId = (value: unknown): value is string =>
 export const liveDigest = (value: unknown): value is string =>
 	typeof value === "string" && /^sha256:[a-f0-9]{64}$/u.test(value);
 const generation = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+export const livePid = (value: unknown): value is number => generation(value) && value > 0 && value <= 0x7fffffff;
+const storeId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{32}$/u.test(value);
+const documentId = (value: unknown): value is string => typeof value === "string" && /^md-[a-f0-9]{20}$/u.test(value);
+const oneLine = (value: unknown, max: number): value is string =>
+	typeof value === "string" &&
+	!!value.trim() &&
+	value.length <= max &&
+	validUnicode(value) &&
+	!/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value);
+export function readLiveView(value: unknown): LivePaneView {
+	if (
+		!isRecord(value) ||
+		!["published", "response", "file", "scratchpad", "copy", "local-file", "loading"].includes(String(value.kind)) ||
+		!oneLine(value.title, 1024) ||
+		(value.mode !== "reading" && value.mode !== "writing") ||
+		typeof value.dirty !== "boolean" ||
+		typeof value.conflict !== "boolean" ||
+		(value.storeId !== undefined && !storeId(value.storeId)) ||
+		(value.documentId !== undefined && (!documentId(value.documentId) || !storeId(value.storeId))) ||
+		(value.revision !== undefined &&
+			(!generation(value.revision) || value.revision < 1 || !documentId(value.documentId))) ||
+		(value.digest !== undefined && (!liveDigest(value.digest) || value.revision === undefined))
+	)
+		throw new Error("Invalid native pane view.");
+	return {
+		kind: value.kind as LivePaneView["kind"],
+		title: value.title,
+		mode: value.mode,
+		dirty: value.dirty,
+		conflict: value.conflict,
+		...(value.storeId !== undefined && { storeId: value.storeId as string }),
+		...(value.documentId !== undefined && { documentId: value.documentId as string }),
+		...(value.revision !== undefined && { revision: value.revision as number }),
+		...(value.digest !== undefined && { digest: value.digest as string }),
+	};
+}
 export function readLiveConfig(value: unknown): LiveConfig {
 	if (
 		!isRecord(value) ||
@@ -69,7 +131,11 @@ export function readLiveConfig(value: unknown): LiveConfig {
 		!/^[a-f0-9]{64}$/u.test(value.token)
 	)
 		throw new Error("Invalid live Markdown connection.");
-	return { version: 1, endpoint: value.endpoint, token: value.token };
+	const base = { version: 1 as const, endpoint: value.endpoint, token: value.token };
+	if (value.live === undefined) return base;
+	if (value.live !== PANE_PROTOCOL || !oneLine(value.conversation, 512) || !livePid(value.hostPid))
+		throw new Error("The live Markdown host and reader protocol do not match. Reload Pi and update the reader.");
+	return { ...base, live: PANE_PROTOCOL, conversation: value.conversation, hostPid: value.hostPid };
 }
 export function readLiveBinding(value: unknown): LiveBinding {
 	if (!isRecord(value) || !liveId(value.workspace) || !liveId(value.document))
@@ -118,6 +184,21 @@ function readLiveClaim(value: Record<string, unknown>): Extract<LiveAction, { op
 export function readLiveAction(value: unknown): LiveAction {
 	if (!isRecord(value)) throw new Error("Invalid live Markdown action.");
 	if (value.op === "read") return { op: "read" };
+	if (value.op === "navigate") {
+		if (
+			!storeId(value.storeId) ||
+			!documentId(value.documentId) ||
+			((value.revision !== undefined || value.digest !== undefined) &&
+				(!generation(value.revision) || value.revision < 1 || !liveDigest(value.digest)))
+		)
+			throw new Error("Navigation requires an exact store and document. A pinned revision also needs its digest.");
+		return {
+			op: "navigate",
+			storeId: value.storeId,
+			documentId: value.documentId,
+			...(value.revision !== undefined && { revision: value.revision as number, digest: value.digest as string }),
+		};
+	}
 	if (value.op === "release") {
 		if (!liveId(value.claimId)) throw new Error("Invalid live Markdown claim identity.");
 		return { op: "release", claimId: value.claimId };
@@ -170,6 +251,24 @@ export function readLiveResult(value: unknown, action: LiveAction): LiveResult {
 		value.message.length <= 1000
 	)
 		return { status: value.status as "error", message: value.message };
+	if (action.op === "navigate" && value.status === "navigated") {
+		const binding = readLiveBinding(value);
+		const view = readLiveView(value.view);
+		if (
+			value.handle !== liveHandle(binding) ||
+			!["published", "response", "file"].includes(view.kind) ||
+			view.mode !== "reading" ||
+			view.dirty ||
+			view.conflict ||
+			view.storeId !== action.storeId ||
+			view.documentId !== action.documentId ||
+			!view.revision ||
+			!view.digest ||
+			(action.revision !== undefined && (action.revision !== view.revision || action.digest !== view.digest))
+		)
+			throw new Error("The reader did not confirm the requested document and revision.");
+		return { status: "navigated", ...binding, handle: value.handle, view };
+	}
 	if (
 		action.op === "claim" &&
 		value.status === "claimed" &&
