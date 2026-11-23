@@ -1,15 +1,15 @@
 import { CONFIG_DIR_NAME, getPackageDir, SettingsManager, VERSION } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { ConfigHost } from "./catalogue.ts";
-import { EDIT_TOOL_NAME, type EditDisplayDetails } from "./display.ts";
+import { type ConfigDisplayDetails, EDIT_TOOL_NAME } from "./display.ts";
 import { ConfigBackend } from "./operations.ts";
 import type { Bus } from "./owners.ts";
 import { publishSettings } from "./settings.ts";
 import {
 	DESCRIPTIONS,
-	describeConfigEdit,
 	type EditInput,
 	EditParameters,
+	editDisplay,
 	executeConfigTool,
 	FindParameters,
 	GetParameters,
@@ -55,7 +55,7 @@ export function configContribution(source: string, bus: Bus, stopFactoryPublishe
 				parameters: Parameters<typeof host.durable.defineTool>[0]["parameters"],
 				replay: "safe" | "unsafe",
 				run: (input: T) => Result | Promise<Result>,
-				describe?: (result: Result) => NonNullable<EditDisplayDetails["edit"]>,
+				describe?: (result: Result, limited: boolean) => ConfigDisplayDetails,
 			) =>
 				host.durable.defineTool({
 					name,
@@ -80,7 +80,7 @@ export function configContribution(source: string, bus: Bus, stopFactoryPublishe
 						EditParameters,
 						"unsafe",
 						(input: EditInput) => runEdit(backend, input),
-						describeConfigEdit,
+						editDisplay,
 					),
 					tool("config_tools", DESCRIPTIONS.tools, ToolsParameters, "safe", (input) =>
 						runTools(backend, input as never),

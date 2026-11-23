@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { readConfigBuild, ConfigUpdater } from "./app-update.ts";
+import { ConfigUpdater, readConfigBuild } from "./app-update.ts";
 import { sourceDigest } from "./native/build.mts";
 
 async function appFixture() {
@@ -50,4 +50,23 @@ test("a matching installed build does not start an automatic update", {
 		},
 	});
 	assert.deepEqual(notices, []);
+});
+
+test("an unsupported update reports a refusal without announcing an install", async () => {
+	const notices: string[][] = [];
+	const status: (string | undefined)[] = [];
+	await new ConfigUpdater().check(
+		"relative.app",
+		{
+			notify: (text, level) => notices.push([text, level]),
+			status: (text) => status.push(text),
+		},
+		true,
+	);
+	const message =
+		process.platform === "darwin"
+			? "The Config app path must be an absolute .app path."
+			: "The Config app requires macOS.";
+	assert.deepEqual(notices, [[message, "warning"]]);
+	assert.deepEqual(status, []);
 });

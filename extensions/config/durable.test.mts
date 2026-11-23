@@ -28,6 +28,7 @@ test("Durable config tools use the shared backend and never replay an edit", { t
 	const registry = Durable.createRegistry();
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
 	const close: (() => void | Promise<void>)[] = [];
+	const largeValue = "x".repeat(26_000);
 	try {
 		const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
 		const contribution = configContribution(
@@ -66,13 +67,16 @@ test("Durable config tools use the shared backend and never replay an edit", { t
 					mode: "commit",
 					changes: [
 						{ id: "pi:/hideThinkingBlock", scope: "global", action: "set", value: true, base: { present: false } },
-						{ id: "custom:/note", action: "create", value: "kept by agents", type: "string" },
+						{ id: "custom:/note", action: "create", value: largeValue, type: "string" },
 					],
 					revisions: { harness: null },
 				}),
 				{ stopReason: "toolUse" },
 			),
 			fauxAssistantMessage(fauxToolCall("config_tools", { activate: ["grep"] }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("config_get", { ids: ["custom:/note", "custom:/note"] }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("Done."),
 		]);
 		const run = await (await conversation.submit({ type: "input", content: "Hide thinking blocks." }, context)).wait(
@@ -87,9 +91,9 @@ test("Durable config tools use the shared backend and never replay an edit", { t
 				assert.equal(block?.role, "toolResult");
 				const part = block.content[0];
 				assert.equal(part.type, "text");
-				return { error: block.isError, value: JSON.parse(part.text), details: block.details };
+				return { error: block.isError, value: JSON.parse(part.text), details: block.details, content: block.content };
 			});
-		const [find, get, edit, tools] = results;
+		const [find, get, edit, tools, oversized] = results;
 		assert.equal(find.value.rows[0].id, "pi:/hideThinkingBlock");
 		assert.equal(get.value.entries[0].resolved.source, "default");
 		assert.equal(get.value.context.host.kind, "durable");
@@ -117,10 +121,20 @@ test("Durable config tools use the shared backend and never replay an edit", { t
 		});
 		assert.deepEqual(JSON.parse(await readFile(join(agentDir, "harness.json"), "utf8")), {
 			version: 1,
-			config: { custom: { note: { value: "kept by agents", type: "string" } } },
+			config: { custom: { note: { value: largeValue, type: "string" } } },
 		});
 		assert.equal(tools.value.session, false);
 		assert.equal(tools.value.change.applied, false);
+		assert.equal(tools.error, false);
+		assert.equal(oversized.error, true);
+		assert.deepEqual(oversized.content, [
+			{ type: "text", text: '{"error":"The result exceeds 98304 bytes; request fewer ids or a smaller page."}' },
+		]);
+		assert.deepEqual(oversized.details, {
+			summary: "config_get",
+			outputLimited: true,
+			diagnostic: oversized.value.error,
+		});
 	} finally {
 		for (const dispose of close) await dispose();
 		await harness.close(context);

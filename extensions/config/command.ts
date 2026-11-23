@@ -3,6 +3,8 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type ExtensionContext, truncateToVisualLines } from "@earendil-works/pi-coding-agent";
+import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import type { ConfigBridge } from "./bridge.ts";
 import { isObject } from "./json.ts";
 
@@ -29,6 +31,38 @@ export function commandHelp(): string {
 		.map(({ usage, description }) => `${usage}  ${description}`)
 		.join("\n");
 }
+export async function showCommandHelp(ctx: Pick<ExtensionContext, "mode" | "ui">): Promise<void> {
+	if (ctx.mode !== "tui") return ctx.ui.notify(commandHelp(), "info");
+	await ctx.ui.custom<void>((tui, theme, _keys, done) => {
+		const text = Object.values(help)
+			.map(({ usage, description }) => `${usage}\n  ${description}`)
+			.join("\n");
+		let offset = 0;
+		let lastOffset = 0;
+		return {
+			invalidate() {},
+			render(width) {
+				const rows = truncateToVisualLines(text, Number.POSITIVE_INFINITY, width).visualLines;
+				const height = Math.max(1, Math.min(8, tui.terminal.rows - 3));
+				lastOffset = Math.max(0, rows.length - height);
+				offset = Math.min(offset, lastOffset);
+				return [
+					theme.bold(truncateToWidth("Config help", width)),
+					...rows.slice(offset, offset + height),
+					theme.fg("muted", truncateToWidth(lastOffset ? "↑/↓ scroll · esc close" : "esc close", width)),
+				];
+			},
+			handleInput(data) {
+				if (matchesKey(data, "escape")) done();
+				else if (matchesKey(data, "up")) offset = Math.max(0, offset - 1);
+				else if (matchesKey(data, "down")) offset = Math.min(lastOffset, offset + 1);
+				else return;
+				tui.requestRender();
+			},
+		};
+	});
+}
+
 export function commandInput(args: string): { mode: "open" | "update" | "help"; query?: string } {
 	const text = args.trim().replace(/[\p{Cc}\p{Cf}]/gu, " ");
 	if (text === "update" || text === "help") return { mode: text };

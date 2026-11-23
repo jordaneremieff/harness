@@ -7,7 +7,7 @@ import { INSTALL_BUSY, sourceDigest } from "./native/build.mts";
 
 export type ConfigBuild = { contract: 1; config: 1; sourceDigest: string; source: string };
 interface Observer {
-	notify(text: string, error?: boolean): void;
+	notify(text: string, level: "info" | "warning" | "error"): void;
 	status(text?: string): void;
 }
 const script = fileURLToPath(new URL("./native/build.mts", import.meta.url));
@@ -54,15 +54,17 @@ async function install(app: string, ui: Observer): Promise<void> {
 		const finished = new Promise<number | null>((resolve) => {
 			child.once("error", () => resolve(null));
 			child.once("exit", resolve);
+			child.once("spawn", () => {
+				ui.status("Config update");
+				ui.notify(`Config app update started; see ${path} for progress.`, "info");
+			});
 		});
 		child.unref();
-		ui.status("Config update");
-		ui.notify(`Config app update started. Log: ${path}`);
 		const code = await finished;
 		if (code === 0 && (await readConfigBuild(app)))
-			ui.notify("Config app installed. Open a new pane to use the new build.");
-		else if (code === INSTALL_BUSY) ui.notify("Another Config app install is in progress.");
-		else ui.notify(`Config app update failed. See ${path}.`, true);
+			ui.notify("The Config app is installed; open a new pane to use this build.", "info");
+		else if (code === INSTALL_BUSY) ui.notify("Another Config app install is in progress.", "info");
+		else ui.notify(`The Config app update failed; see ${path}.`, "error");
 	} finally {
 		await log.close();
 	}
@@ -73,15 +75,15 @@ export class ConfigUpdater {
 
 	async check(app: string, ui: Observer, explicit = false): Promise<void> {
 		if (process.platform !== "darwin") {
-			if (explicit) ui.notify("The Config app requires macOS.", true);
+			if (explicit) ui.notify("The Config app requires macOS.", "warning");
 			return;
 		}
 		if (!isAbsolute(app) || !app.endsWith(".app")) {
-			ui.notify("The Config app path must be an absolute .app path.", true);
+			ui.notify("The Config app path must be an absolute .app path.", "warning");
 			return;
 		}
 		if (this.launching) {
-			if (explicit) ui.notify("The Config app update is already in progress.");
+			if (explicit) ui.notify("The Config app update is already in progress.", "info");
 			return;
 		}
 		this.launching = true;
@@ -89,7 +91,7 @@ export class ConfigUpdater {
 			if (!explicit && (await readConfigBuild(app))?.sourceDigest === sourceDigest()) return;
 			await install(app, ui);
 		} catch {
-			ui.notify("Config could not start its app update. Check the app path and the update log.", true);
+			ui.notify("Config could not start its app update; check the app path and the update log.", "error");
 		} finally {
 			this.launching = false;
 			ui.status();

@@ -12,16 +12,16 @@ import {
 import { ConfigUpdater, readConfigBuild } from "./app-update.ts";
 import { ConfigBridge } from "./bridge.ts";
 import type { ConfigHost } from "./catalogue.ts";
-import { commandHelp, commandInput, completions, openConfig } from "./command.ts";
+import { commandInput, completions, openConfig, showCommandHelp } from "./command.ts";
 import { EDIT_TOOL_NAME, toolDisplay } from "./display.ts";
 import { configContribution } from "./durable.ts";
 import { ConfigBackend } from "./operations.ts";
 import { publishSettings, readSettings } from "./settings.ts";
 import {
 	DESCRIPTIONS,
-	describeConfigEdit,
 	type EditInput,
 	EditParameters,
+	editDisplay,
 	executeConfigTool,
 	type FindInput,
 	FindParameters,
@@ -42,7 +42,7 @@ export default function configExtension(pi: ExtensionAPI): void {
 	const agentDir = getAgentDir();
 	const stopSettings = publishSettings(pi.events, { agentDir });
 	const display = toolDisplay();
-	const [editRenderer] = display.tools;
+	const renderer = (name: string) => display.tools.find((tool) => tool.name === name);
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
 	const stopDisplay = pi.events.on("harness:tool-display:request", (request) => {
 		if (request && typeof request === "object" && "version" in request && request.version === 1) publishDisplay();
@@ -86,8 +86,8 @@ export default function configExtension(pi: ExtensionAPI): void {
 		void updater.check(
 			readSettings({ agentDir }).values.app,
 			{
-				notify: (text, error) => {
-					if (!lifetime.signal.aborted) ctx.ui.notify(singleLine(text), error ? "error" : "info");
+				notify: (text, level) => {
+					if (!lifetime.signal.aborted) ctx.ui.notify(singleLine(text), level);
 				},
 				status: (text) => {
 					if (!lifetime.signal.aborted && ctx.mode === "tui") ctx.ui.setStatus("config", text);
@@ -111,9 +111,7 @@ export default function configExtension(pi: ExtensionAPI): void {
 		const build = await readConfigBuild(app);
 		if (!build) {
 			update(ctx, true);
-			throw new Error(
-				"The Config app is not installed yet. Its build has started; run /config again when it finishes.",
-			);
+			return;
 		}
 		installedBuild = build.sourceDigest;
 		bridge ??= new ConfigBridge({
@@ -132,10 +130,10 @@ export default function configExtension(pi: ExtensionAPI): void {
 		async handler(args, ctx) {
 			context = ctx;
 			const input = commandInput(args);
-			if (input.mode === "help") return ctx.ui.notify(commandHelp(), "info");
+			if (input.mode === "help") return showCommandHelp(ctx);
 			const app = readSettings({ agentDir }).values.app;
 			if (ctx.mode !== "tui") {
-				ctx.ui.notify("Config opens no pane and builds no app outside interactive Pi; use the config_* tools.", "info");
+				ctx.ui.notify("Config needs interactive Pi to open or update its app; use the config_* tools here.", "warning");
 				return;
 			}
 			if (input.mode === "update") {
@@ -159,6 +157,7 @@ export default function configExtension(pi: ExtensionAPI): void {
 		run: (input: T) => unknown,
 	) =>
 		pi.registerTool({
+			...renderer(name),
 			name,
 			label,
 			description,
@@ -172,7 +171,7 @@ export default function configExtension(pi: ExtensionAPI): void {
 	register<FindInput>("config_find", "Config", DESCRIPTIONS.find, FindParameters, (input) => runFind(backend, input));
 	register<GetInput>("config_get", "Config", DESCRIPTIONS.get, GetParameters, (input) => runGet(backend, input));
 	pi.registerTool({
-		...editRenderer,
+		...renderer(EDIT_TOOL_NAME),
 		name: EDIT_TOOL_NAME,
 		label: "Config",
 		description: DESCRIPTIONS.edit,
@@ -180,7 +179,7 @@ export default function configExtension(pi: ExtensionAPI): void {
 		parameters: EditParameters,
 		async execute(_id, input: EditInput, _signal, _update, ctx) {
 			context = ctx;
-			return executeConfigTool(EDIT_TOOL_NAME, () => runEdit(backend, input), describeConfigEdit);
+			return executeConfigTool(EDIT_TOOL_NAME, () => runEdit(backend, input), editDisplay);
 		},
 	});
 	register<ToolsInput>("config_tools", "Config", DESCRIPTIONS.tools, ToolsParameters, (input) =>

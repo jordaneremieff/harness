@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { createEventBus, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
+import { commandHelp } from "./command.ts";
 import { toolDisplay } from "./display.ts";
 import configExtension from "./index.ts";
 
@@ -23,7 +25,7 @@ test("ordinary tools run the shared backend with the session's own controls", { 
 	delete process.env.PI_HARNESS_FILE;
 	await writeFile(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
 	const tools = new Map<string, Tool>();
-	const commands: string[] = [];
+	const commands = new Map<string, (args: string, ctx: ExtensionCommandContext) => Promise<void>>();
 	const handlers = new Map<string, ((event: unknown, ctx: unknown) => unknown)[]>();
 	const contributions: unknown[] = [];
 	const displays: unknown[] = [];
@@ -36,7 +38,10 @@ test("ordinary tools run the shared backend with the session's own controls", { 
 		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) =>
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]),
 		registerTool: (tool: Tool) => tools.set(tool.name, tool),
-		registerCommand: (name: string) => commands.push(name),
+		registerCommand: (
+			name: string,
+			definition: { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> },
+		) => commands.set(name, definition.handler),
 		getSettings: () => ({ theme: "dark" }),
 		getAllTools: () => [
 			{ name: "read", exposure: "direct", sourceInfo: { source: "builtin" } },
@@ -63,15 +68,18 @@ test("ordinary tools run the shared backend with the session's own controls", { 
 	try {
 		configExtension(pi as never);
 		assert.deepEqual([...tools.keys()], ["config_find", "config_get", "config_edit", "config_tools"]);
-		assert.deepEqual(commands, ["config"]);
+		assert.deepEqual([...commands.keys()], ["config"]);
 		assert.equal(contributions.length, 1);
 		assert.deepEqual(displays, [toolDisplay()]);
-		const [presentation] = toolDisplay().tools;
-		const { renderCall, renderResult } = tools.get("config_edit") as Tool & typeof presentation;
-		assert.equal(renderCall, presentation.renderCall);
-		assert.equal(renderResult, presentation.renderResult);
-		for (const name of ["config_find", "config_get", "config_tools"])
-			assert.equal(Object.hasOwn(tools.get(name) as object, "renderCall"), false);
+		assert.deepEqual(
+			toolDisplay().tools.map((tool) => tool.name),
+			[...tools.keys()],
+		);
+		for (const presentation of toolDisplay().tools) {
+			const { renderCall, renderResult } = tools.get(presentation.name) as Tool & typeof presentation;
+			assert.equal(renderCall, presentation.renderCall);
+			assert.equal(renderResult, presentation.renderResult);
+		}
 		events.emit("harness:tool-display:request", { version: 2 });
 		events.emit("harness:tool-display:request", { version: 1 });
 		assert.deepEqual(displays, [toolDisplay(), toolDisplay()]);
@@ -106,6 +114,57 @@ test("ordinary tools run the shared backend with the session's own controls", { 
 
 		const bad = await call("config_get", { ids: ["nonsense"] });
 		assert.deepEqual(bad.value.missing, ["nonsense"]);
+		assert.equal(bad.error, false);
+		await writeFile(
+			join(agentDir, "harness.json"),
+			JSON.stringify({
+				version: 1,
+				config: {
+					custom: {
+						a: { type: "string", value: "x".repeat(30_000) },
+						b: { type: "string", value: "y".repeat(30_000) },
+					},
+				},
+			}),
+		);
+		const oversized = await call("config_get", { ids: ["custom:/a", "custom:/b"] });
+		assert.deepEqual(oversized, {
+			error: true,
+			value: { error: "The result exceeds 98304 bytes; request fewer ids or a smaller page." },
+		});
+
+		const command = commands.get("config");
+		assert.ok(command);
+		const notices: [string, string][] = [];
+		const ui = { notify: (text: string, level: string) => notices.push([text, level]) };
+		await command("help", { ...ctx, ui } as never);
+		assert.deepEqual(notices.splice(0), [[commandHelp(), "info"]]);
+		await command("update", { ...ctx, ui } as never);
+		assert.deepEqual(notices.splice(0), [
+			["Config needs interactive Pi to open or update its app; use the config_* tools here.", "warning"],
+		]);
+		const theme = { bold: (text: string) => text, fg: (_role: string, text: string) => text } as Theme;
+		const tui = { terminal: { rows: 6 }, requestRender() {} } as TUI;
+		let opened = false;
+		await command("help", {
+			...ctx,
+			mode: "tui",
+			ui: {
+				...ui,
+				async custom(create: Parameters<ExtensionCommandContext["ui"]["custom"]>[0]) {
+					const view = await create(tui, theme, {} as never, () => {
+						opened = true;
+					});
+					const first = view.render(24);
+					assert.equal(first.length, 5);
+					view.handleInput?.("\x1b[B");
+					assert.notDeepEqual(view.render(24), first);
+					view.handleInput?.("\x1b");
+				},
+			},
+		} as never);
+		assert.equal(opened, true);
+		assert.deepEqual(notices, []);
 	} finally {
 		for (const handler of handlers.get("session_shutdown") ?? []) await handler({ reason: "quit" }, ctx);
 		const displayCount = displays.length;

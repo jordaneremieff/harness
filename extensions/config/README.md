@@ -69,7 +69,7 @@ A saved change in one host is not applied in other processes; each process appli
 - `config_edit` previews or commits a batch of changes. A commit requires the document revision or each change's `base`.
 - `config_tools` shows the configured tools, the active ones and the resolved `defaultTools`, and changes the current session's active tools where the host allows it.
 
-The `config_edit` card distinguishes validation, settings saved to disk, and any verified effect in the active session. Its readback gives the reason when a saved value is masked or takes effect later. The ordinary transcript, dashboard, and attached terminal use the same card. See the [emission grammar](../../docs/conventions/emissions.md).
+The Config tool cards distinguish matches and discovery coverage, saved and loaded values, validation and writes, and tool selection in this session versus defaults for new sessions. Search pages give the exact next call on expansion. Secret entries show set state only, and edit cards withhold supplied values and bases. An oversized receipt is an output error; for an edit, the card shows the known write outcome separately. The ordinary transcript, dashboard, and attached terminal use the same renderers. See the [emission grammar](../../docs/conventions/emissions.md). In interactive Pi, `/config help` opens a local view without adding a conversation message.
 
 Tool results never include complete files or secret values. Ordinary sessions and Durable agents register the same tools over the same backend. Durable hosts expose no current-session tool controls, so `config_tools` only reads there. Edits are not replayed after process loss: an interrupted edit may have been committed, so read the entry before you retry.
 

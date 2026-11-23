@@ -1,36 +1,43 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import { initTheme, type ToolDefinition, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { toolDisplay } from "./display.ts";
 import type { EditResult } from "./protocol.ts";
-import { describeConfigEdit, executeConfigTool } from "./tools.ts";
+import { EditParameters, editDisplay, executeConfigTool } from "./tools.ts";
 
 initTheme("dark");
 const bindings = (keys: "ctrl+o" | []) =>
 	setKeybindings(new KeybindingsManager({ "app.tools.expand": { defaultKeys: keys } }));
 bindings("ctrl+o");
 
-const [{ name, renderCall, renderResult }] = toolDisplay().tools;
-const tool = {
-	name,
-	label: "Config",
-	description: "Edit settings",
-	parameters: {} as ToolDefinition["parameters"],
-	execute: async () => {
-		throw new Error("Display cannot execute.");
-	},
-	renderCall,
-	renderResult,
-} satisfies ToolDefinition;
+const name = "config_edit";
+function definition(toolName: string): ToolDefinition {
+	const renderer = toolDisplay().tools.find((item) => item.name === toolName);
+	assert.ok(renderer);
+	return {
+		...renderer,
+		label: "Config",
+		description: "Config settings",
+		parameters: {} as ToolDefinition["parameters"],
+		execute: async () => {
+			throw new Error("Display cannot execute.");
+		},
+	};
+}
 const args = {
 	mode: "commit",
 	changes: [{ id: "pi:/hideThinkingBlock", action: "set", value: true, scope: "global" }],
 };
 const tui = { requestRender() {} } as TUI;
-function card(input: unknown = args) {
-	return new ToolExecutionComponent(name, "edit-1", input, {}, tool, tui, "/");
+function card(input: unknown = args, toolName = name) {
+	return new ToolExecutionComponent(toolName, "config-1", input, {}, definition(toolName), tui, "/");
+}
+
+function receiptOnly(component: ToolExecutionComponent, value: unknown) {
+	component.updateResult({ content: [{ type: "text", text: JSON.stringify(value) }], isError: false });
 }
 function screen(component: ToolExecutionComponent, width = 110): string[] {
 	const rows = component.render(width).map((row) => stripVTControlCharacters(row).trimEnd());
@@ -70,7 +77,7 @@ const receipt: EditResult = {
 		},
 	],
 };
-const executeEdit = (value: EditResult) => executeConfigTool(name, () => value, describeConfigEdit);
+const executeEdit = (value: EditResult) => executeConfigTool(name, () => value, editDisplay);
 
 function settle(component: ToolExecutionComponent, result: Awaited<ReturnType<typeof executeEdit>>) {
 	component.updateResult({ ...result, isError: result.isError === true });
@@ -110,7 +117,8 @@ test("Pi draws a single hint after the call, then after the result, and none whe
 	const expanded = screen(component);
 	assert.deepEqual(hints(expanded), []);
 	assert.ok(expanded.includes("mode: commit"));
-	assert.ok(expanded.some((row) => row.includes('"outcome":"committed"')));
+	assert.ok(expanded.includes("global: settings.json (committed)"));
+	assert.ok(expanded.some((row) => row.includes("[withheld]")));
 	assert.ok(
 		expanded.includes(
 			"pi:/hideThinkingBlock: This session still uses its loaded value. /reload loads the saved settings.",
@@ -171,17 +179,194 @@ test("an execution error shows its diagnostic; an oversized result retains the m
 		() => {
 			throw new Error("The settings file is unreadable.");
 		},
-		describeConfigEdit,
+		editDisplay,
 	);
 	assert.equal(failure.isError, true);
 	assert.deepEqual(failure.content, [{ type: "text", text: '{"error":"The settings file is unreadable."}' }]);
 	settle(component, failure);
 	assert.ok(screen(component).includes("The settings file is unreadable."));
-	const oversized = await executeEdit({ ...receipt, requestId: "x".repeat(100_000) });
-	assert.equal(oversized.isError, undefined);
+	const document = receipt.documents[0];
+	const largeChange = document.changes[0];
+	const oversized = await executeEdit({
+		...receipt,
+		documents: [
+			{
+				...document,
+				changes: Array.from({ length: 4 }, (_, i) => ({
+					...largeChange,
+					id: `custom:/sample${i}`,
+					resolved: { source: "machine", value: "x".repeat(25_000) },
+				})),
+			},
+		],
+	});
+	assert.equal(oversized.isError, true);
 	assert.deepEqual(oversized.content, [
 		{ type: "text", text: '{"error":"The result exceeds 98304 bytes; request fewer ids or a smaller page."}' },
 	]);
 	settle(component, oversized);
-	assert.ok(screen(component).includes("[Result exceeded the output limit; complete details were not retained.]"));
+	const oversizeRows = screen(component);
+	assert.ok(oversizeRows.includes("The edit receipt exceeds 98304 bytes. Read the settings before another edit."));
+	assert.ok(oversizeRows.includes("Saved the settings."));
+	assert.ok(oversizeRows.includes("[Result exceeded the output limit; complete details were not retained.]"));
+});
+
+test("the edit card withholds bare Pi diagnostics that include supplied values", () => {
+	const value = "supplied-value";
+	const base = "supplied-base";
+	const description = "supplied-description";
+	const input = {
+		mode: "invalid",
+		changes: [{ ...args.changes[0], value, base: { present: true, value: base }, description }],
+	};
+	const tool = { name, description: "Edit settings", parameters: EditParameters };
+	const call = { type: "toolCall" as const, name, id: "edit-invalid", arguments: input };
+	const cases = [
+		{ call, echoed: [value, base, description] },
+		{ call: { ...call, argumentsError: `Invalid input: ${value}` }, echoed: [value] },
+	];
+	for (const sample of cases) {
+		assert.throws(
+			() => validateToolArguments(tool, sample.call),
+			(error) => {
+				assert.ok(error instanceof Error);
+				const original = error.message;
+				for (const text of sample.echoed) assert.ok(original.includes(text));
+				// Match the host carrier: an error flag and bare text with no Config result details.
+				const result = { content: [{ type: "text", text: original }], isError: true };
+				const component = card(input);
+				component.updateResult(result);
+				for (const expanded of [false, true]) {
+					component.setExpanded(expanded);
+					const rendered = screen(component).join("\n");
+					assert.match(rendered, /diagnostic is withheld/);
+					assert.doesNotMatch(rendered, /supplied-|(?:not )?saved|committed/i);
+				}
+				assert.equal(result.content[0].text, original);
+				return true;
+			},
+		);
+	}
+});
+
+test("retained edit envelopes recover the same outcome without echoing withheld inputs or result values", () => {
+	const sentinel = "sample-withheld";
+	const input = {
+		...args,
+		changes: [{ ...args.changes[0], value: sentinel, base: { present: true, value: sentinel } }],
+	};
+	const component = card(input);
+	receiptOnly(component, receipt);
+	const collapsed = screen(component);
+	assert.ok(collapsed.includes("Saved the settings."));
+	assert.ok(collapsed.some((row) => row.includes("/reload")));
+	component.setExpanded(true);
+	assert.doesNotMatch(screen(component).join("\n"), new RegExp(sentinel));
+
+	receiptOnly(component, { mode: "commit", outcome: "committed", documents: "not a receipt" });
+	assert.ok(screen(component).includes("Config returned an unrecognised receipt."));
+});
+
+test("config_find states coverage, keeps at most five match rows and gives the exact continuation", () => {
+	const input = { query: "thinking", group: "pi", limit: 8 };
+	const component = card(input, "config_find");
+	assert.deepEqual(hints(screen(component)), []);
+	receiptOnly(component, {
+		total: 9,
+		offset: 0,
+		next: 8,
+		coverage: ["One owner did not respond."],
+		rows: Array.from({ length: 8 }, (_, i) => ({ id: `pi:/setting${i}`, label: `Setting ${i}`, source: "global" })),
+	});
+	const collapsed = screen(component);
+	assert.ok(collapsed.includes("Returned matches 1–8 of 9. More matches are available."));
+	assert.ok(collapsed.includes("[Discovery coverage is partial.]"));
+	assert.equal(collapsed.filter((row) => row.startsWith("pi:/setting")).length, 5);
+	assert.deepEqual(hints(collapsed), ["... (3 more lines, ctrl+o to expand)"]);
+	component.setExpanded(true);
+	assert.ok(
+		screen(component).includes('Next call: config_find {"query":"thinking","group":"pi","limit":8,"offset":8}'),
+	);
+	assert.ok(screen(component).includes("One owner did not respond."));
+	assert.deepEqual(hints(screen(component)), []);
+});
+
+test("config_get shows secret set-state, reports absent IDs, and distinguishes saved from loaded values", () => {
+	const secret = "sample-withheld";
+	const component = card({ ids: ["harness:/demo/secret", "pi:/theme", "pi:/missing"] }, "config_get");
+	receiptOnly(component, {
+		entries: [
+			{
+				id: "harness:/demo/secret",
+				env: { name: "EXAMPLE_SECRET", set: true, secret: true },
+				resolved: { value: secret, source: "env" },
+				saved: { machine: { present: true, value: secret } },
+				default: { value: secret },
+			},
+			{
+				id: "pi:/theme",
+				resolved: { value: "light", source: "global" },
+				session: { value: "dark", differs: true },
+				saved: { global: { present: true, value: "light" } },
+			},
+		],
+		missing: ["pi:/missing"],
+	});
+	const collapsed = screen(component);
+	assert.ok(collapsed.includes("Read 2 settings. 1 requested ID not found."));
+	assert.ok(collapsed.includes("harness:/demo/secret: set in the environment; value withheld."));
+	assert.ok(collapsed.includes("pi:/theme: resolved from global; loaded value differs."));
+	component.setExpanded(true);
+	const expanded = screen(component);
+	assert.ok(expanded.includes('global: "light"'));
+	assert.ok(expanded.includes('loaded: "dark"'));
+	assert.doesNotMatch(expanded.join("\n"), new RegExp(secret));
+});
+
+test("config_get identifies an individually omitted value without reporting a failed read", () => {
+	const component = card({ ids: ["custom:/large"] }, "config_get");
+	receiptOnly(component, {
+		entries: [
+			{
+				id: "custom:/large",
+				resolved: {
+					source: "machine",
+					value: {
+						omitted: "The value exceeds 32768 bytes; open it in /config.",
+					},
+				},
+			},
+		],
+		missing: [],
+	});
+	const collapsed = screen(component);
+	assert.ok(collapsed.includes("Read 1 setting."));
+	assert.ok(collapsed.includes("[Values over 32768 bytes were not retained. Open them in /config.]"));
+	component.setExpanded(true);
+	assert.ok(screen(component).includes("resolved: [Value not retained]"));
+});
+
+test("config_tools separates the session selection, configured defaults, and refused or unconfirmed effects", () => {
+	const component = card({ activate: ["grep", "absent"] }, "config_tools");
+	const ordinary = {
+		session: true,
+		active: ["grep"],
+		tools: [{ name: "grep", exposure: "deferred", active: true }],
+		defaults: { resolved: ["read"] },
+	};
+	receiptOnly(component, {
+		...ordinary,
+		change: { applied: true, activated: ["grep"], rejected: [{ name: "absent", reason: "Tool not found." }] },
+	});
+	const rows = screen(component);
+	assert.ok(rows.includes("Pi activated 1; rejected 1."));
+	assert.ok(rows.includes("Selected in this session: grep"));
+	assert.ok(rows.includes("Configured for new sessions: read"));
+	receiptOnly(component, { ...ordinary, change: { applied: false, activated: ["grep"] } });
+	assert.ok(screen(component).includes("Pi did not confirm the full session selection."));
+	assert.ok(screen(component).includes("[Some requested effects were not confirmed.]"));
+	receiptOnly(component, { ...ordinary, session: false, active: [], tools: [] });
+	assert.ok(screen(component).includes("This host exposes no current-session tool controls."));
+	assert.ok(screen(component).includes("Configured for new sessions: read"));
+	assert.deepEqual(hints(screen(component)), []);
 });
