@@ -8,7 +8,8 @@
 			disposed = false,
 			draft: ReaderDocument | undefined;
 		let retained = clone(payload);
-		let delivery = 0;
+		let delivery = 0,
+			lastGenerationBeforeRekey = -1;
 		const mirror: ReaderMirror = {
 			originalSource: input.source,
 			source: input.source,
@@ -34,13 +35,50 @@
 			} catch {
 				return false;
 			}
-			if (type === "document" && !allowsDocument(message)) return false;
+			return deliver(message);
+		};
+		function dispatch(message: ReaderHostMessage) {
+			for (const handler of handlers.get(message.type) ?? []) {
+				const receipt = handler(message);
+				if ((message.type === "ack" || message.type === "documentMetadata") && receipt === false) return false;
+			}
+			return true;
+		}
+		function deliver(message: ReaderHostMessage) {
+			if (message.type === "document" && !allowsDocument(message)) return false;
+			if (message.type === "documentMetadata") return metadataReceipt(message);
 			acceptInbound(message);
 			messages.push(message);
 			inbound.push(message);
-			for (const handler of handlers.get(type) ?? []) handler(message);
+			if (!dispatch(message)) return false;
+			if (message.type === "ack") return storeAck(message);
 			return true;
-		};
+		}
+		function storeAck(message: ReaderHostMessage) {
+			if (message.presentation !== payload.presentation || !message.meta) return true;
+			if ((message.generation as number) <= lastGenerationBeforeRekey) return false;
+			const meta = message.meta as ReaderDocument["meta"];
+			storeMetadata({ ...meta, documentKey: meta.documentKey ?? mirror.meta.documentKey });
+			return true;
+		}
+		function storeMetadata(meta: ReaderDocument["meta"]) {
+			mirror.meta = clone(meta);
+			payload.meta = clone(meta);
+			retained.meta = clone(meta);
+			if (draft) draft.meta = clone(meta);
+		}
+		function metadataReceipt(message: ReaderHostMessage) {
+			const { presentation, previousDocumentKey, meta } = message as unknown as ReaderDocumentMetadata;
+			if (presentation !== payload.presentation) return false;
+			if (mirror.meta.documentKey === meta.documentKey) return true;
+			if (mirror.meta.documentKey !== previousDocumentKey) return false;
+			if (!dispatch(message)) return false;
+			lastGenerationBeforeRekey = mirror.generation;
+			storeMetadata(meta);
+			messages.push(message);
+			inbound.push(message);
+			return true;
+		}
 		function allowsDocument(message: ReaderHostMessage) {
 			for (const allow of handlers.get("beforeDocument") ?? []) if (allow(message) === false) return false;
 			return true;
@@ -53,6 +91,7 @@
 			if (message.name === "saveSettings") storeSettings((message.args as Fields).patch as Fields);
 		}
 		function acceptDocument(document: ReaderDocument) {
+			lastGenerationBeforeRekey = -1;
 			payload = clone(document);
 			mirror.source = document.source;
 			mirror.generation = document.generation;

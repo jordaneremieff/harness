@@ -52,6 +52,7 @@
 		const events = new Map<keyof ReaderControllerEvents, Set<(detail: unknown) => void>>();
 		const subscriptions: (() => void)[] = [];
 		const pendingEdits = new Set<number>();
+		let lastGenerationBeforeRekey = -1;
 		let compositionTarget: EventTarget | null = null;
 		let disposed = false,
 			stateTimer: ReturnType<typeof setTimeout> | undefined,
@@ -120,6 +121,7 @@
 			},
 			replace(payload) {
 				if (editingPending()) return false;
+				lastGenerationBeforeRekey = -1;
 				epoch++;
 				c.doc?.listeners.delete(changed);
 				html.clear();
@@ -547,29 +549,53 @@
 					c.emit("command", message);
 			}
 		}
-		const receive = <T>(type: string, handler: (message: T) => void) =>
+		type EditAck = {
+			presentation: string;
+			generation: number;
+			meta?: { capturedSource: boolean; documentKey?: string; [key: string]: unknown };
+			[key: string]: unknown;
+		};
+		function settleEdit(generation: number) {
+			if (pendingEdits.delete(generation)) c.state();
+		}
+		function acknowledge(m: EditAck) {
+			const doc = c.payload;
+			if (doc?.presentation !== m.presentation) return;
+			if (!c.doc || m.generation > c.doc.generation) {
+				c.emit("error", new Error("Unexpected acknowledgement generation."));
+				return false;
+			}
+			settleEdit(m.generation);
+			// The edit settled, but its old destination must not replace Save As metadata.
+			if (m.meta && m.generation <= lastGenerationBeforeRekey) {
+				const receipt = { ...m };
+				delete receipt.meta;
+				c.emit("ack", receipt);
+				return false;
+			}
+			if (m.meta) doc.meta = { ...m.meta, documentKey: m.meta.documentKey ?? doc.meta.documentKey };
+			c.emit("ack", m);
+		}
+		function updateMetadata(m: ReaderDocumentMetadata) {
+			if (!c.payload || !c.doc || c.payload.presentation !== m.presentation) return false;
+			const currentKey = c.payload.meta.documentKey;
+			if (currentKey === m.meta.documentKey) return true;
+			if (currentKey !== m.previousDocumentKey) return false;
+			lastGenerationBeforeRekey = c.doc.generation;
+			c.payload.meta = { ...m.meta };
+			c.emit("documentMetadata", m);
+			return true;
+		}
+		const receive = <T>(type: string, handler: (message: T) => unknown) =>
 			host.on(type, (message) => handler(message as T));
 		subscriptions.push(
 			host.on("beforeDocument", () => !editingPending()),
 			receive<ReaderCoreDocument>("document", (m) => c.replace(m)),
-			receive<{
-				presentation: string;
-				generation: number;
-				meta?: { capturedSource: boolean; documentKey?: string; [key: string]: unknown };
-				[key: string]: unknown;
-			}>("ack", (m) => {
-				if (!c.payload || m.presentation !== c.payload.presentation) return;
-				if (!c.doc || m.generation > c.doc.generation) {
-					c.emit("error", new Error("Unexpected acknowledgement generation."));
-					return;
-				}
-				if (pendingEdits.delete(m.generation)) c.state();
-				if (m.meta) c.payload.meta = { ...m.meta, documentKey: m.meta.documentKey ?? c.payload.meta.documentKey };
-				c.emit("ack", m);
-			}),
+			receive<ReaderDocumentMetadata>("documentMetadata", updateMetadata),
+			receive<EditAck>("ack", acknowledge),
 			receive<{ presentation: string; generation: number }>("refused", (m) => {
 				if (m.presentation !== c.payload?.presentation) return;
-				if (pendingEdits.delete(m.generation)) c.state();
+				settleEdit(m.generation);
 				c.emit("refused", m);
 			}),
 			receive<ReaderSaveState>("saveState", (m) => {

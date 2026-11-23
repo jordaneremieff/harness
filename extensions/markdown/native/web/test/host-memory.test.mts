@@ -99,6 +99,36 @@ test("agentApply does not change the mirror before the page sends its edits", ()
 	assert.equal(host.source, "Abcdef");
 	host.dispose();
 });
+test("memory host retains the new destination without reloading or replaying metadata", () => {
+	const { payload, host } = setup();
+	const original = payload.meta.documentKey;
+	const packet = {
+		presentation: payload.presentation,
+		previousDocumentKey: original,
+		meta: { ...payload.meta, documentKey: "destination", title: "Destination" },
+	};
+	let updates = 0;
+	host.on("documentMetadata", () => updates++);
+	assert.equal(host.emit("documentMetadata", { ...packet, previousDocumentKey: "stale" }), false);
+	assert.equal(host.emit("documentMetadata", packet), true);
+	assert.equal(host.emit("documentMetadata", packet), true);
+	assert.equal(updates, 1);
+	assert.equal(
+		host.emit("ack", {
+			presentation: payload.presentation,
+			generation: payload.generation,
+			digest: "old",
+			recovery: "retained",
+			meta: payload.meta,
+		}),
+		false,
+	);
+	assert.equal(host.document.meta.documentKey, "destination");
+	assert.equal(host.recovery().meta.title, "Destination");
+	assert.equal(host.document.presentation, payload.presentation);
+	assert.equal(host.source, payload.source);
+	host.dispose();
+});
 test("document replacement updates the mirror before delivery and retains the original capture", () => {
 	const { api, host } = setup();
 	host.on("document", (m) => assert.equal(host.source, (m as ReaderDocument).source));

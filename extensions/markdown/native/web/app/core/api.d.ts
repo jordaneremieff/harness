@@ -167,6 +167,11 @@ declare global {
 		name: string;
 		args?: Record<string, unknown>;
 	}
+	interface ReaderDocumentMetadata {
+		presentation: string;
+		previousDocumentKey: string;
+		meta: ReaderCoreDocument["meta"];
+	}
 	interface ReaderSaveState {
 		presentation: string;
 		state: "saving" | "saved" | "retrying" | "conflict";
@@ -176,6 +181,7 @@ declare global {
 	interface ReaderControllerEvents {
 		saveState: ReaderSaveState;
 		document: ReaderCoreDocument;
+		documentMetadata: ReaderDocumentMetadata;
 		blocks: ReaderMappedBlock[];
 		lock: "reading" | "writing";
 		claims: ReaderClaim[];

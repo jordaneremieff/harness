@@ -203,7 +203,7 @@ test("the whole open block stays held without focus or a time limit and claims r
 	dispose();
 });
 
-test("the native entry refuses replacements until marked text and each submitted edit settle", () => {
+function nativeController() {
 	const clock = new Clock();
 	const field = new EventTarget();
 	const api = scripts(
@@ -221,6 +221,11 @@ test("the native entry refuses replacements until marked text and each submitted
 		sent.push(m);
 	});
 	const c = api.createController(host, { now: () => clock.time });
+	return { clock, field, api, sent, host, c };
+}
+
+test("the native entry refuses replacements until marked text and each submitted edit settle", () => {
+	const { clock, field, api, sent, host, c } = nativeController();
 	const first = { ...api.fixtures.document("abc"), v: 1, type: "document" },
 		second = { ...api.fixtures.document("next"), v: 1, type: "document", chrome: "window" };
 	assert.equal(host.receive(first), true);
@@ -269,6 +274,73 @@ test("the native entry refuses replacements until marked text and each submitted
 	assert.equal(c.doc?.source, "next");
 	assert.equal(host.capabilities.windowChrome, "window");
 	assert.equal(installed, 1);
+	c.dispose();
+	host.dispose();
+});
+
+test("Save As changes only the destination, even during composition and outstanding edits", () => {
+	const { clock, field, api, sent, host, c } = nativeController();
+	const first = { ...api.fixtures.document("abc"), v: 1, type: "document" };
+	const meta = { ...first.meta, title: "New file", kind: "localFile", documentKey: "new-file" };
+	const change = {
+		v: 1,
+		type: "documentMetadata",
+		presentation: first.presentation,
+		previousDocumentKey: first.meta.documentKey,
+		meta,
+	};
+	assert.equal(host.receive(change), false);
+	assert.equal(host.receive(first), true);
+	c.setLock("writing");
+	c.activate(c.blocks[0].key);
+	person(c, 0, 1, "A");
+	const doc = c.doc,
+		active = doc?.active,
+		history = doc?.records[0];
+	field.dispatchEvent(new Event("compositionstart"));
+	let installs = 0;
+	const events: string[] = [];
+	c.on("document", () => installs++);
+	c.on("documentMetadata", (m) => {
+		assert.equal(c.payload?.meta.documentKey, m.meta.documentKey);
+		events.push(`${m.previousDocumentKey}:${m.meta.documentKey}`);
+	});
+	for (const patch of [{ presentation: "old" }, { previousDocumentKey: "wrong" }, { meta: { ...meta, digest: null } }])
+		assert.equal(host.receive({ ...change, ...patch }), false);
+	assert.equal(c.payload?.meta.documentKey, first.meta.documentKey);
+	assert.equal(host.receive(change), true);
+	assert.equal(host.receive({ ...change, meta: { ...meta, title: "stale duplicate" } }), true);
+	assert.equal(c.payload?.meta.title, "New file");
+	assert.equal(c.compositionTarget, field);
+	assert.equal(c.doc, doc);
+	assert.equal(c.doc?.active, active);
+	assert.equal(c.doc?.records[0], history);
+	assert.equal(c.doc?.source, "Abc");
+	field.dispatchEvent(new Event("compositionend"));
+	clock.advance(100);
+	assert.equal(sent.findLast((m) => m.type === "state")?.editingPending, true);
+	const ack = {
+		v: 1,
+		type: "ack",
+		presentation: first.presentation,
+		generation: 1,
+		digest: "edited",
+		recovery: "retained",
+		meta: first.meta,
+	};
+	const receipts: unknown[] = [];
+	c.on("ack", (m) => receipts.push([m.generation, m.meta]));
+	assert.equal(host.receive(ack), false);
+	assert.deepEqual(receipts, [[1, undefined]]);
+	clock.advance(100);
+	assert.equal(sent.findLast((m) => m.type === "state")?.editingPending, false);
+	assert.equal(c.payload?.meta.documentKey, "new-file");
+	const moved = { ...change, previousDocumentKey: "new-file", meta: { ...meta, documentKey: "second-file" } };
+	assert.equal(host.receive(moved), true);
+	assert.equal(host.receive(change), false);
+	assert.equal(c.payload?.meta.documentKey, "second-file");
+	assert.equal(installs, 0);
+	assert.deepEqual(events, [`${first.meta.documentKey}:new-file`, "new-file:second-file"]);
 	c.dispose();
 	host.dispose();
 });

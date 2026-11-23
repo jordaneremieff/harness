@@ -352,6 +352,10 @@
 	const nativeValidators: Record<string, (m: Fields) => void> = {
 		document: documentMessage,
 		reviewChanged() {},
+		documentMetadata(m) {
+			ensure(string(m.presentation, 200) && string(m.previousDocumentKey, 200));
+			meta(m.meta, true);
+		},
 		ack(m) {
 			ensure(string(m.presentation, 200));
 			ensure(integer(m.generation) && string(m.digest, 200) && one(m.recovery, ["retained", "pending"]));
@@ -790,8 +794,13 @@
 			}
 		}
 		function dispatch(message: ReaderHostMessage) {
-			for (const fn of handlers.get(message.type) ?? []) fn(message);
-			return true;
+			let accepted = message.type !== "documentMetadata";
+			for (const fn of handlers.get(message.type) ?? []) {
+				const receipt = fn(message);
+				if (message.type === "documentMetadata" && receipt === true) accepted = true;
+				if ((message.type === "documentMetadata" || message.type === "ack") && receipt === false) return false;
+			}
+			return accepted;
 		}
 		const receive = (value: unknown) => {
 			if (disposed) return false;
@@ -804,6 +813,7 @@
 				capabilities.returnFocus = message.chrome === "pane";
 				return dispatch(message);
 			}
+			if (message.type === "documentMetadata") return dispatch(message);
 			try {
 				return dispatch(message);
 			} catch (error) {

@@ -703,6 +703,7 @@
 			}),
 			controller.on("claims", claims),
 			controller.on("ack", showKind),
+			controller.on("documentMetadata", showKind),
 			controller.on("command", (m) => command(m.name, m.args)),
 			controller.on("error", (error) => notice(`The reader did not complete the change: ${String(error)}`, "warn")),
 			controller.on("notice", (m) => {
