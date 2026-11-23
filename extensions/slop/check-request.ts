@@ -32,7 +32,7 @@ export const renderCheckRequest: MessageRenderer = (message, options, theme) => 
 			? content.slice(0, instructionsEnd)
 			: content,
 	);
-	const title = `${theme.fg("customMessageLabel", theme.bold("[slop]"))} ${theme.fg("customMessageText", theme.bold("Slop check requested"))}`;
+	const title = `${theme.fg("customMessageLabel", theme.bold("[slop]"))} ${theme.fg("customMessageText", theme.bold("Check requested"))}`;
 	box.addChild(
 		new MouseRegion(
 			{

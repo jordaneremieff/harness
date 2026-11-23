@@ -289,7 +289,7 @@ test("ordinary request shows at most three wrapped rows of the hint, then reveal
 	const hint = [`Hint one ${"wide words ".repeat(6)}`, "Hint two", "Last hint fragment"].join("\n");
 	const card = request(hint);
 	const collapsed = rendered(card, width);
-	const titleRow = collapsed.indexOf("[slop] Slop check requested");
+	const titleRow = collapsed.indexOf("[slop] Check requested");
 	const hintRow = collapsed.indexOf("... (click to expand)");
 	assert.ok(titleRow > 0);
 	assert.equal(collapsed[titleRow + 1], "");
@@ -309,7 +309,7 @@ test("ordinary request shows at most three wrapped rows of the hint, then reveal
 test("hint-free request has no placeholder in either view", (t) => {
 	binding(t, "ctrl+e");
 	const card = request("");
-	assert.deepEqual(rendered(card).filter(Boolean), ["[slop] Slop check requested", "... (ctrl+e to expand)"]);
+	assert.deepEqual(rendered(card).filter(Boolean), ["[slop] Check requested", "... (ctrl+e to expand)"]);
 	card.setExpanded(true);
 	assert.match(rendered(card).join("\n"), /Say in a few plain sentences/);
 	assert.doesNotMatch(rendered(card).join("\n"), /Operator hint:|\(none\)|to expand/);
