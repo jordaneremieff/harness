@@ -139,16 +139,23 @@ The receiver sends each message with `triggerTurn: true` and
 places it when the current work ends, under the operator's follow-up mode,
 so requests that arrive during a run can reach the model together.
 
-Pi's interactive Escape clears queued messages, and a run drains or clears its
-queue before it settles. At `agent_settled`, the receiver therefore places
-again, without starting a run, each message that it sent while a run was active
-and that Pi never started. Such a message waits for the next run, which answers
-it. A message sent while the session was idle starts its own run and is never
-placed twice.
+Pi can drop a queued message: interactive Escape clears the queue before it
+stops the run. Pi can also keep one: a run stopped without that clear leaves
+its queue for the next run. The receiver decides at Pi's actionable boundaries,
+`turn_end` and `agent_before_settle`. When a boundary's preview of pending
+messages is empty, every message that the receiver sent while a run was active
+and that Pi has not started is gone from Pi's queue. The receiver places each
+such message again as a boundary entry, without a continuation, and the next
+run answers it. A nonempty preview proves nothing about one message, because
+Pi previews only the messages of its next turn, so the receiver keeps waiting
+for that message. A clear after the last boundary of a run is found at the
+next empty boundary. A message sent while the session was idle starts its own
+run and is never placed twice.
 
 ### Reply rule
 
-A message is placed when Pi starts it (`message_start`). The receiver emits
+A message is placed when Pi starts it (`message_start`) or when the receiver
+places it again at a boundary. The receiver emits
 `working` for a placed message with `reply: "final"` when its run is active,
 or at the start of the next run.
 
