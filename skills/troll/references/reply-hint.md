@@ -1,6 +1,6 @@
 # Return the reply
 
-For an operator-submitted draft from one ordinary interactive Pi session to another on the same machine, start one finite, read-only check for the reply. Use this only when your own `bash` supports `background: true` with a completion message to this conversation, and the target runs in local Rex. Do not start it for a one-off clipboard handoff, a direct peer message, a stopped exchange or a request that excludes readback. If any required fact or tool is unavailable, use the reply-ready cue in [Named sessions](sessions.md). Do not ask the operator to supply technical details.
+Have the complete draft ready before you start a check. Start one finite, read-only check only in the response that offers that draft for submission to another ordinary interactive Pi session on the same machine. If the operator plans to write the message themselves, leave the check off even when you give them a draft to adapt. Use this only when your own `bash` supports `background: true` with a completion message to this conversation, and the target runs in local Rex. Do not start it for a one-off clipboard handoff, a direct peer message, a stopped exchange or a request that excludes readback. If any required fact or tool is unavailable, use the reply-ready cue in [Named sessions](sessions.md). Do not ask the operator to supply technical details.
 
 ## Before you offer the draft
 
