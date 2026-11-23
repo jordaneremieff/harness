@@ -2280,10 +2280,13 @@ it("stops repeated live host losses in Attention and permits an explicit attach 
 		/error output is not retained; use agent_attach to retry/u,
 		"the notice names only an action that exists",
 	);
-	assert.match(dashboardText({ observedAt: Date.now(), sessions: stopped.rows }), /1 need attention/u);
+	assert.match(dashboardText({ observedAt: Date.now(), sessions: stopped.rows }), /1 with errors/u);
+	assert.match(await manager.sessionFigures("owner-1", stopped), /1 needs attention/u);
 	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
 	assert.equal(connections.length, 5);
-	assert.equal((await manager.dashboardPage()).rows[0]?.health?.lastError, undefined);
+	const recovered = await manager.dashboardPage();
+	assert.equal(recovered.rows[0]?.health?.lastError, undefined);
+	assert.doesNotMatch(await manager.sessionFigures("owner-1", recovered), /attention/u);
 });
 
 for (const entry of ["cached", "recovery"] as const)

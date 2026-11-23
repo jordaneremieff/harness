@@ -56,7 +56,6 @@ import {
 	rosterModelColumns,
 	sessionAppearance,
 	titleOf,
-	needsAttention,
 	unplacedText,
 } from "./dashboard-roster.ts";
 import type { AgentCardLookup } from "./tool-cards.ts";
@@ -702,7 +701,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.rows = this.rows
 			.flatMap((row) => {
 				const current = filtered.find((item) => item.id === row.id);
-				return current ? [current] : row.id === this.state.selected ? [row] : [];
+				return current ? [current] : !this.errorsOnly && row.id === this.state.selected ? [row] : [];
 			})
 			.concat(filtered.filter((row) => !this.rows.some((item) => item.id === row.id)));
 	}
@@ -760,7 +759,7 @@ export class AgentDashboard implements Component, Focusable {
 		)
 			this.allAgents = true;
 		const scoped = this.allAgents ? filtered : filtered.filter((row) => identities.has(relationIdentity(row.id)));
-		this.reconcileOrder(this.errorsOnly ? scoped.filter(needsAttention) : scoped);
+		this.reconcileOrder(this.errorsOnly ? scoped.filter(listReason) : scoped);
 		this.rows = groupRows(this.rows);
 		this.chooseSelection();
 		const id = this.state.selected;
@@ -1739,15 +1738,16 @@ export class AgentDashboard implements Component, Focusable {
 				run: () => this.toggleMode(),
 			});
 		}
-		// Reconnect shows in the footer for an agent that needs attention, and stays in More while its observation is lost.
-		const attention = needsAttention(listedRow(row));
-		if (attention || this.source.availability(row.id)?.state === "unavailable")
+		// Reconnect acts on the host; a provider or task block has its own next action.
+		const reconnect = currentFault(listedRow(row));
+		const blocked = row.attention === "provider-blocked" || row.attention === "task-blocked";
+		if (reconnect || this.source.availability(row.id)?.state === "unavailable")
 			actions.push({
 				id: "attach",
 				label: "Reconnect",
 				key: "r",
 				short: "reconnect",
-				primary: attention,
+				primary: reconnect && !blocked,
 				description: "Start the host; unfinished work resumes",
 				run: () => this.openAction("attach"),
 			});
@@ -1816,7 +1816,7 @@ export class AgentDashboard implements Component, Focusable {
 			},
 		];
 		actions.push(...this.surfaceActions());
-		if (this.errorsOnly || this.rows.some(needsAttention))
+		if (this.errorsOnly || this.rows.some(listReason))
 			actions.push({
 				id: "errors",
 				label: this.errorsOnly ? "Every agent" : "Agents with errors",
@@ -2748,7 +2748,7 @@ export class AgentDashboard implements Component, Focusable {
 				lines.length,
 				...wrap(empty, width)
 					.slice(0, rosterHeight)
-					.map((line) => theme.fg("muted", line)),
+					.map((line) => theme.fg(this.rosterNotice ? facts.tone : "muted", line)),
 			);
 		const body = Array.from({ length: rosterHeight }, (_, row) => lines[row] ?? "");
 		// Load more sits at the right of the list's last row.
@@ -2778,16 +2778,24 @@ export class AgentDashboard implements Component, Focusable {
 
 	private listEmpty(): string | undefined {
 		if (this.rows.length) return undefined;
+		if (this.rosterNotice) return plainLine(this.rosterNotice);
 		if (!this.page) return "Reading agents…";
-		if (this.errorsOnly) return "No agent in this view has an error. Esc shows every agent.";
-		if (this.state.filter) return `No agent matches “${plainLine(this.state.filter)}”.`;
-		if (!this.allAgents)
-			return this.relations.view().pending
-				? "Reading related work…"
-				: "No related agents yet. All shows every loaded agent.";
-		return this.page.coverage.complete
-			? "No agents yet. New conversation starts one."
-			: "The agent list is incomplete.";
+		const related = this.allAgents ? undefined : this.relations.view();
+		if (related?.pending) return "Reading related work…";
+		if (related?.failed) return "Related work is unavailable. All shows every loaded agent.";
+		const incomplete = !this.page.coverage.complete;
+		if (this.errorsOnly)
+			return incomplete
+				? "No errors in the loaded results. The agent list is incomplete."
+				: "No agent in this view has an error. Esc clears the error filter.";
+		if (this.state.filter) {
+			const query = `“${plainLine(this.state.filter)}”`;
+			return incomplete
+				? `No loaded agent matches ${query}. The agent list is incomplete.`
+				: `No agent matches ${query}.`;
+		}
+		if (related) return "No related agents in the loaded list. All shows every loaded agent.";
+		return incomplete ? "The agent list is incomplete." : "No agents yet. New conversation starts one.";
 	}
 
 	/** A warning about the list's facts, when one applies, and the Load more control when the store has more agents. */

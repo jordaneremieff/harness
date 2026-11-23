@@ -464,14 +464,14 @@ it("model labels preserve provider identity and a supported thinking level", () 
 	}
 });
 
-it("recovery hints name the supported next action and never a working row", () => {
+it("recovery hints name the supported next action without asking a working agent to change models", () => {
 	assert.equal(
 		recoveryHint(row("provider", { state: "failed", attention: "provider-blocked" })),
 		"Configure another model, then send a message",
 	);
 	assert.equal(
 		recoveryHint(row("task", { state: "idle", attention: "task-blocked" })),
-		"The host must repair a blocked task; Reconnect starts it",
+		"Open Tasks to inspect the blocked task",
 	);
 	assert.equal(
 		recoveryHint(row("unavailable", { owner: "unavailable", state: "unavailable" })),
@@ -484,6 +484,17 @@ it("recovery hints name the supported next action and never a working row", () =
 	assert.equal(recoveryHint(row("failed", { state: "failed", error: "boom" })), "A new message runs the work again");
 	assert.equal(recoveryHint(row("working", { attention: "provider-blocked" })), undefined);
 	assert.equal(recoveryHint(row("idle", { state: "idle", latestReply: "Ready" })), undefined);
+});
+
+it("a scheduled provider retry remains working activity rather than a reconnect fault", () => {
+	const retrying = row("retry", {
+		health: { autoRetry: { attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "Rate limit" } },
+	});
+	const snapshot = { observedAt: 0, sessions: [retrying] };
+	assert.equal(attentionReason(retrying), undefined);
+	assert.equal(recoveryHint(retrying), undefined);
+	assert.match(rosterTotals(snapshot), /^1 working · \$/u);
+	assert.match(rosterLines([retrying], "retry", 80, 10, 0, theme).join("\n"), /Provider retry scheduled.*Rate limit/u);
 });
 
 it("a complete roster footer has no totals, costs or retired error controls", () => {

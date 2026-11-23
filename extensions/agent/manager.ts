@@ -2537,6 +2537,7 @@ export class AgentManager {
 			ownerId,
 			(storageId) => this.inventory.ownerId(storageId),
 			this.primaries.get(ownerId)?.sentWork,
+			(storageId) => this.recoveryErrors.get(storageId) !== undefined,
 		);
 	}
 

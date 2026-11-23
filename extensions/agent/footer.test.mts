@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter, once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,16 +28,27 @@ test("cost always uses a two-decimal recorded-pricing estimate", () => {
 	}
 });
 
-test("counts only working conversations and keeps the empty footer", () => {
+test("counts working conversations separately from actionable attention and keeps the empty footer", () => {
 	assert.equal(formatDurableFooter([]), "");
 	const rows = [
 		row("working", { state: "working", cost: 0.25 }),
 		row("idle", { state: "idle", cost: 1 }),
 		row("done", { state: "done", cost: 2 }),
-		row("failed", { state: "failed", cost: 4 }),
+		row("failed", { state: "failed", attention: "failed-turn", error: "Earlier failure", cost: 4 }),
 		row("unavailable", { owner: "unavailable", state: "unavailable", cost: 8 }),
+		row("retired-host", { owner: "unknown", health: { lastError: "Past host error" } }),
+		row("compaction", { health: { compactionFailure: { trigger: "overflow" } } }),
+		row("retry", { health: { autoRetry: { attempt: 2, maxAttempts: 3, delayMs: 1, errorMessage: "Rate limit" } } }),
 	];
-	assert.equal(formatDurableFooter(rows), "agents: 1/5 active · ~$15.25");
+	assert.equal(formatDurableFooter(rows), "agents: 1/8 active · ~$15.25");
+	rows.push(
+		row("provider", { state: "failed", attention: "provider-blocked" }),
+		row("task", { attention: "task-blocked" }),
+		row("current-host", { health: { lastError: "Current host error" } }),
+		row("unread", { state: "unavailable", unplaced: 1 }),
+		row("open", { owner: "unavailable", openWorkCount: 1 }),
+	);
+	assert.equal(formatDurableFooter(rows), "agents: 1/13 active · 5 need attention · ~$15.25");
 });
 
 test("hides cost below half a cent and rounds the summed estimate to cents", () => {
@@ -185,6 +197,16 @@ test("sent-work roots include only working same-storage delegates; non-root targ
 		sessionFigures(rows.slice(0, 4), "primary", owner, new Set(["reused"])),
 		"agents: 2/2 active",
 		"same-storage reused scope never contributes lifetime cost",
+	);
+	rows[2].attention = "provider-blocked";
+	assert.equal(
+		sessionFigures(rows, "primary", owner, new Set(["reused"])),
+		"agents: 2/4 active · 1 needs attention · ~$0.25",
+	);
+	assert.equal(
+		sessionFigures(rows, "primary", owner, new Set(["reused:4"])),
+		"agents: 0/2 active · ~$0.25",
+		"a non-root target does not import a blocked sibling",
 	);
 });
 
@@ -388,6 +410,8 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 	const second = create("primary-b", [8]);
 	const statuses = new Map<string, string | undefined>();
 	const writes = new Map<string, number>();
+	const changes = new EventEmitter();
+	const nextStatus = (ownerId: string) => once(changes, ownerId, { signal: AbortSignal.timeout(2000) });
 	for (const ownerId of ["primary-a", "primary-b", "empty-primary"]) {
 		await manager.registerPrimary(ownerId, {
 			signal: new AbortController().signal,
@@ -395,6 +419,7 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 			status: (text) => {
 				statuses.set(ownerId, text);
 				writes.set(ownerId, (writes.get(ownerId) ?? 0) + 1);
+				changes.emit(ownerId, text);
 			},
 		});
 	}
@@ -413,13 +438,56 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 	const before = new Map(writes);
 	await refreshFooter();
 	assert.deepEqual(writes, before, "an unchanged footer text writes no status");
+	const updatedCost = nextStatus("primary-b");
 	manager.catalog.updateView(second, {
 		updatedAt: new Date().toISOString(),
 		coverage: { complete: true, omitted: 0 },
 		rows: [row(second, { storageId: second, cost: 9 })],
 	});
-	await refreshFooter();
-	assert.equal(statuses.get("primary-b"), "agents: 0/1 active · ~$9.00");
+	assert.deepEqual(await updatedCost, ["agents: 0/1 active · ~$9.00"]);
 	assert.equal(writes.get("primary-b"), (before.get("primary-b") ?? 0) + 1);
 	assert.equal(writes.get("primary-a"), before.get("primary-a"), "an unrelated owner's text stays unwritten");
+
+	// A reused root is not in the new caller's creation lineage. Store the same attention projection
+	// the publishing host writes, not an `attention` field on the raw conversation rows.
+	const child = create(second, [5]);
+	const old = create(second, [6]);
+	const publish = (storageId: string, kind?: "provider-blocked" | "task-blocked" | "failed-turn") => {
+		const hint =
+			kind === "provider-blocked"
+				? { identity: storageId, kind, blockId: "block" }
+				: kind === "task-blocked"
+					? { identity: storageId, kind, taskId: 1, reason: "missing_task" as const }
+					: kind === "failed-turn"
+						? { identity: storageId, kind }
+						: undefined;
+		manager.catalog.updateView(storageId, {
+			updatedAt: new Date().toISOString(),
+			coverage: { complete: true, omitted: 0 },
+			rows: [
+				row(storageId, {
+					storageId,
+					state: kind === "failed-turn" || kind === "provider-blocked" ? "failed" : "idle",
+					cost: 5,
+				}),
+			],
+			attention: { rows: hint ? [hint] : [], coverage: { complete: true, omitted: 0 } },
+		});
+	};
+	publish(child, "task-blocked");
+	publish(old, "failed-turn");
+	const unrelated = create("another-primary", [1]);
+	publish(unrelated, "provider-blocked");
+	const pendingAttention = nextStatus("reused-primary");
+	await manager.registerPrimary("reused-primary", {
+		signal: new AbortController().signal,
+		send: () => {},
+		sentWork: new Set([second]),
+		status: (text) => changes.emit("reused-primary", text),
+	});
+	assert.deepEqual(await pendingAttention, ["agents: 0/2 active · 1 needs attention"]);
+	assert.equal(await manager.sessionFigures("reused-primary"), "agents: 0/2 active · 1 needs attention");
+	const clearedAttention = nextStatus("reused-primary");
+	publish(child);
+	assert.deepEqual(await clearedAttention, ["agents: 0/1 active"], "a later publication clears the block");
 });

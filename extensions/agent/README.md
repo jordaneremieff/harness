@@ -1635,12 +1635,13 @@ unanswered submission's error detail, the last assistant error, or the native
 conversation whose newest run ended without an answer is `failed` (`stopped`
 when the run was aborted) until a later run starts. A delivery receipt defines the outcome only while no
 newer input supersedes it; an unowned report still changes the current outcome.
-An error reason exists for unavailable or conflicted storage, a host error,
-failed compaction, failed work with an error, or exhausted retries; the list
-marks current host faults with the error colour and retained failed runs with the
-warning colour on their glyph. More's error filter (`e`) lists these rows.
-A failed run stays failed until a new input,
-so an old failure keeps its reason and age instead of reading as a new alarm.
+The error filter (`e`) finds the list's error reasons: unavailable storage,
+host errors, provider or task blocks, failed compaction and failed turns. A
+scheduled provider retry is activity, not an exhausted retry. The selected
+agent's header points to Configure for a provider block, Tasks for a blocked
+task, and Reconnect for an unavailable host. A failed run stays failed until a
+new input, so an old failure keeps its reason and age rather than becoming a
+new alarm.
 Done and deliberately stopped work have no error reason by themselves. The
 manager joins the host-published intervention hint (`provider-blocked`,
 `task-blocked` or `failed-turn`) to its row; an absent hint is unknown. The
@@ -1734,11 +1735,11 @@ The primary status line and dashboard heading use the same session scope:
 agents created by the current primary session and their creation descendants,
 plus exact conversations this session sent work to. Sent-work targets remain in
 scope after settlement. Their creation descendants contribute only while
-`working`, so old idle delegates do not enter the session count. When a sent-work
-target is a storage root, its other same-storage conversations contribute only
-while `working`. The roster lacks conversation-level creator evidence, so these
-working conversations serve as practical root delegation scope. A non-root
-target does not pull in its storage siblings.
+`working` or in need of intervention, so old idle delegates do not enter the
+session count. When a sent-work target is a storage root, the same rule applies
+to its other conversations. The roster lacks conversation-level creator
+evidence, so these conversations serve as practical root delegation scope. A
+non-root target does not pull in its storage siblings.
 Creation lineage remains in scope in every state. Other primary sessions and
 unrelated retained agents do not contribute. The roster still lists discovered
 agents across sessions.
@@ -1768,8 +1769,13 @@ that every request settled. No catalog schema or host protocol carries this scop
 The status says `agents: <working>/<total> active · ~$<cost>` and disappears when
 no session-scoped rows are found. The numerator counts displayed `working` rows
 with a verified current-host publication; the denominator includes every scoped
-row. Each registered primary receives its own caller-prioritized page and
-figures. A `+` after the denominator marks unresolved selected claims, unseen
+row. A nonzero attention count follows `active`. It counts published provider
+and task blocks, errors reported by a current host, automatic host recovery that
+stopped, and unavailable rows with recorded unread inputs or open work. A failed
+turn alone remains a retained outcome. Compaction diagnostics and scheduled
+retries do not by themselves ask for intervention. The count describes the
+observed rows, not every possible block. Each registered primary receives its
+own caller-prioritized page and figures. A `+` after the denominator marks unresolved selected claims, unseen
 records, unreadable records, or incomplete published projections. Connected
 publications resolve selected claims for presentation only; raw catalogue
 coverage, including `unknownClaims`, remains unchanged. The loaded count is not

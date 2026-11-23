@@ -77,25 +77,11 @@ export function elapsed(ms: number): string {
 function costOf(row: AgentConversationSummary): string {
 	return formatCost(row.cost, row.partial);
 }
-/** Recovery detail for a held storage; an absent report is not a health verdict. */
-function recoveryLines(row: AgentConversationSummary, skipRetry = false): Array<{ color: ThemeColor; text: string }> {
-	const health = row.health;
-	if (!health) return [];
-	const lines: Array<{ color: ThemeColor; text: string }> = [];
-	if (health.lastError) lines.push({ color: "error", text: `Last host error: ${oneLine(health.lastError)}` });
-	if (health.compactionFailure) {
-		const failure = health.compactionFailure;
-		lines.push({
-			color: "warning",
-			text: `Last compaction failure (${failure.trigger}) at ${failure.at}: ${oneLine(failure.errorMessage ?? "no error text")}`,
-		});
-	}
-	if (!skipRetry && health.autoRetry)
-		lines.push({
-			color: "warning",
-			text: `provider retry ${health.autoRetry.attempt}/${health.autoRetry.maxAttempts} after ${elapsed(health.autoRetry.delayMs)}: ${oneLine(health.autoRetry.errorMessage)}`,
-		});
-	return lines;
+function retryActivity(row: AgentConversationSummary): string | undefined {
+	const retry = row.health?.autoRetry;
+	if (!retry) return undefined;
+	const error = readableError(retry.errorMessage);
+	return `Provider retry scheduled after ${elapsed(retry.delayMs)}${error ? `: ${error}` : ""}`;
 }
 function stateLabel(row: AgentConversationSummary): string {
 	const owner =
@@ -114,46 +100,37 @@ export function compareRosterRows(left: AgentConversationSummary, right: AgentCo
 		left.id.localeCompare(right.id)
 	);
 }
-/** Attention means the operator must act; a terminal outcome alone is a record. */
-export function needsAttention(row: AgentConversationSummary): boolean {
-	if (row.owner === "unavailable" || row.state === "unavailable") return true;
-	if (row.health?.lastError || row.health?.compactionFailure) return true;
-	const retry = row.health?.autoRetry;
-	if (retry !== undefined && retry.attempt >= retry.maxAttempts) return true;
-	return row.state === "failed" && Boolean(row.error);
-}
-/** A fault the host reports now, as opposed to the stored outcome of a finished run. */
+/** A host fault or unavailable observation, not a retained failure or a scheduled retry. */
 export function currentFault(row: AgentConversationSummary): boolean {
-	if (row.owner === "unavailable" || row.state === "unavailable") return true;
-	if (row.health?.lastError || row.health?.compactionFailure) return true;
-	const retry = row.health?.autoRetry;
-	return retry !== undefined && retry.attempt >= retry.maxAttempts;
+	return row.owner === "unavailable" || row.state === "unavailable" || Boolean(row.health?.lastError);
 }
 /**
- * The supported way forward for a row with an error. A provider block needs a model change before the
- * next message; a failed run needs a new message, which runs the work again; a host fault needs Reconnect.
+ * The supported way forward for a row with an error. Inspect blocked tasks without starting new work.
+ * A provider block needs a model change; a failed run needs a new message; a host fault needs Reconnect.
  */
 export function recoveryHint(row: AgentConversationSummary): string | undefined {
+	if (row.attention === "task-blocked") return "Open Tasks to inspect the blocked task";
 	if (row.state === "working") return undefined;
 	if (row.attention === "provider-blocked") return "Configure another model, then send a message";
-	if (row.attention === "task-blocked") return "The host must repair a blocked task; Reconnect starts it";
 	if (row.owner === "unavailable" || row.state === "unavailable")
 		return "Reconnect starts the host when the storage is readable";
 	if (currentFault(row)) return "Reconnect starts the host; unfinished work resumes";
-	if (row.state === "failed" && row.error) return "A new message runs the work again";
+	if (row.state === "failed") return "A new message runs the work again";
 	return undefined;
 }
 /** One governing failure reason; full recovery records belong in Details. */
 export function attentionReason(row: AgentConversationSummary): string | undefined {
+	if (row.attention === "provider-blocked")
+		return row.error ? `Provider blocked: ${readableError(row.error)}` : "Provider blocked";
+	if (row.attention === "task-blocked")
+		return row.health?.lastError ? `Blocked task: ${readableError(row.health.lastError)}` : "Blocked task";
 	if (row.owner === "unavailable" || row.state === "unavailable")
 		return `Unavailable: ${oneLine(row.error || row.ownerLabel || "Storage cannot be read")}`;
 	if (row.health?.lastError) return `Host error: ${readableError(row.health.lastError)}`;
 	const failure = row.health?.compactionFailure;
 	if (failure)
 		return `Compaction failed (${failure.trigger}): ${readableError(failure.errorMessage || "No error text")}`;
-	const retry = row.health?.autoRetry;
-	if (retry && retry.attempt >= retry.maxAttempts) return `Retries exhausted: ${readableError(retry.errorMessage)}`;
-	if (row.state === "failed" && row.error) return readableError(row.error);
+	if (row.state === "failed") return row.error ? readableError(row.error) : "The last turn failed";
 	return undefined;
 }
 export function dashboardRecords(
@@ -195,16 +172,14 @@ export function coverageText(coverage: AgentDashboardCoverage | undefined): stri
 }
 export function rosterTotals(snapshot: AgentDashboardSnapshot | undefined): string {
 	const rows = snapshot?.sessions ?? [];
-	const attention = rows.filter(needsAttention).length;
-	const working = rows.filter(
-		(row) => !needsAttention(row) && (row.state === "working" || row.state === "starting"),
-	).length;
+	const errors = rows.filter((row) => attentionReason(row) !== undefined).length;
+	const working = rows.filter((row) => row.state === "working" || row.state === "starting").length;
 	const coverage = snapshot?.coverage;
 	const incomplete =
 		rows.some((row) => row.partial || !Number.isFinite(row.cost)) ||
 		Boolean(coverage && (!coverage.complete || coverage.nextCursor || coverage.skipped || coverage.omitted));
 	const cost = rows.reduce((sum, row) => sum + (Number.isFinite(row.cost) ? row.cost : 0), 0);
-	return `${working} working${attention ? ` · ${attention} need attention` : ""} · ${formatCost(cost, incomplete)} retained`;
+	return `${working} working${errors ? ` · ${errors} with errors` : ""} · ${formatCost(cost, incomplete)} retained`;
 }
 /** Plain-text roster summary for non-TUI reads and status tests. */
 export function dashboardText(snapshot: AgentDashboardSnapshot): string {
@@ -214,15 +189,18 @@ export function dashboardText(snapshot: AgentDashboardSnapshot): string {
 		rosterTotals(snapshot),
 		...(coverage ? [`Coverage: ${coverage}`] : []),
 		...(snapshot.error ? [`Store unavailable: ${snapshot.error}`] : []),
-		...dashboardRecords(snapshot, "").flatMap((row) => [
-			oneLine(
-				`${sessionAppearance[row.state].glyph} ${stateLabel(row)} · ${titleOf(row)} · ${basename(row.cwd)} · ${row.model?.modelId ?? "unknown model"} · ${costOf(row)}`,
-			),
-			`  ${oneLine(row.id)} · ${oneLine(row.cwd)}`,
-			...(row.profile?.role ? [`  Role: ${oneLine(row.profile.role)}`] : []),
-			...recoveryLines(row).map((line) => `  ${oneLine(line.text)}`),
-			...(row.latestReply ? [`  ${oneLine(row.latestReply).slice(0, 300)}`] : []),
-		]),
+		...dashboardRecords(snapshot, "").flatMap((row) => {
+			const reason = attentionReason(row) ?? (row.state === "working" ? retryActivity(row) : undefined);
+			return [
+				oneLine(
+					`${sessionAppearance[row.state].glyph} ${stateLabel(row)} · ${titleOf(row)} · ${basename(row.cwd)} · ${row.model?.modelId ?? "unknown model"} · ${costOf(row)}`,
+				),
+				`  ${oneLine(row.id)} · ${oneLine(row.cwd)}`,
+				...(row.profile?.role ? [`  Role: ${oneLine(row.profile.role)}`] : []),
+				...(reason ? [`  ${reason}`] : []),
+				...(row.latestReply ? [`  ${oneLine(row.latestReply).slice(0, 300)}`] : []),
+			];
+		}),
 		"Use /agent help for actions.",
 	].join("\n");
 }
@@ -267,9 +245,10 @@ export function activityOf(row: AgentConversationSummary): string {
 	const reason = attentionReason(row);
 	if (reason) return reason;
 	if (row.state === "working")
-		return row.currentTool
-			? oneLine(`${row.currentTool.name} ${argumentSummary(row.currentTool.argument)}`)
-			: "Responding";
+		return (
+			retryActivity(row) ??
+			(row.currentTool ? oneLine(`${row.currentTool.name} ${argumentSummary(row.currentTool.argument)}`) : "Responding")
+		);
 	return row.latestReply ? oneLine(row.latestReply) : row.state === "starting" ? "Starting agent" : "No reply yet";
 }
 /** An absent observation time leaves the published age unchanged. */

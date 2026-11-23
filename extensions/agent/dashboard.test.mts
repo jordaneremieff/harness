@@ -492,15 +492,17 @@ for (const [patch, reason, recovery] of [
 			health: { compactionFailure: { trigger: "manual" as const, at: "now", errorMessage: "Compaction error marker" } },
 		},
 		"Compaction failed (manual): Compaction error marker",
-		"Reconnect starts the host; unfinished work resumes",
+		undefined,
 	],
 	[
-		{
-			state: "idle" as const,
-			health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "Exhausted retry marker" } },
-		},
-		"Retries exhausted: Exhausted retry marker",
-		"Reconnect starts the host; unfinished work resumes",
+		{ state: "failed" as const, attention: "provider-blocked" as const },
+		"Provider blocked",
+		"Configure another model, then send a message",
+	],
+	[
+		{ state: "working" as const, attention: "task-blocked" as const },
+		"Blocked task",
+		"Open Tasks to inspect the blocked task",
 	],
 	[
 		{ state: "failed" as const, error: "Work failure marker" },
@@ -514,7 +516,7 @@ for (const [patch, reason, recovery] of [
 			await turn();
 			const { lines, title } = paneLines(f);
 			assert.match(lines[title + 1] ?? "", /test\/model/u, "the facts precede the notice");
-			assert.equal(lines[title + 2]?.trim(), `${reason} · ${recovery}`);
+			assert.equal(lines[title + 2]?.trim(), recovery ? `${reason} · ${recovery}` : reason);
 			assert.equal(lines[title + 3]?.trim(), "", "one blank row follows the notice");
 			assert.doesNotMatch(lines.slice(title, title + 3).join("\n"), /Details has the stored error/u);
 		} finally {
@@ -582,6 +584,65 @@ it("the errors key filters agents and its key or Escape restores every agent", a
 		await turn();
 		assert.match(read().list, /Okay/u);
 		assert.doesNotMatch(read().all, /errors only/u);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("the errors filter removes a selected task after it recovers and does not claim an incomplete list is clear", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const blocked = row("task", { state: "idle", attention: "task-blocked" });
+	let rows = [blocked];
+	const observed = source();
+	observed.list = async () => {
+		const result = page(rows);
+		return { ...result, coverage: { ...result.coverage, complete: false, nextCursor: "more" } };
+	};
+	let notify = () => {};
+	observed.subscribeRoster = (listener) => {
+		notify = listener;
+		return () => {};
+	};
+	const f = fixture(160, 38, observed);
+	try {
+		await turn();
+		press(f, "e");
+		assert.match(shown(f), /Blocked task/u);
+		rows = [row("task", { state: "idle" })];
+		notify();
+		t.mock.timers.tick(250);
+		await turn();
+		const screen = shown(f);
+		assert.match(screen, /No errors in the loaded results/u);
+		const list = screen
+			.split("\n")
+			.map((line) => line.split("│")[0]?.trim())
+			.join(" ");
+		assert.match(list, /agent list is incomplete/u);
+		assert.match(screen, /Load more/u);
+		assert.doesNotMatch(screen, /Blocked task/u, "the filtered list must not preserve an obsolete error row");
+		press(f, "\x1b", "/");
+		type(f, "elsewhere");
+		assert.match(shown(f), /No loaded agent matches “elsewhere”/u);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("an initial list refusal is not presented as an ongoing read", async () => {
+	const observed = source();
+	observed.list = async () => {
+		throw new Error("Catalog offline");
+	};
+	const f = fixture(100, 25, observed);
+	try {
+		const screen = await until(f, /Agents unavailable:/u);
+		const list = screen
+			.split("\n")
+			.map((line) => line.split("│")[0]?.trim())
+			.join(" ");
+		assert.match(list, /Catalog offline/u);
+		assert.doesNotMatch(screen, /Reading agents|No agents yet/u);
 	} finally {
 		f.ui.dispose();
 	}
@@ -774,11 +835,11 @@ it("with no related work the list shows every agent, and a chosen Related scope 
 			ctrl: false,
 			clickCount: 1,
 		});
-		await settle(() => /No related agents yet/u.test(shown(f)));
+		await settle(() => /No related agents/u.test(shown(f)));
 		const lines = visible(f.ui.render(120));
 		const divider = lines[1]?.indexOf("\u2502") ?? 0;
 		const list = lines.map((line) => line.slice(0, divider).trim()).join(" ");
-		assert.match(list, /No related agents yet\. All shows every loaded agent\./u);
+		assert.match(list, /No related agents in the loaded list\. All shows every loaded agent\./u);
 	} finally {
 		f.ui.dispose();
 	}
