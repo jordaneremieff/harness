@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { test } from "node:test";
 import { LiveBridge, LiveBridges, type PaneClosure } from "./live-bridge.ts";
 import {
@@ -7,9 +9,11 @@ import {
 	readLiveConfig,
 	readLiveResult,
 	type LiveConfig,
+	type LiveBinding,
 	type LiveCommand,
 	type LiveState,
 } from "./live-protocol.ts";
+import { connectTestPane } from "./test-live-pane.mts";
 import { responseDigest, SOURCE_BYTES } from "./responses.ts";
 const binding = () => ({ workspace: randomUUID().toUpperCase(), document: randomUUID().toUpperCase() });
 async function post(config: LiveConfig, path: string, body: unknown, headers: Record<string, string> = {}) {
@@ -19,6 +23,12 @@ async function post(config: LiveConfig, path: string, body: unknown, headers: Re
 		body: JSON.stringify(body),
 		signal: AbortSignal.timeout(5000),
 	});
+	return responseData(result);
+}
+async function connect(config: LiveConfig, pane: LiveBinding, overrides?: object) {
+	return responseData(await connectTestPane(config, pane, overrides));
+}
+async function responseData(result: Response) {
 	return {
 		status: result.status,
 		data: (await result.json()) as {
@@ -44,7 +54,7 @@ test("the broker binds prompts and unsaved reads to one authenticated conversati
 	try {
 		assert.equal((await post(config, "/connect", pane, { Origin: "http://other.invalid" })).status, 403);
 		assert.equal((await post({ ...config, token: "0".repeat(64) }, "/connect", pane)).status, 403);
-		const connected = await post(config, "/connect", pane);
+		const connected = await connect(config, pane);
 		const handle = connected.data.handle;
 		const operationId = randomUUID();
 		const prompt = { ...pane, operationId, text: "Fix this paragraph." };
@@ -77,7 +87,7 @@ test("the broker forwards a large batch as one prompt and enforces the UTF-8 lim
 	const config = await bridge.start(),
 		pane = binding();
 	try {
-		await post(config, "/connect", pane);
+		await connect(config, pane);
 		const text = "😀".repeat(32768);
 		const request = { ...pane, operationId: randomUUID(), text };
 		assert.equal((await post(config, "/prompt", request)).data.status, "requested");
@@ -99,7 +109,7 @@ test("uncertain edits retain their ID and reconcile a lost acknowledgement witho
 	const config = await bridge.start();
 	const pane = binding();
 	try {
-		const handle = (await post(config, "/connect", pane)).data.handle;
+		const handle = (await connect(config, pane)).data.handle;
 		const action = {
 			op: "apply" as const,
 			operationId: randomUUID(),
@@ -150,29 +160,34 @@ test("selection deactivates a handle without retiring its prompt receipts, while
 	const config = await bridge.start();
 	const pane = binding();
 	try {
-		const handle = (await post(config, "/connect", pane)).data.handle;
+		const handle = (await connect(config, pane)).data.handle;
 		const prompt = { ...pane, operationId: randomUUID(), text: "Keep this request" };
 		await post(config, "/prompt", prompt);
 		const waiting = bridge.execute(handle, { op: "read" });
 		const other = { ...pane, document: randomUUID() };
-		await post(config, "/connect", other);
+		await connect(config, other);
 		assert.equal((await waiting).status, "closed");
 		assert.equal((await bridge.execute(handle, { op: "read" })).status, "closed");
 		bridge.publish("answer", "Answer while deselected", prompt.operationId);
-		assert.equal((await post(config, "/connect", pane)).status, 200);
-		const deselected = (await post(config, "/poll", { ...pane, after: 0 })).data.state;
+		const deselected = (await post(config, "/poll", { ...other, after: 0 })).data.state;
 		assert.equal(deselected.text, "Answer while deselected");
 		assert.equal(deselected.operationId, prompt.operationId);
+		assert.equal(deselected.document, pane.document);
+		const separate = binding();
+		const separateHandle = (await connect(config, separate)).data.handle;
+		const separateRead = bridge.execute(separateHandle, { op: "read" });
+		const separatePoll = (await post(config, "/poll", { ...separate, after: 0 })).data;
+		assert.equal(separatePoll.state.status, "idle");
+		assert.equal(separatePoll.state.text, "");
+		await post(config, "/close", { ...separate, pane: true });
+		await separateRead;
+		assert.equal((await connect(config, pane)).status, 200);
 		await post(config, "/prompt", prompt);
 		assert.equal(submitted, 1);
-		await post(config, "/connect", other);
+		await connect(config, other);
 		assert.equal((await post(config, "/close", pane)).status, 200, "a deselected document can close");
 		assert.equal((await post(config, "/close", pane)).status, 200, "close is idempotent");
-		assert.equal(
-			(await post(config, "/connect", pane)).status,
-			409,
-			"a closed document never reconnects by its old identity",
-		);
+		assert.equal((await connect(config, pane)).status, 409, "a closed document never reconnects by its old identity");
 		assert.equal(bridge.list()[0].handle, `${other.workspace}:${other.document}`);
 		registry.close();
 		await assert.rejects(
@@ -191,7 +206,7 @@ test("a delivered edit stays uncertain through selection and accepts its origina
 	const pane = binding();
 	const other = { ...pane, document: randomUUID() };
 	try {
-		const handle = (await post(config, "/connect", pane)).data.handle;
+		const handle = (await connect(config, pane)).data.handle;
 		const action = {
 			op: "apply" as const,
 			operationId: randomUUID(),
@@ -209,12 +224,12 @@ test("a delivered edit stays uncertain through selection and accepts its origina
 			retained: true,
 		};
 		const receipt = { requestId: command.requestId, result };
-		await post(config, "/connect", other);
+		await connect(config, other);
 		assert.equal((await first).status, "uncertain");
 		assert.equal((await bridge.execute(handle, action)).status, "uncertain");
 		assert.equal((await post(config, "/result", { ...pane, ...receipt })).status, 409);
 		await post(config, "/result", { ...other, ...receipt });
-		await post(config, "/connect", pane);
+		await connect(config, pane);
 		assert.equal((await post(config, "/result", { ...pane, ...receipt })).status, 200);
 		assert.deepEqual(await bridge.execute(handle, action), result);
 	} finally {
@@ -227,7 +242,7 @@ test("a retry after selection redelivers the exact unconfirmed command", { timeo
 	const config = await bridge.start();
 	const pane = binding();
 	try {
-		const handle = (await post(config, "/connect", pane)).data.handle;
+		const handle = (await connect(config, pane)).data.handle;
 		const action = {
 			op: "apply" as const,
 			operationId: randomUUID(),
@@ -237,9 +252,9 @@ test("a retry after selection redelivers the exact unconfirmed command", { timeo
 		};
 		const first = bridge.execute(handle, action);
 		const command = (await post(config, "/poll", { ...pane, after: 0 })).data.command;
-		await post(config, "/connect", { ...pane, document: randomUUID() });
+		await connect(config, { ...pane, document: randomUUID() });
 		await first;
-		await post(config, "/connect", pane);
+		await connect(config, pane);
 		assert.equal(
 			(await post(config, "/poll", { ...pane, after: 0 })).data.command,
 			null,
@@ -278,7 +293,7 @@ test("failed connection startup permits a fresh route without retaining a reject
 		assert.equal(await registry.find("exact"), undefined);
 		const bridge = await registry.get("exact", () => ({ submit: async () => ({ status: "requested" }) }));
 		assert.equal(await registry.find("exact"), bridge);
-		assert.equal((await post(await bridge.start(), "/connect", binding())).status, 200);
+		assert.equal((await connect(await bridge.start(), binding())).status, 200);
 	} finally {
 		registry.close();
 	}
@@ -299,7 +314,7 @@ test("failed idempotent admission retries the same ID but ordinary uncertainty n
 		const config = await bridge.start();
 		try {
 			const pane = binding();
-			await post(config, "/connect", pane);
+			await connect(config, pane);
 			const prompt = { ...pane, operationId: randomUUID(), text: "An exact request" };
 			const first = (await post(config, "/prompt", prompt)).data;
 			assert.equal(first.status, "uncertain");
@@ -325,7 +340,7 @@ test("definite prompt rejection is a final receipt without another admission att
 	const config = await bridge.start();
 	try {
 		const pane = binding();
-		await post(config, "/connect", pane);
+		await connect(config, pane);
 		const prompt = { ...pane, operationId: randomUUID(), text: "A rejected request" };
 		assert.equal((await post(config, "/prompt", prompt)).data.status, "rejected");
 		assert.equal((await post(config, "/prompt", prompt)).data.status, "rejected");
@@ -342,8 +357,8 @@ test("timed-out reads release queue slots and late replies do not block a health
 	try {
 		const lost = binding(),
 			healthy = binding();
-		const handle = (await post(config, "/connect", lost)).data.handle;
-		const other = (await post(config, "/connect", healthy)).data.handle;
+		const handle = (await connect(config, lost)).data.handle;
+		const other = (await connect(config, healthy)).data.handle;
 		const pending = bridge.execute(handle, { op: "read" });
 		const command = (await post(config, "/poll", { ...lost, after: 0 })).data.command;
 		assert.equal((await pending).status, "error");
@@ -414,14 +429,14 @@ test("native source integrity, retention and edit bounds fail without truncation
 	};
 	assert.throws(() => readLiveAction(action), /UTF-16/u);
 });
-test("claims and releases forward only to a version 2 pane and preserve held outcomes", {
+test("the host refuses older pane versions and preserves exact claim and release receipts", {
 	timeout: 10000,
 }, async () => {
 	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
 	const config = await bridge.start();
 	const pane = binding();
 	try {
-		const handle = (await post(config, "/connect", pane)).data.handle;
+		const handle = (await connect(config, pane)).data.handle;
 		const claim = {
 			op: "claim" as const,
 			baseGeneration: 4,
@@ -429,12 +444,8 @@ test("claims and releases forward only to a version 2 pane and preserve held out
 			ranges: [{ start: 0, end: 5 }],
 			label: "Revise passage",
 		};
-		assert.equal(bridge.list()[0].live, 1);
-		assert.equal((await bridge.execute(handle, claim)).status, "error");
-		assert.equal((await bridge.execute(handle, { op: "release", claimId: randomUUID() })).status, "error");
-		assert.equal((await post(config, "/connect", { ...pane, live: 3 })).status, 409);
-		await post(config, "/connect", { ...pane, live: 2 });
-		assert.equal(bridge.list()[0].live, 2);
+		for (const live of [undefined, 1, 2]) assert.equal((await post(config, "/connect", { ...pane, live })).status, 426);
+		assert.equal(bridge.list()[0].live, 3);
 		const claimId = randomUUID();
 		const results = [
 			{
@@ -477,7 +488,7 @@ test("unconfirmed claims release queue slots without changing apply retry identi
 	const config = await bridge.start();
 	const pane = binding();
 	try {
-		const handle = (await post(config, "/connect", { ...pane, live: 2 })).data.handle;
+		const handle = (await connect(config, pane)).data.handle;
 		for (let index = 0; index < 17; index++) {
 			const result = await bridge.execute(handle, {
 				op: "claim",
@@ -554,7 +565,7 @@ test("a live poll wakes on progress and cancelled commands do not dispatch", { t
 	const config = await bridge.start();
 	const pane = binding();
 	try {
-		const handle = (await post(config, "/connect", pane)).data.handle;
+		const handle = (await connect(config, pane)).data.handle;
 		const readController = new AbortController();
 		const read = bridge.execute(handle, { op: "read" }, readController.signal);
 		readController.abort();
@@ -579,7 +590,7 @@ test("a slow reader receives each question's answer even if another question fin
 	const first = randomUUID(),
 		second = randomUUID();
 	try {
-		await post(config, "/connect", pane);
+		await connect(config, pane);
 		for (const operationId of [first, second])
 			await post(config, "/prompt", { ...pane, operationId, text: "Explain." });
 		bridge.publish("working", "Earlier progress", first);
@@ -600,7 +611,7 @@ test("an explicit identical edit retry restores delivery after an aborted lost-p
 	const config = await bridge.start();
 	const pane = binding();
 	try {
-		const handle = (await post(config, "/connect", pane)).data.handle;
+		const handle = (await connect(config, pane)).data.handle;
 		const action = {
 			op: "apply" as const,
 			operationId: randomUUID(),
@@ -677,15 +688,18 @@ test("a pane that closes and stays away is reported once with the panes that rem
 	const config = await bridge.start();
 	const [first, second] = [binding(), binding()];
 	try {
-		await post(config, "/connect", first);
-		await post(config, "/connect", second);
+		await connect(config, first);
+		await connect(config, second);
+		const [firstPane, secondPane] = [first, second].map((x) =>
+			bridge.list().find((entry) => entry.workspace === x.workspace),
+		);
 		let report = next();
 		await post(config, "/close", first);
 		assert.equal(bridge.list().length, 1, "the count drops at once; only the report waits");
-		assert.deepEqual(await report, { closed: 1, connected: 1 });
+		assert.deepEqual(await report, { closed: 1, connected: 1, panes: [firstPane] });
 		report = next();
 		await post(config, "/close", second);
-		assert.deepEqual(await report, { closed: 1, connected: 0 });
+		assert.deepEqual(await report, { closed: 1, connected: 0, panes: [secondPane] });
 		await settled(100);
 		assert.equal(reports.length, 2);
 	} finally {
@@ -697,10 +711,10 @@ test("a pane that switches documents is not reported as closed", { timeout: 1000
 	const config = await bridge.start();
 	const pane = binding();
 	try {
-		await post(config, "/connect", pane);
+		await connect(config, pane);
 		// A pane closes its shown document and connects the next one at once.
 		await post(config, "/close", pane);
-		await post(config, "/connect", { ...pane, document: randomUUID().toUpperCase() });
+		await connect(config, { ...pane, document: randomUUID().toUpperCase() });
 		await settled(150);
 		assert.deepEqual(reports, []);
 		assert.equal(bridge.list().length, 1);
@@ -713,11 +727,15 @@ test("panes that close together are reported together", { timeout: 10000 }, asyn
 	const config = await bridge.start();
 	const panes = [binding(), binding(), binding()];
 	try {
-		for (const pane of panes) await post(config, "/connect", pane);
+		for (const pane of panes) await connect(config, pane);
+		const departed = panes.slice(0, 2).map((x) => bridge.list().find((entry) => entry.workspace === x.workspace));
 		const report = next();
 		await post(config, "/close", panes[0]);
 		await post(config, "/close", panes[1]);
-		assert.deepEqual(await report, { closed: 2, connected: 1 });
+		const closed = await report;
+		assert.equal(closed.closed, 2);
+		assert.equal(closed.connected, 1);
+		assert.deepEqual(new Set(closed.panes), new Set(departed));
 		await settled(150);
 		assert.equal(reports.length, 1);
 	} finally {
@@ -728,7 +746,7 @@ test("closing the conversation's bridge reports no pane closure", { timeout: 100
 	const { bridge, reports } = closureBridge(30);
 	const config = await bridge.start();
 	const pane = binding();
-	await post(config, "/connect", pane);
+	await connect(config, pane);
 	await post(config, "/close", pane);
 	bridge.close();
 	await settled(150);
@@ -751,14 +769,133 @@ test("a route that refuses the closure report leaves the bridge working", { time
 	const config = await bridge.start();
 	const pane = binding();
 	try {
-		await post(config, "/connect", pane);
+		await connect(config, pane);
 		await post(config, "/close", pane);
 		await settled(150);
 		assert.equal(calls, 1);
 		const other = binding();
-		assert.equal((await post(config, "/connect", other)).status, 200);
+		assert.equal((await connect(config, other)).status, 200);
 		assert.equal(bridge.list().length, 1);
 	} finally {
+		bridge.close();
+	}
+});
+
+const target = {
+	storeId: "a".repeat(32),
+	documentId: `md-${"b".repeat(20)}`,
+	revision: 2,
+	digest: responseDigest("Published revision"),
+};
+const navigate = { op: "navigate" as const, ...target };
+const shown = { kind: "published", title: "Target", mode: "reading", dirty: false, conflict: false, ...target };
+
+test("only the original agent pane and exact target receipt confirm navigation", { timeout: 10000 }, async () => {
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) }, 2000, 50);
+	const config = await bridge.start();
+	const operator = binding(),
+		source = binding(),
+		destination = { ...source, document: randomUUID() };
+	try {
+		const operatorHandle = (await connect(config, operator)).data.handle;
+		const denied = await bridge.execute(operatorHandle, navigate);
+		assert.equal(denied.status, "error");
+		assert.equal((await post(config, "/poll", { ...operator, after: 0 })).data.command, null);
+
+		const launchId = randomUUID();
+		const original = (await connect(config, source, { origin: "agent", launchId })).data.handle;
+		const before = bridge.list().find((pane) => pane.handle === original);
+		assert.ok(before);
+		const reconnect = { ...source, launchId, pid: process.pid, live: 3, serial: 2, view: before.view };
+		for (const changed of [{ launchId: randomUUID() }, { pid: process.ppid }]) {
+			assert.equal((await post(config, "/connect", { ...reconnect, ...changed })).status, 409);
+		}
+		const draft = { ...before.view, dirty: true };
+		assert.equal((await post(config, "/state", { ...source, serial: 3, view: draft })).status, 200);
+		await post(config, "/state", { ...source, serial: 2, view: before.view });
+		assert.deepEqual(bridge.list().find((pane) => pane.handle === original)?.view, draft);
+		await post(config, "/state", { ...source, serial: 4, view: before.view });
+
+		const pending = bridge.execute(original, navigate);
+		const command = (await post(config, "/poll", { ...source, after: 0 })).data.command;
+		assert.deepEqual(command, { ...source, ...navigate, requestId: command.requestId });
+		const handle = `${destination.workspace}:${destination.document}`;
+		const result = { status: "navigated", ...destination, handle, view: shown };
+		const receipt = { requestId: command.requestId, serial: 5, result };
+		await post(config, "/result", { ...operator, ...receipt });
+		assert.ok(bridge.list().some((pane) => pane.handle === original));
+		assert.equal(
+			(await post(config, "/result", { ...source, ...receipt, result: { ...result, view: { ...shown, revision: 1 } } }))
+				.status,
+			409,
+		);
+		assert.ok(bridge.list().some((pane) => pane.handle === original));
+		assert.equal((await post(config, "/result", { ...source, ...receipt })).status, 200);
+		assert.deepEqual(await pending, result);
+		await post(config, "/connect", reconnect);
+		const installed = bridge.list().find((pane) => pane.workspace === source.workspace);
+		assert.equal(installed?.handle, handle);
+		assert.deepEqual(installed?.view, shown);
+		assert.equal(installed?.origin, "agent");
+		assert.equal(installed?.pid, process.pid);
+		assert.ok(Number.isSafeInteger(installed?.reportedAt));
+		assert.equal((await bridge.execute(original, { op: "read" })).status, "closed");
+	} finally {
+		bridge.close();
+	}
+});
+
+test("a pane departure distinguishes undelivered navigation from a lost receipt", { timeout: 10000 }, async () => {
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) }, 2000, 40);
+	const config = await bridge.start();
+	try {
+		for (const delivered of [false, true]) {
+			const source = binding(),
+				other = { ...source, document: randomUUID() };
+			const handle = (await connect(config, source, { origin: "agent" })).data.handle;
+			const pending = bridge.execute(handle, navigate);
+			if (delivered) assert.equal((await post(config, "/poll", { ...source, after: 0 })).data.command.op, "navigate");
+			await connect(config, other);
+			assert.equal((await pending).status, delivered ? "uncertain" : "closed");
+			assert.equal((await post(config, "/poll", { ...other, after: 0 })).data.command, null);
+			await connect(config, source);
+			assert.equal((await post(config, "/poll", { ...source, after: 0 })).data.command, null);
+		}
+	} finally {
+		bridge.close();
+	}
+});
+
+test("a killed reader releases a delivered edit without another poll or command timeout", {
+	timeout: 6000,
+}, async () => {
+	const { bridge, next } = closureBridge(20);
+	const config = await bridge.start();
+	const reader = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
+	const exit = once(reader, "exit");
+	const pane = binding();
+	try {
+		await once(reader, "spawn");
+		const handle = (await connect(config, pane, { pid: reader.pid })).data.handle;
+		const pending = bridge.execute(handle, {
+			op: "apply",
+			operationId: randomUUID(),
+			baseGeneration: 0,
+			baseDigest: responseDigest("x"),
+			edits: [{ start: 0, end: 1, expected: "x", replacement: "y" }],
+		});
+		assert.equal((await post(config, "/poll", { ...pane, after: 0 })).data.command.op, "apply");
+		const closure = next();
+		reader.kill("SIGKILL");
+		const [outcome, closed] = await Promise.all([pending, closure]);
+		assert.equal(outcome.status, "uncertain");
+		assert.equal(closed.panes[0]?.handle, handle);
+		assert.equal(closed.panes[0]?.pid, reader.pid);
+		assert.equal(closed.connected, 0);
+		assert.deepEqual(bridge.list(), []);
+	} finally {
+		reader.kill();
+		await exit;
 		bridge.close();
 	}
 });

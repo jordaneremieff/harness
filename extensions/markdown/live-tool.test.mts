@@ -10,6 +10,7 @@ import * as Durable from "@earendil-works/pi-durable";
 import { LiveBridge } from "./live-bridge.ts";
 import { createLiveTool, createNativeLiveTool, liveSourcePage } from "./live-tool.ts";
 import { liveId, type LiveAction, type LiveCommand, type LiveResult } from "./live-protocol.ts";
+import { connectTestPane } from "./test-live-pane.mts";
 import { responseDigest } from "./responses.ts";
 
 test("the live tool validates claim fields and forwards exact claim and release actions", async () => {
@@ -424,7 +425,9 @@ test("retry after an unconfirmed refreshed edit keeps its exact native command",
 	};
 	const reply = (command: LiveCommand, result: LiveResult) => post("/result", { requestId: command.requestId, result });
 	try {
-		const { handle } = await post("/connect", { live: 2 });
+		const connected = await connectTestPane(config, binding);
+		assert.equal(connected.status, 200);
+		const { handle } = (await connected.json()) as { handle: string };
 		const input = applyInput(handle, [{ find: "old", replace: "new" }]);
 		const tool = createLiveTool(async () => bridge);
 		const pending = runTool(tool, input);
