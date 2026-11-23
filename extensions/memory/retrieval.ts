@@ -18,6 +18,7 @@ import {
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { promisify } from "node:util";
+import { assertKnownArgumentKeys } from "./argument-keys.ts";
 import { findMarkdownHeading, markdownHeadings } from "./headings.ts";
 import { findFrontmatterClose, memorySourceCache, type ParsedMemoryHeader } from "./source-cache.ts";
 import {
@@ -1383,12 +1384,21 @@ function validateRoot(raw: string): string {
 	return resolve(raw);
 }
 
-function validateOptions(options: object, allowed: string[]): void {
-	if (options === null || typeof options !== "object" || Array.isArray(options)) {
-		throw new UsageError("options must be an object");
+const RETRIEVAL_ARGUMENT_KEYS = {
+	search: ["query", "cursor", "limit", "includeRetired", "detail"],
+	read: ["slug", "offset", "digest", "revision"],
+	history: ["slug", "cursor", "limit", "plan"],
+} as const;
+
+export function preflightRetrievalArguments(tool: keyof typeof RETRIEVAL_ARGUMENT_KEYS, input: unknown): void {
+	try {
+		assertKnownArgumentKeys(input, RETRIEVAL_ARGUMENT_KEYS[tool]);
+		if (tool === "history" && input.plan !== undefined) {
+			assertKnownArgumentKeys(input.plan, ["capturedBefore", "keepNewest"], "plan");
+		}
+	} catch (error) {
+		throw new UsageError(error instanceof Error ? error.message : "Invalid retrieval input");
 	}
-	const unknown = Object.keys(options).find((key) => !allowed.includes(key));
-	if (unknown !== undefined) throw new UsageError(`unknown option: ${JSON.stringify(unknown)}`);
 }
 
 function safeError(error: unknown): MemoryRetrievalError {
@@ -1418,7 +1428,7 @@ export async function searchMemory(
 ): Promise<Record<string, unknown>> {
 	try {
 		checkAbort(signal);
-		validateOptions(options, ["query", "cursor", "limit", "includeRetired", "detail"]);
+		preflightRetrievalArguments("search", options);
 		if (options.detail !== undefined && typeof options.detail !== "boolean")
 			throw new UsageError("detail must be a boolean");
 		if (options.includeRetired !== undefined && typeof options.includeRetired !== "boolean")
@@ -1458,7 +1468,7 @@ export async function readMemory(
 ): Promise<Record<string, unknown>> {
 	try {
 		checkAbort(signal);
-		validateOptions(options, ["slug", "offset", "digest", "revision"]);
+		preflightRetrievalArguments("read", options);
 		if (typeof options.slug !== "string") throw new UsageError("slug must be a string");
 		const slug = normalizeSlug(options.slug);
 		if (options.revision !== undefined) {
@@ -1496,7 +1506,6 @@ function validateHistorySlug(slug: string): void {
 
 function normalizeHistoryPlan(plan: HistoryPlan | undefined): HistoryPlan | undefined {
 	if (plan === undefined) return undefined;
-	validateOptions(plan, ["capturedBefore", "keepNewest"]);
 	const { capturedBefore, keepNewest } = plan;
 	if (
 		typeof capturedBefore !== "string" ||
@@ -1560,7 +1569,7 @@ export async function historyMemory(
 ): Promise<Record<string, unknown>> {
 	try {
 		checkAbort(signal);
-		validateOptions(options, ["slug", "cursor", "limit", "plan"]);
+		preflightRetrievalArguments("history", options);
 		validateHistorySlug(options.slug);
 		const plan = normalizeHistoryPlan(options.plan);
 		const limit = boundedInt("limit", options.limit === undefined ? 25 : options.limit, 1, 100);

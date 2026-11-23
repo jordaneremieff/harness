@@ -1140,12 +1140,16 @@ test("retrieval refusals name unknown options and rejected subjects without writ
 		readMemory(root, { slug: "good", unexpected: true } as ReadOptions),
 		searchMemory(root, { unexpected: true } as SearchOptions),
 		historyMemory(root, { slug: "good", unexpected: true } as Parameters<typeof historyMemory>[1]),
+	])
+		await rejects(operation, "input", /^unknown option: "unexpected"$/);
+	await rejects(
 		historyMemory(root, {
 			slug: "good",
 			plan: { capturedBefore: "2026-01-01T00:00:00.000Z", keepNewest: 0, unexpected: true },
 		} as Parameters<typeof historyMemory>[1]),
-	])
-		await rejects(operation, "input", /^unknown option: "unexpected"$/);
+		"input",
+		/^unknown option: "plan\.unexpected"$/,
+	);
 	await rejects(
 		readMemory(root, { slug: "good.md" }),
 		"input",

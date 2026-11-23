@@ -31,12 +31,12 @@ function fixture(t: { after(fn: () => void): void }) {
 	});
 	const path = join(root, "editor-choice.md");
 	const source = readFileSync(path, "utf8");
-	const input: MemoryEdit = {
+	const input = {
 		slug: "editor-choice",
 		expectedDigest: sourceDigest(source),
 		verified: false,
 		edits: [{ oldText: "Use editor A.", newText: "Use editor B." }],
-	};
+	} satisfies MemoryEdit;
 	return { root, path, source, input };
 }
 function failure(fn: () => unknown): MemoryWriteError {
@@ -88,6 +88,122 @@ test("single edit returns the shared receipt and refreshes whole-note verificati
 		parseFrontmatter<Record<string, unknown>>(readFileSync(f.path, "utf8")).frontmatter.verified_date,
 		meta.updated,
 	);
+});
+
+test("title-only correction patches both title locations and keeps unrelated bytes", (t) => {
+	const f = fixture(t);
+	const source = `\uFEFF${f.source}`
+		.replace('tags: ["editor"]', '# Keep this comment\ntags: ["editor"]\ncustom: {value: "Editor choice"}')
+		.replace(/^updated: .*$/m, 'updated: "2020-01-02"')
+		.replace("# Editor choice", "Intro\n\n~~~md\n# Editor choice\n~~~\n\n  # Editor choice ##")
+		.replaceAll("\n", "\r\n")
+		.concat("\n\n# Editor choice\nLeave the later heading unchanged.");
+	writeFileSync(f.path, source);
+	const today = new Date().toISOString().slice(0, 10);
+	const title = 'Local "editor": choice #';
+	const result = editMemory(f.root, {
+		slug: f.input.slug,
+		expectedDigest: sourceDigest(source),
+		verified: false,
+		title: ` ${title} `,
+	});
+	const expected = source
+		.replace(/^title:[^\r\n]*/m, `title: ${JSON.stringify(title)}`)
+		.replace(/^updated:[^\r\n]*/m, `updated: "${today}"`)
+		.replace(/^verified:[^\r\n]*/m, "verified: false")
+		.replace(/^verified_date:[^\r\n]*/m, "verified_date: null")
+		.replace("  # Editor choice ##\r\n", `# ${title}\r\n`);
+	assert.deepEqual(readFileSync(f.path), Buffer.from(expected));
+	assert.equal(result.digest, sourceDigest(expected));
+	assert.equal(result.captured[0].digest, sourceDigest(source));
+	const edited = editMemory(f.root, { ...f.input, expectedDigest: result.digest, verified: true });
+	assert.ok(edited.ok);
+	const next = parseFrontmatter<Record<string, unknown>>(readFileSync(f.path, "utf8")).frontmatter;
+	assert.equal(next.title, title);
+	assert.equal(next.verified, true);
+	assert.equal(next.verified_date, today);
+});
+
+test("a combined title and body edit keeps the heading identity as its offset moves", (t) => {
+	const f = fixture(t);
+	const source = f.source.replace("# Editor choice", "Intro\n\n# Editor choice");
+	writeFileSync(f.path, source);
+	const input = { ...f.input, expectedDigest: sourceDigest(source), title: "New title" };
+	for (const edit of [
+		{ oldText: "Intro", newText: "# New title" },
+		{ oldText: "Intro", newText: "```" },
+		{ oldText: "# Editor choice", newText: "# New title" },
+	]) {
+		assert.match(failure(() => editMemory(f.root, { ...input, edits: [edit] })).message, /title heading/);
+		assert.equal(readFileSync(f.path, "utf8"), source);
+	}
+	const result = editMemory(f.root, {
+		...input,
+		verified: true,
+		edits: [{ oldText: "Intro", newText: "Long introductory prose" }, ...input.edits],
+	});
+	const changed = readFileSync(f.path, "utf8");
+	const meta = parseFrontmatter<Record<string, unknown>>(changed).frontmatter;
+	assert.equal(meta.title, input.title);
+	assert.equal(meta.verified, true);
+	assert.equal(meta.verified_date, meta.updated);
+	assert.equal(
+		body(changed),
+		body(source)
+			.replace("Intro\n\n# Editor choice", "Long introductory prose\n\n# New title")
+			.replace("Use editor A.", "Use editor B."),
+	);
+	assert.equal(result.digest, sourceDigest(changed));
+});
+
+test("title-only requests require a valid changed title and the same attestation and digest as body edits", (t) => {
+	const f = fixture(t);
+	const input = { slug: f.input.slug, expectedDigest: f.input.expectedDigest, verified: false };
+	const token = `sk-${"x".repeat(24)}`;
+	const cases = [
+		[{}, /Supply a title/],
+		[{ title: "New title", edits: [] }, /between 1 and 32/],
+		[{ title: " Editor choice " }, /title is unchanged/],
+		...[" ", "A\nB", "A\u2028B", "\u0000", "\ud800", "x".repeat(161), null].map(
+			(title) => [{ title }, /Invalid title/] as const,
+		),
+		[{ title: "New title", verified: undefined }, /verified must be explicit/],
+		[{ title: "New title", expectedDigest: undefined }, /digest is required/],
+		[{ title: "New title", expectedDigest: "a".repeat(64) }, /digest changed/],
+		[{ title: token }, /Credential-like material refused in title/],
+	] as const;
+	for (const [fields, pattern] of cases) {
+		const error = failure(() => editMemory(f.root, { ...input, ...fields } as MemoryEdit));
+		assert.match(error.message, pattern);
+		assert.ok(!error.message.includes(token));
+		assert.deepEqual(error.receipt.written, []);
+	}
+	assert.equal(readFileSync(f.path, "utf8"), f.source);
+	assert.deepEqual(readdirSync(f.root).sort(), [".memory-write.lock", "README.md", "editor-choice.md"]);
+});
+
+test("title correction refuses an unsafe title key or a missing or divergent heading", (t) => {
+	const f = fixture(t);
+	for (const [source, pattern] of [
+		[f.source.replace(/^title: /m, '"title": '), /independent plain top-level keys/],
+		[
+			f.source.replace("# Editor choice", "# Different\n\n# Editor choice"),
+			/first unfenced # heading must match title/,
+		],
+		[f.source.replace("# Editor choice", "~~~md\n# Editor choice\n~~~"), /first unfenced # heading must match title/],
+	] as const) {
+		writeFileSync(f.path, source);
+		const result = failure(() =>
+			editMemory(f.root, {
+				slug: f.input.slug,
+				expectedDigest: sourceDigest(source),
+				verified: false,
+				title: "New title",
+			}),
+		);
+		assert.match(result.message, pattern);
+		assert.equal(readFileSync(f.path, "utf8"), source);
+	}
 });
 
 test("writer titles with trailing hashes permit body edits and retain their exact heading bytes", (t) => {

@@ -5,6 +5,8 @@
  * matching, with the body's own text at that point.
  */
 
+import { credentialFamily } from "./credentials.ts";
+
 const EXCERPT_CHARS = 80;
 const QUOTE_CHARS = 600;
 /** A shorter matching prefix or suffix locates nothing useful. */
@@ -75,21 +77,16 @@ function longest(limit: number, matches: (length: number) => boolean): number {
 	return low;
 }
 
-const quoted = (text: string) => JSON.stringify(text);
+// Clipping can also give a token a word boundary it did not have in the full input.
+const quoted = (text: string) => (credentialFamily(text) ? "[excerpt withheld]" : JSON.stringify(text));
 
-/**
- * The refusal for `edits[index].oldText` that occurs nowhere in `body`. `source` is the whole note; the body starts
- * at `bodyStart`, and line numbers count from the first line of the note as memory_read returns it.
- */
-export function anchorMismatch(source: string, bodyStart: number, oldText: string, index: number): string {
-	const label = `edits[${index}].oldText`;
-	const body = source.slice(bodyStart);
-	const line = (bodyOffset: number) => source.slice(0, bodyStart + bodyOffset).split("\n").length;
-	if (source.slice(0, bodyStart).includes(oldText))
-		return `${label} is in the frontmatter, which memory_edit does not change; its generated fields update themselves. Anchor the edit on text in the body.`;
-	if (source.includes(oldText))
-		return `${label} starts in the frontmatter and ends in the body; memory_edit changes only the body. Anchor the edit on body text alone.`;
-
+function foldedMismatch(
+	body: string,
+	oldText: string,
+	label: string,
+	line: (offset: number) => number,
+	withhold: boolean,
+): string | undefined {
 	const foldedBody = fold(body);
 	const foldedOld = fold(oldText).text.trim();
 	if (foldedOld.length > 0) {
@@ -101,11 +98,33 @@ export function anchorMismatch(source: string, bodyStart: number, oldText: strin
 			const end = foldedBody.origin[places[0] + foldedOld.length - 1] + 1;
 			const exact = body.slice(start, end);
 			const where = `line ${line(start)}`;
+			if (withhold || credentialFamily(exact))
+				return `${label} matches only after folding whitespace and punctuation, from ${where} to line ${line(end)}. Credential-like material: excerpts withheld.`;
 			return exact.length <= QUOTE_CHARS
-				? `${label} matches the body only when whitespace and quote or dash forms are ignored. The body has this text at ${where}; copy it exactly: ${quoted(exact)}`
+				? `${label} matches the body only when whitespace and quote or dash forms are ignored. The body has this text at ${where}; copy it exactly: ${JSON.stringify(exact)}`
 				: `${label} matches the body only when whitespace and quote or dash forms are ignored, from ${where} to line ${line(end)}. Copy that passage exactly from the note's current body.`;
 		}
 	}
+	return undefined;
+}
+
+/**
+ * The refusal for `edits[index].oldText` that occurs nowhere in `body`. `source` is the whole note; the body starts
+ * at `bodyStart`, and line numbers count from the first line of the note as memory_read returns it.
+ */
+export function anchorMismatch(source: string, bodyStart: number, oldText: string, index: number): string {
+	const label = `edits[${index}].oldText`;
+	const body = source.slice(bodyStart);
+	const line = (bodyOffset: number) => source.slice(0, bodyStart + bodyOffset).split("\n").length;
+	if (source.slice(0, bodyStart).includes(oldText))
+		return `${label} is in the frontmatter. Use title for a title change; anchor body edits on text after the frontmatter.`;
+	if (source.includes(oldText))
+		return `${label} starts in the frontmatter and ends in the body; body replacements must stay in the body. Anchor the edit on body text alone.`;
+
+	// A slice of a credential can lose its recognisable prefix. Decide before clipping either input.
+	const withhold = Boolean(credentialFamily(source) || credentialFamily(oldText));
+	const folded = foldedMismatch(body, oldText, label, line, withhold);
+	if (folded !== undefined) return folded;
 
 	const prefix = longest(oldText.length, (length) => body.includes(oldText.slice(0, length)));
 	const suffix = longest(oldText.length, (length) => body.includes(oldText.slice(oldText.length - length)));
@@ -113,10 +132,14 @@ export function anchorMismatch(source: string, bodyStart: number, oldText: strin
 		return `${label} does not match the body, and neither its start nor its end occurs there. Read the note again and copy the anchor exactly from its body.`;
 	if (prefix >= suffix) {
 		const at = body.indexOf(oldText.slice(0, prefix)) + prefix;
-		return `${label} matches the body for its first ${prefix} characters, up to line ${line(at)}, and then differs. There the body continues ${quoted(body.slice(at, at + EXCERPT_CHARS))}, while oldText continues ${quoted(oldText.slice(prefix, prefix + EXCERPT_CHARS))}. Copy the anchor exactly from the body.`;
+		const where = `${label} matches the body for its first ${prefix} characters, up to line ${line(at)}, and then differs.`;
+		if (withhold) return `${where} Credential-like material: excerpts withheld.`;
+		return `${where} There the body continues ${quoted(body.slice(at, at + EXCERPT_CHARS))}, while oldText continues ${quoted(oldText.slice(prefix, prefix + EXCERPT_CHARS))}. Copy the anchor exactly from the body.`;
 	}
 	const tail = oldText.slice(oldText.length - suffix);
 	const at = body.indexOf(tail);
 	const missing = oldText.length - suffix;
-	return `${label} matches the body for its last ${suffix} characters, from line ${line(at)}, but not before them. There the body has ${quoted(body.slice(Math.max(0, at - EXCERPT_CHARS), at))}, while oldText has ${quoted(oldText.slice(Math.max(0, missing - EXCERPT_CHARS), missing))}. Copy the anchor exactly from the body.`;
+	const where = `${label} matches the body for its last ${suffix} characters, from line ${line(at)}, but not before them.`;
+	if (withhold) return `${where} Credential-like material: excerpts withheld.`;
+	return `${where} There the body has ${quoted(body.slice(Math.max(0, at - EXCERPT_CHARS), at))}, while oldText has ${quoted(oldText.slice(Math.max(0, missing - EXCERPT_CHARS), missing))}. Copy the anchor exactly from the body.`;
 }

@@ -1,6 +1,7 @@
-import { arr, bool, int, num, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
+import { arr, bool, int, num, obj, opt, str, type Schema, type Static } from "@earendil-works/pi-schema";
 import { REVISION_PATTERN } from "./history.ts";
-import { DIGEST, SLUG, type WriteReceipt } from "./store.ts";
+import { preflightRetrievalArguments } from "./retrieval.ts";
+import { DIGEST, preflightMutationArguments, SLUG, type WriteReceipt } from "./store.ts";
 
 /**
  * Tool schemas, model-facing text, and result framing shared by the ordinary
@@ -125,15 +126,18 @@ export const memoryEditParameters = obj(
 		slug: slug(),
 		expectedDigest: digest(),
 		verified: bool({ description: "Attest to the whole result; false clears verification." }),
-		edits: arr(
-			obj(
-				{
-					oldText: str({ minLength: 1, maxLength: 24000 }),
-					newText: str({ maxLength: 24000, description: "Empty deletes the match." }),
-				},
-				{ open: true },
+		title: opt(str({ minLength: 1, maxLength: 160, description: "New single-line title; required without edits." })),
+		edits: opt(
+			arr(
+				obj(
+					{
+						oldText: str({ minLength: 1, maxLength: 24000 }),
+						newText: str({ maxLength: 24000, description: "Empty deletes the match." }),
+					},
+					{ open: true },
+				),
+				{ minItems: 1, maxItems: 32, description: "Exact replacements against the original body." },
 			),
-			{ minItems: 1, maxItems: 32 },
 		),
 	},
 	{ open: true },
@@ -162,6 +166,27 @@ export const memoryRetireParameters = obj(
 	},
 	{ open: true },
 );
+
+function withArgumentPreflight<S extends object>(parameters: S, check: (args: unknown) => void) {
+	return {
+		parameters,
+		prepareArguments(args: unknown): Static<S> {
+			check(args);
+			return args as Static<S>;
+		},
+	};
+}
+
+// Pi validates types after preparation; check raw keys first so a typo in a required key gets a safe diagnostic.
+export const memoryToolArguments = {
+	search: withArgumentPreflight(memorySearchParameters, (args) => preflightRetrievalArguments("search", args)),
+	read: withArgumentPreflight(memoryReadParameters, (args) => preflightRetrievalArguments("read", args)),
+	history: withArgumentPreflight(memoryHistoryParameters, (args) => preflightRetrievalArguments("history", args)),
+	write: withArgumentPreflight(memoryWriteParameters, (args) => preflightMutationArguments("write", args)),
+	edit: withArgumentPreflight(memoryEditParameters, (args) => preflightMutationArguments("edit", args)),
+	review: withArgumentPreflight(memoryReviewParameters, (args) => preflightMutationArguments("review", args)),
+	retire: withArgumentPreflight(memoryRetireParameters, (args) => preflightMutationArguments("retire", args)),
+};
 
 export const MEMORY_TOOL_DESCRIPTIONS = {
 	search:

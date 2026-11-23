@@ -16,14 +16,8 @@ import {
 	MEMORY_SEARCH_GUIDELINES,
 	MEMORY_TOOL_DESCRIPTIONS,
 	MEMORY_WRITE_GUIDELINES,
-	memoryEditParameters,
-	memoryHistoryParameters,
 	memoryMutationResult,
-	memoryReadParameters,
-	memoryRetireParameters,
-	memoryReviewParameters,
-	memorySearchParameters,
-	memoryWriteParameters,
+	memoryToolArguments,
 } from "./tool-contract.ts";
 
 export default function memory(pi: ExtensionAPI): void {
@@ -65,9 +59,9 @@ export default function memory(pi: ExtensionAPI): void {
 		label: "Memory search",
 		description: MEMORY_TOOL_DESCRIPTIONS.search,
 		promptGuidelines: [...MEMORY_SEARCH_GUIDELINES],
-		parameters: memorySearchParameters,
+		...memoryToolArguments.search,
 		outputSchema: memorySearchOutputSchema,
-		async execute(_id, args: Static<typeof memorySearchParameters>, signal) {
+		async execute(_id, args: Static<typeof memoryToolArguments.search.parameters>, signal) {
 			const details = await searchMemory(memoryRoot(configuredDir()), args, signal);
 			return {
 				content: [{ type: "text", text: JSON.stringify(details) }],
@@ -80,8 +74,8 @@ export default function memory(pi: ExtensionAPI): void {
 		name: "memory_read",
 		label: "Memory read",
 		description: MEMORY_TOOL_DESCRIPTIONS.read,
-		parameters: memoryReadParameters,
-		async execute(_id, args: Static<typeof memoryReadParameters>, signal) {
+		...memoryToolArguments.read,
+		async execute(_id, args: Static<typeof memoryToolArguments.read.parameters>, signal) {
 			const details = await readMemory(memoryRoot(configuredDir()), args, signal);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
@@ -90,8 +84,8 @@ export default function memory(pi: ExtensionAPI): void {
 		name: "memory_history",
 		label: "Memory history",
 		description: MEMORY_TOOL_DESCRIPTIONS.history,
-		parameters: memoryHistoryParameters,
-		async execute(_id, args: Static<typeof memoryHistoryParameters>, signal) {
+		...memoryToolArguments.history,
+		async execute(_id, args: Static<typeof memoryToolArguments.history.parameters>, signal) {
 			const details = await historyMemory(memoryRoot(configuredDir()), args, signal);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
@@ -101,8 +95,8 @@ export default function memory(pi: ExtensionAPI): void {
 		label: "Memory write",
 		description: MEMORY_TOOL_DESCRIPTIONS.write,
 		promptGuidelines: [...MEMORY_WRITE_GUIDELINES],
-		parameters: memoryWriteParameters,
-		async execute(_id, args: Static<typeof memoryWriteParameters>, signal) {
+		...memoryToolArguments.write,
+		async execute(_id, args: Static<typeof memoryToolArguments.write.parameters>, signal) {
 			const root = memoryRoot(configuredDir());
 			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
 				writeMemory(root, args, signal),
@@ -114,8 +108,8 @@ export default function memory(pi: ExtensionAPI): void {
 		name: "memory_edit",
 		label: "Memory edit",
 		description: MEMORY_TOOL_DESCRIPTIONS.edit,
-		parameters: memoryEditParameters,
-		async execute(_id, args: Static<typeof memoryEditParameters>, signal) {
+		...memoryToolArguments.edit,
+		async execute(_id, args: Static<typeof memoryToolArguments.edit.parameters>, signal) {
 			const root = memoryRoot(configuredDir());
 			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
 				editMemory(root, args, signal),
@@ -128,8 +122,8 @@ export default function memory(pi: ExtensionAPI): void {
 		label: "Memory review",
 		description: MEMORY_TOOL_DESCRIPTIONS.review,
 		promptGuidelines: [...MEMORY_REVIEW_GUIDELINES],
-		parameters: memoryReviewParameters,
-		async execute(_id, args: Static<typeof memoryReviewParameters>, signal) {
+		...memoryToolArguments.review,
+		async execute(_id, args: Static<typeof memoryToolArguments.review.parameters>, signal) {
 			const root = memoryRoot(configuredDir());
 			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
 				reviewMemory(root, args, signal),
@@ -141,8 +135,8 @@ export default function memory(pi: ExtensionAPI): void {
 		name: "memory_retire",
 		label: "Memory retire",
 		description: MEMORY_TOOL_DESCRIPTIONS.retire,
-		parameters: memoryRetireParameters,
-		async execute(_id, args: Static<typeof memoryRetireParameters>, signal) {
+		...memoryToolArguments.retire,
+		async execute(_id, args: Static<typeof memoryToolArguments.retire.parameters>, signal) {
 			const root = memoryRoot(configuredDir());
 			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
 				retireMemory(root, args, signal),

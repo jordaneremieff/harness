@@ -18,6 +18,8 @@ import { basename, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { anchorMismatch } from "./anchor.ts";
+import { assertKnownArgumentKeys } from "./argument-keys.ts";
+import { credentialFamily, redactCredentials } from "./credentials.ts";
 import { findMarkdownHeading } from "./headings.ts";
 import { HISTORY_DIRECTORY, historyDirectory, newRevision, revisionIdentity } from "./history.ts";
 import { SLUG } from "./note-identity.ts";
@@ -76,7 +78,8 @@ export interface MemoryEdit {
 	slug: string;
 	expectedDigest: string;
 	verified: boolean;
-	edits: Array<{ oldText: string; newText: string }>;
+	title?: string;
+	edits?: Array<{ oldText: string; newText: string }>;
 }
 export interface MemoryReview {
 	slug: string;
@@ -185,7 +188,7 @@ function validate(input: MemoryWrite): void {
 	if (typeof input.verified !== "boolean") throw new Error("verified must be explicit");
 	if (input.expectedDigest !== undefined) digest(input.expectedDigest);
 	validateReviewSelection(input, false);
-	if (input.supersedes !== undefined && (!Array.isArray(input.supersedes) || input.supersedes.length > 16))
+	if (input.supersedes !== undefined && !Array.isArray(input.supersedes))
 		throw new Error("Use at most 16 supersession targets");
 	const seen = new Set<string>();
 	for (const [index, target] of (input.supersedes ?? []).entries()) {
@@ -212,30 +215,17 @@ function checkCredentials(payload: string, location = "resulting note"): void {
 		);
 }
 
-const PRIVATE_KEY_MARKER = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i;
-const CREDENTIAL_TOKEN =
-	/\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b/i;
-
-function credentialFamily(payload: string): string | undefined {
-	return PRIVATE_KEY_MARKER.test(payload)
-		? "private-key marker"
-		: CREDENTIAL_TOKEN.test(payload)
-			? "recognized token prefix"
-			: undefined;
-}
-
-/** Error text shares the writer's recognised credential formats, before any output clipping. */
-export function redactCredentials(value: string): string {
-	if (PRIVATE_KEY_MARKER.test(value)) return "[redacted credential material]";
-	return value.replace(new RegExp(CREDENTIAL_TOKEN.source, "gi"), "[redacted]");
-}
+export { redactCredentials } from "./credentials.ts";
 
 /** Validation occurs before corpus access, so its refusal always has zero publications. */
 function preflight(subject: unknown, validate: () => void): void {
 	try {
 		validate();
 	} catch (error) {
-		const slug = typeof subject === "string" ? redactCredentials(subject).slice(0, 120) : "[invalid subject]";
+		const slug =
+			typeof subject === "string" && subject.length <= 120 && SLUG.test(subject) && subject !== "readme"
+				? redactCredentials(subject)
+				: "[invalid subject]";
 		throw new MemoryWriteError({
 			ok: false,
 			slug,
@@ -250,13 +240,57 @@ function preflight(subject: unknown, validate: () => void): void {
 	}
 }
 
+const MUTATION_ARGUMENT_KEYS = {
+	write: [
+		"slug",
+		"title",
+		"tags",
+		"summary",
+		"details",
+		"sources",
+		"verified",
+		"reviewPolicy",
+		"reviewAfter",
+		"expectedDigest",
+		"supersedes",
+	],
+	edit: ["slug", "expectedDigest", "verified", "title", "edits"],
+	review: ["slug", "expectedDigest", "outcome", "sources", "reason", "reviewPolicy", "reviewAfter", "reactivate"],
+	retire: ["slug", "expectedDigest", "reason", "sources"],
+} as const;
+
+function checkEntryKeys(value: unknown, field: string, limit: number, keys: readonly string[]): void {
+	if (!Array.isArray(value)) return;
+	if (value.length > limit) throw new Error(`${field} accepts at most ${limit} entries`);
+	for (const [index, entry] of value.entries()) assertKnownArgumentKeys(entry, keys, `${field}[${index}]`);
+}
+
+export function preflightMutationArguments(
+	tool: keyof typeof MUTATION_ARGUMENT_KEYS,
+	input: unknown,
+	validate?: () => void,
+): void {
+	const subject = input !== null && typeof input === "object" && "slug" in input ? input.slug : undefined;
+	preflight(subject, () => {
+		assertKnownArgumentKeys(input, MUTATION_ARGUMENT_KEYS[tool]);
+		if (tool === "write") checkEntryKeys(input.supersedes, "supersedes", 16, ["slug", "digest"]);
+		if (tool === "edit") checkEntryKeys(input.edits, "edits", 32, ["oldText", "newText"]);
+		validate?.();
+	});
+}
+
+const LINKED_SOURCE_RECOVERY =
+	"Stop corpus writers before repair. Remove only a confirmed writer stage (.memory-<uuid>.tmp) in the same directory. Without following symlinks, verify that both paths are regular files with the same device and inode and the stage is the sole extra hard link. Do not remove the source or any unrelated links.";
+
 /** Open the inode itself, not a link target, and bound the read before allocation. */
 function readSource(path: string): string {
 	const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	try {
 		const before = fstatSync(fd);
+		if (before.isFile() && before.nlink > 1)
+			throw new Error(`Mutation refuses multiply linked source ${basename(path)}. ${LINKED_SOURCE_RECOVERY}`);
 		if (!before.isFile() || before.nlink !== 1 || before.size > MAX_BYTES)
-			throw new Error("Mutation requires a regular, unlinked source within 64 KiB");
+			throw new Error("Mutation requires a regular, singly linked source within 64 KiB");
 		const buffer = Buffer.alloc(before.size + 1);
 		let used = 0;
 		while (used < buffer.length) {
@@ -584,9 +618,19 @@ function validateEdit(input: MemoryEdit): void {
 	checkCredentials(input.slug, "slug");
 	digest(input.expectedDigest);
 	if (typeof input.verified !== "boolean") throw new Error("verified must be explicit for the whole edited note");
-	if (!Array.isArray(input.edits) || input.edits.length < 1 || input.edits.length > 32)
-		throw new Error("Use between 1 and 32 edits");
-	for (const [index, edit] of input.edits.entries()) {
+	if (input.title === undefined && input.edits === undefined)
+		throw new Error("Supply a title or at least one body edit");
+	if (input.title !== undefined) {
+		text(input.title, "title", 160, false);
+		checkCredentials(input.title, "title");
+	}
+	if (input.edits !== undefined && (!Array.isArray(input.edits) || input.edits.length < 1))
+		throw new Error("Use between 1 and 32 edits, or omit edits for a title-only correction");
+	validateReplacements(input.edits ?? []);
+}
+
+function validateReplacements(edits: NonNullable<MemoryEdit["edits"]>): void {
+	for (const [index, edit] of edits.entries()) {
 		if (!edit || typeof edit !== "object") throw new Error("Invalid edit");
 		for (const key of ["oldText", "newText"] as const) {
 			const value = edit[key];
@@ -602,15 +646,18 @@ function validateEdit(input: MemoryEdit): void {
 	}
 }
 
-function editedBody(source: Existing, edits: MemoryEdit["edits"]): string {
+function editedBody(source: Existing, edits: MemoryEdit["edits"] = [], title?: string): string {
 	const body = source.text.slice(source.end);
 	const heading = findMarkdownHeading(body, 1);
+	const oldTitle = source.meta.title;
 	if (
 		!heading ||
-		(heading.title !== source.meta.title && heading.text.replace(/[\r\n]+$/, "") !== `# ${source.meta.title}`)
+		typeof oldTitle !== "string" ||
+		!oldTitle.trim() ||
+		(heading.title !== oldTitle && heading.text.replace(/[\r\n]+$/, "") !== `# ${oldTitle}`)
 	)
 		throw new Error(
-			"Editing requires a title heading that matches frontmatter: the first unfenced # heading must match title. Preserve that heading; use memory_write only for an intentional complete rewrite",
+			"Editing requires a title heading that matches frontmatter: the first unfenced # heading must match title. Repair a divergent source explicitly; use memory_write only for an intentional complete rewrite",
 		);
 	const matches = edits
 		.map((edit, index) => {
@@ -624,7 +671,8 @@ function editedBody(source: Existing, edits: MemoryEdit["edits"]): string {
 				);
 			}
 			const end = start + edit.oldText.length;
-			if (start < heading.end && end > heading.start) throw new Error("The title heading cannot be edited");
+			if (start < heading.end && end > heading.start)
+				throw new Error("Body edits cannot change the title heading; supply title instead");
 			return { start, end, newText: edit.newText };
 		})
 		.sort((a, b) => a.start - b.start);
@@ -636,14 +684,17 @@ function editedBody(source: Existing, edits: MemoryEdit["edits"]): string {
 		cursor = match.end;
 	}
 	result += body.slice(cursor);
-	if (result === body) throw new Error("Edits produce no body change");
+	if (result === body && title === undefined)
+		throw new Error(edits.length ? "Edits produce no body change" : "The title is unchanged");
 	const expectedStart = matches
 		.filter((match) => match.end <= heading.start)
 		.reduce((start, match) => start + match.newText.length - (match.end - match.start), heading.start);
 	const resultingHeading = findMarkdownHeading(result, 1);
 	if (resultingHeading?.text !== heading.text || resultingHeading.start !== expectedStart)
 		throw new Error("The title heading cannot be changed or preceded by another title");
-	return result;
+	if (title === undefined) return result;
+	const newline = /[\r\n]+$/.exec(heading.text)?.[0] ?? "";
+	return `${result.slice(0, expectedStart)}# ${title}${newline}${result.slice(resultingHeading.end)}`;
 }
 
 function replaceHeaderFields(source: Existing, fields: Record<string, unknown>) {
@@ -700,13 +751,17 @@ function planEdit(root: string, input: MemoryEdit, signal?: AbortSignal): Public
 	const file = `${input.slug}.md`;
 	const source = destinationSource(join(root, file), input) as Existing;
 	const today = new Date().toISOString().slice(0, 10);
+	const requestedTitle = input.title?.trim();
+	const title = requestedTitle === source.meta.title ? undefined : requestedTitle;
+	const body = editedBody(source, input.edits, title);
 	const content =
 		changedHeader(source, {
 			updated: today,
 			verified: input.verified,
 			verified_date: input.verified ? today : null,
 			...(input.verified ? { review_flag: undefined } : {}),
-		}) + editedBody(source, input.edits);
+			...(title === undefined ? {} : { title }),
+		}) + body;
 	if (Buffer.byteLength(content) > MAX_BYTES) throw new Error("Note exceeds the 64 KiB source limit");
 	return [{ file, content, expected: input.expectedDigest, prior: source.text }];
 }
@@ -717,7 +772,7 @@ export function editMemory(
 	signal?: AbortSignal,
 	hooks: WriteHooks = {},
 ): WriteReceipt {
-	preflight(input?.slug, () => {
+	preflightMutationArguments("edit", input, () => {
 		memoryRoot(rootValue);
 		validateEdit(input);
 		checkAbort(signal);
@@ -793,7 +848,7 @@ export function reviewMemory(
 	signal?: AbortSignal,
 	hooks: WriteHooks = {},
 ): WriteReceipt {
-	preflight(input?.slug, () => {
+	preflightMutationArguments("review", input, () => {
 		memoryRoot(rootValue);
 		validateReviewIdentity(input);
 		validateReviewSelection(input, true);
@@ -819,7 +874,7 @@ export function retireMemory(
 	signal?: AbortSignal,
 	hooks: WriteHooks = {},
 ): WriteReceipt {
-	preflight(input?.slug, () => {
+	preflightMutationArguments("retire", input, () => {
 		memoryRoot(rootValue);
 		validateReviewIdentity(input);
 		text(input.reason, "reason", 600);
@@ -847,17 +902,18 @@ export function retireMemory(
 	);
 }
 
-function publish(root: string, plan: Publication & { temp: string }, lease: WriteLease): void {
+function publish(root: string, plan: Publication & { temp: string }, lease: WriteLease): string | undefined {
 	const path = join(root, plan.file);
 	if (plan.expected === undefined) {
 		lease.assertNamed();
 		linkSync(plan.temp, path);
-		return;
+		return removeFile(plan.temp);
 	}
 	if (sourceDigest(readSource(path)) !== plan.expected)
 		throw digestMismatch(path, plan.expectedArgument ?? "expectedDigest", "publication");
 	lease.assertNamed();
 	renameSync(plan.temp, path);
+	return undefined;
 }
 function recordFailure(receipt: WriteReceipt, message: string): void {
 	receipt.ok = false;
@@ -891,7 +947,7 @@ export function writeMemory(
 	signal?: AbortSignal,
 	hooks: WriteHooks = {},
 ): WriteReceipt {
-	preflight(input?.slug, () => {
+	preflightMutationArguments("write", input, () => {
 		memoryRoot(rootValue);
 		validate(input);
 		checkAbort(signal);
@@ -1013,16 +1069,25 @@ function mutate(
 		for (const plan of prepared) {
 			checkAbort(signal);
 			hooks.beforePublish?.(plan.file);
-			publish(root, plan, lease);
-			memorySourceCache.invalidate(root, plan.file);
-			if (root !== rootValue) memorySourceCache.invalidate(rootValue, plan.file);
+			const cleanupError = publish(root, plan, lease);
+			// Publication consumed the stage, or its failed unlink is reported here rather than retried in final cleanup.
+			staged.splice(staged.indexOf(plan.temp), 1);
 			receipt.written.push(plan.file);
 			receipt.notWritten.shift();
 			if (plan.staleSlug !== undefined) publishedStale.push(plan.staleSlug);
 			if (plan.file === "README.md") receipt.initialized = true;
 			if (plan.file === receipt.file) receipt.digest = sourceDigest(plan.content);
+			memorySourceCache.invalidate(root, plan.file);
+			if (root !== rootValue) memorySourceCache.invalidate(rootValue, plan.file);
+			if (cleanupError !== undefined) {
+				recordFailure(
+					receipt,
+					`Temporary file cleanup failed (${cleanupError}) after publishing ${plan.file}; retained artifact: ${basename(plan.temp)}. ${LINKED_SOURCE_RECOVERY}`,
+				);
+				break;
+			}
 		}
-		receipt.ok = true;
+		receipt.ok = receipt.error === undefined;
 	} catch (error) {
 		receipt.error = mutationFailure(error, lease);
 	} finally {

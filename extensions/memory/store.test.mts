@@ -17,7 +17,7 @@ import {
 	linkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import {
@@ -192,6 +192,74 @@ test("final cleanup failure reports published notes without false rollback", (t)
 		syncBuiltinESMExports();
 	}
 });
+
+test("an exclusive create drops its stage before the next live publication", (t) => {
+	const root = corpus(t);
+	const result = writeMemory(root, note(), undefined, {
+		beforePublish(file) {
+			if (file !== "editor-choice.md") return;
+			assert.equal(lstatSync(join(root, "README.md")).nlink, 1);
+			assert.equal(readdirSync(root).filter((name) => name.endsWith(".tmp")).length, 1);
+		},
+	});
+	assert.equal(result.ok, true);
+	assert.equal(lstatSync(join(root, "editor-choice.md")).nlink, 1);
+	assert.equal(readdirSync(root).filter((name) => name.endsWith(".tmp")).length, 0);
+});
+
+for (const file of ["README.md", "editor-choice.md"]) {
+	test(`a failed stage unlink counts the published ${file} in the receipt`, (t) => {
+		const root = corpus(t);
+		const originalLink = fs.linkSync,
+			originalUnlink = fs.unlinkSync;
+		let retained: string | undefined;
+		t.mock.method(fs, "linkSync", (existing: fs.PathLike, next: fs.PathLike) => {
+			originalLink(existing, next);
+			if (basename(String(next)) === file) retained = String(existing);
+		});
+		t.mock.method(fs, "unlinkSync", (path: fs.PathLike) => {
+			if (path === retained) throw Object.assign(new Error("Synthetic stage unlink failure"), { code: "EACCES" });
+			originalUnlink(path);
+		});
+		syncBuiltinESMExports();
+		let error: MemoryWriteError;
+		try {
+			error = failure(() => writeMemory(root, note()));
+		} finally {
+			t.mock.restoreAll();
+			syncBuiltinESMExports();
+		}
+
+		const contractOnly = file === "README.md";
+		const live = join(root, file);
+		assert.ok(retained);
+		const stageName = basename(retained);
+		assert.equal(error.receipt.ok, false);
+		assert.deepEqual(error.receipt.written, contractOnly ? [file] : ["README.md", file]);
+		assert.deepEqual(error.receipt.notWritten, contractOnly ? ["editor-choice.md"] : []);
+		assert.equal(error.receipt.initialized, true);
+		assert.equal(error.receipt.digest, contractOnly ? undefined : sourceDigest(readFileSync(live)));
+		assert.match(error.message, contractOnly ? /partially completed/ : /published all live files, but cleanup failed/);
+		assert.ok(
+			error.message.includes(`cleanup failed (EACCES) after publishing ${file}; retained artifact: ${stageName}`),
+		);
+		assert.ok(!error.message.includes(fs.realpathSync(root)));
+		assert.deepEqual(
+			readdirSync(root).filter((name) => name.endsWith(".tmp")),
+			[stageName],
+		);
+		assert.equal(lstatSync(live).nlink, 2);
+		assert.equal(lstatSync(live).ino, lstatSync(retained).ino);
+
+		const input = { ...note(), expectedDigest: error.receipt.digest };
+		const refusal = failure(() => writeMemory(root, input));
+		assert.ok(refusal.message.includes(`Mutation refuses multiply linked source ${file}`));
+		assert.match(refusal.message, /same device and inode.*sole extra hard link/);
+		assert.deepEqual(refusal.receipt.written, []);
+		fs.unlinkSync(retained);
+		assert.equal(writeMemory(root, input).ok, true);
+	});
+}
 
 test("BOM source digests use raw bytes and supersession preserves the BOM", (t) => {
 	const root = corpus(t);
@@ -996,8 +1064,17 @@ test("directories and multiply linked note inodes refuse mutation", (t) => {
 	mkdirSync(join(root, "directory.md"));
 	failure(() => writeMemory(root, { ...note("directory"), expectedDigest: "a".repeat(64) }));
 	const first = writeMemory(root, note());
-	linkSync(join(root, "editor-choice.md"), join(root, "linked.md"));
-	failure(() => writeMemory(root, { ...note(), expectedDigest: first.digest }));
+	const source = join(root, "editor-choice.md"),
+		alias = join(root, "linked.md");
+	linkSync(source, alias);
+	const error = failure(() => writeMemory(root, { ...note(), expectedDigest: first.digest }));
+	assert.match(
+		error.message,
+		/multiply linked source editor-choice\.md.*Do not remove the source or any unrelated links/,
+	);
+	assert.equal(lstatSync(source).nlink, 2);
+	assert.equal(lstatSync(source).ino, lstatSync(alias).ino);
+	assert.equal(sourceDigest(readFileSync(alias)), first.digest);
 });
 test("single-line titles refuse Unicode separators before initialization", (t) => {
 	const root = join(corpus(t), "absent");

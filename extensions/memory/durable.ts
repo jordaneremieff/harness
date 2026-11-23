@@ -12,14 +12,8 @@ import { editMemory, memoryRoot, retireMemory, reviewMemory, type WriteReceipt, 
 import {
 	MEMORY_GUIDELINES,
 	MEMORY_TOOL_DESCRIPTIONS,
-	memoryEditParameters,
-	memoryHistoryParameters,
 	memoryMutationText,
-	memoryReadParameters,
-	memoryRetireParameters,
-	memoryReviewParameters,
-	memorySearchParameters,
-	memoryWriteParameters,
+	memoryToolArguments,
 } from "./tool-contract.ts";
 
 /**
@@ -148,7 +142,7 @@ export function createMemoryContribution(
 			const searchTool = defineTool({
 				name: "memory_search",
 				description: MEMORY_TOOL_DESCRIPTIONS.search,
-				parameters: memorySearchParameters,
+				...memoryToolArguments.search,
 				structuredOutputSchema: memorySearchOutputSchema,
 				replay: "safe",
 				execute: async (args, _api, context) => {
@@ -175,7 +169,7 @@ export function createMemoryContribution(
 					defineTool({
 						name: "memory_read",
 						description: MEMORY_TOOL_DESCRIPTIONS.read,
-						parameters: memoryReadParameters,
+						...memoryToolArguments.read,
 						replay: "safe",
 						execute: async (args, _api, context) => {
 							const details = await readMemory(memoryRoot(configuredDir()), args, context.abortSignal);
@@ -185,7 +179,7 @@ export function createMemoryContribution(
 					defineTool({
 						name: "memory_history",
 						description: MEMORY_TOOL_DESCRIPTIONS.history,
-						parameters: memoryHistoryParameters,
+						...memoryToolArguments.history,
 						replay: "safe",
 						execute: async (args, _api, context) => {
 							const details = await historyMemory(memoryRoot(configuredDir()), args, context.abortSignal);
@@ -195,7 +189,7 @@ export function createMemoryContribution(
 					defineTool({
 						name: "memory_write",
 						description: MEMORY_TOOL_DESCRIPTIONS.write,
-						parameters: memoryWriteParameters,
+						...memoryToolArguments.write,
 						replay: "unsafe",
 						execute: async (args, _api, context) => {
 							const root = memoryRoot(configuredDir());
@@ -206,7 +200,7 @@ export function createMemoryContribution(
 					defineTool({
 						name: "memory_edit",
 						description: MEMORY_TOOL_DESCRIPTIONS.edit,
-						parameters: memoryEditParameters,
+						...memoryToolArguments.edit,
 						replay: "unsafe",
 						execute: async (args, _api, context) => {
 							const root = memoryRoot(configuredDir());
@@ -217,7 +211,7 @@ export function createMemoryContribution(
 					defineTool({
 						name: "memory_review",
 						description: MEMORY_TOOL_DESCRIPTIONS.review,
-						parameters: memoryReviewParameters,
+						...memoryToolArguments.review,
 						replay: "unsafe",
 						execute: async (args, _api, context) => {
 							const root = memoryRoot(configuredDir());
@@ -228,7 +222,7 @@ export function createMemoryContribution(
 					defineTool({
 						name: "memory_retire",
 						description: MEMORY_TOOL_DESCRIPTIONS.retire,
-						parameters: memoryRetireParameters,
+						...memoryToolArguments.retire,
 						replay: "unsafe",
 						execute: async (args, _api, context) => {
 							const root = memoryRoot(configuredDir());

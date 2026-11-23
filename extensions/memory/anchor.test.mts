@@ -25,11 +25,11 @@ const mismatch = (oldText: string) => anchorMismatch(NOTE, HEADER.length, oldTex
 test("an anchor in the frontmatter or across its end names the body as the only editable part", () => {
 	assert.equal(
 		mismatch('status: "active"'),
-		"edits[2].oldText is in the frontmatter, which memory_edit does not change; its generated fields update themselves. Anchor the edit on text in the body.",
+		"edits[2].oldText is in the frontmatter. Use title for a title change; anchor body edits on text after the frontmatter.",
 	);
 	assert.equal(
 		mismatch('status: "active"\n---\n\n# Editor choice'),
-		"edits[2].oldText starts in the frontmatter and ends in the body; memory_edit changes only the body. Anchor the edit on body text alone.",
+		"edits[2].oldText starts in the frontmatter and ends in the body; body replacements must stay in the body. Anchor the edit on body text alone.",
 	);
 });
 
@@ -61,6 +61,23 @@ test("an anchor that stops matching shows where, with the body's text and the an
 		mismatch("Nothing like this appears anywhere."),
 		"edits[2].oldText does not match the body, and neither its start nor its end occurs there. Read the note again and copy the anchor exactly from its body.",
 	);
+});
+
+test("credential-bearing inputs keep locations but suppress all mismatch excerpts before clipping", () => {
+	const marker = `sk-${"example".repeat(14)}`;
+	const common = "A distinct passage shared by both inputs";
+	for (const [body, oldText] of [
+		[`${common}\n${marker}`, `${common} ${marker}`],
+		[`${common}: ${marker}`, `${common}: changed`],
+		[`${marker}${common}`, `${common} changed ${marker}${common}`],
+		[`${common} fine`, `${common} ${marker}`],
+		[`fine ${common}`, `${marker} ${common}`],
+	]) {
+		const message = anchorMismatch(HEADER + body, HEADER.length, oldText, 0);
+		assert.match(message, /line \d+/u);
+		assert.match(message, /excerpts withheld/u);
+		assert.doesNotMatch(message, /example|sk-|"/u);
+	}
 });
 
 test("memory_edit refuses a mismatched anchor with the exact text, and the retry with that text succeeds", (t) => {
