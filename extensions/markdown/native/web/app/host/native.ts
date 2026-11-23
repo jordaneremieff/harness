@@ -327,7 +327,7 @@
 		ensure(
 			one(m.lock, ["reading", "writing"]) && one(m.overlay, [null, "review", "image", "details", "source", "library"]),
 		);
-		for (const key of ["canBack", "canForward", "canUndo", "canRedo", "hasSelection", "findOpen"])
+		for (const key of ["canBack", "canForward", "canUndo", "canRedo", "hasSelection", "findOpen", "editingPending"])
 			ensure(typeof m[key] === "boolean");
 		if (m.held !== undefined) range(m.held);
 		if (m.activeBlock !== undefined) range(m.activeBlock);
@@ -598,15 +598,18 @@
 			ensure(handler, "Reader transport is unavailable.");
 			return handler.postMessage(message);
 		};
+		function installCapabilities(message: ReaderHostMessage) {
+			for (const allow of handlers.get("beforeDocument") ?? []) if (allow(message) === false) return false;
+			capabilities.windowChrome = String(message.chrome);
+			capabilities.menuBar = message.chrome === "window";
+			capabilities.returnFocus = message.chrome === "pane";
+			return true;
+		}
 		const receive = (value: unknown) => {
 			if (disposed) return false;
 			try {
 				const message = native(value);
-				if (message.type === "document") {
-					capabilities.windowChrome = String(message.chrome);
-					capabilities.menuBar = message.chrome === "window";
-					capabilities.returnFocus = message.chrome === "pane";
-				}
+				if (message.type === "document" && !installCapabilities(message)) return false;
 				for (const fn of handlers.get(message.type) ?? []) fn(message);
 				return true;
 			} catch (error) {

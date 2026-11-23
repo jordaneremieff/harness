@@ -199,6 +199,7 @@ declare global {
 		agentOperations: ReaderAgentOperation[];
 	}
 	interface ReaderController {
+		readonly compositionTarget: EventTarget | null;
 		host: ReaderCoreHost;
 		doc: ReaderExactDocument | null;
 		payload: ReaderCoreDocument | null;
@@ -213,7 +214,7 @@ declare global {
 			handler: (detail: ReaderControllerEvents[K]) => void,
 		): () => void;
 		emit<K extends keyof ReaderControllerEvents>(type: K, detail: ReaderControllerEvents[K]): void;
-		replace(payload: ReaderCoreDocument): void;
+		replace(payload: ReaderCoreDocument): boolean;
 		setLock(lock: "reading" | "writing"): void;
 		change(edits: ReaderEdit[], options?: { blockId?: string; now?: number }): ReaderOperationResult;
 		undo(): ReaderOperationResult | null | undefined;

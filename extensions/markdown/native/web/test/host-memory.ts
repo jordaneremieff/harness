@@ -34,12 +34,17 @@
 			} catch {
 				return false;
 			}
+			if (type === "document" && !allowsDocument(message)) return false;
 			acceptInbound(message);
 			messages.push(message);
 			inbound.push(message);
 			for (const handler of handlers.get(type) ?? []) handler(message);
 			return true;
 		};
+		function allowsDocument(message: ReaderHostMessage) {
+			for (const allow of handlers.get("beforeDocument") ?? []) if (allow(message) === false) return false;
+			return true;
+		}
 		function acceptInbound(message: ReaderHostMessage) {
 			if (message.type === "document") acceptDocument(message as unknown as ReaderDocument);
 			if (message.type === "command" && message.name === "applySettings") storeSettings(message.args as Fields);
@@ -65,8 +70,8 @@
 		function install() {
 			emit("document", { ...snapshot(), presentation: `memory-view-${++delivery}` });
 		}
-		function refuse(presentation: string, reason: string) {
-			emit("refused", { presentation, generation: mirror.generation, reason });
+		function refuse(presentation: string, generation: number, reason: string) {
+			emit("refused", { presentation, generation, reason });
 			if (presentation === payload.presentation) install();
 		}
 		function copyMeta() {
@@ -101,18 +106,19 @@
 			});
 		}
 		function mirrorEdit(m: ReaderHostMessage) {
-			const presentation = m.presentation as string;
+			const presentation = m.presentation as string,
+				generation = m.generation as number;
 			if (presentation !== payload.presentation) {
-				refuse(presentation, "presentation");
+				refuse(presentation, generation, "presentation");
 				return;
 			}
 			if (m.baseGeneration !== mirror.generation) {
-				refuse(presentation, "generation");
+				refuse(presentation, generation, "generation");
 				return;
 			}
 			const edits = m.edits as ReaderEdit[];
 			if (!matching(edits)) {
-				refuse(presentation, "expected");
+				refuse(presentation, generation, "expected");
 				return;
 			}
 			let next = "",
@@ -123,7 +129,7 @@
 			}
 			next += mirror.source.slice(cursor);
 			if (new TextEncoder().encode(next).length > 2 * 1024 * 1024) {
-				refuse(presentation, "size");
+				refuse(presentation, generation, "size");
 				return;
 			}
 			commitMirror(next, m.generation as number);

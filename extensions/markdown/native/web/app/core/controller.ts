@@ -51,6 +51,8 @@
 		const now = options.now ?? Date.now;
 		const events = new Map<keyof ReaderControllerEvents, Set<(detail: unknown) => void>>();
 		const subscriptions: (() => void)[] = [];
+		const pendingEdits = new Set<number>();
+		let compositionTarget: EventTarget | null = null;
 		let disposed = false,
 			stateTimer: ReturnType<typeof setTimeout> | undefined,
 			claimTimer: ReturnType<typeof setTimeout> | undefined;
@@ -73,6 +75,9 @@
 		const html = new Map<string, string>();
 		const c: ReaderController = {
 			host,
+			get compositionTarget() {
+				return compositionTarget;
+			},
 			doc: null,
 			payload: null,
 			blocks: [],
@@ -114,6 +119,7 @@
 				for (const fn of events.get(type) ?? []) fn(detail);
 			},
 			replace(payload) {
+				if (editingPending()) return false;
 				epoch++;
 				c.doc?.listeners.delete(changed);
 				html.clear();
@@ -143,6 +149,7 @@
 				c.emit("agentOperations", []);
 				clearTimeout(claimTimer);
 				c.state();
+				return true;
 			},
 			setLock(lock) {
 				if (c.lock === lock) return;
@@ -247,13 +254,38 @@
 				}
 			},
 		};
+		function editingPending() {
+			return compositionTarget !== null || c.doc?.composing === true || pendingEdits.size > 0;
+		}
+		// Ask and other text fields also hold marked text outside the block editor.
+		function composition(event: Event) {
+			compositionTarget = event.type === "compositionstart" ? event.target : null;
+			c.state();
+		}
+		const owner = globalThis.document;
+		if (owner) {
+			for (const type of ["compositionstart", "compositionend"]) {
+				owner.addEventListener(type, composition, true);
+				subscriptions.push(() => owner.removeEventListener(type, composition, true));
+			}
+		}
 		function historyChanged() {
 			c.emit("history", c.nextHistory());
 			c.state();
 		}
 		// The bridge refuses a state message with any field outside its contract, so the
 		// wire copy carries exactly the contract fields whatever components add locally.
-		const wireFlags = ["lock", "overlay", "canUndo", "canRedo", "canBack", "canForward", "hasSelection", "findOpen"];
+		const wireFlags = [
+			"lock",
+			"overlay",
+			"canUndo",
+			"canRedo",
+			"canBack",
+			"canForward",
+			"hasSelection",
+			"findOpen",
+			"editingPending",
+		];
 		const wireObjects: Record<string, string[]> = {
 			held: ["start", "end"],
 			activeBlock: ["start", "end"],
@@ -296,6 +328,7 @@
 			const canRedo = doc.redos.some((r) => block === null || (r.origin === "person" && r.blockId === block));
 			const state = {
 				...extra,
+				editingPending: editingPending(),
 				lock: c.lock,
 				canUndo,
 				canRedo,
@@ -352,6 +385,7 @@
 			if (!c.payload) return;
 			const edits = change.edits,
 				presentation = c.payload.presentation;
+			pendingEdits.add(change.generation);
 			c.emit("beforeChange", change);
 			c.blocks = c.blocks.map((block) => mappedBlock(block, change, c.doc?.active?.blockId));
 			mapClaims(edits);
@@ -516,6 +550,7 @@
 		const receive = <T>(type: string, handler: (message: T) => void) =>
 			host.on(type, (message) => handler(message as T));
 		subscriptions.push(
+			host.on("beforeDocument", () => !editingPending()),
 			receive<ReaderCoreDocument>("document", (m) => c.replace(m)),
 			receive<{
 				presentation: string;
@@ -528,11 +563,14 @@
 					c.emit("error", new Error("Unexpected acknowledgement generation."));
 					return;
 				}
+				if (pendingEdits.delete(m.generation)) c.state();
 				if (m.meta) c.payload.meta = { ...m.meta, documentKey: m.meta.documentKey ?? c.payload.meta.documentKey };
 				c.emit("ack", m);
 			}),
-			receive<{ presentation: string }>("refused", (m) => {
-				if (m.presentation === c.payload?.presentation) c.emit("refused", m);
+			receive<{ presentation: string; generation: number }>("refused", (m) => {
+				if (m.presentation !== c.payload?.presentation) return;
+				if (pendingEdits.delete(m.generation)) c.state();
+				c.emit("refused", m);
 			}),
 			receive<ReaderSaveState>("saveState", (m) => {
 				if (!c.payload || c.payload.presentation !== m.presentation) return;

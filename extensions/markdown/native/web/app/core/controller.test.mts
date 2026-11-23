@@ -203,6 +203,76 @@ test("the whole open block stays held without focus or a time limit and claims r
 	dispose();
 });
 
+test("the native entry refuses replacements until marked text and each submitted edit settle", () => {
+	const clock = new Clock();
+	const field = new EventTarget();
+	const api = scripts(
+		[
+			"app/host/native.ts",
+			"app/core/exact.ts",
+			"app/core/source-model.ts",
+			"app/core/controller.ts",
+			"test/fixtures.ts",
+		],
+		{ document: field, setTimeout: clock.set, clearTimeout: clock.clear },
+	).reader as ReaderNamespace & { fixtures: FixtureAPI };
+	const sent: ReaderHostMessage[] = [];
+	const host = api.createNativeHost((m) => {
+		sent.push(m);
+	});
+	const c = api.createController(host, { now: () => clock.time });
+	const first = { ...api.fixtures.document("abc"), v: 1, type: "document" },
+		second = { ...api.fixtures.document("next"), v: 1, type: "document", chrome: "window" };
+	assert.equal(host.receive(first), true);
+	let installed = 0;
+	c.on("document", () => installed++);
+	field.dispatchEvent(new Event("compositionstart"));
+	clock.advance(100);
+	assert.equal(sent.at(-1)?.editingPending, true);
+	assert.equal(c.compositionTarget, field);
+	assert.equal(host.receive(second), false);
+	assert.equal(c.doc?.source, "abc");
+	c.setLock("writing");
+	person(c, 0, 1, "A");
+	person(c, 1, 2, "B");
+	field.dispatchEvent(new Event("compositionend"));
+	assert.equal(c.compositionTarget, null);
+	assert.equal(host.receive(second), false);
+	const ack = {
+		v: 1,
+		type: "ack",
+		presentation: first.presentation,
+		generation: 1,
+		digest: "one",
+		recovery: "retained",
+	};
+	assert.equal(host.receive(ack), true);
+	assert.equal(host.receive(ack), true);
+	assert.equal(host.receive({ ...ack, presentation: second.presentation, generation: 2 }), true);
+	assert.equal(host.receive(second), false);
+	assert.equal(c.doc?.source, "ABc");
+	assert.equal(host.capabilities.windowChrome, "pane");
+	assert.equal(installed, 0);
+	assert.equal(
+		host.receive({
+			v: 1,
+			type: "refused",
+			presentation: first.presentation,
+			generation: 2,
+			reason: "mismatched source",
+		}),
+		true,
+	);
+	clock.advance(100);
+	assert.equal(sent.findLast((m) => m.type === "state")?.editingPending, false);
+	assert.equal(host.receive(second), true);
+	assert.equal(c.doc?.source, "next");
+	assert.equal(host.capabilities.windowChrome, "window");
+	assert.equal(installed, 1);
+	c.dispose();
+	host.dispose();
+});
+
 test("a current save updates the shown publication revision; a stale save has no effect", () => {
 	const { host, payload, api, controller: c, dispose } = setup();
 	const states: string[] = [];
@@ -398,6 +468,7 @@ test("state publication sends only the bridge contract's fields", () => {
 			[
 				"lock",
 				"overlay",
+				"editingPending",
 				"canUndo",
 				"canRedo",
 				"canBack",

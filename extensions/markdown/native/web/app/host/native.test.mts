@@ -362,6 +362,7 @@ test("jump commands and jump history state validate at the host boundary", () =>
 	const state = {
 		v: 1,
 		type: "state",
+		editingPending: false,
 		lock: "reading",
 		overlay: null,
 		canBack: false,
