@@ -11,9 +11,9 @@ import { readPiReleaseIntake } from "./release.ts";
 const HARNESS_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const ENTRYPOINT = fileURLToPath(import.meta.url);
 
-function reportInvalidInvocation(ctx: ExtensionCommandContext, message: string): void {
-	if (ctx.hasUI) ctx.ui.notify(message, "error");
-	else throw new Error(message);
+function reportInvalidInvocation(ctx: ExtensionCommandContext, notice: string, error: string): void {
+	if (ctx.hasUI) ctx.ui.notify(notice, "warning");
+	else throw new Error(error);
 }
 
 export default function registerEvo(pi: ExtensionAPI): void {
@@ -23,7 +23,7 @@ export default function registerEvo(pi: ExtensionAPI): void {
 		handler: async (rawArgs, ctx) => {
 			const invocation = parseEvoInvocation(rawArgs);
 			if (!invocation.ok) {
-				reportInvalidInvocation(ctx, invocation.error);
+				reportInvalidInvocation(ctx, invocation.notice, invocation.error);
 				return;
 			}
 			const release = await readPiReleaseIntake({ harnessRoot: HARNESS_ROOT });

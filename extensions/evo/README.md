@@ -65,8 +65,9 @@ The parser replaces malformed UTF-16, removes terminal controls and hidden forma
 normalizes logical line separators, and trims whitespace. Oversized input is refused,
 not truncated. The refusal directs the caller to shorten the direction and invoke
 `/evo` again for an Evo run. A plain message starts no Evo run and carries no
-elevated grant. UI hosts receive an error notification; headless hosts receive a
-command error through Pi. Invalid input dispatches no kickoff.
+elevated grant. UI hosts receive a warning that names the limit and how to retry.
+Headless hosts receive a command error through Pi. Invalid input dispatches no
+kickoff. See the [notification convention](../../docs/conventions/emissions.md#notifications).
 
 The kickoff states who invoked the command. The ordinary command is an operator
 invocation: Pi runs a registered command only from the session's direct prompt

@@ -120,7 +120,7 @@ const directionContracts = [
 function registeredEvo(): {
 	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 	sent: SentMessage[];
-	notifications: string[];
+	notifications: { text: string; level: string }[];
 	commandNames: string[];
 	description: string | undefined;
 	toolRegistrations: number;
@@ -129,7 +129,7 @@ function registeredEvo(): {
 	let handler: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
 	let description: string | undefined;
 	const sent: SentMessage[] = [];
-	const notifications: string[] = [];
+	const notifications: { text: string; level: string }[] = [];
 	const commandNames: string[] = [];
 	const emissions: unknown[] = [];
 	let toolRegistrations = 0;
@@ -172,7 +172,10 @@ function registeredEvo(): {
 	};
 }
 
-function context(mode: "tui" | "rpc" | "print" | "json", notifications: string[]): ExtensionCommandContext {
+function context(
+	mode: "tui" | "rpc" | "print" | "json",
+	notifications: { text: string; level: string }[],
+): ExtensionCommandContext {
 	return {
 		cwd: "/workspace/current-project",
 		hasUI: mode === "tui" || mode === "rpc",
@@ -181,8 +184,8 @@ function context(mode: "tui" | "rpc" | "print" | "json", notifications: string[]
 			throw new Error("evo must not snapshot idle state before message preflight");
 		},
 		ui: {
-			notify(message: string) {
-				notifications.push(message);
+			notify(text: string, level: string) {
+				notifications.push({ text, level });
 			},
 		},
 	} as unknown as ExtensionCommandContext;
@@ -932,6 +935,10 @@ test("oversized directions fail without dispatch", async () => {
 	const registered = registeredEvo();
 	await registered.handler("x".repeat(MAX_DIRECTION_CODE_POINTS + 1), context("tui", registered.notifications));
 	assert.equal(registered.sent.length, 0);
-	assert.equal(registered.notifications.length, 1);
-	assert.match(registered.notifications[0], /Unicode code points or fewer/);
+	assert.deepEqual(registered.notifications, [
+		{
+			text: `The Evo direction exceeds ${MAX_DIRECTION_CODE_POINTS} Unicode code points; shorten it and retry /evo.`,
+			level: "warning",
+		},
+	]);
 });

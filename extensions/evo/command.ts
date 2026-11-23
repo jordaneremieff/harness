@@ -11,13 +11,14 @@ const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
 const HIDDEN = /(?:\p{Cf}|\u{E0000}|[\uFE00-\uFE0F]|[\u{E0100}-\u{E01EF}]|[\u1160\u2800\u3164\uFFA0])/gu;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
-export type EvoInvocation = { ok: true; direction: string | undefined } | { ok: false; error: string };
+export type EvoInvocation = { ok: true; direction: string | undefined } | { ok: false; error: string; notice: string };
 
 /** The complete argument contract is one optional, variable-length direction. */
 export function parseEvoInvocation(raw: string): EvoInvocation {
 	if (Buffer.byteLength(raw, "utf8") > MAX_RAW_DIRECTION_BYTES) {
 		return {
 			ok: false,
+			notice: `The raw Evo direction exceeds ${MAX_RAW_DIRECTION_BYTES} UTF-8 bytes; shorten it and retry /evo.`,
 			error: `The raw evo direction must be ${MAX_RAW_DIRECTION_BYTES} UTF-8 bytes or fewer. Shorten the direction and invoke /evo again for an Evo run. A plain message starts no Evo run and carries no elevated grant.`,
 		};
 	}
@@ -32,6 +33,7 @@ export function parseEvoInvocation(raw: string): EvoInvocation {
 	if (Array.from(direction).length > MAX_DIRECTION_CODE_POINTS) {
 		return {
 			ok: false,
+			notice: `The Evo direction exceeds ${MAX_DIRECTION_CODE_POINTS} Unicode code points; shorten it and retry /evo.`,
 			error: `The evo direction must be ${MAX_DIRECTION_CODE_POINTS} Unicode code points or fewer. Shorten the direction and invoke /evo again for an Evo run. A plain message starts no Evo run and carries no elevated grant.`,
 		};
 	}
