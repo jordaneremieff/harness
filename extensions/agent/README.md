@@ -618,16 +618,18 @@ and the application's guidance only when absent from the current context and
 pending messages. The collapsed card previews the request, not those instructions.
 
 Pi starts a run when idle or takes the request as a follow-up when busy.
-If Pi clears a follow-up, the receiver restores it at an empty queue boundary
-without starting another run. A final answer goes to every application that
+If Pi drops a queued request, the receiver restores it at the next boundary
+with an empty queue and asks Pi to continue. After a stop such as Escape, Pi
+does not continue, and the next run answers the request. A final answer goes to every application that
 requested one since the previous answer. Each application learns how many
 other inputs that answer covered. A change of branch or the end of the
 session closes outstanding reply routes. Reload does not reconnect them.
 
-The receiver tracks up to 64 pending requests or unrecorded request IDs in
-memory. It refuses a new request at capacity instead of evicting an existing
-one. Once Pi records a message, its entry identifies repeated deliveries even
-after compaction. Agent does not keep a second on-disk inbox for applications.
+The receiver tracks up to 64 pending requests in memory and refuses a new
+request at capacity instead of evicting an existing one. Once Pi records a
+message, its entry identifies repeated deliveries even after compaction. For
+requests that ended before Pi recorded them, the receiver remembers the latest
+64 IDs and forgets the oldest first. Agent does not keep a second on-disk inbox for applications.
 
 ### Continuity tool declarations
 

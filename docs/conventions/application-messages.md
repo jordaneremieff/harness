@@ -145,19 +145,23 @@ its queue for the next run. The receiver decides at Pi's actionable boundaries,
 `turn_end` and `agent_before_settle`. When a boundary's preview of pending
 messages is empty, every message that the receiver sent while a run was active
 and that Pi has not started is gone from Pi's queue. The receiver places each
-such message again as a boundary entry, without a continuation, and the next
-run answers it. A nonempty preview proves nothing about one message, because
-Pi previews only the messages of its next turn, so the receiver keeps waiting
-for that message. A clear after the last boundary of a run is found at the
-next empty boundary. A message sent while the session was idle starts its own
-run and is never placed twice.
+such message again as a boundary entry and asks Pi to continue. Pi does not
+continue a stopped run, so after Escape the message waits for the next run;
+when Pi dropped the message without a stop, the same run answers it. A
+nonempty preview proves nothing about one message, because Pi previews only
+the messages of its next turn, so the receiver keeps waiting for that message.
+A clear after the last boundary of a run is found at the next empty boundary.
+A message sent while the session was idle starts its own run and is never
+placed twice.
 
 ### Reply rule
 
 A message is placed when Pi starts it (`message_start`) or when the receiver
 places it again at a boundary. The receiver emits
 `working` for a placed message with `reply: "final"` when its run is active,
-or at the start of the next run.
+or at the start of the next turn of a run that has not stopped. A stop during
+tool calls still starts one more turn, which ends without an answer; that turn
+does not count.
 
 The run's answer is the first assistant message that ends without tool calls,
 an error, or an abort. That message answers every request placed since the

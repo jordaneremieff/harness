@@ -1416,7 +1416,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		if (!inbox) return application;
 		return {
 			entries: [...(application?.entries ?? event.entries), ...inbox.entries],
-			continue: event.continue || inbox.continue,
+			continue: event.continue || application?.continue === true || inbox.continue,
 		};
 	};
 	pi.on("turn_end", inboxBoundary);

@@ -100,7 +100,7 @@ class ApplicationInbox {
 		const receipt = { status: "requested" as const, reference: applicationReference(input.id) };
 		const recorded = this.recordedPending(id);
 		if (recorded === "repeat") return receipt;
-		if (this.pending.size + this.unrecorded.size >= MAX_PENDING)
+		if (this.pending.size >= MAX_PENDING)
 			return {
 				status: "rejected",
 				message: "This conversation has reached its application message limit. No message was sent.",
@@ -119,6 +119,16 @@ class ApplicationInbox {
 			return { status: "rejected", message: "Pi refused the application message." };
 		}
 		return receipt;
+	}
+
+	/** The oldest request ID goes first; an ID that Pi recorded remains in its entry. */
+	private remember(id: string): void {
+		this.unrecorded.delete(id);
+		this.unrecorded.add(id);
+		for (const oldest of this.unrecorded) {
+			if (this.unrecorded.size <= MAX_PENDING) break;
+			this.unrecorded.delete(oldest);
+		}
 	}
 
 	private reply({ input }: Pending, status: "working" | "answer" | "unanswered", text: string, shared?: number): void {
@@ -145,7 +155,9 @@ class ApplicationInbox {
 		if (row && (row.phase === "starting" || row.phase === "queued")) this.work(row);
 	}
 
-	startTurn(): void {
+	/** A tool batch that a stop interrupted still starts one more turn, which ends without an answer. */
+	startTurn(stopped: boolean): void {
+		if (stopped) return;
 		const restored = [...this.pending].filter(([, row]) => row.phase === "restored");
 		if (!restored.length) return;
 		// A later boundary handler can replace a draft. Route only entries that Pi actually kept for this turn.
@@ -158,7 +170,7 @@ class ApplicationInbox {
 			if (visible.has(id)) this.work(row);
 			else {
 				this.pending.delete(id);
-				this.unrecorded.add(id);
+				this.remember(id);
 				this.reply(row, "unanswered", "Pi did not keep this request in the context for the next turn.");
 			}
 		}
@@ -199,7 +211,8 @@ class ApplicationInbox {
 			}
 		}
 		if (event.type === "turn_end") this.finishTurn(event);
-		return drafts ? { entries: [...event.entries, ...drafts] } : undefined;
+		// Pi does not continue a stopped run, so a request cleared by Escape waits for the next one.
+		return drafts ? { entries: [...event.entries, ...drafts], continue: true } : undefined;
 	}
 
 	private takeWorking(): Pending[] {
@@ -227,7 +240,7 @@ class ApplicationInbox {
 		const rows = [...this.pending];
 		this.pending.clear();
 		this.users = 0;
-		if (keepReceipts) for (const [id] of rows) this.unrecorded.add(id);
+		if (keepReceipts) for (const [id] of rows) this.remember(id);
 		for (const [, row] of rows) this.reply(row, "unanswered", reason);
 	}
 }
@@ -256,7 +269,7 @@ export function registerApplicationMessages(pi: ExtensionAPI): (event: Boundary)
 		);
 	});
 	pi.on("session_tree", () => inbox?.end("The conversation changed branches before Pi answered this request.", true));
-	pi.on("turn_start", () => inbox?.startTurn());
+	pi.on("turn_start", (_event, ctx) => inbox?.startTurn(ctx.signal?.aborted === true));
 	pi.on("message_start", (event) => inbox?.startMessage(event.message));
 	pi.on("agent_settled", (event) => inbox?.settled(event.aborted));
 

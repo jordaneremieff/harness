@@ -81,11 +81,13 @@ function fixture() {
 	const bus = new EventEmitter();
 	let session = SessionManager.inMemory("/work");
 	let active = false;
+	let run = new AbortController();
+	let continued: boolean[] = [];
 	let initial: Custom | undefined;
 	let turnIndex = 0;
 	let outcome: TurnEndEvent["outcome"] = "completed";
 	const queue: Message[] = [];
-	const run: Message[] = [];
+	const placed: Message[] = [];
 	const sent: Array<{ message: Sent; options: Options; idle: boolean }> = [];
 	const replies: Reply[] = [];
 	const publications: Publication[] = [];
@@ -96,6 +98,9 @@ function fixture() {
 			return session;
 		},
 		isIdle: () => !active,
+		get signal() {
+			return active ? run.signal : undefined;
+		},
 	} as unknown as ExtensionContext;
 	const pi = {
 		events: {
@@ -138,7 +143,7 @@ function fixture() {
 			const result = (await handler({ type: "message_end", message }, ctx)) as MessageEndEventResult | undefined;
 			if (result?.message?.role === message.role) message = result.message;
 		}
-		run.push(message);
+		placed.push(message);
 		if (message.role === "custom") {
 			const id = session.appendCustomMessageEntry(
 				message.customType,
@@ -184,13 +189,18 @@ function fixture() {
 				},
 				ctx,
 			)) as BoundaryResult | undefined;
-			const continued = result?.continue ?? shouldContinue;
-			assert.equal(continued, shouldContinue, "The receiver must leave continuation to Pi and other handlers");
-			shouldContinue = continued;
+			const requested = result?.continue ?? shouldContinue;
+			if (requested !== shouldContinue)
+				assert.ok(
+					requested && (result?.entries?.length ?? 0) > entries.length,
+					"The receiver asks to continue only for requests that it places again",
+				);
+			shouldContinue = requested;
 			entries = result?.entries ?? entries;
 		}
 		// Pi commits the returned drafts after the boundary handlers, without message events.
 		appendDrafts(session, entries);
+		continued.push(shouldContinue);
 	}
 	function user(text: string): Message {
 		return { role: "user", content: [{ type: "text", text }], timestamp: 0 };
@@ -241,10 +251,20 @@ function fixture() {
 			if (reason === "new") session = SessionManager.inMemory("/work");
 			await emit({ type: "session_start", reason });
 		},
+		/** The continuation decision of each boundary, in order. */
+		get continued() {
+			return continued;
+		},
+		/** Pi's stop: the active run's signal aborts. */
+		stop() {
+			run.abort();
+		},
 		async begin(prompt = "Operator prompt") {
 			const message = initial;
 			initial = undefined;
 			active = true;
+			run = new AbortController();
+			continued = [];
 			turnIndex = 0;
 			outcome = "completed";
 			await emit({ type: "agent_start" });
@@ -292,8 +312,15 @@ function fixture() {
 			await nextTurn();
 			for (const message of pending) await place(message);
 		},
+		/** Ends the low-level run at Pi's pre-settlement boundary and returns its continuation decision. */
+		async endRun() {
+			await emit({ type: "agent_end", messages: placed.splice(0) });
+			assert.equal(queue.length, 0);
+			await boundary({ type: "agent_before_settle", outcome });
+			return continued.at(-1);
+		},
 		async settle(aborted = false) {
-			await emit({ type: "agent_end", messages: run.splice(0) });
+			await emit({ type: "agent_end", messages: placed.splice(0) });
 			// A bare abort leaves the queue intact and bypasses the pre-settlement boundary.
 			if (!aborted) {
 				assert.equal(queue.length, 0);
@@ -543,7 +570,9 @@ it("restores a cleared follow-up at the aborted turn's empty boundary for the ne
 	await pi.begin();
 	const receipt = pi.deliver(message);
 	pi.clearQueue();
+	pi.stop();
 	await pi.turn(assistant("An aborted response.", "aborted"));
+	assert.equal(pi.continued.at(-1), true, "Pi ignores this continuation because the run stopped");
 	const [restored] = pi.customMessages();
 	assert.deepEqual(restored?.content, pi.sent[0].message.content);
 	await pi.settle(true);
@@ -587,7 +616,7 @@ it("waits for an empty preview after a late clear and activates restored request
 	assert.equal(pi.sent.length, 1);
 });
 
-it("recovers at pre-settlement after a clear and preserves the preceding boundary draft", async () => {
+it("recovers at pre-settlement after a clear, continues the run and preserves the preceding boundary draft", async () => {
 	const pi = await bound();
 	const message = request(pi.session.getSessionId(), 1);
 	await pi.begin();
@@ -599,7 +628,7 @@ it("recovers at pre-settlement after a clear and preserves the preceding boundar
 		entries: [{ type: "custom_message", customType: "fixture.prior", content: "Prior draft", display: false }],
 		continue: false,
 	});
-	await pi.settle();
+	assert.equal(await pi.endRun(), true);
 	assert.deepEqual(
 		pi.customMessages().map((entry) => entry.content),
 		["Prior draft", pi.sent[0].message.content],
@@ -607,10 +636,72 @@ it("recovers at pre-settlement after a clear and preserves the preceding boundar
 	assert.equal(pi.sent.length, 1);
 	assert.deepEqual(pi.replies, []);
 
+	await pi.nextTurn();
+	assert.deepEqual(pi.replies, [working(message)]);
+	await pi.turn(assistant("An answer in the continuation."));
+	await pi.settle();
+	assert.deepEqual(pi.replies, [working(message), answer(message, "An answer in the continuation.")]);
+});
+
+it("continues the run for a request that Pi dropped without a stop", async () => {
+	const pi = await bound();
+	const message = request(pi.session.getSessionId(), 1);
 	await pi.begin();
+	pi.deliver(message);
+	pi.clearQueue();
+	await pi.turn(assistant("An answer to the operator."));
+	assert.equal(pi.customMessages().length, 1);
+	assert.equal(pi.continued.at(-1), true);
+	assert.deepEqual(pi.replies, []);
+	await pi.nextTurn();
+	assert.deepEqual(pi.replies, [working(message)]);
+	await pi.turn(assistant("An answer to the request."));
+	await pi.settle();
+	assert.deepEqual(pi.replies, [working(message), answer(message, "An answer to the request.")]);
+	assert.equal(pi.sent.length, 1);
+});
+
+it("keeps a request cleared by a stop during tools waiting through the stopped turn for the next run", async () => {
+	const pi = await bound();
+	const message = request(pi.session.getSessionId(), 1);
+	await pi.begin();
+	pi.deliver(message);
+	pi.clearQueue();
+	pi.stop();
+	await pi.turn(assistant("A tool call that the stop interrupts.", "toolUse"));
+	assert.equal(pi.customMessages().length, 1);
+	// Pi starts one more turn after an interrupted tool batch; its response ends aborted.
+	await pi.nextTurn();
+	await pi.turn(assistant("", "aborted"));
+	await pi.settle(true);
+	assert.deepEqual(pi.replies, []);
+
+	await pi.begin();
+	assert.deepEqual(pi.replies, [working(message)]);
 	await pi.turn(assistant("A later answer."));
 	await pi.settle();
 	assert.deepEqual(pi.replies, [working(message), answer(message, "A later answer.", 1)]);
+	assert.equal(pi.customMessages().length, 1);
+	assert.equal(pi.sent.length, 1);
+});
+
+it("keeps accepting requests after many unrecorded ones and forgets the oldest unrecorded ID first", async () => {
+	const pi = await bound();
+	const make = (n: number) => request(pi.session.getSessionId(), n);
+	const navigate = async () => {
+		const leaf = pi.session.getLeafId();
+		await pi.emit({ type: "session_tree", oldLeafId: leaf, newLeafId: leaf });
+	};
+	await pi.begin();
+	for (let n = 0; n < 40; n++) assert.equal(pi.deliver(make(n)).status, "requested");
+	await navigate();
+	for (let n = 40; n < 80; n++) assert.equal(pi.deliver(make(n)).status, "requested");
+	await navigate();
+	assert.equal(pi.sent.length, 80);
+	for (const n of [16, 79]) assert.equal(pi.deliver(make(n)).status, "requested");
+	assert.equal(pi.sent.length, 80, "A remembered ID is not sent again");
+	assert.equal(pi.deliver(make(15)).status, "requested");
+	assert.equal(pi.sent.length, 81, "The oldest unrecorded ID is forgotten first");
 });
 
 it("ends a waiting request's application reply route on tree navigation or shutdown", async () => {
