@@ -28,6 +28,7 @@ interface Registered {
 		content: Array<{ type: string; text: string }>;
 		details: Record<string, unknown>;
 		structuredContent?: JsonObject;
+		isError?: boolean;
 	}>;
 	renderCall: unknown;
 	renderResult: unknown;
@@ -228,10 +229,11 @@ test("registered jobs round-trip source evidence and serialize concurrent update
 		call(writer, { ...input, summary: "Use editor B.", expectedDigest: first.details.digest as string }),
 		call(writer, { ...input, summary: "Use editor C.", expectedDigest: first.details.digest as string }),
 	]);
-	assert.equal(updates.filter((result) => result.status === "fulfilled").length, 1);
-	assert.equal(updates.filter((result) => result.status === "rejected").length, 1);
-	const current = updates.find((result) => result.status === "fulfilled");
-	assert.ok(current?.status === "fulfilled");
+	const current = updates.find((result) => result.status === "fulfilled" && !result.value.isError);
+	const failed = updates.find((result) => result.status === "fulfilled" && result.value.isError);
+	assert.ok(current?.status === "fulfilled" && failed?.status === "fulfilled");
+	assert.deepEqual(failed.value.details.written, []);
+	assert.match(failed.value.content[0].text, /digest changed/);
 	const replacement = await call(writer, {
 		...input,
 		slug: "new-editor",
@@ -336,8 +338,9 @@ test("review and retirement adapters share receipts, preserve signals, and seria
 		}),
 	]);
 	assert.equal(reviewResults[0].status, "fulfilled");
-	assert.equal(reviewResults[1].status, "rejected");
-	assert.ok(reviewResults[0].status === "fulfilled");
+	assert.ok(reviewResults[1].status === "fulfilled" && reviewResults[1].value.isError);
+	assert.deepEqual(reviewResults[1].value.details.written, []);
+	assert.ok(reviewResults[0].status === "fulfilled" && !reviewResults[0].value.isError);
 	const reviewed = reviewResults[0].value;
 	assert.match(reviewed.content[0].text, /^Memory updated: editor-choice.md\n/);
 	assert.deepEqual(reviewed.details.written, ["editor-choice.md"]);
@@ -367,8 +370,9 @@ test("review and retirement adapters share receipts, preserve signals, and seria
 		call(writer, { ...input, expectedDigest: confirmed.details.digest as string }),
 	]);
 	assert.equal(retireResults[0].status, "fulfilled");
-	assert.equal(retireResults[1].status, "rejected");
-	assert.ok(retireResults[0].status === "fulfilled");
+	assert.ok(retireResults[1].status === "fulfilled" && retireResults[1].value.isError);
+	assert.deepEqual(retireResults[1].value.details.written, []);
+	assert.ok(retireResults[0].status === "fulfilled" && !retireResults[0].value.isError);
 	const retired = retireResults[0].value;
 	assert.match(retired.content[0].text, /^Memory updated: editor-choice.md\n/);
 	assert.deepEqual(retired.details.written, ["editor-choice.md"]);
@@ -421,8 +425,9 @@ test("edit adapter reports the receipt and notice and shares the write queue", a
 		call(writer, { ...input, summary: "Use editor C.", expectedDigest: first.details.digest as string }),
 	]);
 	assert.equal(results[0].status, "fulfilled");
-	assert.equal(results[1].status, "rejected");
-	assert.ok(results[0].status === "fulfilled");
+	assert.ok(results[1].status === "fulfilled" && results[1].value.isError);
+	assert.deepEqual(results[1].value.details.written, []);
+	assert.ok(results[0].status === "fulfilled" && !results[0].value.isError);
 	const result = results[0].value;
 	assert.match(result.content[0].text, /^Memory updated: editor-choice.md\n/);
 	assert.deepEqual(result.details.written, ["editor-choice.md"]);
@@ -430,5 +435,8 @@ test("edit adapter reports the receipt and notice and shares the write queue", a
 	assert.equal(result.details.initialized, false);
 	assert.equal(typeof result.details.digest, "string");
 	assert.match(readFileSync(join(root, "editor-choice.md"), "utf8"), /Use editor B\./);
-	await assert.rejects(call(editor, edit), /digest changed/);
+	const stale = await call(editor, edit);
+	assert.equal(stale.isError, true);
+	assert.match(stale.content[0].text, /digest changed/);
+	assert.deepEqual(stale.details.written, []);
 });

@@ -8,7 +8,15 @@ import { durableRecall } from "./proactive-durable.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
 import { memorySourceCache } from "./source-cache.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
-import { editMemory, memoryRoot, retireMemory, reviewMemory, type WriteReceipt, writeMemory } from "./store.ts";
+import {
+	editMemory,
+	memoryRoot,
+	MemoryWriteError,
+	retireMemory,
+	reviewMemory,
+	type WriteReceipt,
+	writeMemory,
+} from "./store.ts";
 import {
 	MEMORY_GUIDELINES,
 	MEMORY_TOOL_DESCRIPTIONS,
@@ -133,12 +141,26 @@ export function createMemoryContribution(
 				output: [{ type: "text" as const, text: JSON.stringify(details) }],
 				details: details as Durable.JsonObject,
 			});
-			const mutationResult = (root: string, details: WriteReceipt) => ({
-				output: [{ type: "text" as const, text: memoryMutationText(root, details) }],
-				details: details as unknown as Durable.JsonObject,
-			});
-			const onCorpusLock = (root: string, operation: () => WriteReceipt): Promise<WriteReceipt> =>
-				withFileMutationQueue(join(root, ".memory-write.lock"), async () => operation());
+			const mutation = async (
+				root: string,
+				api: Durable.ToolExecutionApi,
+				context: Context,
+				operation: () => WriteReceipt,
+			) => {
+				try {
+					const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () => operation());
+					return {
+						output: [{ type: "text" as const, text: memoryMutationText(root, details) }],
+						details: { ...details },
+					};
+				} catch (error) {
+					if (error instanceof MemoryWriteError && !context.abortSignal?.aborted) {
+						// Report the receipt without replacing the thrown error that fails the task.
+						await api.details({ ...error.receipt }, context).catch(() => {});
+					}
+					throw error;
+				}
+			};
 			const searchTool = defineTool({
 				name: "memory_search",
 				description: MEMORY_TOOL_DESCRIPTIONS.search,
@@ -191,10 +213,9 @@ export function createMemoryContribution(
 						description: MEMORY_TOOL_DESCRIPTIONS.write,
 						...memoryToolArguments.write,
 						replay: "unsafe",
-						execute: async (args, _api, context) => {
+						execute: async (args, api, context) => {
 							const root = memoryRoot(configuredDir());
-							const details = await onCorpusLock(root, () => writeMemory(root, args, context.abortSignal));
-							return mutationResult(root, details);
+							return mutation(root, api, context, () => writeMemory(root, args, context.abortSignal));
 						},
 					}),
 					defineTool({
@@ -202,10 +223,9 @@ export function createMemoryContribution(
 						description: MEMORY_TOOL_DESCRIPTIONS.edit,
 						...memoryToolArguments.edit,
 						replay: "unsafe",
-						execute: async (args, _api, context) => {
+						execute: async (args, api, context) => {
 							const root = memoryRoot(configuredDir());
-							const details = await onCorpusLock(root, () => editMemory(root, args, context.abortSignal));
-							return mutationResult(root, details);
+							return mutation(root, api, context, () => editMemory(root, args, context.abortSignal));
 						},
 					}),
 					defineTool({
@@ -213,10 +233,9 @@ export function createMemoryContribution(
 						description: MEMORY_TOOL_DESCRIPTIONS.review,
 						...memoryToolArguments.review,
 						replay: "unsafe",
-						execute: async (args, _api, context) => {
+						execute: async (args, api, context) => {
 							const root = memoryRoot(configuredDir());
-							const details = await onCorpusLock(root, () => reviewMemory(root, args, context.abortSignal));
-							return mutationResult(root, details);
+							return mutation(root, api, context, () => reviewMemory(root, args, context.abortSignal));
 						},
 					}),
 					defineTool({
@@ -224,10 +243,9 @@ export function createMemoryContribution(
 						description: MEMORY_TOOL_DESCRIPTIONS.retire,
 						...memoryToolArguments.retire,
 						replay: "unsafe",
-						execute: async (args, _api, context) => {
+						execute: async (args, api, context) => {
 							const root = memoryRoot(configuredDir());
-							const details = await onCorpusLock(root, () => retireMemory(root, args, context.abortSignal));
-							return mutationResult(root, details);
+							return mutation(root, api, context, () => retireMemory(root, args, context.abortSignal));
 						},
 					}),
 				],

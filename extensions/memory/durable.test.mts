@@ -198,6 +198,7 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 	// cannot be exercised. The probe records the replay policy of the committed
 	// tool intent, which is the durable input to rerun classification.
 	const intents: Array<{ name: string; replay?: string }> = [];
+	let lastWriteTask: Durable.TaskId | undefined;
 	try {
 		const contribution = emitContribution();
 		const extension = await contribution.create(hostFor(contribution, corpus, harness));
@@ -207,6 +208,9 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 				name: "memory-durable-probe",
 				hooks: [
 					Durable.hook(Durable.ToolTask, {
+						beforeTool: (call, api) => {
+							if (call.name === "memory_write") lastWriteTask = api.taskId;
+						},
 						afterTool: async (call, _result, api, context) => {
 							const task = await harness.getTask(api.taskId, context);
 							const checkpoint = (task?.state as { checkpoint?: { replay?: string } } | undefined)?.checkpoint;
@@ -365,6 +369,32 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 			new Date().toISOString().slice(0, 10),
 		);
 		assert.equal((detailedNote.formulations as unknown[]).length, 2);
+
+		await drive("memory_write", {
+			slug: "durable-note",
+			title: "Durable note",
+			tags: [],
+			summary: "Summary.",
+			details: "Details.",
+			sources: "Test.",
+			verified: false,
+			expectedDigest: "0".repeat(64),
+		});
+		const refusal = (await toolResults(conversation)).at(-1)?.message;
+		assert.ok(refusal?.isError);
+		const receipt = nativeDetails(refusal);
+		assert.equal(receipt.ok, false);
+		assert.deepEqual(receipt.written, []);
+		assert.match(String(receipt.error), /digest changed/);
+		assert.equal(
+			messageText(refusal),
+			`<harness>\n[error] Memory write stopped; no live files were written: ${JSON.stringify(receipt)}\n</harness>`,
+		);
+		assert.ok(lastWriteTask);
+		const task = await harness.getTask(lastWriteTask, BACKGROUND_CONTEXT);
+		assert.equal(task?.state.status, "terminal");
+		assert.equal(task?.state.status === "terminal" && task.state.outcome.status, "failed");
+		assert.equal(readFileSync(notePath, "utf8"), retired);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 		if (previous === undefined) delete process.env.PI_MEMORY_DIR;

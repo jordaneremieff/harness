@@ -10,7 +10,7 @@ import {
 	ToolExecutionComponent,
 	type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
-import { Text, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { toolDisplay } from "./display.ts";
 import { renderCall, renderResult } from "./presentation.ts";
 
@@ -106,7 +106,7 @@ describe("memory_search call cards", () => {
 	});
 });
 
-describe("memory_search in Pi's tool component", () => {
+describe("Memory cards in Pi's tool component", () => {
 	it("uses one real hint, preserves the cursor, and bounds wrapped previews", async (t) => {
 		initTheme("dark", false);
 		const tui = await import(
@@ -121,27 +121,28 @@ describe("memory_search in Pi's tool component", () => {
 		const setBinding = (key: string[] = []) =>
 			tui.setKeybindings(new tui.KeybindingsManager(definitions, { "app.tools.expand": key }));
 		setBinding();
-		const tool = toolDisplay().tools.find(({ name }) => name === "memory_search");
-		assert.ok(tool?.renderCall && tool.renderResult);
-		const { renderResult: render } = tool;
 		let hostTheme: Theme | undefined;
-		const definition = {
-			...tool,
-			renderResult: ((response, options, theme, context) => {
-				hostTheme = theme;
-				return render(response, options, theme, context);
-			}) satisfies NonNullable<ToolDefinition["renderResult"]>,
-		} as ToolDefinition;
-		const component = (args: Record<string, unknown>) =>
-			new ToolExecutionComponent(
-				"memory_search",
-				"call-search",
+		const component = (args: Record<string, unknown>, name = "memory_search") => {
+			const tool = toolDisplay().tools.find((tool) => tool.name === name);
+			assert.ok(tool?.renderCall && tool.renderResult);
+			const { renderResult: render } = tool;
+			const definition = {
+				...tool,
+				renderResult: ((response, options, theme, context) => {
+					hostTheme = theme;
+					return render(response, options, theme, context);
+				}) satisfies NonNullable<ToolDefinition["renderResult"]>,
+			} as ToolDefinition;
+			return new ToolExecutionComponent(
+				name,
+				"call",
 				args,
 				undefined,
 				definition,
 				{ requestRender() {} } as unknown as TUI,
 				".",
 			);
+		};
 		const card = component({ query: ["fixture", "second formulation"], limit: 3 });
 		card.setArgsComplete();
 		assert.doesNotMatch(screen(card, 85), /to expand/);
@@ -193,6 +194,12 @@ describe("memory_search in Pi's tool component", () => {
 		assert.match(expanded, /"includeRetired": false/);
 		assert.match(expanded, /Continue with memory_search:/);
 		assert.doesNotMatch(expanded, /to expand|retained model text|\[2J/);
+		assert.ok(
+			card
+				.render(width)
+				.join("\n")
+				.includes(`${hostTheme.getFgAnsi("warning")}[Partial source coverage`),
+		);
 
 		const error = component({ query: "fixture" });
 		error.updateResult({ ...result("Memory source is unavailable", null), isError: true });
@@ -204,242 +211,37 @@ describe("memory_search in Pi's tool component", () => {
 				.join("\n")
 				.includes(`${hostTheme.getFgAnsi("error")}Memory source is unavailable`),
 		);
-	});
-});
 
-describe("memory_read call cards", () => {
-	it("names the slug with offset and digest qualifiers", () => {
-		const view = renderCall(
-			"memory_read",
-			{ slug: "provider-lessons", offset: 4000, digest: "0f1e2d3c4b5a6978" },
-			theme,
-			call,
+		const edit = component(
+			{ slug: "subject", edits: [{ oldText: "private anchor", newText: "private replacement" }] },
+			"memory_edit",
 		);
-		const shown = screen(view);
-		assert.match(shown, /memory_read · provider-lessons/);
-		assert.match(shown, /offset 4000 · digest 0f1e2d3c/);
-	});
-
-	it("marks a pending slug during streaming", () => {
-		assert.match(
-			screen(renderCall("memory_read", {}, theme, { expanded: false, argsComplete: false })),
-			/memory_read\s*$/,
-		);
-		assert.match(screen(renderCall("memory_read", {}, theme, call)), /\(slug pending\)/);
-	});
-});
-
-describe("memory_write call cards", () => {
-	it("names the slug, mode, and payload size without printing body fields", () => {
-		const args = {
-			slug: "provider-lessons",
-			title: "Provider lessons",
-			summary: "use the pinned provider",
-		};
-		const view = renderCall("memory_write", args, theme, call);
-		const shown = screen(view);
-		assert.match(shown, /memory_write · provider-lessons/);
-		assert.match(shown, /create/);
-		assert.match(shown, /payload 39 chars/);
-		assert.doesNotMatch(shown, /use the pinned provider|Provider lessons/);
-		assert.equal(lines(view).length, 2);
-	});
-
-	it("marks update mode from expectedDigest", () => {
-		assert.match(
-			screen(renderCall("memory_write", { slug: "s", summary: "x", expectedDigest: "0f1e2d3c" }, theme, call)),
-			/update/,
-		);
-	});
-
-	it("withholds short body-field values in the expanded preview", () => {
-		const args = {
-			slug: "provider-lessons",
-			title: "Secret title",
-			summary: "pin provider X",
-			details: ["credential abc"],
-			sources: ["doc.md", "talk.md"],
-		};
-		const view = renderCall("memory_write", args, theme, expandedCall);
-		const shown = screen(view);
-		assert.match(shown, /"slug": "provider-lessons"/);
-		assert.match(shown, /"title": "<withheld: 12 chars>"/);
-		assert.match(shown, /"summary": "<withheld: 14 chars>"/);
-		assert.match(shown, /"details": "<withheld: 1 items>"/);
-		assert.match(shown, /"sources": "<withheld: 2 items>"/);
-		assert.doesNotMatch(shown, /Secret title|pin provider X|credential abc|doc\.md/);
-	});
-
-	it("withholds long strings under unfamiliar keys and bounds long arrays", () => {
-		const args = { slug: "s", novel: "x".repeat(200), tags: Array.from({ length: 30 }, (_, i) => `t${i}`) };
-		const shown = screen(renderCall("memory_write", args, theme, expandedCall));
-		assert.match(shown, /"novel": "<withheld: 200 chars>"/);
-		assert.match(shown, /\(\+10 more\)/);
-	});
-
-	it("escapes hostile control sequences in the slug", () => {
-		const view = renderCall("memory_write", { slug: `\x1b]52;c;clip\x07${"s".repeat(80)}`, summary: "x" }, theme, call);
-		const shown = screen(view, 60);
-		assert.doesNotMatch(shown, /[\x1b\x07]/);
-		assert.ok(shown.includes("…"));
-		wellFormed(shown);
-	});
-});
-
-describe("memory_edit cards", () => {
-	it("names the subject and edit count while withholding both texts in every view", () => {
-		const args = {
-			slug: "editor-choice",
-			expectedDigest: "a".repeat(64),
-			verified: false,
-			edits: [{ oldText: "private old text", newText: "private new text" }],
-		};
-		for (const context of [call, expandedCall]) {
-			const shown = screen(renderCall("memory_edit", args, theme, context));
-			assert.match(shown, /memory_edit · editor-choice/);
-			assert.doesNotMatch(shown, /private old text|private new text/);
-		}
-		assert.match(screen(renderCall("memory_edit", args, theme, call)), /1 edit/);
-		assert.match(screen(renderCall("memory_edit", args, theme, expandedCall)), /"oldText": "<withheld: 16 chars>"/);
-	});
-
-	it("escapes controls, bounds long payloads, and handles partial arguments", () => {
-		const args = { slug: "\x1b]52;c;clip\x07", edits: [{ oldText: "x".repeat(40000), newText: "\x1b" }] };
-		for (const context of [call, expandedCall]) {
-			const shown = screen(renderCall("memory_edit", args, theme, context), 40);
-			assert.doesNotMatch(shown, /[\x1b\x07]/);
-			assert.ok(shown.length < 1000);
-			wellFormed(shown);
-		}
-		for (const args of [null, {}, { edits: "partial" }]) {
-			assert.match(screen(renderCall("memory_edit", args, theme, { argsComplete: false })), /memory_edit/);
-		}
-	});
-
-	it("uses publication receipts for success and failure and escapes expanded evidence", () => {
-		const receipt = {
-			ok: true,
-			slug: "editor-choice",
-			written: ["editor-choice.md"],
-			notWritten: [],
-			digest: "12345678abcdef",
-			initialized: false,
-		};
-		assert.match(
-			screen(renderResult("memory_edit", result("saved", receipt), collapsed, theme, okContext)),
-			/editor-choice edited/,
-		);
-		const failed = { ...receipt, ok: false, written: [], notWritten: ["editor-choice.md"], error: "Source changed" };
-		const shown = screen(
-			renderResult(
-				"memory_edit",
-				result(`Memory write incomplete: ${JSON.stringify(failed)}`, undefined),
-				collapsed,
-				theme,
-				errorContext,
-			),
-		);
-		assert.match(shown, /edit failed.*editor-choice.*Source changed/);
-		assert.match(
-			screen(renderResult("memory_edit", result("Unknown refusal", undefined), collapsed, theme, errorContext)),
-			/edit incomplete/,
-		);
-		assert.match(
-			screen(
-				renderResult(
-					"memory_edit",
-					result("", { ...failed, written: ["editor-choice.md"] }),
-					collapsed,
-					theme,
-					errorContext,
-				),
-			),
-			/edit incomplete/,
-		);
-		assert.match(
-			screen(renderResult("memory_edit", result("", {}), { ...collapsed, isPartial: true }, theme, okContext)),
-			/Editing note/,
-		);
-		const expanded = screen(
-			renderResult("memory_edit", result("Evidence\x1b[2J", receipt), expandedView, theme, okContext),
-		);
-		assert.match(expanded, /Evidence/);
-		assert.doesNotMatch(expanded, /\x1b/);
-		assert.match(screen(renderResult("memory_edit", result("", null), collapsed, theme, okContext)), /memory_edit/);
-	});
-});
-
-describe("memory review and retirement cards", () => {
-	it("withholds reasons and sources in every mutation call view", () => {
-		for (const name of ["memory_review", "memory_retire"]) {
-			const args = {
+		assert.doesNotMatch(screen(edit, width), /to expand/);
+		edit.updateResult({
+			...result("Anchor mismatch: current excerpt \x1b[2Jis different", {
+				ok: false,
 				slug: "subject",
-				expectedDigest: "a".repeat(64),
-				outcome: "confirmed",
-				reactivate: true,
-				reason: "private reason",
-				sources: "private source",
-			};
-			const before = structuredClone(args);
-			for (const view of [call, expandedCall]) {
-				const shown = screen(renderCall(name, args, theme, view));
-				assert.ok(shown.includes(`${name} · subject`));
-				assert.doesNotMatch(shown, /private reason|private source/);
-			}
-			assert.match(screen(renderCall(name, args, theme, expandedCall)), /"reason": "<withheld: 14 chars>"/);
-			assert.match(screen(renderCall(name, args, theme, expandedCall)), /"sources": "<withheld: 14 chars>"/);
-			assert.deepEqual(args, before);
-		}
-		assert.match(
-			screen(renderCall("memory_review", { slug: "subject", outcome: "confirmed", reactivate: true }, theme, call)),
-			/confirmed · reactivation requested/,
-		);
-	});
-
-	it("uses shared receipt semantics without claiming a review confirmed the note", () => {
-		for (const [name, operation, past] of [
-			["memory_review", "review", "reviewed"],
-			["memory_retire", "retire", "retired"],
-		]) {
-			const receipt = {
-				ok: true,
-				slug: "subject",
-				written: ["subject.md"],
+				written: [],
 				notWritten: [],
-				captured: [{ revision: "prior" }],
-			};
-			const shown = screen(renderResult(name, result("stored", receipt), collapsed, theme, okContext));
-			assert.ok(shown.includes(`subject ${past}`));
-			assert.match(shown, /1 prior captures/);
-			assert.doesNotMatch(shown, /confirmed|reactivated/);
-			const failed = { ...receipt, ok: false, written: [], notWritten: ["subject.md"], error: "Source changed" };
-			const failure = screen(
-				renderResult(
-					name,
-					result(`Memory write incomplete: ${JSON.stringify(failed)}`, undefined),
-					collapsed,
-					theme,
-					errorContext,
-				),
-			);
-			assert.ok(failure.includes(`${operation} failed`));
-			assert.match(failure, /Source changed/);
-			assert.match(
-				screen(renderResult(name, result("", {}), { ...collapsed, isPartial: true }, theme, okContext)),
-				/note\.\.\./,
-			);
-		}
-	});
+			}),
+			isError: true,
+		});
+		assert.match(screen(edit, width), /No live files were written for subject/);
+		assert.doesNotMatch(screen(edit, width), /private|current excerpt/);
+		assert.equal(screen(edit, width).match(/to expand/g)?.length, 1);
+		edit.setExpanded(true);
+		const editExpanded = screen(edit, width);
+		assert.match(editExpanded, /"oldText": "14 characters"/);
+		assert.match(editExpanded, /Anchor mismatch: current excerpt is different/);
+		assert.doesNotMatch(editExpanded, /private|to expand|\[2J/);
 
-	it("handles partial, malformed, hostile and narrow call views without leaking payloads", () => {
-		for (const name of ["memory_review", "memory_retire"])
-			for (const args of [null, {}, { slug: "subject\x1b[2J", reason: "r".repeat(10000), sources: "\x07" }])
-				for (const expanded of [false, true]) {
-					const shown = screen(renderCall(name, args, theme, { argsComplete: false, expanded }), 24);
-					assert.doesNotMatch(shown, /[\x1b\x07]|r{50}/);
-					assert.ok(shown.length < 1000);
-					wellFormed(shown);
-				}
+		const read = component({ slug: "editor" }, "memory_read");
+		read.updateResult({
+			...result("model text", { content: "0\n1\n2\n3\n4\n5\n6", hasMore: false, nextOffset: null }),
+			isError: false,
+		});
+		assert.match(screen(read, width), /\.\.\. \(2 more lines, click to expand\)/);
+		assert.doesNotMatch(screen(read, width), /\n\s+5\s*\n|model text/);
 	});
 });
 
@@ -660,7 +462,7 @@ describe("memory_search result cards", () => {
 		assert.deepEqual(response, before);
 	});
 
-	it("bounds collapsed subject previews and shows zero-match guidance without expansion", () => {
+	it("bounds collapsed subject previews and keeps zero-match guidance for expansion", () => {
 		const details = {
 			...indexPage,
 			returned: 6,
@@ -689,7 +491,8 @@ describe("memory_search result cards", () => {
 				200,
 			);
 			assert.match(shown, /No matches returned from this source window/);
-			assert.match(shown, /Try alternate inflections, exact identifier forms, or quoted fragments/);
+			if (view.expanded) assert.match(shown, /Try alternate inflections, exact identifier forms, or quoted fragments/);
+			else assert.doesNotMatch(shown, /Try alternate inflections/);
 		}
 	});
 
@@ -743,576 +546,298 @@ describe("memory_search result cards", () => {
 	});
 });
 
-describe("memory_read result cards", () => {
+describe("read and history cards", () => {
+	const digest = "a".repeat(64);
+	const revision = `20260101T120000000Z-00000000-0000-0000-0000-000000000001-${digest}`;
 	const notePage = {
 		ok: true,
 		kind: "note",
-		slug: "provider-lessons",
-		file: "provider-lessons.md",
+		slug: "editor",
 		source: "note",
-		digest: "0f1e2d3c".repeat(8),
+		digest,
 		offset: 0,
-		nextOffset: 12000,
-		totalCodePoints: 19000,
-		contentCodePoints: 12000,
+		nextOffset: 12,
+		totalCodePoints: 12003,
+		contentCodePoints: 12,
 		hasMore: true,
 		lifecycle: { status: "active", supersededBy: null },
-		content: "page one",
+		content: "line\nsecond\n",
 	};
+	const show = (name: string, details: unknown, options = collapsed, context = okContext, width = 160) =>
+		screen(renderResult(name, result("model text", details), options, theme, context), width);
 
-	it("separates the returned page from the remaining source", () => {
-		const view = renderResult("memory_read", result("page one", notePage), collapsed, theme, okContext);
-		const shown = screen(view);
-		assert.match(shown, /provider-lessons · 12000 of 19000 chars · more/);
-		assert.match(shown, /status active/);
-		assert.match(shown, /(?:to expand result|expand for result)/i);
-		assert.equal(lines(view).length, 2);
+	it("names the exact subject, revision, offset and digest without a placeholder", () => {
+		const args = { slug: "editor", revision, offset: 12, digest };
+		const view = renderCall("memory_read", args, theme, { ...call, keyText: () => "ctrl+g" });
+		const wide = screen(view, 250);
+		assert.equal(wide.split("\n")[0], "memory_read editor");
+		assert.ok(wide.includes(`revision ${revision} · offset 12 · digest ${digest}`));
+		assert.doesNotMatch(wide, /to expand/);
+		assert.match(screen(view, 60), /…\n\.\.\. \(ctrl\+g to expand\)/);
+		for (const argsComplete of [false, true])
+			assert.equal(screen(renderCall("memory_read", {}, theme, { argsComplete })), "memory_read");
 	});
 
-	it("marks the final page and contract source", () => {
+	it("states scope and discloses both the remaining body and the exact continuation", () => {
+		const body = Array.from({ length: 7 }, (_, index) => `Line ${index}`).join("\n");
+		const read = { ...notePage, content: body };
+		const compact = show("memory_read", read);
+		assert.match(compact, /12 of 12003 characters on this page; more source follows/);
+		assert.deepEqual(
+			compact.split("\n").filter((line) => line.startsWith("Line")),
+			body.split("\n").slice(0, 5),
+		);
+		assert.match(compact, /\.\.\. \(2 more lines, click to expand\)$/);
+		const expanded = show("memory_read", read, expandedView);
+		assert.ok(expanded.includes(body));
+		assert.doesNotMatch(expanded, /to expand|model text/);
+		assert.match(expanded, /Continue with memory_read:\n\{\n.*"slug": "editor",\n.*"offset": 12,\n.*"digest": "a{64}"/);
+	});
+
+	it("reports the exact final Unicode range and keeps advisory evidence separate", () => {
 		const details = {
 			...notePage,
-			hasMore: false,
-			nextOffset: 19000,
 			offset: 12000,
-			contentCodePoints: 7000,
-			source: "contract",
-			lifecycle: null,
+			nextOffset: null,
+			contentCodePoints: 3,
+			hasMore: false,
+			content: "A🌍Z",
+			lifecycle: { status: "superseded", supersededBy: "replacement", problem: "Bad source metadata" },
+			freshness: {
+				policy: "before-use",
+				deadline: "due",
+				verified: true,
+				concern: { date: "2026-09-29", reason: "Current source differs\x1b[2J", sources: "Source A" },
+				problems: ["Invalid date"],
+			},
+			staleReferences: [{ slug: "stale-subject", status: "retired" }],
+			staleReferenceCoverage: { complete: false, count: 5, entriesVisited: 16, notesChecked: 10 },
+			staleReferenceGuidance: "Read the replacement before applying the claim.",
 		};
-		const shown = screen(renderResult("memory_read", result("t", details), collapsed, theme, okContext));
-		assert.match(shown, /7000 of 19000 chars/);
-		assert.doesNotMatch(shown, /· more/);
-		assert.match(shown, /contract source/);
-	});
-
-	it("shows actual source text with digest, code-point range, and escaped terminal controls", () => {
-		const details = { ...notePage, content: "# Actual title\n\nFirst line\nSecond line\tvalue\x1b[2J\u202e" };
 		const response = result(JSON.stringify(details), details);
 		const before = structuredClone(response);
-		const shown = screen(renderResult("memory_read", response, expandedView, theme, okContext), 200);
-		assert.match(shown, /# Actual title\n\nFirst line\nSecond line\\tvalue\\u\{1b\}\[2J\\u\{202e\}/);
-		assert.match(shown, /Digest: (?:0f1e2d3c){8}/);
-		assert.match(shown, /Source range: \[0, 12000\) code points/);
-		assert.match(shown, /Continue at offset 12000 with the same digest/);
-		assert.doesNotMatch(shown, /"content":|\\nFirst|\x1b|\u202e/);
+		const compact = screen(renderResult("memory_read", response, collapsed, colorTheme, okContext), 220);
+		assert.match(compact, /\{toolOutput\}3 of 12003 characters on this page/);
+		assert.match(compact, /\{warning\}\[status superseded · replacement replacement · review due · unresolved concern/);
+		assert.match(compact, /1 stale reference · reference coverage partial/);
+		assert.doesNotMatch(compact, /Read the replacement before/);
+		const full = show("memory_read", details, expandedView, okContext, 220);
+		for (const pattern of [
+			/Source range: \[12000, 12003\) code points/,
+			/End of source\./,
+			/Lifecycle problem: Bad source metadata/,
+			/Review policy: before-use/,
+			/Declared verified: true/,
+			/Unresolved concern reason: Current source differs/,
+			/Unresolved concern sources: Source A/,
+			/Stale reference: stale-subject · retired/,
+			/Reference matches observed: 5/,
+			/Reference notes checked: 10/,
+			/Read the replacement before applying the claim\./,
+		])
+			assert.match(full, pattern);
+		assert.doesNotMatch(full, /\[2J|nextOffset|Continue with memory_read/);
 		assert.deepEqual(response, before);
 	});
 
-	it("keeps supersession and unknown lifecycle warnings visible in both views", () => {
-		for (const lifecycle of [
-			{ status: "superseded", supersededBy: "new-subject" },
-			{ status: "unknown", supersededBy: null, problem: "invalid or ambiguous frontmatter" },
-			{ status: "retired", supersededBy: null },
-		])
-			for (const view of [collapsed, expandedView]) {
-				const details = { ...notePage, lifecycle };
-				const shown = screen(
-					renderResult("memory_read", result(JSON.stringify(details), details), view, colorTheme, okContext),
-					200,
-				);
-				assert.match(shown, /\{warning\}/);
-				assert.match(shown, new RegExp(`status ${lifecycle.status}`));
-				if (lifecycle.supersededBy) assert.match(shown, /replacement new-subject/);
-				if (lifecycle.problem) assert.match(shown, /Lifecycle problem: invalid or ambiguous frontmatter/);
-			}
-	});
-
-	it("keeps the escaped display within its bound and leaves the full result intact", () => {
-		const details = { ...notePage, content: "\u0001".repeat(12000) };
-		const response = result(JSON.stringify(details), details);
-		const shown = screen(renderResult("memory_read", response, expandedView, theme, okContext), 100000);
-		assert.ok(shown.length < 32200);
-		assert.match(shown, /Display limit; full text remains in native tool history/);
-		assert.doesNotMatch(shown, /\u0001/);
-		assert.equal(response.details, details);
-		assert.equal(details.content.length, 12000);
+	it("reads a current JSON note envelope and strips controls without changing the retained bytes", () => {
+		const content = `Line\twith tab\x1b[2J\u202e\n${"🌍".repeat(17000)}`;
+		const details = { ...notePage, content, source: "contract", lifecycle: null };
+		const response = result(JSON.stringify(details), undefined);
+		const shown = screen(renderResult("memory_read", response, expandedView, theme, okContext), 50000);
+		assert.match(shown, /Contract source/);
+		assert.match(shown, /Line {3}with tab/);
+		assert.match(shown, /\[Truncated: showing [\d]+ of [\d]+ characters\]/);
+		assert.doesNotMatch(shown, /\x1b|\u202e|\[2J/);
+		assert.equal(JSON.parse(response.content[0].type === "text" ? response.content[0].text : "").content, content);
 		wellFormed(shown);
 	});
 
-	it("renders errors, partial state, and malformed details safely", () => {
-		const error = screen(
-			renderResult(
-				"memory_read",
-				result(
-					'Error: note source changed since the supplied digest: provider-lessons.md. Restart memory_read with {"slug":"provider-lessons","offset":0} without digest for the current note and digest. If the slug is absent, use memory_search; do not continue the previous page',
-					undefined,
-				),
-				collapsed,
-				theme,
-				errorContext,
-			),
-		);
-		assert.match(error, /note source changed since the supplied digest/);
-		assert.match(error, /Restart memory_read with/);
-		assert.match(error, /"slug":"provider-lessons","offset":0/);
-		assert.match(error, /without digest for the current note and digest/);
-		assert.match(error, /If the slug is absent, use\s+memory_search/);
-		const missing =
-			"note not found: absent.md. Use memory_search to find the current slug; read it from offset 0 with its current digest";
-		assert.match(
-			screen(renderResult("memory_read", result(missing, undefined), collapsed, theme, errorContext), 200),
-			/memory_search.*offset 0.*current digest/,
-		);
-		assert.match(
-			screen(renderResult("memory_read", result("", {}), { expanded: false, isPartial: true }, theme, okContext)),
-			/Reading note\.\.\./,
-		);
-		const malformed = screen(renderResult("memory_read", result("fallback", "broken"), collapsed, theme, okContext));
-		assert.match(malformed, /fallback/);
-	});
-});
-
-describe("freshness evidence cards", () => {
-	const freshness = {
-		evaluatedOn: "2026-09-29",
-		verified: true,
-		verifiedDate: "2026-01-01",
-		policy: "before-use",
-		reviewAfter: "2026-09-01",
-		deadline: "due",
-		concern: {
-			date: "2026-09-28",
-			reason: "Only the release claim differs.\x1b[2J",
-			sources: "Current release source.",
-		},
-		lastReview: { date: "2026-01-01", digest: "b".repeat(64), sources: "Inspected prior source." },
-		retirement: null,
-		problems: ["Verification date requires interpretation"],
-	};
-	it("exposes policy, deadline and concerns without labeling the note fresh or false", () => {
+	it("carries the historical identity into the whole continuation call", () => {
 		const details = {
-			slug: "subject",
-			source: "note",
-			content: "Source body",
-			lifecycle: { status: "active", supersededBy: null },
-			freshness,
-		};
-		const response = result(JSON.stringify(details), details);
-		const before = structuredClone(response);
-		const compact = screen(renderResult("memory_read", response, collapsed, colorTheme, okContext), 300);
-		assert.match(compact, /\{warning\}.*subject/);
-		assert.match(compact, /review due · unresolved concern · 1 freshness problems/);
-		const expanded = screen(renderResult("memory_read", response, expandedView, theme, okContext), 300);
-		for (const pattern of [
-			/Freshness evaluated on: 2026-09-29/,
-			/Declared verified: true/,
-			/Declared verification date: 2026-01-01/,
-			/Review policy: before-use/,
-			/Review deadline: due/,
-			/Review after: 2026-09-01/,
-			/Unresolved concern reason: Only the release claim differs\.\\u\{1b\}\[2J/,
-			/Unresolved concern sources: Current release source\./,
-			/Last review digest: b{64}/,
-			/Last review sources: Inspected prior source\./,
-			/Freshness problem: Verification date requires interpretation/,
-			/Metadata records declarations, not proof of current truth\./,
-		])
-			assert.match(expanded, pattern);
-		assert.doesNotMatch(expanded, /\x1b|status false|status fresh/);
-		assert.deepEqual(response, before);
-	});
-
-	it("preserves retired and historical evidence in search and direct reads", () => {
-		const note = {
-			slug: "subject",
-			lifecycle: { status: "retired", supersededBy: null },
-			freshness: {
-				...freshness,
-				retirement: { date: "2026-09-29", reason: "Withdrawn by operator.", sources: "Current instruction." },
-			},
-		};
-		const details = {
-			notes: [note],
-			includeRetired: true,
-			excludedRetired: 0,
-			returned: 1,
-			totalNotes: 1,
-			scan: { complete: true, issueCount: 0, retiredNotes: 1 },
-		};
-		assert.match(screen(renderCall("memory_search", { includeRetired: true }, theme, call)), /includes retired/);
-		const search = screen(renderResult("memory_search", result("", details), expandedView, theme, okContext), 300);
-		assert.match(search, /Includes retired notes: true/);
-		assert.match(search, /Retired notes in this window: 1/);
-		assert.match(search, /status retired/);
-		assert.match(search, /Retirement reason: Withdrawn by operator\./);
-		const excluded = { ...details, notes: [], includeRetired: false, excludedRetired: 1, returned: 0, totalNotes: 0 };
-		assert.match(
-			screen(renderResult("memory_search", result("", excluded), collapsed, theme, okContext), 300),
-			/1 retired note excluded in this window/,
-		);
-		const history = screen(
-			renderResult(
-				"memory_read",
-				result("", { ...note, source: "history", content: "Prior bytes" }),
-				expandedView,
-				theme,
-				okContext,
-			),
-			300,
-		);
-		assert.match(history, /historical evidence · prior status retired/);
-		assert.match(history, /Retirement sources: Current instruction\./);
-	});
-
-	it("renders unknown and malformed freshness data without upgrading it", () => {
-		for (const value of [
-			null,
-			{},
-			"bad",
-			{ policy: "unknown", deadline: "unknown", verified: "yes", problems: ["Malformed policy", 1] },
-		]) {
-			const details = { slug: "subject", content: "text", freshness: value };
-			const shown = screen(renderResult("memory_read", result("", details), expandedView, theme, okContext));
-			assert.doesNotMatch(shown, /Declared verified: true/);
-			if (value && typeof value === "object" && "verified" in value) assert.match(shown, /Declared verified: unknown/);
-			wellFormed(shown);
-		}
-	});
-});
-
-describe("memory_write result cards", () => {
-	const receipt = {
-		ok: true,
-		slug: "provider-lessons",
-		file: "provider-lessons.md",
-		digest: "0f1e2d3c4b5a6978",
-		written: ["provider-lessons.md", "README.md"],
-		notWritten: [],
-		initialized: true,
-	};
-
-	it("reports the stored slug, digest, and initialization", () => {
-		const view = renderResult("memory_write", result("stored", receipt), collapsed, colorTheme, okContext);
-		const shown = screen(view);
-		assert.match(shown, /provider-lessons written · corpus initialized/);
-		assert.match(shown, /digest 0f1e2d3c/);
-		assert.match(shown, /\{success\}/);
-		assert.doesNotMatch(shown, /README\.md/);
-		assert.equal(lines(view).length, 2);
-	});
-
-	it("marks a partial receipt as a warning with both counts", () => {
-		const details = { ...receipt, written: ["provider-lessons.md"], notWritten: ["other.md"] };
-		const shown = screen(renderResult("memory_write", result("t", details), collapsed, colorTheme, okContext));
-		assert.match(shown, /\{warning\}/);
-		assert.match(shown, /1 written · 1 not written/);
-	});
-
-	it("recovers a partial receipt from a thrown write error message", () => {
-		const thrown = {
-			ok: false,
-			slug: "provider-lessons",
-			file: "provider-lessons.md",
-			written: ["provider-lessons.md"],
-			notWritten: ["other.md", "third.md"],
-			initialized: true,
-			error: "EACCES: other.md",
-		};
-		const failed = result(`Memory write incomplete: ${JSON.stringify(thrown)}`, undefined);
-		const view = renderResult("memory_write", failed, collapsed, colorTheme, errorContext);
-		const shown = screen(view);
-		assert.match(shown, /provider-lessons write incomplete · 1 written · 2 not written/);
-		assert.match(shown, /EACCES: other\.md/);
-		assert.match(shown, /\{warning\}/);
-		const expanded = screen(renderResult("memory_write", failed, expandedView, theme, errorContext));
-		assert.match(expanded, /"ok":false/);
-	});
-
-	it("classifies a total failure from a receipt", () => {
-		const thrown = {
-			ok: false,
-			slug: "s",
-			file: "s.md",
-			written: [],
-			notWritten: ["s.md"],
-			initialized: false,
-			error: "disk full",
-		};
-		const shown = screen(
-			renderResult(
-				"memory_write",
-				result(`Memory write incomplete: ${JSON.stringify(thrown)}`, undefined),
-				collapsed,
-				colorTheme,
-				errorContext,
-			),
-		);
-		assert.match(shown, /write failed · s · disk full/);
-		assert.match(shown, /\{error\}/);
-	});
-
-	it("says incomplete when the thrown receipt does not parse", () => {
-		const failed = result('Memory write incomplete: {"ok":false,"written":["a', undefined);
-		const shown = screen(renderResult("memory_write", failed, collapsed, colorTheme, errorContext));
-		assert.match(shown, /write incomplete ·/);
-		assert.match(shown, /\{error\}/);
-		assert.doesNotMatch(shown, /\{warning\}/);
-		const empty = screen(renderResult("memory_write", result("", undefined), collapsed, theme, errorContext));
-		assert.match(empty, /write incomplete/);
-	});
-
-	it("renders partial state and malformed details safely", () => {
-		assert.match(
-			screen(renderResult("memory_write", result("", {}), { expanded: false, isPartial: true }, theme, okContext)),
-			/Writing note\.\.\./,
-		);
-		const malformed = screen(renderResult("memory_write", result("fallback", "broken"), collapsed, theme, okContext));
-		assert.match(malformed, /fallback/);
-	});
-});
-
-describe("historical evidence cards", () => {
-	const revision = `20260101T120000000Z-00000000-0000-0000-0000-000000000001-${"a".repeat(64)}`;
-	it("keeps exact revision identity and prior lifecycle separate from current authority", () => {
-		const details = {
-			slug: "subject",
+			...notePage,
 			source: "history",
 			revision,
 			capturedAt: "2026-01-01T12:00:00.000Z",
-			digest: "a".repeat(64),
-			lifecycle: { status: "active", supersededBy: null },
-			content: "Old source",
-			authority: "Historical evidence, not current authority",
-			hasMore: true,
-			nextOffset: 12,
+			authority: "Historical evidence, not current authority.",
 		};
-		for (const options of [collapsed, expandedView]) {
-			const shown = screen(renderResult("memory_read", result("", details), options, theme, okContext), 300);
-			assert.match(shown, /historical evidence · prior status active/);
-			assert.ok(shown.includes(revision.slice(0, 28)), "collapsed keeps the timestamp and first identifier group");
-		}
-		const fullRevision = screen(renderResult("memory_read", result("", details), expandedView, theme, okContext), 300);
-		assert.ok(fullRevision.includes(revision), "expanded keeps the exact revision");
-		assert.ok(
-			screen(renderCall("memory_read", { slug: "subject", revision }, theme, expandedCall), 300).includes(revision),
-		);
-		const history = {
-			slug: "subject",
-			revisions: [{ revision, capturedAt: details.capturedAt, digest: details.digest, bytes: 100 }],
-			coverage: { unavailable: 1 },
-			nextCursor: "opaque",
-			authority: details.authority,
-		};
-		const expanded = screen(renderResult("memory_history", result("", history), expandedView, theme, okContext), 300);
-		assert.ok(expanded.includes(revision));
-		assert.match(expanded, /not current authority/);
-		assert.match(expanded, /nextCursor: opaque/);
-		assert.match(
-			screen(renderResult("memory_history", result("", history), collapsed, theme, okContext)),
-			/1 unavailable revisions/,
-		);
-		assert.match(
-			screen(renderCall("memory_history", { slug: "subject", cursor: "opaque" }, theme, call)),
-			/continuation/,
-		);
+		assert.match(show("memory_read", details), /on this historical page/);
+		const full = show("memory_read", details, expandedView);
+		assert.match(full, /Historical evidence · prior status active/);
+		assert.match(full, /Captured: 2026-01-01T12:00:00\.000Z/);
+		assert.match(full, /not current authority/);
+		assert.ok(full.includes(`"revision": "${revision}"`));
 	});
-	it("shows exact history-plan selections and page totals without deletion authority", () => {
-		const plan = {
-			capturedBefore: "2026-02-01T00:00:00.000Z",
-			keepNewest: 1,
-			scope: "metadata-page",
-			availableBytes: 300,
-			keepBytes: 100,
-			candidateBytes: 200,
-			kept: 1,
-			candidates: 1,
-			unavailable: 1,
-			digestsVerified: false,
-			meaning: "The retention floor includes unavailable revision names; it promises no recoverable floor.",
-		};
+
+	it("keeps history metadata, partial coverage and an exact plan cursor on empty pages", () => {
+		const plan = { capturedBefore: "2026-02-01T00:00:00.000Z", keepNewest: 1 };
 		const details = {
-			slug: "subject",
-			plan,
-			coverage: { unavailable: 1, bodiesRead: false },
-			nextCursor: "opaque",
+			ok: true,
+			kind: "history",
+			slug: "editor",
+			revisions: [],
+			nextCursor: "opaque-history-token",
+			coverage: { inventoryComplete: true, unavailable: 1, bodiesRead: false, totalRevisions: 2 },
+			plan: { ...plan, candidates: 0, availableBytes: 0, meaning: "Inventory floor includes unavailable names." },
+		};
+		const compact = show("memory_history", details);
+		assert.match(compact, /No prior captures returned on this metadata page; more pages available/);
+		assert.match(compact, /\[1 unavailable revision\]/);
+		assert.doesNotMatch(compact, /opaque-history-token|End of/);
+		const body = show("memory_history", details, expandedView);
+		assert.match(body, /Capture name inventory: complete/);
+		assert.match(body, /Historical bodies were not read/);
+		assert.match(body, /Capture-name digests are unverified/);
+		assert.match(body, /authorises no removal/);
+		const continuation = body.match(/Continue with memory_history:\n(\{[\s\S]+?\n\})/);
+		assert.ok(continuation);
+		assert.deepEqual(JSON.parse(continuation[1]), { slug: "editor", plan, cursor: details.nextCursor });
+		const final = {
+			...details,
+			nextCursor: null,
 			revisions: [
 				{
 					revision,
 					capturedAt: "2026-01-01T12:00:00.000Z",
-					digest: "a".repeat(64),
+					digest,
 					bytes: 200,
 					selection: "candidate",
 					reason: "before-cutoff-outside-floor",
 				},
-				{ revision: "newest-revision", bytes: 100, selection: "keep", reason: "newest-retention-floor" },
 			],
 		};
-		assert.match(screen(renderCall("memory_history", { slug: "subject", plan }, theme, call)), /read-only plan/);
-		assert.match(
-			screen(renderResult("memory_history", result("", details), collapsed, theme, okContext), 300),
-			/1 candidates on this page; read-only plan/,
-		);
-		const expanded = screen(renderResult("memory_history", result("", details), expandedView, theme, okContext), 300);
-		for (const pattern of [
-			/Read-only history plan: captured before 2026-02-01T00:00:00\.000Z; keep newest 1/,
-			/Available bytes on this metadata page: 300/,
-			/Keep bytes on this metadata page: 100/,
-			/Candidate bytes on this metadata page: 200/,
-			/Unavailable revisions on this page: 1/,
-			/Selection: candidate\nReason: before-cutoff-outside-floor/,
-			/Selection: keep\nReason: newest-retention-floor/,
-			/Capture-name digests are unverified/,
-			/Plan scope: The retention floor includes unavailable revision names; it promises no recoverable floor\./,
-			/authorizes no removal/,
-			/imposes no retained-storage bound/,
-			/Repeat slug and plan with nextCursor: opaque/,
-		])
-			assert.match(expanded, pattern);
-		assert.ok(expanded.includes(revision));
+		const finalBody = show("memory_history", final, expandedView);
+		assert.match(finalBody, /End of the capture inventory/);
+		assert.ok(finalBody.includes(revision));
+		assert.match(finalBody, /Selection: candidate\nReason: before-cutoff-outside-floor/);
+		assert.match(finalBody, /Bytes: 200/);
 	});
-	it("separates prior captures and policy omissions from live publication failure", () => {
-		const details = {
-			ok: false,
-			slug: "subject",
-			written: [],
-			notWritten: ["subject.md"],
-			captured: [{ revision }],
-			historyOmitted: [{ file: "other.md", reason: "credential-policy" }],
-		};
-		const shown = screen(renderResult("memory_write", result("", details), collapsed, theme, errorContext), 300);
-		assert.match(shown, /write failed/);
-		assert.match(shown, /1 prior captures \(not proof of write success\)/);
-		assert.match(shown, /1 history omissions \(credential policy\)/);
+
+	it("does not claim zero or end from absent history and keeps real read errors", () => {
+		const malformed = screen(
+			renderResult("memory_history", result("\nDetails unavailable\nEvidence", {}), collapsed, theme, okContext),
+		);
+		assert.match(malformed, /Details unavailable/);
+		assert.doesNotMatch(malformed, /No prior|End of/);
+		const readError = screen(
+			renderResult(
+				"memory_read",
+				result("Source changed\nRestart at offset 0", {}),
+				expandedView,
+				colorTheme,
+				errorContext,
+			),
+		);
+		assert.match(readError, /\{error\}Source changed\nRestart at offset 0/);
+		const pending = show("memory_history", {}, { expanded: false, isPartial: true });
+		assert.match(pending, /History read in progress/);
+		assert.doesNotMatch(pending, /to expand/);
 	});
 });
 
-describe("renderer hygiene", () => {
-	it("never splits surrogate pairs when clipping", () => {
-		const query = `x${"🌍".repeat(40)}`;
-		const shown = screen(renderCall("memory_search", { query }, theme, call), 53);
-		assert.ok(shown.includes("…"));
-		wellFormed(shown);
-		const body = screen(renderCall("memory_read", { slug: `🌍${"a".repeat(80)}` }, theme, expandedCall), 200);
-		wellFormed(body);
-	});
+describe("mutation cards", () => {
+	const receipt = {
+		ok: true,
+		slug: "editor",
+		written: ["editor.md"],
+		notWritten: [],
+		digest: "a".repeat(64),
+		captured: [{ slug: "editor", revision: "prior" }],
+		historyOmitted: [{ file: "other.md", reason: "credential-policy" }],
+	};
+	const show = (name: string, details: unknown, options = collapsed, ctx = okContext, diagnostic = "") =>
+		screen(renderResult(name, result(diagnostic, details), options, colorTheme, ctx), 180);
 
-	it("preserves non-BMP characters inside the preview", () => {
-		const shown = screen(renderCall("memory_search", { query: "providers 🌍 lessons" }, theme, call));
-		assert.match(shown, /providers 🌍 lessons/);
-	});
-
-	it("renders unknown tool names without dumping arguments", () => {
-		const view = renderCall("memory_evict", { secret: "payload" }, theme, expandedCall);
-		const shown = screen(view);
-		assert.match(shown, /memory_evict/);
-		assert.doesNotMatch(shown, /secret|payload/);
-		const outcome = screen(renderResult("memory_evict", result("done", { n: 1 }), collapsed, theme, okContext));
-		assert.match(outcome, /done/);
-	});
-
-	it("does not mutate the arguments or the result", () => {
-		const args = { query: ["a", "b"], slug: "s", summary: "x".repeat(300) };
-		const argsBefore = structuredClone(args);
-		renderCall("memory_write", args, theme, expandedCall);
-		renderCall("memory_search", args, theme, call);
-		assert.deepEqual(args, argsBefore);
-		const writeResult = result("stored", {
-			ok: true,
-			slug: "s",
-			file: "s.md",
-			written: ["s.md"],
-			notWritten: [],
-			initialized: false,
-		});
-		const before = structuredClone(writeResult);
-		renderResult("memory_write", writeResult, collapsed, theme, okContext);
-		renderResult("memory_write", writeResult, expandedView, theme, okContext);
-		assert.deepEqual(writeResult, before);
-	});
-
-	describe("dense rows and host hints", () => {
-		it("uses the host-injected binding and stays neutral without one", () => {
-			const pending = { slug: "s", title: "T", summary: "x" };
-			assert.match(
-				screen(renderCall("memory_write", pending, theme, { ...call, keyText: () => "ctrl+g" })),
-				/ctrl\+g to expand arguments/,
-			);
-			assert.match(
-				screen(
-					renderResult("memory_read", result("t", { slug: "s" }), collapsed, theme, {
-						...okContext,
-						keyText: () => "ctrl+g",
-					}),
-				),
-				/ctrl\+g to expand result/,
-			);
-			for (const neutral of [{ ...call }, { ...call, keyText: () => "" }]) {
-				const shown = screen(renderCall("memory_write", pending, theme, neutral));
-				assert.match(shown, /Expand for arguments/);
-				assert.doesNotMatch(shown, /ctrl\+g/);
+	it("withholds all designated arguments even on expansion", () => {
+		const args = {
+			slug: "editor",
+			expectedDigest: "a".repeat(64),
+			title: "Private title",
+			summary: "Secret for fixture",
+			details: "A withheld body",
+			sources: "Withheld source",
+			reason: "Withheld reason",
+			edits: [{ oldText: "Withheld anchor", newText: "Withheld replacement" }],
+			novel: "x".repeat(200),
+			tags: Array.from({ length: 30 }, (_, index) => `tag-${index}`),
+		};
+		const before = structuredClone(args);
+		for (const name of ["memory_write", "memory_edit", "memory_review", "memory_retire"]) {
+			for (const ctx of [call, expandedCall]) {
+				const shown = screen(renderCall(name, args, theme, ctx));
+				assert.ok(shown.startsWith(`${name} editor`));
+				assert.doesNotMatch(
+					shown,
+					/Private title|Secret for fixture|A withheld body|Withheld (?:source|reason|anchor|replacement)|x{30}/,
+				);
+				if (ctx.expanded) {
+					assert.match(shown, /title: 13 characters/);
+					assert.match(shown, /"oldText": "15 characters"/);
+					assert.match(shown, /10 omitted items/);
+				}
 			}
-		});
-
-		it("bounds collapsed subject rows at 60, 80, and 100 columns", () => {
-			const details = {
-				ok: true,
-				kind: "index",
-				query: "provider",
-				totalMatches: 1,
-				returned: 1,
-				hasMore: false,
-				notes: [
-					{
-						slug: "s".repeat(120),
-						title: "T".repeat(120),
-						lifecycle: { status: "superseded", supersededBy: "r".repeat(60) },
-						freshness: { deadline: "due", concern: { reason: "x" }, problems: ["p1"] },
-					},
-				],
-				scan: { complete: true, issueCount: 0 },
-				search: { complete: true },
-			};
-			const view = renderResult("memory_search", result("t", details), collapsed, theme, okContext);
-			const shown = screen(view, 100);
-			assert.match(shown, /T{10}/);
-			assert.match(shown, /s{10}/);
-			for (const width of [60, 80, 100]) {
-				const rows = view
-					.render(width)
-					.map((line) => stripVTControlCharacters(line).trimEnd())
-					.filter((line) => line !== "");
-				const preview = rows.slice(1, -2);
-				assert.equal(preview.length, 5, `preview lines at width ${width}`);
-				assert.ok(rows.every((row) => visibleWidth(row) <= width));
-			}
-		});
-
-		it("bounds the collapsed read qualifier row with the same budget", () => {
-			const details = {
-				slug: "subject",
-				source: "history",
-				revision: `20260101T120000000Z-${"0".repeat(60)}`,
-				lifecycle: { status: "superseded", supersededBy: "replacement", problem: "p".repeat(200) },
-				content: "text",
-			};
-			const view = renderResult("memory_read", result("t", details), collapsed, theme, okContext);
-			for (const width of [60, 80, 100]) {
-				const rows = view
-					.render(width)
-					.map((line) => stripVTControlCharacters(line).trimEnd())
-					.filter((line) => line !== "");
-				assert.ok(rows.length <= 4, `card rows at width ${width}: ${rows.length}`);
-			}
-			const shown = screen(view, 100);
-			assert.match(
-				shown,
-				/status superseded · replacement replacement/,
-				"lifecycle outranks the revision prefix in a crowded row",
-			);
-			assert.doesNotMatch(shown, /revision 2026/, "the revision prefix yields to the budget");
-			const expanded = screen(renderResult("memory_read", result("t", details), expandedView, theme, okContext), 300);
-			assert.match(expanded, /Revision: 20260101T120000000Z-0{60}/, "the expanded evidence keeps the exact revision");
-		});
+		}
+		assert.deepEqual(args, before);
+		assert.match(screen(renderCall("memory_edit", args, theme, call)), /1 edit/);
+		assert.match(
+			screen(renderCall("memory_review", { slug: "editor", outcome: "confirmed", reactivate: true }, theme, call)),
+			/confirmed · reactivation requested/,
+		);
+		assert.doesNotMatch(
+			screen(renderCall("memory_retire", { slug: "editor", reactivate: true }, theme, call)),
+			/reactivation/,
+		);
 	});
 
-	it("reuses the previous component instance", () => {
-		const previous = new Text("", 0, 0);
-		const view = renderCall("memory_read", { slug: "s" }, theme, { ...call, lastComponent: previous });
-		assert.equal(view, previous);
-		const outcome = renderResult("memory_read", result("t", { slug: "s" }), collapsed, theme, {
-			isError: false,
-			lastComponent: previous,
-		});
-		assert.equal(outcome, previous);
+	it("labels successful mutations without upgrading historical captures or review authority", () => {
+		for (const [name, effect] of [
+			["memory_write", "Wrote"],
+			["memory_edit", "Edited"],
+			["memory_review", "Reviewed"],
+			["memory_retire", "Retired"],
+		]) {
+			const shown = show(name, receipt);
+			assert.ok(shown.includes(`{toolOutput}${effect} editor`));
+			assert.match(shown, /1 prior capture \(not proof of publication\)/);
+			assert.match(shown, /1 history omission \(credential policy\)/);
+			assert.doesNotMatch(shown, /Confirmed|Reactivated|\{success\}|\{warning\}/);
+		}
+		const full = show("memory_write", { ...receipt, initialized: true }, expandedView);
+		assert.match(full, /initialised the corpus/);
+		assert.match(full, /Written: editor\.md/);
+		assert.match(full, /Digest: a{64}/);
+	});
+
+	it("distinguishes no publication, partial publication, cleanup failure and absent effects", () => {
+		const failed = { ...receipt, ok: false };
+		const cases = [
+			[{ ...failed, written: [], notWritten: ["editor.md"] }, /No live files were written for editor/],
+			[{ ...failed, notWritten: ["other.md", "third.md"] }, /Published 1 live file; 2 files not written/],
+			[failed, /Published all live files; cleanup failed/],
+			[{ ok: false, slug: "editor" }, /Memory write failed for editor/],
+		] as const;
+		for (const [details, expected] of cases) {
+			const shown = show("memory_write", details, collapsed, errorContext, "Sensitive diagnostic");
+			assert.match(shown, /\{error\}/);
+			assert.match(shown, expected);
+			assert.doesNotMatch(shown, /Sensitive diagnostic/);
+		}
+		const text = 'Current failure: {"ok":false,"written":["a"],"notWritten":["b"]}';
+		const fallback = show("memory_write", {}, collapsed, errorContext, text);
+		assert.match(fallback, /Memory write failed/);
+		assert.doesNotMatch(fallback, /Published|no live files|Current failure/i);
+		const full = show("memory_write", {}, expandedView, errorContext, text);
+		assert.ok(full.includes(text));
+	});
+
+	it("does not over-disclose before a result or print text for unknown call arguments", () => {
+		const args = { slug: "editor", summary: "Private body" };
+		const bound = screen(renderCall("memory_write", args, theme, { ...call, keyText: () => "ctrl+g" }));
+		assert.match(bound, /\.\.\. \(ctrl\+g to expand\)$/);
+		assert.doesNotMatch(screen(renderCall("memory_write", args, theme, call)), /to expand/);
+		assert.equal(screen(renderCall("memory_evict", { private: "value" }, theme, expandedCall)), "memory_evict");
+		const clipped = screen(renderCall("memory_write", { slug: "🌍".repeat(40) }, theme, call), 45);
+		assert.match(clipped.split("\n")[0], /…$/);
+		wellFormed(clipped);
 	});
 });

@@ -1136,31 +1136,29 @@ line endings, and body bytes otherwise remain unchanged.
 
 ## Presentation and verification
 
-The `memory_search` card follows the [emission grammar](../../docs/conventions/emissions.md).
-It shows the query or browse action, a count scoped to the current source window,
-and whether another page is available. Complete filename enumeration does not
-imply that note sources were readable. The collapsed card flags source gaps and
-previews the first results or displays guidance for a query with no matches.
-Expanded evidence separates filename enumeration, cursor traversal and source
-coverage. It keeps the exact cursor to use with the same query and
-`includeRetired` filter. Search evidence also includes raw cues, cue problems,
-digests, formulation matches, source excerpt ranges and scan issues. Raw cues
-remain untrusted source evidence, not attestations.
+Memory cards follow the [emission grammar](../../docs/conventions/emissions.md).
 
-Expanded read cards show the actual source text, digest and half-open code-point
-range instead of a serialized JSON string. Lifecycle status, replacement subjects,
-review policy, deadline state, concerns, and problem counts remain visible in both
-views. Expanded evidence includes verification declarations, review dates, exact
-review digests, concern sources, and retirement metadata without treating them as truth. Historical reads label prior lifecycle,
-revision identity, capture time, and the separate current-authority boundary.
-History cards show capture identities, metadata coverage, read-only plan selections,
-reasons, and page-local byte totals. Mutation cards distinguish
-live changes, captures, and credential-policy omissions. The search card strips
-terminal controls; the other cards show controls as text. Expanded evidence has an
-explicit display limit. Write/edit payloads and review/retirement reasons and
-sources stay withheld in both call views. Presentation never changes model-visible
-evidence or retained native history.
-Semantic tool behavior is identical in TUI and headless modes.
+Search and browse counts apply to the current source window. A scan can reach
+the end of the filename list without reading every note. The card flags that
+gap in both views. Expansion shows the continuation call, cues, digests, scan
+issues and match evidence.
+
+A read previews the returned text. Expansion shows its range in Unicode code
+points (end excluded), digest, continuation and any advisories. Historical
+reads identify the exact capture rather than attributing it to the current note.
+History counts describe the available metadata, not verified note bodies. The
+card distinguishes unavailable revisions from the end of the inventory and
+shows the selections and totals for a retention plan.
+
+A mutation reports whether it published no files, some files or all files,
+including when publication succeeded but cleanup failed. A prior capture or a
+capture omitted under the credential policy does not prove publication. Both
+call views omit write and edit payloads, review and retirement reasons, and
+source evidence supplied as an argument. If a diagnostic quotes this material,
+only the expanded result shows it.
+
+Ordinary and Durable results carry the structured failure receipt when one
+exists. The adapters preserve the diagnostic and error status that the model receives.
 
 Run focused tests with `node --test --test-concurrency=1 extensions/memory/*.test.mts`.
 `proactive.test.mts` checks scorer gates, long-input extraction and its scan

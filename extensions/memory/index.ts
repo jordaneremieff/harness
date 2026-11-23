@@ -10,7 +10,15 @@ import { toolDisplay } from "./display.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
 import { memorySourceCache } from "./source-cache.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
-import { editMemory, memoryRoot, retireMemory, reviewMemory, writeMemory } from "./store.ts";
+import {
+	editMemory,
+	memoryRoot,
+	MemoryWriteError,
+	retireMemory,
+	reviewMemory,
+	type WriteReceipt,
+	writeMemory,
+} from "./store.ts";
 import {
 	MEMORY_REVIEW_GUIDELINES,
 	MEMORY_SEARCH_GUIDELINES,
@@ -19,6 +27,17 @@ import {
 	memoryMutationResult,
 	memoryToolArguments,
 } from "./tool-contract.ts";
+
+async function mutation(root: string, signal: AbortSignal | undefined, operation: () => WriteReceipt) {
+	const abortedBeforeExecution = signal?.aborted;
+	try {
+		const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () => operation());
+		return memoryMutationResult(root, details);
+	} catch (error) {
+		if (abortedBeforeExecution || !(error instanceof MemoryWriteError)) throw error;
+		return { isError: true, content: [{ type: "text" as const, text: error.message }], details: error.receipt };
+	}
+}
 
 export default function memory(pi: ExtensionAPI): void {
 	const configuration = () => readSettings({ agentDir: getAgentDir() }).values;
@@ -98,10 +117,7 @@ export default function memory(pi: ExtensionAPI): void {
 		...memoryToolArguments.write,
 		async execute(_id, args: Static<typeof memoryToolArguments.write.parameters>, signal) {
 			const root = memoryRoot(configuredDir());
-			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
-				writeMemory(root, args, signal),
-			);
-			return memoryMutationResult(root, details);
+			return mutation(root, signal, () => writeMemory(root, args, signal));
 		},
 	});
 	registerTool({
@@ -111,10 +127,7 @@ export default function memory(pi: ExtensionAPI): void {
 		...memoryToolArguments.edit,
 		async execute(_id, args: Static<typeof memoryToolArguments.edit.parameters>, signal) {
 			const root = memoryRoot(configuredDir());
-			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
-				editMemory(root, args, signal),
-			);
-			return memoryMutationResult(root, details);
+			return mutation(root, signal, () => editMemory(root, args, signal));
 		},
 	});
 	registerTool({
@@ -125,10 +138,7 @@ export default function memory(pi: ExtensionAPI): void {
 		...memoryToolArguments.review,
 		async execute(_id, args: Static<typeof memoryToolArguments.review.parameters>, signal) {
 			const root = memoryRoot(configuredDir());
-			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
-				reviewMemory(root, args, signal),
-			);
-			return memoryMutationResult(root, details);
+			return mutation(root, signal, () => reviewMemory(root, args, signal));
 		},
 	});
 	registerTool({
@@ -138,10 +148,7 @@ export default function memory(pi: ExtensionAPI): void {
 		...memoryToolArguments.retire,
 		async execute(_id, args: Static<typeof memoryToolArguments.retire.parameters>, signal) {
 			const root = memoryRoot(configuredDir());
-			const details = await withFileMutationQueue(join(root, ".memory-write.lock"), async () =>
-				retireMemory(root, args, signal),
-			);
-			return memoryMutationResult(root, details);
+			return mutation(root, signal, () => retireMemory(root, args, signal));
 		},
 	});
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());

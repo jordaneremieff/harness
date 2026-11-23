@@ -318,7 +318,9 @@ return {
 		const refusalPrefix = "Memory write stopped; no live files were written: ";
 		assert.ok(text(stale).startsWith(refusalPrefix));
 		assert.match(text(stale), /digest changed/);
-		const receipt = JSON.parse(text(stale).slice(refusalPrefix.length));
+		const receipt = stale.details as JsonObject;
+		assert.equal(receipt.ok, false);
+		assert.equal(text(stale), `${refusalPrefix}${JSON.stringify(receipt)}`);
 		assert.deepEqual(receipt.written, []);
 		assert.deepEqual(receipt.captured, []);
 		assert.equal(readFileSync(path, "utf8"), current);
