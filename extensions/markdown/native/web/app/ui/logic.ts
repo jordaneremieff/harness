@@ -342,11 +342,17 @@
 		const text = source.slice(range.start, range.end);
 		const contexts: ReaderPassageAnchor["contexts"] = [];
 		function remember(left: string, right: string) {
-			if (!hasWording(left, right) || contexts.some((c) => c.before === left && c.after === right)) return;
-			if (uniqueStart(within, left + text + right) !== undefined) contexts.push({ before: left, after: right });
+			if (!hasWording(left, right) || uniqueStart(within, left + text + right) === undefined) return false;
+			if (!contexts.some((c) => c.before === left && c.after === right)) contexts.push({ before: left, after: right });
+			return true;
 		}
-		remember(before.slice(before.lastIndexOf("\n") + 1), after.split("\n", 1)[0]);
-		remember(before, after);
+		// Independent witnesses survive edits on opposite sides. If neither side suffices alone,
+		// their combination can still distinguish this occurrence from its neighbours.
+		const left = before.slice(before.lastIndexOf("\n") + 1),
+			right = after.split("\n", 1)[0];
+		if (!remember(left, "")) remember(before, "");
+		if (!remember("", right)) remember("", after);
+		if (contexts.length < 2 && !remember(left, right)) remember(before, after);
 		return contexts;
 	}
 	type Rendering = NonNullable<ReaderPassageAnchor["rendered"]>;
@@ -407,6 +413,14 @@
 		const rendered = view?.map && quote ? captureRendered(range, quote, view, section) : undefined;
 		return { text, headings: section.headings, contexts, ...(rendered ? { rendered } : {}) };
 	}
+	function competingContext(content: string, anchor: ReaderPassageAnchor, start: number) {
+		return anchor.contexts.some(({ before, after }) => {
+			if (!hasWording(before, after)) return false;
+			const witness = before + anchor.text + after;
+			if (start >= before.length && content.startsWith(witness, start - before.length)) return false;
+			return content.includes(witness);
+		});
+	}
 	function sourceRange(source: string, anchor: ReaderPassageAnchor, section: Section) {
 		const content = source.slice(section.start, section.end);
 		let result: ReaderRange | undefined;
@@ -418,6 +432,7 @@
 			if (result && result.start !== start) return null;
 			result = { start, end: start + anchor.text.length };
 		}
+		if (result && competingContext(content, anchor, result.start - section.start)) return null;
 		return result;
 	}
 	function corroboratedRender(source: string, anchor: ReaderPassageAnchor, view: ReaderPassageView, section: Section) {

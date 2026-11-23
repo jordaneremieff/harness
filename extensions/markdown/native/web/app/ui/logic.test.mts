@@ -84,6 +84,40 @@ function sectionView(source: string, headings: string[]): ReaderPassageView {
 	return { blocks };
 }
 
+for (const [side, old, quote, next] of [
+	[
+		"heading",
+		"# Terms\n\nFirst complete paragraph.\n\nSecond paragraph.",
+		"First complete paragraph.",
+		"# Terms\n\nFirst complete paragraph.\n\nRevised second.",
+	],
+	[
+		"following paragraph",
+		"# Terms\n\nFirst complete paragraph.\n\nSecond paragraph.\n\nNext steps.",
+		"Second paragraph.",
+		"# Terms\n\nRevised first.\n\nSecond paragraph.\n\nNext steps.",
+	],
+]) {
+	test(`a whole passage keeps its position with only its ${side} as a witness`, () => {
+		const anchor = passage(old, quote, old.indexOf(quote), sectionView(old, ["# Terms"]));
+		const start = next.indexOf(quote);
+		assert.deepEqual(
+			{ ...resolve(next, anchor, sectionView(next, ["# Terms"])) },
+			{ start, end: start + quote.length },
+		);
+	});
+}
+
+test("two surviving neighbours that identify different paragraphs cannot resolve a mark", () => {
+	const old = "# Terms\n\nFirst complete paragraph.\n\nSecond paragraph.",
+		quote = "First complete paragraph.";
+	const anchor = passage(old, quote, old.indexOf(quote), sectionView(old, ["# Terms"]));
+	const next = `# Terms\n\n${quote}\n\nOther words.\n\n${quote}\n\nSecond paragraph.`;
+	assert.equal(resolve(next, anchor, sectionView(next, ["# Terms"])), undefined);
+	const repeated = `${next}\n\n${quote}\n\nSecond paragraph.`;
+	assert.equal(resolve(repeated, anchor, sectionView(repeated, ["# Terms"])), undefined);
+});
+
 test("a changed revision never transfers a unique quote from Alpha to Beta", () => {
 	const source = "# Alpha\nState: ready now.\n# Beta\nState: done now.";
 	const view = sectionView(source, ["# Alpha", "# Beta"]);
