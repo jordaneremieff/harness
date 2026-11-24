@@ -85,3 +85,16 @@ it("reads the real directory stamp and sees a replaced record", async (t) => {
 	});
 	assert.equal((await index.read(catalog))[0]?.value, "2026-11-24T00:00:00.000Z");
 });
+
+it("reads again after a record failed to read, even when the old directory stamp is unchanged", async (t) => {
+	const { catalog, create } = catalogFor(t);
+	const first = create();
+	const { state, index } = controlled();
+	state.now = state.modifiedMs + CATALOG_INDEX_STAMP_MARGIN_MS;
+	const failing = t.mock.method(catalog, "derive", () => {
+		throw Object.assign(new Error("too many open files"), { code: "EMFILE" });
+	});
+	assert.deepEqual(await index.read(catalog), [{ storageId: first.storageId, value: undefined, unreadable: true }]);
+	failing.mock.restore();
+	assert.deepEqual(await index.read(catalog), [{ storageId: first.storageId, value: first.cwd, unreadable: false }]);
+});

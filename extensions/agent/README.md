@@ -3148,7 +3148,8 @@ stats each record, parses only the records whose file changed since its
 previous read, and answers from one directory stat while no record changed
 (the catalog changes records only by link, rename or unlink). A directory
 modified less than 2 s before that stat is listed again at every read, because
-a later write in the same timestamp tick would leave its stamp unchanged. The caller's own
+a later write in the same timestamp tick would leave its stamp unchanged, and so
+is a catalog in which a record failed to read. The caller's own
 storages and the storages of efforts that share its location or an item are
 priority sources; the contact thread that the caller or such an effort declares
 admits that one thread from its storage. An effort that shares only a topic adds

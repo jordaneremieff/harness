@@ -65,6 +65,29 @@ export class CatalogIndex<T> {
 			: undefined;
 	}
 
+	/** One record's entry, reusing its retained value while its file stamp is unchanged; undefined once removed. */
+	private entry(
+		catalog: AgentCatalog,
+		storageId: string,
+		known: Map<string, { fileStamp: string; value: T }> | undefined,
+		current: Map<string, { fileStamp: string; value: T }>,
+	): CatalogIndexEntry<T> | undefined {
+		try {
+			const retained = known?.get(storageId);
+			const entry =
+				retained !== undefined && catalog.recordStamp(storageId) === retained.fileStamp
+					? retained
+					: catalog.derive(storageId, this.project);
+			current.set(storageId, entry);
+			return { storageId, value: entry.value, unreadable: false };
+		} catch (error) {
+			// A record removed since the listing is absent, not unreadable.
+			return (error as NodeJS.ErrnoException).code === "ENOENT"
+				? undefined
+				: { storageId, value: undefined, unreadable: true };
+		}
+	}
+
 	/** Every record of the catalog in storage ID order. */
 	async read(catalog: AgentCatalog): Promise<CatalogIndexEntry<T>[]> {
 		const directory = await this.provingStamp(catalog.root);
@@ -76,24 +99,15 @@ export class CatalogIndex<T> {
 		const entries: CatalogIndexEntry<T>[] = [];
 		for (let index = 0; index < identities.length; index++) {
 			if (index > 0 && index % INDEX_BATCH === 0) await new Promise<void>((resolve) => setImmediate(resolve));
-			const storageId = identities[index];
-			try {
-				const retained = known?.get(storageId);
-				const entry =
-					retained !== undefined && catalog.recordStamp(storageId) === retained.fileStamp
-						? retained
-						: catalog.derive(storageId, this.project);
-				current.set(storageId, entry);
-				entries.push({ storageId, value: entry.value, unreadable: false });
-			} catch (error) {
-				// A record removed since the listing is absent, not unreadable.
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-					entries.push({ storageId, value: undefined, unreadable: true });
-			}
+			const entry = this.entry(catalog, identities[index], known, current);
+			if (entry !== undefined) entries.push(entry);
 		}
 		this.roots.delete(catalog.root);
 		if (this.roots.size >= INDEX_ROOTS) this.roots.clear();
-		this.roots.set(catalog.root, { directory, records: current, entries: [...entries] });
+		// A record that failed to read may read next time without a directory change, so such a read
+		// proves nothing about later ones.
+		const proven = entries.some((entry) => entry.unreadable) ? undefined : directory;
+		this.roots.set(catalog.root, { directory: proven, records: current, entries: [...entries] });
 		return entries;
 	}
 }
