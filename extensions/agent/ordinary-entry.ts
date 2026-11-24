@@ -25,6 +25,7 @@ import {
 	presetDeclaration,
 	presetParameter,
 	readAgentPreferences,
+	readPreferenceViews,
 	renderAgentPreferences,
 	type PreferenceSnapshot,
 } from "./agent-preferences.ts";
@@ -697,8 +698,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	let agentFigures = "";
 	const showAgentCell = (ctx: ExtensionContext) => ctx.ui.setStatus("agent", agentFigures || undefined);
-	let registrationPreferences = readAgentPreferences();
+	const initialPreferences = readPreferenceViews();
+	let registrationPreferences = initialPreferences.snapshot;
 	let currentPreferences = registrationPreferences;
+	let promptPreferences = initialPreferences.prompt;
 	const continuity = new OrdinaryContinuity({
 		append: (fact) => pi.appendEntry(ORDINARY_CONTINUITY_ENTRY, fact),
 		retainNote: (note) => pi.appendEntry(CONTINUITY_NOTE_ENTRY, note),
@@ -714,8 +717,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	const refreshRegistrations = new Map<string, (snapshot: PreferenceSnapshot) => void>();
 	const refreshPreferences = (ctx?: ExtensionContext): PreferenceSnapshot => {
-		const snapshot = readAgentPreferences(undefined, ctx ? caller(ctx, pi).preferenceCatalog : undefined);
+		const { snapshot, prompt } = readPreferenceViews(undefined, ctx ? caller(ctx, pi).preferenceCatalog : undefined);
 		currentPreferences = snapshot;
+		promptPreferences = prompt;
 		if (presetDeclaration(snapshot) !== presetDeclaration(registrationPreferences)) {
 			registrationPreferences = snapshot;
 			for (const refresh of refreshRegistrations.values()) refresh(snapshot);
@@ -1730,7 +1734,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		eventManager()?.setPrimaryWorkRefs(id, refs);
 	});
 	pi.on("before_agent_start", async (event, ctx) => {
-		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
+		refreshPreferences(ctx);
+		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(promptPreferences);
 		// The section keeps its bytes between baseline points; changed rows arrive as one hidden update.
 		let prompt: ReturnType<typeof effortPrompt> | undefined;
 		try {

@@ -830,3 +830,72 @@ it("advertises selection-aware manager controls without changing message admissi
 		durable: HOST_CONTRACT.upstream.durable,
 	});
 });
+
+it("keeps the ordinary preference section bytes when a provider's model list changes", async (t) => {
+	const directory = realpathSync(mkdtempSync(join(tmpdir(), "ordinary-preference-section-")));
+	const root = join(directory, "sessions");
+	mkdirSync(root);
+	const previous = { agent: process.env.PI_AGENT_DIR, sessions: process.env.PI_AGENT_SESSIONS_DIR };
+	process.env.PI_AGENT_DIR = directory;
+	process.env.PI_AGENT_SESSIONS_DIR = root;
+	const manager = new AgentManager({ root, agentDir: directory, packageDir: directory });
+	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[
+		Symbol.for("pi.extension.agent.owners")
+	];
+	owners.managers.set(root, manager);
+	t.after(async () => {
+		await manager.close();
+		owners.managers.delete(root);
+		if (previous.agent === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous.agent;
+		if (previous.sessions === undefined) delete process.env.PI_AGENT_SESSIONS_DIR;
+		else process.env.PI_AGENT_SESSIONS_DIR = previous.sessions;
+		rmSync(directory, { recursive: true, force: true });
+	});
+	writeFileSync(
+		join(directory, "harness.json"),
+		JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-new" } } })),
+	);
+	type StartEvent = { systemPromptOptions: { sections: Record<string, string> } };
+	type StartHandler = (event: StartEvent, ctx: ExtensionContext) => Promise<void> | void;
+	const startHandlers: StartHandler[] = [];
+	await registerAgentExtension({
+		events: { on: () => () => {}, emit() {} },
+		on(name: string, handler: StartHandler) {
+			if (name === "before_agent_start") startHandlers.push(handler);
+		},
+		registerTool() {},
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
+		appendEntry() {},
+		getThinkingLevel: () => "off",
+	} as unknown as ExtensionAPI);
+	const listed: Array<{ provider: string; id: string; reasoning: boolean }> = [];
+	const ctx = {
+		cwd: directory,
+		sessionManager: {
+			getSessionId: () => "primary",
+			getSessionName: () => undefined,
+			getBranch: () => [],
+			getLeafId: () => null,
+			getEntry: () => undefined,
+		},
+		modelRegistry: {
+			find: (provider: string, id: string) => listed.find((model) => model.provider === provider && model.id === id),
+			getAll: () => listed,
+		},
+	} as unknown as ExtensionContext;
+	const section = async () => {
+		const event: StartEvent = { systemPromptOptions: { sections: {} } };
+		for (const handler of startHandlers) await handler(event, ctx);
+		return event.systemPromptOptions.sections["agent-preferences"];
+	};
+	const before = await section();
+	listed.push({ provider: "acme", id: "model-new", reasoning: false });
+	const after = await section();
+	assert.match(before, /Preset "review"/u);
+	assert.equal(after, before);
+	assert.doesNotMatch(before, /Unknown model/u);
+});

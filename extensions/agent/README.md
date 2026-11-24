@@ -5329,8 +5329,10 @@ No watcher exists. Native declarations refresh on explicit
 host reload; native prompt sections and fresh receipts read current file facts.
 Direct file edits between these boundaries do not imply instant declaration
 refresh. Fresh, bounded prompt sections supply exclusion facts, context budgets,
-substitution order, reporting notes, and diagnostics. Equal document and diagnostic facts render
-identical text; observation times remain in receipts, not prompt sections.
+substitution order, reporting notes, and diagnostics of the machine document. Checks against the
+local model catalog stay out of the sections: a provider can change its model list during a
+session, so creation checks the selected model and its receipt reports the result. An equal
+machine document renders identical text; observation times remain in receipts, not prompt sections.
 Ordinary callers receive them through `before_agent_start`; native Durable callers receive them through
 `durable.section`. Read errors render source diagnostics and current safe-default or environment
 values instead of leaving previous preferences apparently current. Environment

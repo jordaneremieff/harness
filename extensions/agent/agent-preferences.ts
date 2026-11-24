@@ -133,12 +133,6 @@ function catalogDiagnostics(
 					field: `${field}.thinkingLevel`,
 					message: `Unsupported thinking level ${preset.thinkingLevel} for ${preset.model}`,
 				});
-			const providerId = configurationModel(preset.model).provider;
-			if (preferences?.excludedModels?.includes(preset.model) || preferences?.excludedProviders?.includes(providerId))
-				facts.push({
-					field,
-					message: `Preset model matches an operator exclusion preference: ${preset.model}; ${preferences?.enforceRoster ? "creation enforcement rejects it" : "this is advisory, not an admission gate"}.`,
-				});
 		}
 	};
 	const checkExclusions = () => {
@@ -166,14 +160,59 @@ function catalogDiagnostics(
 					message: `Planning budget ${budget} exceeds catalog capacity ${found.contextWindow}`,
 				});
 		}
-		for (const key of preferences?.quotaSubstitutionOrder ?? [])
-			if (!Object.hasOwn(document.presets, key))
-				facts.push({ field: "preferences.quotaSubstitutionOrder", message: `Unknown preset: ${key}` });
 	};
 	checkPresets();
 	checkExclusions();
 	checkPlanning();
 	return facts;
+}
+
+/** Checks of the machine document against itself; they change only when the document changes. */
+function documentDiagnostics(document: AgentPreferences): PreferenceDiagnostic[] {
+	const facts: PreferenceDiagnostic[] = [];
+	const preferences = document.preferences;
+	for (const [key, preset] of Object.entries(document.presets)) {
+		const providerId = configurationModel(preset.model).provider;
+		if (preferences?.excludedModels?.includes(preset.model) || preferences?.excludedProviders?.includes(providerId))
+			facts.push({
+				field: `presets.${key}`,
+				message: `Preset model matches an operator exclusion preference: ${preset.model}; ${preferences?.enforceRoster ? "creation enforcement rejects it" : "this is advisory, not an admission gate"}.`,
+			});
+	}
+	for (const key of preferences?.quotaSubstitutionOrder ?? [])
+		if (!Object.hasOwn(document.presets, key))
+			facts.push({ field: "preferences.quotaSubstitutionOrder", message: `Unknown preset: ${key}` });
+	return facts;
+}
+
+/**
+ * One read of the machine document. `snapshot` adds the local catalog checks for creation and receipts.
+ * `prompt` leaves them out: a provider can change its model list during a session, and the prompt section
+ * then keeps its bytes until the machine document changes.
+ */
+export function readPreferenceViews(
+	agentDir = process.env.PI_AGENT_DIR ?? getAgentDir(),
+	catalog?: PreferenceCatalog,
+	env?: Environment,
+): { snapshot: PreferenceSnapshot; prompt: PreferenceSnapshot } {
+	const settings = readSettings({ agentDir, env });
+	const document: AgentPreferences = {
+		version: 1,
+		presets: settings.values.presets,
+		preferences: settings.values.preferences,
+	};
+	const read = settings.diagnostics.map((fact) => ({ field: fact.field, message: `${fact.source}: ${fact.message}` }));
+	const own = documentDiagnostics(document);
+	let checks: PreferenceDiagnostic[];
+	try {
+		checks = catalogDiagnostics(document, catalog);
+	} catch {
+		checks = [{ field: "catalog", message: "Local catalog checks are unavailable." }];
+	}
+	return {
+		snapshot: { source: settings.source, document, diagnostics: [...read, ...checks, ...own] },
+		prompt: { source: settings.source, document, diagnostics: [...read, ...own] },
+	};
 }
 
 /** Read effective delegation settings; file status never substitutes for field validation. */
@@ -182,22 +221,7 @@ export function readAgentPreferences(
 	catalog?: PreferenceCatalog,
 	env?: Environment,
 ): PreferenceSnapshot {
-	const snapshot = readSettings({ agentDir, env });
-	const document: AgentPreferences = {
-		version: 1,
-		presets: snapshot.values.presets,
-		preferences: snapshot.values.preferences,
-	};
-	const diagnostics: PreferenceDiagnostic[] = snapshot.diagnostics.map((fact) => ({
-		field: fact.field,
-		message: `${fact.source}: ${fact.message}`,
-	}));
-	try {
-		diagnostics.push(...catalogDiagnostics(document, catalog));
-	} catch {
-		diagnostics.push({ field: "catalog", message: "Local catalog checks are unavailable." });
-	}
-	return { source: snapshot.source, document, diagnostics };
+	return readPreferenceViews(agentDir, catalog, env).snapshot;
 }
 
 function boundedDiagnostics(facts: PreferenceDiagnostic[]): PreferenceDiagnostic[] {
@@ -441,7 +465,7 @@ export function renderPreferenceStatus(snapshot: PreferenceSnapshot): string[] {
 /** Compact current facts, with explicit omitted coverage rather than silent clipping. */
 export function renderAgentPreferences(snapshot: PreferenceSnapshot): string {
 	const lines = [
-		"Operator machine configuration for agent delegation. Catalog check results are local evidence.",
+		"Operator machine configuration for agent delegation. Creation checks the selected model against the local catalog and reports the result in its receipt.",
 		`Source: ${JSON.stringify(snapshot.source.path)}; ${snapshot.source.status}; digest ${snapshot.source.digest ?? "none"}.`,
 	];
 	if (snapshot.source.status === "unavailable" || snapshot.source.status === "invalid")

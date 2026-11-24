@@ -53,6 +53,7 @@ import {
 	PresetParameter,
 	presetParameter,
 	readAgentPreferences,
+	readPreferenceViews,
 	resolveExecutionPreset,
 	effectiveExecutionSelection,
 	renderAgentPreferences,
@@ -3026,7 +3027,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	});
 
 	const preferences = durable.section("agent-preferences", () =>
-		renderAgentPreferences(readAgentPreferences(host.agentDir, host.services.modelRuntime)),
+		renderAgentPreferences(readPreferenceViews(host.agentDir).prompt),
 	);
 
 	// Durable renders sections before every request and sends a changed section as a system patch:
