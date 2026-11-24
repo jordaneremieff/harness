@@ -4662,3 +4662,35 @@ it("passes the caller's signal to a live host's result read", async (t) => {
 	await assert.rejects(read, /view left/u);
 	assert.equal(signals[0]?.aborted, true, "the live request is cancelled, not only abandoned");
 });
+
+it("names a remedy for unknown handles, malformed identities and threads whose storage is gone", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	const caller = { id: "caller", cwd: root };
+	const noPath = (pattern: RegExp) => (error: Error) => {
+		assert.match(error.message, pattern);
+		assert.doesNotMatch(error.message, /ENOENT|\/durable\//u);
+		return true;
+	};
+	const unknown =
+		/No retained agent holds @nobody\. Find it with agent_list and query "nobody", or create it with agent_spawn and handle "nobody"/u;
+	await assert.rejects(manager.control("submit", { sessionId: "@nobody", message: "hi" }, caller), noPath(unknown));
+	await assert.rejects(manager.resolveTarget("@nobody"), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
+	for (const selector of ["worker", "ad3718de"])
+		await assert.rejects(
+			manager.control("submit", { sessionId: selector, message: "hi" }, caller),
+			noPath(/Invalid Durable agent identity .*Use @handle, or an exact identity from agent_status or agent_list/u),
+		);
+	const gone = randomUUID();
+	await assert.rejects(
+		manager.collaborate({ action: "read", threadId: `${gone}/${"a".repeat(32)}` }, caller),
+		noPath(
+			/Thread .* is not retained: its storage .* no longer exists\. Find current threads with agent_collaborate action list/u,
+		),
+	);
+	await assert.rejects(
+		manager.collaborate({ action: "list", sessionId: `${gone}:2` }, caller),
+		noPath(/No retained storage .*Find current agents and threads with agent_list/u),
+	);
+});

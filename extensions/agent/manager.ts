@@ -700,8 +700,22 @@ export class AgentManager {
 	async resolveTarget(selector: string, signal?: AbortSignal): Promise<string> {
 		signal?.throwIfAborted();
 		if (!selector.startsWith("@")) return selector;
-		const id = handleStorageId(selector.slice(1), this.catalog.root);
-		const record = this.catalog.read(id);
+		let id: string;
+		let record: CatalogRecord;
+		try {
+			// A catalog root that does not exist yet holds no handle either.
+			id = handleStorageId(selector.slice(1), this.catalog.root);
+			record = this.catalog.read(id);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			const slug = selector.slice(1);
+			throw Object.assign(
+				new Error(
+					`No retained agent holds ${selector}. Find it with agent_list and query ${JSON.stringify(slug)}, or create it with agent_spawn and handle ${JSON.stringify(slug)}.`,
+				),
+				{ code: "ENOENT" },
+			);
+		}
 		if (
 			record.view?.profileSeed?.handle === selector.slice(1) ||
 			record.view?.profiles?.rows.some((row) => row.identity === id && row.handle === selector)
@@ -1877,7 +1891,13 @@ export class AgentManager {
 		} catch (error) {
 			// Only a list that named an ordinary session selects a thread storage that may not exist yet.
 			const session = typeof input.sessionId === "string" && input.threadId === undefined ? input.sessionId : sessionId;
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT" || session === sessionId) throw error;
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			if (typeof input.threadId === "string")
+				throw new Error(
+					`Thread ${input.threadId} is not retained: its storage ${sessionId} no longer exists. Find current threads with agent_collaborate action list.`,
+				);
+			if (session === sessionId)
+				throw new Error(`No retained storage ${sessionId}. Find current agents and threads with agent_list.`);
 			if (session !== caller.id && !readPrimaryEndpointDescriptor(this.options.root, session).info)
 				throw new Error("The exact native target is not retained and no ordinary primary is registered");
 			return { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } };

@@ -400,7 +400,9 @@ export type CatalogDiscardResult = "removed" | "record-changed" | "storage-prese
 export function storageIdOf(identity: string): string {
 	const [storageId, conversationId, extra] = identity.split(":");
 	if (!UUID.test(storageId) || extra !== undefined || (conversationId !== undefined && !/^\d+$/u.test(conversationId)))
-		throw new Error("Invalid Durable agent identity");
+		throw new Error(
+			`Invalid Durable agent identity ${JSON.stringify(identity.slice(0, 80))}. Use @handle, or an exact identity from agent_status or agent_list: storageId, or storageId:conversationId. Display names and ID prefixes are not identities.`,
+		);
 	return storageId;
 }
 
