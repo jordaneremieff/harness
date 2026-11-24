@@ -17,6 +17,8 @@
  * that callback: a child is an owned conversation in the calling storage.
  */
 
+import { releaseNativeQuestion, reserveNativeQuestion } from "./native-questions.ts";
+import { DURABLE_TARGET_QUESTION, questionText } from "./peer-questions.ts";
 import { realpathSync } from "node:fs";
 import { hostname } from "node:os";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
@@ -525,6 +527,11 @@ const SendParams = obj(
 			bool({ description: "Report mode only. Enter context at the next normal boundary without attention." }),
 		),
 		checkInMinutes: CheckInParams,
+		expectReply: opt(
+			bool({
+				description: "Ordinary primary target only: a question; its reply or non-reply notice arrives as a report.",
+			}),
+		),
 	},
 	{},
 );
@@ -1901,6 +1908,53 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		);
 	};
 
+	const questionRefusal = (args: SendInput): string | undefined => {
+		if (args.mode === "report" || args.deliverAt !== undefined || args.replyTo !== undefined)
+			return "expectReply asks an immediate question: omit mode report, deliverAt and replyTo, and repeat the call";
+		return target(args.sessionId).kind === "foreign" ? undefined : DURABLE_TARGET_QUESTION;
+	};
+	/** Reserve the question in this conversation's storage, then deliver it; a failed delivery drops the reservation. */
+	const askPrimary = async (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+		args: SendInput,
+	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
+		const refusal = questionRefusal(args);
+		if (refusal !== undefined) return errorResult(refusal);
+		const asker = identity(api.conversationId);
+		const id = `question:${asker}:${api.taskId}`;
+		const question = {
+			id,
+			peer: targetIdentity(args.sessionId, host.catalogRoot),
+			message: args.message,
+			at: Date.now(),
+		};
+		try {
+			await api.commit((tx) => reserveNativeQuestion(tx, api.conversationId, question), context);
+		} catch (error) {
+			if (context.abortSignal?.aborted) throw error;
+			return errorResult(error instanceof Error ? error.message : String(error));
+		}
+		const result = await dispatchControl(
+			"submit",
+			{
+				sessionId: args.sessionId,
+				message: questionText(args.message, id, asker),
+				requestId: id,
+				ownerId: asker,
+				senderIdentity: asker,
+				origin: "model",
+				checkInMinutes: 0,
+				whenBusy: args.mode === "steer" ? "steer" : "followUp",
+				expectReply: true,
+			},
+			`Question to ${args.sessionId} failed`,
+			{ api, context },
+		);
+		if (result.isError === true) await api.commit((tx) => releaseNativeQuestion(tx, api.conversationId, id), context);
+		return result;
+	};
+
 	const sendLocal = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		context: Context,
@@ -2017,37 +2071,44 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		description: `Send a message to an agent conversation. A busy conversation receives it at its next tool boundary, the end of its current tool round; mode is the class of the message, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Reports request attention by default. For progress that asks for no action, set mode:'report',passive:true. Passive reports enter context at the next result or normal boundary. They do not wake the recipient. Keep questions, blockers, corrections and capacity interventions active. Send explicit instructions as followUp or steer, not passive reports. Task answers report back to you. With deliverAt, schedule the input instead of admitting it now. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool.`,
 		parameters: SendParams,
 		replay: "safe",
-		execute: async (args: SendInput, api, context) => {
-			if (args.passive !== undefined && args.mode !== "report")
-				return errorResult("passive is valid only for report mode");
-			if (args.mode === "report") {
-				if (args.deliverAt !== undefined || args.replyTo !== undefined || args.checkInMinutes !== undefined)
-					return errorResult("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
-				return dispatchControl(
-					"report",
-					{
-						sessionId: args.sessionId,
-						senderIdentity: identity(api.conversationId),
-						message: args.message,
-						requestId: `report:${host.storageId}:${api.taskId}`,
-						...(args.passive === undefined ? {} : { passive: args.passive }),
-					},
-					"Report delivery failed",
-				);
-			}
-			return args.deliverAt === undefined
-				? sendTarget(
-						api,
-						context,
-						args.sessionId,
-						args.message,
-						args.mode ?? "followUp",
-						args.replyTo,
-						checkInMinutes(args.checkInMinutes, "model", host.agentDir),
-					)
-				: scheduleSend(api, context, args);
-		},
+		execute: (args: SendInput, api, context) =>
+			args.expectReply === true ? askPrimary(api, context, args) : sendMessage(args, api, context),
 	});
+
+	async function sendMessage(
+		args: SendInput,
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+	): Promise<Durable.ToolExecutionResult<ControlDetails>> {
+		if (args.passive !== undefined && args.mode !== "report")
+			return errorResult("passive is valid only for report mode");
+		if (args.mode === "report") {
+			if (args.deliverAt !== undefined || args.replyTo !== undefined || args.checkInMinutes !== undefined)
+				return errorResult("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
+			return dispatchControl(
+				"report",
+				{
+					sessionId: args.sessionId,
+					senderIdentity: identity(api.conversationId),
+					message: args.message,
+					requestId: `report:${host.storageId}:${api.taskId}`,
+					...(args.passive === undefined ? {} : { passive: args.passive }),
+				},
+				"Report delivery failed",
+			);
+		}
+		return args.deliverAt === undefined
+			? sendTarget(
+					api,
+					context,
+					args.sessionId,
+					args.message,
+					args.mode ?? "followUp",
+					args.replyTo,
+					checkInMinutes(args.checkInMinutes, "model", host.agentDir),
+				)
+			: scheduleSend(api, context, args);
+	}
 
 	const steerTool = durable.defineTool<typeof SteerParams, ControlDetails>({
 		name: "agent_steer",

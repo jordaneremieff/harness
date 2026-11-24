@@ -10,6 +10,8 @@ import {
 } from "./continuity-facts.ts";
 import { ContinuityDoc, freezeContinuityWork } from "./continuity-native.ts";
 import { canonicalIdentity } from "./native-identity.ts";
+import { openNativeQuestions } from "./native-questions.ts";
+import type { OpenQuestion } from "./peer-questions.ts";
 
 export const CONTINUITY_LOAD_TIMEOUT_MS = 10_000;
 interface MirroredConversation {
@@ -17,6 +19,8 @@ interface MirroredConversation {
 	head?: EntryRecord;
 	/** Declared open work as retained; it enters the note only for the head it was read for. */
 	work?: ContinuityWork;
+	/** Questions this conversation asked with no reply or notice, read with the open work of the same head. */
+	questions?: readonly OpenQuestion[];
 	/** Head whose open-work read failed in this process; its note states that and stays unchanged. */
 	unread?: number;
 	reading?: Promise<void>;
@@ -117,8 +121,17 @@ export class ContinuityMirror {
 		context: Context,
 	): Promise<void> {
 		try {
-			const work = await this.harness.commit((tx) => freezeContinuityWork(tx, conversationId, headId), context);
-			if (work !== undefined && row.head?.id === headId) row.work = work;
+			const read = await this.harness.commit(
+				async (tx) => ({
+					work: await freezeContinuityWork(tx, conversationId, headId),
+					questions: await openNativeQuestions(tx, conversationId),
+				}),
+				context,
+			);
+			if (read.work !== undefined && row.head?.id === headId) {
+				row.work = read.work;
+				row.questions = read.questions;
+			}
 		} catch (error) {
 			if (context.abortSignal?.aborted) throw error;
 			if (row.head?.id === headId) row.unread = headId;
@@ -134,7 +147,13 @@ export class ContinuityMirror {
 		const head = row.head;
 		const text =
 			row.text ??
-			nativeContinuityText(canonicalIdentity(this.storageId, conversationId), head.id, row.events, row.work);
+			nativeContinuityText(
+				canonicalIdentity(this.storageId, conversationId),
+				head.id,
+				row.events,
+				row.work,
+				row.work?.headId === head.id ? row.questions : undefined,
+			);
 		if (row.work?.headId === head.id || row.unread === head.id) row.text = text;
 		return { head, text };
 	}

@@ -1,3 +1,4 @@
+import { DURABLE_TARGET_QUESTION, questionReceipt } from "./peer-questions.ts";
 import { readSettings } from "./settings.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -587,6 +588,7 @@ export async function createDurableRuntime(
 				sessionId,
 				admitted: true,
 				sourceId: report.sourceId,
+				...(params.expectReply === true ? questionReceipt({ question: String(params.requestId) }, "agent") : {}),
 				boundary: "Retained for delivery; does not prove action or task acceptance",
 			};
 		} finally {
@@ -611,6 +613,7 @@ export async function createDurableRuntime(
 		sessionId: string,
 		context?: Context,
 	): Promise<unknown> {
+		if (params.expectReply === true) throw new Error(DURABLE_TARGET_QUESTION);
 		const client = await manager.connectNative(sessionId);
 		if (
 			method === "submit" &&

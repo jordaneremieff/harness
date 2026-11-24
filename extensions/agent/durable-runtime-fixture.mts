@@ -58,6 +58,7 @@ export interface RuntimeFixture {
 			| "await-reference"
 			| "retry"
 			| "intent"
+			| "question"
 			| "storage-pages",
 	): Record<string, string>;
 	/** Resolve when the host publishes this marker name. The file is not the signal. */

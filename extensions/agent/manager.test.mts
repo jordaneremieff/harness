@@ -43,6 +43,7 @@ import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
 import type { ContinuityFact } from "./continuity-facts.ts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
 import { isThreadStorage, threadStorageId } from "./identity.ts";
+import { DURABLE_TARGET_QUESTION } from "./peer-questions.ts";
 import { PLACE_FILE_MAX_BYTES } from "./places.ts";
 import { dispatchFacts } from "./result-reference.ts";
 import type { ExecutionSelection } from "./agent-preferences.ts";
@@ -3281,7 +3282,7 @@ it("creates an ordinary primary's thread in its own thread storage without an ag
 	assert.equal(page.coverage.catalog.storages, 1, "agent views count the agent and omit the thread storage");
 });
 
-it("refuses a reply expectation for a Durable target, whose answer arrives through its request result", async (t) => {
+it("refuses a question and a malformed reply to a Durable target, whose answer arrives through its request result", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root));
 	t.after(() => manager.close());
@@ -3292,17 +3293,17 @@ it("refuses a reply expectation for a Durable target, whose answer arrives throu
 		model: { provider: "acme", modelId: "model-x" },
 		thinkingLevel: "off",
 	});
-	for (const field of [{ expectReply: true }, { inReplyTo: "question:a:1" }])
+	for (const [field, message] of [
+		[{ expectReply: true }, DURABLE_TARGET_QUESTION],
+		[{ inReplyTo: "not-a-question" }, "inReplyTo requires the question ID that the question message names"],
+	] as const)
 		await assert.rejects(
 			manager.control(
 				"submit",
 				{ sessionId: record.storageId, message: "Ready?", ...field },
 				{ id: "caller", cwd: root },
 			),
-			{
-				message:
-					"expectReply and inReplyTo apply to ordinary primary sessions; a Durable agent's answer arrives through its request result, so omit them",
-			},
+			{ message },
 		);
 });
 

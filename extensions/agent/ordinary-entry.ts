@@ -523,8 +523,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	/** A question counts as received when this session's model is given it. */
 	const presented = (ctx: ExtensionContext, details: unknown, text: string) => {
 		const { question } = peerQuestionDetail(details);
-		const asker = (details as { senderIdentity?: unknown } | null)?.senderIdentity;
-		if (question !== undefined && typeof asker === "string") questionsOf(ctx).received(question, asker, text);
+		if (question === undefined) return;
+		const { senderIdentity, message } = details as { senderIdentity?: unknown; message?: unknown };
+		// A report delivery carries its body apart from the header that the session reads.
+		if (typeof senderIdentity === "string")
+			questionsOf(ctx).received(question, senderIdentity, typeof message === "string" ? message : text);
 	};
 	/** An arrived reply or notice closes the question that it names. */
 	const arrived = (ctx: ExtensionContext, details: unknown) => {
@@ -535,9 +538,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	/** One notice per received question that this session's settled run left without a reply. */
 	const noticeUnanswered = (ctx: ExtensionContext) => {
 		const questions = questionsOf(ctx);
+		const unanswered = questions.unanswered();
+		if (unanswered.length === 0) return;
 		const self = ctx.sessionManager.getSessionId();
 		const name = ctx.sessionManager.getSessionName();
-		for (const question of questions.open().received) {
+		for (const question of unanswered) {
 			questions.noticed(question.id, question.peer);
 			void getManager()
 				.control(

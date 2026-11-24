@@ -13,6 +13,7 @@
  * power loss. `DurableObservation` reads a cold copy of the same file without a
  * writer claim.
  */
+import { closeNativeQuestion, closingInput } from "./native-questions.ts";
 import { randomUUID } from "node:crypto";
 import { reconcileInputCommunications } from "./communication-retention.ts";
 import { parseCommunication, parseCommunicationPassive } from "./communication.ts";
@@ -1054,6 +1055,13 @@ export class DurableHost {
 			throw error;
 		});
 		await complete(submitted.deduped ? [] : recoveryRequests);
+		const closing = closingInput({
+			requestId,
+			inputClass: requestString(params, "inputClass"),
+			inputSender: requestString(params, "inputSender"),
+		});
+		if (closing !== undefined)
+			await this.harness.commit((tx) => closeNativeQuestion(tx, conversation.id, closing.id, closing.sender), context);
 		return { ...submitted, identity: this.identity(conversation.id) };
 	}
 

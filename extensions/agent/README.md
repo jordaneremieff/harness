@@ -2476,7 +2476,7 @@ Saved expertise remains evidence; fresh sources and task restrictions outrank it
 An ordinary primary asks another ordinary primary a question with `agent_send`
 and `expectReply: true`, as an immediate message: report mode and `deliverAt`
 refuse it, and a Durable target refuses it because its answer arrives through
-its request result. The question ID is `question:<asker>:<tool call ID>`; the
+its request result; send the message without `expectReply` instead. The question ID is `question:<asker>:<tool call ID>`; the
 receipt names it as `question`. The recipient's model reads the question
 followed by a line that names the asker and the question ID, says how to answer
 (`agent_send` to the asker with `inReplyTo` set to the ID), and says that a
@@ -2497,8 +2497,33 @@ Nothing replies automatically and nothing waits. The asker continues other
 work or calls `agent_yield`, whose card lists each open question as
 `Questions awaiting a reply from:`. After a compaction the continuity note
 lists the questions this session asked with no reply or notice, and the
-questions it received with no reply. One session holds at most 16 open
-questions at once; it tracks the 32 newest received questions.
+questions it received with no reply. The sections appear only while such
+questions are open. One session holds at most 16 open questions at once; it
+tracks the 32 newest received questions and ignores a repeated delivery of one
+it already answered or noticed. Each session keeps its open questions in
+memory, updated per fact; session start folds the entries it already read.
+
+### Durable askers
+
+A Durable agent asks an ordinary primary with its own `agent_send` and
+`expectReply: true`; the question ID is `question:<asker identity>:<task ID>`.
+A local conversation or another Durable storage refuses the question with the
+same request-result reason. The agent's storage reserves the question in one
+document per asking conversation (`agent.peer-questions`) before delivery, and
+a failed delivery drops the reservation. The question reaches the primary as a
+report whose request ID is the question ID; the primary treats it as a received
+question like any other.
+
+The primary's reply with `inReplyTo` and its non-reply notice reach the agent
+as report inputs with request IDs `reply:<question ID>` and
+`notice:<question ID>`. They wake an idle agent and reach a busy one at its next
+tool boundary. When the agent's host admits such an input from the asked
+session, it removes the question from the document; the last 32 closed IDs stay
+there, so a replayed ask cannot reopen one. The receipt of the question tells
+an agent whose routed task needs the answer to declare `agent_work continue`
+with an empty results list and end the run, and to complete the work when the
+reply or notice arrives. After a compaction the agent's continuity note lists
+its open questions, read once per context head with its declared open work.
 
 ## Peer threads
 

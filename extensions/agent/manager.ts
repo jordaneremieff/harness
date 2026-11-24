@@ -18,7 +18,7 @@ import {
 	isThreadStorage,
 	threadStorageId,
 } from "./identity.ts";
-import { assertNoPeerQuestion, peerMessageText, peerQuestionFields, questionReceipt } from "./peer-questions.ts";
+import { durableTargetInput, peerMessageText, peerQuestionFields, questionReceipt } from "./peer-questions.ts";
 import { profileText, type AgentProfile } from "./profile-schema.ts";
 import { NativeListOutputSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
 import {
@@ -1115,7 +1115,7 @@ export class AgentManager {
 				throw new Error("The exact native target is not retained and no ordinary primary is registered");
 			return this.primaryControl(method, input, sessionId, caller);
 		}
-		assertNoPeerQuestion(input);
+		({ method, input } = durableTargetInput(method, input, caller.id, caller.name));
 		if (isThreadStorage(record, this.catalog.root) && !THREAD_STORAGE_METHODS.has(method))
 			throw new Error(
 				`${sessionId} is a thread storage of ${record.ownerId}; it holds threads and runs no agent work. Use agent_collaborate with a threadId it holds, or message its owner ${record.ownerId}`,

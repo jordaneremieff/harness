@@ -1,6 +1,12 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { ResultReference } from "./result-schema.ts";
-import { foldPeerQuestions, isPeerQuestionFact, PEER_QUESTION_ENTRY, type PeerQuestionFact } from "./peer-questions.ts";
+import {
+	foldPeerQuestions,
+	isPeerQuestionFact,
+	type OpenQuestion,
+	PEER_QUESTION_ENTRY,
+	type PeerQuestionFact,
+} from "./peer-questions.ts";
 
 export const CONTINUITY_ENTRY = "agent.continuity";
 export const ORDINARY_CONTINUITY_ENTRY = "agent.admitted-request";
@@ -176,19 +182,23 @@ export function continuityText(
 			scheduled.map((fact) => JSON.stringify({ sessionId: fact.sessionId, timerId: fact.timerId })),
 		),
 		`Routed elsewhere: ${pending.length - local.length}.`,
-		...(questions === undefined
-			? []
-			: [
+		...(questions !== undefined && questions.asked.length > 0
+			? [
 					listed(
 						"Questions this session asked other sessions, with no reply or non-reply notice here",
 						questions.asked.map((item) => JSON.stringify({ sessionId: item.peer, question: item.id })),
 					),
+				]
+			: []),
+		...(questions !== undefined && questions.received.length > 0
+			? [
 					listed(
 						"Questions other sessions asked here, with no reply from this session; answer with agent_send inReplyTo",
 						questions.received.map((item) => JSON.stringify({ sessionId: item.peer, question: item.id })),
 					),
-				]),
-		`Not covered: messages sent to an ordinary primary${questions === undefined ? "" : " without expectReply"}; requests that another session routed here.`,
+				]
+			: []),
+		`Not covered: messages sent to an ordinary primary${questions !== undefined && questions.asked.length + questions.received.length > 0 ? " without expectReply" : ""}; requests that another session routed here.`,
 		"Creation records are provenance, not ownership.",
 	].join("\n");
 }
@@ -226,11 +236,13 @@ export function nativeContinuityText(
 	headId: number,
 	events: readonly ContinuityEvent[],
 	work?: ContinuityWork,
+	questions?: readonly OpenQuestion[],
 ): string {
 	return `${continuityText(
 		ownerId,
 		headId,
 		events.filter((event) => event.afterHead < headId),
+		questions === undefined ? undefined : { asked: [...questions], received: [] },
 	)}\n${continuityWorkText(ownerId, work?.headId === headId ? work.items : undefined)}`;
 }
 

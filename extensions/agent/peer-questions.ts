@@ -59,78 +59,101 @@ export function questionExcerpt(text: string): string {
 	return flat.length > EXCERPT ? `${flat.slice(0, EXCERPT)}…` : flat;
 }
 
+/** Received question IDs that a session remembers after it closes them, so a repeated delivery opens nothing. */
+const MAX_SETTLED_QUESTIONS = 64;
+
+/**
+ * Open questions as two insertion-ordered maps. Each fact updates them in constant time; the received map
+ * drops its oldest entry beyond its bound, and closed received IDs stay in a bounded set.
+ */
+class OpenQuestions {
+	readonly asked = new Map<string, OpenQuestion>();
+	readonly received = new Map<string, OpenQuestion>();
+	private readonly settled = new Set<string>();
+	/** False when the fact changes nothing, so the caller retains no entry for it. */
+	apply(fact: PeerQuestionFact): boolean {
+		const open = { id: fact.id, peer: fact.peer, at: fact.at, excerpt: fact.excerpt ?? "" };
+		switch (fact.event) {
+			case "asked":
+				this.asked.set(fact.id, open);
+				return true;
+			case "answered":
+			case "unanswered":
+				return this.asked.delete(fact.id);
+			case "received":
+				if (this.received.has(fact.id) || this.settled.has(fact.id)) return false;
+				this.received.set(fact.id, open);
+				if (this.received.size > MAX_RECEIVED_QUESTIONS) this.received.delete(first(this.received.keys()));
+				return true;
+			default:
+				if (!this.received.delete(fact.id)) return false;
+				this.settled.add(fact.id);
+				if (this.settled.size > MAX_SETTLED_QUESTIONS) this.settled.delete(first(this.settled.values()));
+				return true;
+		}
+	}
+}
+function first(values: IterableIterator<string>): string {
+	return values.next().value as string;
+}
+
 /** Fold facts in order: asked and received open a question, every other event closes it. */
 export function foldPeerQuestions(facts: Iterable<PeerQuestionFact>): {
 	asked: OpenQuestion[];
 	received: OpenQuestion[];
 } {
-	const asked = new Map<string, OpenQuestion>();
-	const received = new Map<string, OpenQuestion>();
-	for (const fact of facts) {
-		const open = { id: fact.id, peer: fact.peer, at: fact.at, excerpt: fact.excerpt ?? "" };
-		if (fact.event === "asked") asked.set(fact.id, open);
-		else if (fact.event === "received") {
-			received.delete(fact.id);
-			received.set(fact.id, open);
-			if (received.size > MAX_RECEIVED_QUESTIONS) received.delete(received.keys().next().value as string);
-		} else if (fact.event === "answered" || fact.event === "unanswered") asked.delete(fact.id);
-		else received.delete(fact.id);
-	}
-	return { asked: [...asked.values()], received: [...received.values()] };
-}
-export function retainedPeerQuestions(entries: readonly SessionEntry[]): PeerQuestionFact[] {
-	const facts: PeerQuestionFact[] = [];
-	for (const entry of entries)
-		if (entry.type === "custom" && entry.customType === PEER_QUESTION_ENTRY && isPeerQuestionFact(entry.data))
-			facts.push(entry.data);
-	return facts;
+	const open = new OpenQuestions();
+	for (const fact of facts) open.apply(fact);
+	return { asked: [...open.asked.values()], received: [...open.received.values()] };
 }
 
-/** One session's questions. `append` retains each fact as a session entry. */
+/** One session's questions, kept in memory and updated per fact. `append` retains each fact as a session entry. */
 export class PeerQuestions {
-	private facts: PeerQuestionFact[] = [];
+	private state = new OpenQuestions();
 	private readonly append: (fact: PeerQuestionFact) => void;
 	private readonly now: () => number;
 	constructor(append: (fact: PeerQuestionFact) => void, now: () => number = Date.now) {
 		this.append = append;
 		this.now = now;
 	}
+	/** One pass over entries that the caller already holds. */
 	restore(entries: readonly SessionEntry[]): void {
-		this.facts = retainedPeerQuestions(entries);
+		this.state = new OpenQuestions();
+		for (const entry of entries)
+			if (entry.type === "custom" && entry.customType === PEER_QUESTION_ENTRY && isPeerQuestionFact(entry.data))
+				this.state.apply(entry.data);
 	}
-	private record(event: PeerQuestionEvent, id: string, peer: string, excerpt?: string): void {
+	private record(event: PeerQuestionEvent, id: string, peer: string, excerpt?: string): boolean {
 		const fact: PeerQuestionFact = { event, id, peer, at: this.now(), ...(excerpt === undefined ? {} : { excerpt }) };
-		this.facts.push(fact);
+		if (!this.state.apply(fact)) return false;
 		this.append(fact);
-		if (this.facts.length > 4 * (MAX_OPEN_QUESTIONS + MAX_RECEIVED_QUESTIONS)) {
-			const { asked, received } = foldPeerQuestions(this.facts);
-			this.facts = [
-				...asked.map((item) => ({ event: "asked" as const, ...item })),
-				...received.map((item) => ({ event: "received" as const, ...item })),
-			];
-		}
+		return true;
 	}
 	open(): { asked: OpenQuestion[]; received: OpenQuestion[] } {
-		return foldPeerQuestions(this.facts);
+		return { asked: [...this.state.asked.values()], received: [...this.state.received.values()] };
+	}
+	/** Received questions that still owe a reply; empty without allocation in the common case. */
+	unanswered(): readonly OpenQuestion[] {
+		return this.state.received.size === 0 ? [] : [...this.state.received.values()];
 	}
 	/** Refuses a further question while this session has its full number of open questions. */
 	assertCanAsk(): void {
-		if (this.open().asked.length >= MAX_OPEN_QUESTIONS)
+		if (this.state.asked.size >= MAX_OPEN_QUESTIONS)
 			throw new Error(
-				`This session has ${MAX_OPEN_QUESTIONS} open questions; each closes when its reply or non-reply notice arrives. Send this message without expectReply, or wait for an answer event`,
+				`This session has ${MAX_OPEN_QUESTIONS} open questions; each closes when its reply or non-reply notice arrives. Send this message without expectReply, or continue other work until an answer event arrives`,
 			);
 	}
 	asked(id: string, recipient: string, message: string): void {
 		this.record("asked", id, recipient, questionExcerpt(message));
 	}
 	received(id: string, asker: string, message: string): void {
-		if (this.open().received.some((item) => item.id === id)) return;
+		if (this.state.received.has(id)) return;
 		this.record("received", id, asker, questionExcerpt(askedText(message)));
 	}
 	/** The received question that a reply names, checked against the reply's recipient. */
 	replyTarget(id: unknown, recipient: unknown): OpenQuestion {
 		if (!validQuestionId(id)) throw new Error("inReplyTo requires the question ID that the question message names");
-		const question = this.open().received.find((item) => item.id === id);
+		const question = this.state.received.get(id);
 		if (!question)
 			throw new Error(
 				`inReplyTo ${id} names no open question that another session asked here; omit inReplyTo to send an ordinary message`,
@@ -147,10 +170,8 @@ export class PeerQuestions {
 	}
 	/** An arrived reply or notice closes the asker's question once; unknown IDs change nothing. */
 	closed(id: string, event: "answered" | "unanswered"): boolean {
-		const question = this.open().asked.find((item) => item.id === id);
-		if (!question) return false;
-		this.record(event, id, question.peer);
-		return true;
+		const question = this.state.asked.get(id);
+		return question !== undefined && this.record(event, id, question.peer);
 	}
 }
 
@@ -167,13 +188,22 @@ export function replyText(message: string, id: string, replier: string, name?: s
 export function noticeText(question: OpenQuestion, recipient: string, name?: string): string {
 	return `Session ${label(recipient, name)} ended its run without replying to the question you asked (${question.id}): ${JSON.stringify(question.excerpt)}. No reply is expected from that run. Continue without the answer, ask once more if it still matters, or tell the operator.`;
 }
+/**
+ * A question is the message whose request ID is the question ID: a primary's message names it as
+ * `question`, and a Durable agent's report delivery names it as `requestId`.
+ */
 export function peerQuestionDetail(details: unknown): { reply?: string; notice?: string; question?: string } {
 	if (details === null || typeof details !== "object") return {};
 	const value = details as Record<string, unknown>;
+	const question = validQuestionId(value.question)
+		? value.question
+		: value.kind === "report" && validQuestionId(value.requestId)
+			? value.requestId
+			: undefined;
 	return {
 		...(validQuestionId(value.inReplyTo) ? { reply: value.inReplyTo } : {}),
 		...(validQuestionId(value.questionNotice) ? { notice: value.questionNotice } : {}),
-		...(validQuestionId(value.question) ? { question: value.question } : {}),
+		...(question === undefined ? {} : { question }),
 	};
 }
 
@@ -202,12 +232,42 @@ export function peerQuestionFields(
 	return {};
 }
 
-/** A Durable agent's answer arrives through its request result, so question fields do not apply. */
-export function assertNoPeerQuestion(input: Record<string, unknown>): void {
-	if (input.expectReply === true || input.inReplyTo !== undefined)
-		throw new Error(
-			"expectReply and inReplyTo apply to ordinary primary sessions; a Durable agent's answer arrives through its request result, so omit them",
-		);
+export const DURABLE_TARGET_QUESTION =
+	"A Durable agent answers through its request result, so expectReply does not apply to it. Send the message without expectReply; the answer reports back to you as that request's result";
+/** The request IDs of a reply and a non-reply notice name the question that they close. */
+const CLOSING_REQUEST = /^(reply|notice):(question:\S{1,400})$/u;
+export function closingQuestion(requestId: unknown): { id: string; event: "answered" | "unanswered" } | undefined {
+	if (
+		typeof requestId !== "string" ||
+		(!requestId.startsWith("reply:question:") && !requestId.startsWith("notice:question:"))
+	)
+		return undefined;
+	const match = CLOSING_REQUEST.exec(requestId);
+	return match ? { id: match[2], event: match[1] === "reply" ? "answered" : "unanswered" } : undefined;
+}
+/**
+ * A message to a Durable agent: a question refuses, and a reply to that agent's question becomes a report
+ * whose request ID names the question, so the agent's host closes it.
+ */
+export function durableTargetInput(
+	method: string,
+	input: Record<string, unknown>,
+	sender: string,
+	name?: string,
+): { method: string; input: Record<string, unknown> } {
+	if (input.expectReply === true) throw new Error(DURABLE_TARGET_QUESTION);
+	if (input.inReplyTo === undefined) return { method, input };
+	if (!validQuestionId(input.inReplyTo))
+		throw new Error("inReplyTo requires the question ID that the question message names");
+	return {
+		method: "report",
+		input: {
+			sessionId: input.sessionId,
+			message: replyText(String(input.message ?? ""), input.inReplyTo, sender, name),
+			requestId: `reply:${input.inReplyTo}`,
+			origin: input.origin ?? "model",
+		},
+	};
 }
 export function peerMessageText(
 	message: string,
@@ -219,11 +279,16 @@ export function peerMessageText(
 	if (fields.inReplyTo !== undefined) return replyText(message, fields.inReplyTo, sender, name);
 	return message;
 }
-export function questionReceipt(fields: ReturnType<typeof peerQuestionFields>): Record<string, string> {
+export function questionReceipt(
+	fields: ReturnType<typeof peerQuestionFields>,
+	asker: "session" | "agent" = "session",
+): Record<string, string> {
 	if (fields.question === undefined) return {};
 	return {
 		question: fields.question,
 		reply:
-			"The reply arrives as a message event that names this question. If the recipient's run ends without a reply, one notice arrives instead. Do not wait or poll.",
+			asker === "session"
+				? "The reply arrives as a message event that names this question. If the recipient's run ends without a reply, one notice arrives instead. Do not wait or poll."
+				: "The reply arrives as a report that names this question. If the recipient's run ends without a reply, one notice arrives instead. Do not wait or poll. If your routed task needs the answer, call agent_work continue with that request and an empty results list, then end the run; the reply or notice starts your next run, and agent_work complete then sends the final report.",
 	};
 }

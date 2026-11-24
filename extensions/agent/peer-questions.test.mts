@@ -15,11 +15,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	askedText,
+	closingQuestion,
+	DURABLE_TARGET_QUESTION,
+	durableTargetInput,
 	foldPeerQuestions,
 	MAX_OPEN_QUESTIONS,
 	noticeText,
 	PEER_QUESTION_ENTRY,
 	PeerQuestions,
+	peerQuestionDetail,
 	peerQuestionFields,
 	questionText,
 	type PeerQuestionFact,
@@ -56,6 +60,9 @@ it("opens a question when asked or received and closes it once by its reply, not
 	assert.deepEqual(questions.open().received, [{ id: "question:b:1", peer: ASKER, at: 4, excerpt: "Is it safe?" }]);
 	questions.replied("question:b:1", ASKER);
 	assert.deepEqual(questions.open().received, []);
+	questions.received("question:b:1", ASKER, "Is it safe?");
+	assert.deepEqual(questions.open().received, [], "a repeated delivery of an answered question opens nothing");
+	questions.noticed("question:b:1", ASKER);
 	assert.deepEqual(
 		facts.map((fact) => fact.event),
 		["asked", "asked", "answered", "received", "replied"],
@@ -101,6 +108,39 @@ it("bounds open questions and keeps the asker's words in the excerpt", () => {
 		noticeText({ id: "question:a:1", peer: ASKER, at: 1, excerpt: "Why?" }, OTHER, "Review"),
 		/ended its run without replying to the question you asked \(question:a:1\): "Why\?"/u,
 	);
+});
+
+it("reads a Durable agent's question from its report delivery and turns a reply to it into a closing report", () => {
+	assert.deepEqual(peerQuestionDetail({ kind: "report", requestId: "question:agent:7" }), {
+		question: "question:agent:7",
+	});
+	assert.deepEqual(peerQuestionDetail({ kind: "report", requestId: "report:agent:7" }), {});
+	assert.deepEqual(peerQuestionDetail({ kind: "message", requestId: "question:agent:7" }), {});
+	assert.deepEqual(closingQuestion("reply:question:agent:7"), { id: "question:agent:7", event: "answered" });
+	assert.deepEqual(closingQuestion("notice:question:agent:7"), { id: "question:agent:7", event: "unanswered" });
+	assert.equal(closingQuestion("report:question:agent:7"), undefined);
+	const reply = durableTargetInput(
+		"submit",
+		{ sessionId: "agent", message: "Yes.", inReplyTo: "question:agent:7" },
+		ASKER,
+		"Docs",
+	);
+	assert.deepEqual(reply, {
+		method: "report",
+		input: {
+			sessionId: "agent",
+			message: `Reply from session ${ASKER} ("Docs") to the question you asked (question:agent:7):\n\nYes.`,
+			requestId: "reply:question:agent:7",
+			origin: "model",
+		},
+	});
+	assert.throws(
+		() => durableTargetInput("submit", { sessionId: "agent", message: "Ready?", expectReply: true }, ASKER),
+		{
+			message: DURABLE_TARGET_QUESTION,
+		},
+	);
+	assert.deepEqual(durableTargetInput("submit", { sessionId: "agent", message: "Hi" }, ASKER).method, "submit");
 });
 
 it("derives question, reply and notice fields for one primary message", () => {

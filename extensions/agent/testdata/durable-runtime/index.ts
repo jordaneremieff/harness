@@ -17,6 +17,11 @@
  *   - `tool-round`: read the fixture input before the final answer on each turn.
  *   - `intent`: execute one tagged intent or status request, retain its tool
  *     result, and answer without an external provider.
+ *   - `question`: on `QUESTION_TO:<identity>` the agent asks that primary with
+ *     `agent_send` and `expectReply`, appends the tool result to
+ *     `question-returns.jsonl` and marks `question-asked`; a later reply or
+ *     non-reply notice is appended to `question-arrivals.jsonl` and marked
+ *     `question-reply` or `question-notice`.
  *   - `spawn`: the owner calls `agent_spawn` for `DURABLE_TEST_CHILD_CWD`, the
  *     child answers `CHILD_RESULT`, and the owner marks `delivered` when the
  *     routed follow-up arrives.
@@ -270,6 +275,51 @@ function intent(context: TranscriptContext) {
 	);
 }
 
+function question(context: TranscriptContext) {
+	const lastAnswer = context.messages.findLastIndex((item) => item.role === "assistant");
+	const texts = context.messages
+		.slice(lastAnswer + 1)
+		.flatMap((item) =>
+			item.role === "user"
+				? [
+						typeof item.content === "string"
+							? item.content
+							: item.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
+					]
+				: [],
+		);
+	const text = texts.filter((value) => !value.startsWith("<agent-request-route ")).join("\n");
+	const arrival = text.includes("ended its run without replying")
+		? "question-notice"
+		: text.includes("to the question you asked")
+			? "question-reply"
+			: undefined;
+	if (arrival !== undefined) {
+		appendFileSync(join(controlDir(), "question-arrivals.jsonl"), `${JSON.stringify({ arrival, text })}\n`);
+		mark(arrival);
+		return answer();
+	}
+	const target = text.split("QUESTION_TO:")[1]?.split(/\s/u)[0];
+	const last = context.messages.at(-1);
+	if (last?.role === "toolResult") {
+		appendFileSync(join(controlDir(), "question-returns.jsonl"), `${JSON.stringify(last)}\n`);
+		mark("question-asked");
+		return answer();
+	}
+	if (target === undefined) return answer();
+	return completed(
+		[
+			{
+				type: "toolCall",
+				id: `ask-${context.messages.length}`,
+				name: "agent_send",
+				arguments: { sessionId: target, message: "Are retries idempotent?", expectReply: true },
+			},
+		],
+		"toolUse",
+	);
+}
+
 function stream(_model: unknown, context: TranscriptContext, options?: RequestOptions) {
 	recordSessionOptions(options);
 	const mode = process.env.DURABLE_TEST_MODE ?? "answer";
@@ -277,6 +327,7 @@ function stream(_model: unknown, context: TranscriptContext, options?: RequestOp
 	if (mode === "retry") return retryError();
 	if (mode === "spawn") return spawn(context);
 	if (mode === "intent") return intent(context);
+	if (mode === "question") return question(context);
 	if (mode === "storage-pages") return storagePages(context);
 	if (mode === "tool-round" && context.messages.at(-1)?.role !== "toolResult") {
 		return completed(
