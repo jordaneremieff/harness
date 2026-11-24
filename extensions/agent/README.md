@@ -2597,6 +2597,10 @@ an unreadable, foreign or incompatible endpoint keeps the question open, and so
 does a live session that has not run yet. A reload keeps the session's endpoint
 published until the reloaded extension registers again, within 60 s, so a
 reload never reads as an end; deliveries in between refuse as retryable. The
+refusal holds until the new registration is current: while it opens its
+channel, both the old and the new channel refuse, and a registration whose
+extension has shut down refuses before it stores anything. A delivery is
+therefore either refused with nothing stored or accepted. The
 check runs only at points that already read the questions, and only when
 questions are open, with one endpoint read per distinct asked session:
 

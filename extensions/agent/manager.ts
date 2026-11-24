@@ -237,6 +237,8 @@ interface ListCursor {
 }
 
 const DEFAULT_DELIVERED_LIMIT = 1024;
+/** The refusal of a delivery to a session whose extension reloads; its source keeps the delivery for a retry. */
+export const PRIMARY_RELOADING_REFUSAL = "Primary session is reloading; the delivery stays unacknowledged for a retry";
 /** How long a reloading session's channel stays published while its extension registers again. */
 const PRIMARY_RELOAD_GRACE_MS = 60_000;
 const DEFAULT_FAILURE_LIMIT = 256;
@@ -549,6 +551,8 @@ export class AgentManager {
 	private readonly reloadedSignals = new WeakSet<AbortSignal>();
 	private readonly primaryClosures = new WeakMap<AbortSignal, Map<string, Promise<void>>>();
 	private readonly registeringPrimaries = new WeakMap<AbortSignal, Map<string, Promise<void>>>();
+	/** The registration that is replacing each session's channel, from its start until it settles. */
+	private readonly replacingPrimaries = new Map<string, PrimaryClient>();
 	private readonly subscriptions = new Map<string, () => void>();
 	private readonly lifecycle = new AbortController();
 	private refreshing = false;
@@ -2065,12 +2069,14 @@ export class AgentManager {
 	}
 
 	registerPrimary(ownerId: string, primary: PrimaryClient): Promise<void> {
+		this.replacingPrimaries.set(ownerId, primary);
 		const registration = this.registerPrimaryChannel(ownerId, primary);
 		const pending = this.registeringPrimaries.get(primary.signal) ?? new Map<string, Promise<void>>();
 		pending.set(ownerId, registration);
 		this.registeringPrimaries.set(primary.signal, pending);
 		return registration.finally(() => {
 			if (pending.get(ownerId) === registration) pending.delete(ownerId);
+			if (this.replacingPrimaries.get(ownerId) === primary) this.replacingPrimaries.delete(ownerId);
 		});
 	}
 
@@ -2098,14 +2104,25 @@ export class AgentManager {
 		return true;
 	}
 
-	/** Delivery into one registration; a closed or reloading registration refuses, so the source retries. */
+	/** Why one registration takes no delivery now, or undefined when it takes one. */
+	private primaryRefusal(ownerId: string, primary: PrimaryClient): string | undefined {
+		const replacing = this.replacingPrimaries.get(ownerId);
+		if (replacing !== undefined && replacing !== primary) return PRIMARY_RELOADING_REFUSAL;
+		if (this.stopping(primary) || this.primaries.get(ownerId) !== primary)
+			return replacing === primary && !this.stopping(primary) ? PRIMARY_RELOADING_REFUSAL : "Primary session is closed";
+		return this.reloadingPrimaries.get(ownerId)?.primary === primary ? PRIMARY_RELOADING_REFUSAL : undefined;
+	}
+
+	/**
+	 * Delivery into one registration; a closed or reloading registration refuses, so the source retries. While
+	 * another registration replaces the session's channel, both channels refuse as reloading until the new one
+	 * is current, so no delivery reaches the registration that is leaving.
+	 */
 	private primaryDelivery(ownerId: string, primary: PrimaryClient): PrimaryChannelOptions["deliver"] {
 		const deliveryScope = Symbol();
 		return (message) => {
-			if (this.stopping(primary) || this.primaries.get(ownerId) !== primary)
-				throw new Error("Primary session is closed");
-			if (this.reloadingPrimaries.get(ownerId)?.primary === primary)
-				throw new Error("Primary session is reloading; the delivery stays unacknowledged for a retry");
+			const refusal = this.primaryRefusal(ownerId, primary);
+			if (refusal !== undefined) throw new Error(refusal);
 			if (message.requireRetained === false) {
 				primary.send(message.text, message.details, message.sourceId, false);
 				return;

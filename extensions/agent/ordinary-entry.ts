@@ -79,7 +79,7 @@ import { IntentParams, validateIntentInput } from "./effort-schema.ts";
 import { validateFleetSelection } from "./fleet-status.ts";
 import { createIdCommand } from "./id-command.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
-import { AgentManager, MANAGER_PROTOCOL, type AgentCaller } from "./manager.ts";
+import { AgentManager, MANAGER_PROTOCOL, PRIMARY_RELOADING_REFUSAL, type AgentCaller } from "./manager.ts";
 import {
 	InspectToolOutputSchema,
 	StatusToolOutputSchema,
@@ -472,6 +472,12 @@ function ordinaryThreadSources(ctx: ExtensionContext): ThreadNoticeSource<Contex
 		});
 	}
 	return sources;
+}
+
+/** Whether an immediate delivery is a message from `sessionId` to itself. */
+function isSelfMessage(details: unknown, sessionId: string): boolean {
+	const sender = details as { senderKind?: unknown; senderIdentity?: unknown } | undefined;
+	return sender?.senderKind === "session" && sender.senderIdentity === sessionId;
 }
 
 /** The resolved directory of agent sessions, created when absent; one manager serves each. */
@@ -1625,6 +1631,21 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			}
 		};
 		primaryDeliveries.set(sessionId, { retention, inbox, flush });
+		const admitImmediate = (text: string, details: unknown, sourceId: string) => {
+			// The sending manager can be older code that a reload kept, so the receiver also refuses a session's message to itself.
+			if (isSelfMessage(details, sessionId)) throw new Error(SELF_MESSAGE_REFUSAL);
+			if (retention.hasQueued(sourceId)) throw new Error("Primary delivery awaits its queued source-ledger notice");
+			inbox.admit(sourceId, text, details);
+			flush();
+		};
+		const deliverRetained = (text: string, details: unknown, sourceId: string) => {
+			if (inbox.hasPending(sourceId)) throw new Error("Primary delivery awaits its inbox notice");
+			// Only a result that the session file retains settles the requests that its tuples name.
+			const results = deliveredResults(details);
+			providerBlocks.observe(details);
+			retention.deliver(sourceId, text, details);
+			continuity.delivered(sessionId, results);
+		};
 		heldPlacements.set(sessionId, []);
 		endQuestions(sessionId);
 		const retained = ctx.sessionManager.getEntries();
@@ -1655,22 +1676,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			thinkingLevel: pi.getThinkingLevel(),
 			resumeInbox: flush,
 			send: (text, details, sourceId, requireRetained) => {
-				if (!requireRetained) {
-					// The sending manager can be older code that a reload kept, so the receiver also refuses a session's message to itself.
-					const sender = details as { senderKind?: unknown; senderIdentity?: unknown } | undefined;
-					if (sender?.senderKind === "session" && sender.senderIdentity === sessionId)
-						throw new Error(SELF_MESSAGE_REFUSAL);
-					if (retention.hasQueued(sourceId)) throw new Error("Primary delivery awaits its queued source-ledger notice");
-					inbox.admit(sourceId, text, details);
-					flush();
-					return;
-				}
-				if (inbox.hasPending(sourceId)) throw new Error("Primary delivery awaits its inbox notice");
-				// Only a result that the session file retains settles the requests that its tuples name.
-				const results = deliveredResults(details);
-				providerBlocks.observe(details);
-				retention.deliver(sourceId, text, details);
-				continuity.delivered(sessionId, results);
+				// After this extension's shutdown, a manager that still calls the registration gets a refusal
+				// that its source retries, before anything reaches the inbox or the transcript.
+				if (primaryDeliveries.get(sessionId)?.inbox !== inbox) throw new Error(PRIMARY_RELOADING_REFUSAL);
+				if (requireRetained) deliverRetained(text, details, sourceId);
+				else admitImmediate(text, details, sourceId);
 			},
 			receiveRetainedReplay: (details) => continuity.delivered(sessionId, deliveredResults(details)),
 			status: (text) => {

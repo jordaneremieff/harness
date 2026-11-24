@@ -386,3 +386,105 @@ test("a reloading session keeps its endpoint published until it registers again"
 	await manager.closePrimary(other, third.signal);
 	assert.equal(readPrimaryEndpointDescriptor(root, other).state, "absent");
 });
+
+test("a reloading session refuses deliveries until its new registration replaces the old one", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-reload-window-")));
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const id = randomUUID();
+	const first = new AbortController();
+	const delivered: string[] = [];
+	await manager.registerPrimary(id, { signal: first.signal, cwd: root, send: () => delivered.push("first") });
+	assert.equal(manager.suspendPrimary(id, first), true);
+	const locations = (manager as unknown as { locations: { resolve(cwd: string): Promise<unknown> } }).locations;
+	const resolve = locations.resolve.bind(locations);
+	let entered!: () => void;
+	let release!: () => void;
+	const inside = new Promise<void>((done) => (entered = done));
+	const gate = new Promise<void>((done) => (release = done));
+	locations.resolve = async (cwd: string) => {
+		entered();
+		await gate;
+		return resolve(cwd);
+	};
+	const second = new AbortController();
+	const registering = manager.registerPrimary(id, {
+		signal: second.signal,
+		cwd: root,
+		send: () => delivered.push("second"),
+	});
+	await inside;
+	const connection = await connectPrimaryChannel({ id, sessionsRoot: root });
+	await assert.rejects(connection.deliver({ sourceId: "s1", text: "Hi", requireRetained: false }), /reloading/u);
+	await connection.close();
+	locations.resolve = resolve;
+	release();
+	await registering;
+	assert.deepEqual(delivered, [], "the unloaded registration never receives a delivery");
+});
+
+test("an ordinary registration that its extension shut down for a reload refuses deliveries", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-reload-callback-")));
+	const saved = new Map(
+		["PI_AGENT_SESSIONS_DIR", "PI_CODING_AGENT_DIR", "PI_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [
+			key,
+			process.env[key],
+		]),
+	);
+	process.env.PI_AGENT_SESSIONS_DIR = root;
+	process.env.PI_CODING_AGENT_DIR = root;
+	process.env.PI_AGENT_DIR = root;
+	process.env.PI_HARNESS_FILE = join(root, "harness.json");
+	writeFileSync(process.env.PI_HARNESS_FILE, '{"version":1}');
+	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[
+		Symbol.for("pi.extension.agent.owners")
+	];
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
+	const clients: Array<Parameters<AgentManager["registerPrimary"]>[1]> = [];
+	const registerPrimary = manager.registerPrimary.bind(manager);
+	manager.registerPrimary = (id, client) => {
+		clients.push(client);
+		return registerPrimary(id, client);
+	};
+	owners.managers.set(root, manager);
+	t.after(async () => {
+		await manager.close();
+		owners.managers.delete(root);
+		for (const [key, value] of saved) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		rmSync(root, { recursive: true, force: true });
+	});
+	const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
+	await register({
+		events: { emit() {}, on: () => () => {} },
+		on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => {
+			events.set(name, handler);
+			return () => {};
+		},
+		registerTool() {},
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
+		appendEntry() {},
+		getThinkingLevel: () => "off",
+	} as unknown as ExtensionAPI);
+	const ctx = {
+		cwd: root,
+		hasUI: false,
+		isIdle: () => true,
+		sessionManager: SessionManager.inMemory(root),
+		ui: { setStatus() {}, notify() {} },
+		modelRegistry: { getAll: () => [], find: () => undefined },
+	} as unknown as ExtensionContext;
+	await events.get("session_start")?.({ reason: "startup" }, ctx);
+	assert.equal(clients.length, 1);
+	await events.get("session_shutdown")?.({ reason: "reload" }, ctx);
+	assert.throws(() => clients[0].send("Hi", {}, "source-1", false), /Primary session is reloading/u);
+	assert.throws(() => clients[0].send("Result", {}, "source-2", true), /Primary session is reloading/u);
+});
