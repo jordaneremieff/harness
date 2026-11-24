@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
 	chmodSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -19,6 +20,7 @@ import {
 	discoverPrimaryLocation,
 	LOCATION_BATCH_SPAWNS,
 	LOCATION_CACHE_ENTRIES,
+	UNCACHED_LOCATION_MS,
 } from "./effort-location.ts";
 
 const REAL_GIT = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
@@ -569,4 +571,198 @@ it("starts a bounded number of Git processes per batch and resolves the rest in 
 	assert.equal(settled.unresolved, 0);
 	assert.equal(calls(), spawned, "settled directories run no Git");
 	for (const directory of directories) assert.equal(settled.locations.get(directory)?.repositoryState, "outside-git");
+});
+
+const commit = (cwd: string) =>
+	git(cwd, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "c");
+
+it("asks Git in turn for directories whose answers cannot be cached and keeps each answer briefly", async (t) => {
+	const { root, calls } = workspace(t, { asksGit: false });
+	const shared = join(root, "shared");
+	mkdirSync(shared);
+	git(shared, "init", "-q");
+	// A symbolic link as `.git` and a config that Git refuses both give answers that are never cached.
+	const linked = Array.from({ length: LOCATION_BATCH_SPAWNS + 4 }, (_, index) => {
+		const directory = join(root, `linked-${index.toString().padStart(2, "0")}`);
+		mkdirSync(directory);
+		symlinkSync(join(shared, ".git"), join(directory, ".git"));
+		return directory;
+	});
+	const refused = Array.from({ length: 2 }, (_, index) => {
+		const directory = join(root, `refused-${index}`);
+		mkdirSync(directory);
+		git(directory, "init", "-q");
+		writeFileSync(join(directory, ".git", "config"), "[core\nbroken");
+		return directory;
+	});
+	// A stray HEAD makes Git decide; that answer is cached.
+	const stray = Array.from({ length: 3 }, (_, index) => {
+		const directory = join(root, `stray-${index}`, "work");
+		mkdirSync(directory, { recursive: true });
+		writeFileSync(join(root, `stray-${index}`, "HEAD"), "not a ref\n");
+		return directory;
+	});
+	const directories = [...linked, ...refused, ...stray];
+	let clock = 1_000_000;
+	const resolver = createPrimaryLocationResolver({ now: () => clock });
+	const batch = async () => {
+		const before = calls();
+		const result = await resolver.resolveMany(directories);
+		return { spawned: calls() - before, unresolved: result.unresolved, locations: result.locations };
+	};
+	const first = await batch();
+	assert.equal(first.spawned, LOCATION_BATCH_SPAWNS);
+	assert.equal(first.unresolved, directories.length - LOCATION_BATCH_SPAWNS);
+	const second = await batch();
+	assert.equal(second.spawned, directories.length - LOCATION_BATCH_SPAWNS, "the next batch asks the others");
+	assert.equal(second.unresolved, 0, "every directory resolves");
+	for (const directory of directories)
+		assert.deepEqual(second.locations.get(directory), await discoverPrimaryLocation(directory), directory);
+	const third = await batch();
+	assert.equal(third.spawned, 0, "recent answers that cannot be cached are reused");
+	assert.equal(third.unresolved, 0);
+	clock += UNCACHED_LOCATION_MS;
+	const expired = await batch();
+	assert.equal(expired.spawned, LOCATION_BATCH_SPAWNS, "expired answers are asked again");
+	const rest = await batch();
+	assert.equal(rest.spawned, linked.length + refused.length - LOCATION_BATCH_SPAWNS, "in turn, not the same window");
+	assert.equal(rest.unresolved, 0);
+});
+
+it("reads whitespace after ref: in HEAD as Git does", async (t) => {
+	const { root, calls } = workspace(t, { asksGit: false });
+	const alone = join(root, "alone");
+	mkdirSync(alone);
+	git(alone, "init", "-q");
+	writeFileSync(join(alone, ".git", "HEAD"), "ref:\vrefs/heads/main\n");
+	const outer = join(root, "outer");
+	const inner = join(outer, "inner");
+	mkdirSync(inner, { recursive: true });
+	git(outer, "init", "-q");
+	git(inner, "init", "-q");
+	writeFileSync(join(inner, ".git", "HEAD"), "ref:\frefs/heads/main\n");
+	const tabbed = join(root, "tabbed");
+	mkdirSync(tabbed);
+	git(tabbed, "init", "-q");
+	writeFileSync(join(tabbed, ".git", "HEAD"), "ref: \t refs/heads/main\n");
+	const resolver = createPrimaryLocationResolver();
+	assert.deepEqual(await resolver.resolve(alone), await discoverPrimaryLocation(alone));
+	assert.equal((await resolver.resolve(alone)).repositoryState, "outside-git", "a vertical tab is not Git's space");
+	assert.equal(
+		(await resolver.resolve(inner)).repository,
+		realpathSync(join(outer, ".git")),
+		"a form feed is not either",
+	);
+	const before = calls();
+	assert.equal((await resolver.resolve(tabbed)).repository, realpathSync(join(tabbed, ".git")));
+	assert.equal(calls(), before, "spaces and tabs are, without Git");
+});
+
+it("resolves pointer paths through a symbolic link before a following .. as Git does", async (t) => {
+	const { root, calls } = workspace(t, { asksGit: false });
+	const far = join(root, "far", "a");
+	mkdirSync(join(far, "real"), { recursive: true });
+	mkdirSync(join(far, "inside"));
+	git(join(far, "real"), "init", "-q");
+	const near = join(root, "near");
+	mkdirSync(join(near, "real"), { recursive: true });
+	mkdirSync(join(near, "work"));
+	git(join(near, "real"), "init", "-q");
+	symlinkSync(join(far, "inside"), join(near, "link"));
+	// Lexically this names near/real; the filesystem resolves link first and reaches far/a/real.
+	writeFileSync(join(near, "work", ".git"), "gitdir: ../link/../real/.git\n");
+	const main = join(root, "main");
+	mkdirSync(main);
+	git(main, "init", "-q");
+	commit(main);
+	const tree = join(root, "tree");
+	git(main, "worktree", "add", "-q", "-b", "side", tree);
+	const admin = readFileSync(join(tree, ".git"), "utf8").slice(8).trim();
+	mkdirSync(join(root, "deep", "x", "y", "z"), { recursive: true });
+	symlinkSync(join(root, "deep", "x", "y", "z"), join(admin, "up"));
+	// up/../../../.. climbs from deep/x/y/z to the root, and main/.git follows: the filesystem's reading.
+	writeFileSync(join(admin, "commondir"), "up/../../../../main/.git\n");
+	const resolver = createPrimaryLocationResolver();
+	const before = calls();
+	const gitfile = await resolver.resolve(join(near, "work"));
+	const worktree = await resolver.resolve(tree);
+	assert.equal(calls(), before, "both pointers resolve without Git");
+	assert.deepEqual(gitfile, await discoverPrimaryLocation(join(near, "work")));
+	assert.equal(gitfile.repository, realpathSync(join(far, "real", ".git")));
+	assert.deepEqual(worktree, await discoverPrimaryLocation(tree));
+	assert.equal(worktree.repository, realpathSync(join(main, ".git")));
+});
+
+it("asks Git for a repository config that Git may refuse and reads a version 0 config without it", async (t) => {
+	const { root, calls } = workspace(t, { asksGit: false });
+	const make = (name: string, ...settings: string[][]) => {
+		const directory = join(root, name);
+		mkdirSync(directory);
+		git(directory, "init", "-q");
+		for (const setting of settings) git(directory, "config", ...setting);
+		return directory;
+	};
+	const extension = make("extension", ["core.repositoryformatversion", "1"], ["extensions.frobnicate", "true"]);
+	const future = make("future", ["core.repositoryformatversion", "2"]);
+	const broken = make("broken");
+	writeFileSync(join(broken, ".git", "config"), "[core\nbroken");
+	const unquoted = make("unquoted");
+	writeFileSync(join(broken, "..", "unquoted", ".git", "config"), '[core]\n\trepositoryformatversion = "0\n');
+	const plain = make(
+		"plain",
+		["extensions.worktreeConfig", "true"],
+		["remote.origin.url", "https://example.invalid/a b;c"],
+	);
+	const resolver = createPrimaryLocationResolver();
+	for (const directory of [extension, future, broken, unquoted]) {
+		const before = calls();
+		const answer = await resolver.resolve(directory);
+		assert.ok(calls() > before, `${directory} asks Git`);
+		assert.deepEqual(answer, await discoverPrimaryLocation(directory), directory);
+	}
+	assert.equal((await resolver.resolve(extension)).repositoryState, "unknown");
+	assert.equal((await resolver.resolve(broken)).repositoryState, "unknown");
+	const before = calls();
+	assert.equal((await resolver.resolve(plain)).repository, realpathSync(join(plain, ".git")));
+	assert.equal(calls(), before, "a version 0 config with a version 0 extension needs no Git");
+});
+
+it("names a directory the same way in one location and in a batch", async (t) => {
+	const { root } = workspace(t, { asksGit: false });
+	const actual = join(root, "Plain", "Dir");
+	mkdirSync(actual, { recursive: true });
+	symlinkSync(join(root, "Plain"), join(root, "alias"));
+	const variants = [actual, join(root, "alias", "Dir")];
+	// On a filesystem that ignores letter case, another spelling names the same directory.
+	if (existsSync(join(root, "plain", "dir"))) variants.push(join(root, "plain", "dir"));
+	const resolver = createPrimaryLocationResolver();
+	const batch = await resolver.resolveMany(variants);
+	for (const cwd of variants) {
+		assert.deepEqual(batch.locations.get(cwd), await resolver.resolve(cwd), cwd);
+		assert.equal(batch.locations.get(cwd)?.cwd, actual);
+	}
+	// A later batch reuses a canonical path only while the path still names the same directory.
+	const moved = join(root, "Other", "Dir");
+	mkdirSync(moved, { recursive: true });
+	unlinkSync(join(root, "alias"));
+	symlinkSync(join(root, "Other"), join(root, "alias"));
+	const after = await resolver.resolveMany([join(root, "alias", "Dir")]);
+	assert.equal(after.locations.get(join(root, "alias", "Dir"))?.cwd, moved);
+});
+
+it("notices that a directory with a stray HEAD above a cached cwd became a bare repository", async (t) => {
+	const { root } = workspace(t, { asksGit: false });
+	const ancestor = join(root, "ancestor");
+	const cwd = join(ancestor, "work");
+	mkdirSync(cwd, { recursive: true });
+	writeFileSync(join(ancestor, "HEAD"), "not a ref\n");
+	const resolver = createPrimaryLocationResolver();
+	assert.equal((await resolver.resolve(cwd)).repositoryState, "outside-git");
+	assert.equal((await resolver.resolveMany([cwd])).locations.get(cwd)?.repositoryState, "outside-git");
+	rmSync(join(ancestor, "HEAD"));
+	git(ancestor, "init", "-q", "--bare");
+	const expected = await discoverPrimaryLocation(cwd);
+	assert.equal(expected.repositoryState, "git");
+	assert.deepEqual(await resolver.resolve(cwd), expected);
+	assert.deepEqual((await resolver.resolveMany([cwd])).locations.get(cwd), expected);
 });

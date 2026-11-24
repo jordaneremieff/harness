@@ -3184,21 +3184,35 @@ recency unknown. A record outside the priority sources is matched by its working
 directory, and one read locates all of them in one batch. For the common layouts
 the resolver reads the entries that Git reads during discovery, in Git's order,
 and starts no Git process: at each directory from the cwd up, a `.git` directory
-or `gitdir:` file whose Git directory has a valid HEAD and searchable `objects`
-and `refs` (through an optional `commondir`), owned by the current user, found
-before a filesystem boundary; or no `.git` and no Git directory up to that
-boundary. That covers plain repositories, linked worktrees, submodules and
-directories outside Git, with the common directory that
-`git rev-parse --git-common-dir` names. Anything else (a bare repository, a HEAD
-file along the way, another owner, a privileged process, `GIT_CEILING_DIRECTORIES`
-or `GIT_DISCOVERY_ACROSS_FILESYSTEM`, an entry that cannot be read) asks Git. A
-batch reads each filesystem entry once, so directories that share ancestors or a
-repository share the reads, and it yields to the event loop every 128
-directories. It starts at most 16 Git processes, 4 at a time; the directories
-past that bound stay unresolved for this read, their threads stay out of the
-prompt, and coverage names `location-unresolved`. Git answers are kept for 16,384
-directories while their marker stamps are unchanged, so later reads resolve the
-rest and coverage converges. A missing directory reads as unknown without Git.
+or `gitdir:` file whose Git directory has a valid HEAD (`ref:` followed by
+spaces, tabs or line ends and `refs/`, or an object name) and searchable
+`objects` and `refs` (through an optional `commondir`), with a config that parses
+at format version 0 and names only the extensions that version accepts, owned by
+the current user, found before a filesystem boundary; or no `.git` and no Git
+directory up to that boundary. Pointer paths in `gitdir:` and `commondir` files
+resolve as the filesystem resolves them, a symbolic link before a following `..`.
+That covers plain repositories, linked worktrees, submodules and directories
+outside Git, with the common directory that `git rev-parse --git-common-dir`
+names. Anything else (a bare repository, a HEAD file along the way, a newer
+format version or another extension, a config this reader does not parse,
+another owner, a privileged process, `GIT_CEILING_DIRECTORIES` or
+`GIT_DISCOVERY_ACROSS_FILESYSTEM`, an entry that cannot be read) asks Git.
+A batch canonicalises each directory through the same filesystem call as a single
+lookup, so letter case and symbolic links name one directory one way, and later
+batches reuse that path for up to a minute while it still names the same
+directory. It reads each filesystem entry once, so directories that share
+ancestors or a repository share the reads, and it yields to the event loop every
+128 directories. It starts at most 16 Git processes, 4 at a time, for the
+directories asked longest ago, never-asked ones first; the directories past that
+bound stay unresolved for this read, their threads stay out of the prompt, and
+coverage names `location-unresolved`. Git answers are kept for 16,384
+directories while their marker stamps are unchanged: the nearest `.git`, the
+entries that could make each directory below it a Git directory, the common
+directory pointer, the config and the markers Git checks. An answer that cannot
+be cached (a symbolic link as `.git`, or no answer from Git) is reused for one
+minute. So later reads resolve the rest, coverage converges, and no read repeats
+an earlier read's Git processes while other directories wait. A missing
+directory reads as unknown without Git.
 
 Use `agent_intent({ action: "read" })` in either runtime for current bounded
 awareness without publishing or clearing a claim. Its `awareness` result contains

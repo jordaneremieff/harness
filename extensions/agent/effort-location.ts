@@ -4,21 +4,24 @@
  * Git owns repository discovery. For the common layouts the resolver reads the entries that Git
  * reads during discovery, in Git's order, and answers without starting Git: at each directory from
  * the cwd up, a `.git` directory or `gitdir:` file whose Git directory has a valid HEAD, `objects`
- * and `refs` (through an optional `commondir`), owned by the current user, found before Git would
- * stop at a filesystem boundary; or no `.git` and no Git directory up to that boundary. Any other
- * layout, an environment input that changes discovery, a privileged process, or an entry that
- * cannot be inspected asks Git (`git rev-parse --git-common-dir`).
+ * and `refs` (through an optional `commondir`) and a config that Git reads without question,
+ * owned by the current user, found before Git would stop at a filesystem boundary; or no `.git`
+ * and no Git directory up to that boundary. Pointer paths resolve as the filesystem resolves them,
+ * a symbolic link before a following `..`. Any other layout, an environment input that changes
+ * discovery, a privileged process, or an entry that cannot be inspected asks Git
+ * (`git rev-parse --git-common-dir`).
  *
  * A Git answer is cached and reused only while every input that can change it keeps the same
- * identity: the canonical cwd, the discovery environment, the nearest `.git` marker, the
- * common-directory pointer and the markers Git requires before it accepts a directory as a
- * repository. Inputs are captured before and after discovery, so a result is never paired with a
+ * identity: the canonical cwd, the discovery environment, the nearest `.git` marker, the entries
+ * that could make each directory below it a Git directory, the common-directory pointer, the
+ * config, and the markers Git requires before it accepts a directory as a repository. Inputs are captured before and after discovery, so a result is never paired with a
  * stamp from a different repository state. When a marker identity cannot be established, the
  * caller gets a fresh uncached result instead of a guess.
  *
- * One batch reads each filesystem entry at most once, starts at most LOCATION_BATCH_SPAWNS Git
- * processes, LOCATION_SPAWN_CONCURRENCY at a time, and leaves the other directories that need Git
- * unresolved for a later batch.
+ * One batch canonicalises each directory once, reads each filesystem entry at most once, starts at
+ * most LOCATION_BATCH_SPAWNS Git processes, LOCATION_SPAWN_CONCURRENCY at a time, the directories
+ * asked longest ago first, and leaves the others unresolved for a later batch. An answer that cannot
+ * be cached is kept for UNCACHED_LOCATION_MS, so later batches ask Git for other directories.
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -66,7 +69,19 @@ export const LOCATION_BATCH_SPAWNS = 16;
 const LOCATION_SPAWN_CONCURRENCY = 4;
 /** Directories one batch reads between turns of the event loop. */
 const BATCH_YIELD = 128;
+/** How long a batch reuses a Git answer that cannot be cached before it asks Git again. */
+export const UNCACHED_LOCATION_MS = 60_000;
+/**
+ * How long a batch reuses a directory's canonical path while the path still names the same
+ * directory. Only a change of letter case in a component keeps the directory and changes the
+ * spelling, so that change shows within this time.
+ */
+const CANONICAL_PATH_MS = 60_000;
 const MARKER_BYTES = 4096;
+/** A repository config larger than this asks Git. */
+const CONFIG_BYTES = 64 * 1024;
+/** Extensions that every Git release that knows them accepts in a repository of format version 0. */
+const VERSION_0_EXTENSIONS = new Set(["noop", "preciousobjects", "partialclone", "worktreeconfig"]);
 const ANCESTOR_LIMIT = 256;
 
 function gitEnvironment(): NodeJS.ProcessEnv {
@@ -130,7 +145,7 @@ export async function discoverPrimaryLocation(cwd: string): Promise<PrimaryLocat
 }
 
 /** Read one marker file without following a symlink or reading past its bound. */
-function readMarker(path: string): string | undefined {
+function readMarker(path: string, limit = MARKER_BYTES): string | undefined {
 	let fd: number;
 	try {
 		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -139,21 +154,113 @@ function readMarker(path: string): string | undefined {
 	}
 	try {
 		const info = fstatSync(fd);
-		if (!info.isFile() || info.size > MARKER_BYTES) return undefined;
-		const bytes = Buffer.alloc(MARKER_BYTES + 1);
+		if (!info.isFile() || info.size > limit) return undefined;
+		const bytes = Buffer.alloc(limit + 1);
 		let length = 0;
 		while (length < bytes.length) {
 			const count = readSync(fd, bytes, length, bytes.length - length, length);
 			if (!count) break;
 			length += count;
 		}
-		if (length > MARKER_BYTES) return undefined;
+		if (length > limit) return undefined;
 		return bytes.toString("utf8", 0, length);
 	} catch {
 		return undefined;
 	} finally {
 		closeSync(fd);
 	}
+}
+
+/**
+ * The canonical path that a Git pointer file names, resolved as Git and the filesystem resolve it:
+ * a relative path is appended to its base without normalisation, so a symbolic link resolves before
+ * a following `..`. Undefined when it does not resolve.
+ */
+function pointerTarget(base: string, raw: string): string | undefined {
+	return nativeRealpath(isAbsolute(raw) ? raw : `${base}/${raw}`);
+}
+
+/** A `..` component, which lexical joining would apply before the filesystem resolves a symbolic link. */
+function climbs(raw: string): boolean {
+	return raw.split("/").includes("..");
+}
+
+const CONFIG_ESCAPES: Readonly<Record<string, string>> = { "\\": "\\", '"': '"', n: "\n", t: "\t", b: "\b" };
+
+/**
+ * One config value as Git parses it, or undefined for a value this reader does not model: an
+ * unterminated quote, an unknown escape, or a line continuation.
+ */
+function configValue(text: string): string | undefined {
+	let value = "";
+	let quoted = false;
+	for (let index = 0; index < text.length; index++) {
+		const char = text[index] as string;
+		if (char === "\\") {
+			const escaped = CONFIG_ESCAPES[text[++index] ?? ""];
+			if (escaped === undefined) return undefined;
+			value += escaped;
+			continue;
+		}
+		if (!quoted && (char === "#" || char === ";")) break;
+		if (char === '"') quoted = !quoted;
+		else value += char;
+	}
+	return quoted ? undefined : value.replace(/^[ \t]+|[ \t]+$/gu, "");
+}
+
+/** One parsed config line: a section header, an entry, nothing, or undefined for a line this reader does not model. */
+type ConfigLine =
+	| { readonly section: string; readonly subsection: boolean }
+	| { readonly key: string; readonly value: string };
+
+function configLine(raw: string): ConfigLine | null | undefined {
+	const line = raw.replace(/\r$/u, "").replace(/^[ \t]+/u, "");
+	if (line === "" || line.startsWith("#") || line.startsWith(";")) return null;
+	if (line.startsWith("[")) {
+		const header = /^\[([A-Za-z0-9.-]+)(?:[ \t]+"(?:[^"\\\n]|\\.)*")?\][ \t]*(?:[#;].*)?$/u.exec(line);
+		if (header === null) return undefined;
+		const name = (header[1] as string).toLowerCase();
+		return { section: name.split(".")[0] as string, subsection: name.includes(".") || line.includes('"') };
+	}
+	const entry = /^([A-Za-z][A-Za-z0-9-]*)[ \t]*(.*)$/u.exec(line);
+	if (entry === null) return undefined;
+	const rest = entry[2] as string;
+	// A key without `=` is a boolean true; anything else after the key must be `=` and a value.
+	const value =
+		rest === "" || rest.startsWith("#") || rest.startsWith(";")
+			? ""
+			: rest.startsWith("=")
+				? configValue(rest.slice(1))
+				: undefined;
+	return value === undefined ? undefined : { key: (entry[1] as string).toLowerCase(), value };
+}
+
+/**
+ * Whether Git accepts a repository's config without question: it parses, its format version is 0
+ * or absent, and it names only extensions that version 0 accepts. Anything else, including a
+ * construct this reader does not model, asks Git.
+ */
+function plainRepositoryFormat(text: string): boolean {
+	let header: { readonly section: string; readonly subsection: boolean } | undefined;
+	let version: string | undefined;
+	for (const raw of text.split("\n")) {
+		const line = configLine(raw);
+		if (line === null) continue;
+		if (line === undefined) return false;
+		if ("section" in line) {
+			header = line;
+			continue;
+		}
+		if (header === undefined || !acceptedEntry(header, line.key)) return false;
+		if (header.section === "core" && !header.subsection && line.key === "repositoryformatversion") version = line.value;
+	}
+	return version === undefined || version === "0";
+}
+
+/** An entry outside `extensions`, or an extension that version 0 accepts. */
+function acceptedEntry(header: { readonly section: string; readonly subsection: boolean }, key: string): boolean {
+	return header.section !== "extensions" || (!header.subsection && VERSION_0_EXTENSIONS.has(key));
 }
 
 function nativeRealpath(path: string): string | undefined {
@@ -170,11 +277,21 @@ type Entry<T> = T | null | undefined;
 interface Node {
 	readonly kind: "directory" | "file" | "symlink" | "other";
 	readonly dev: number;
+	readonly ino: number;
 	readonly uid: number;
 }
 function nodeOf(info: Stats): Node {
 	const kind = info.isDirectory() ? "directory" : info.isFile() ? "file" : info.isSymbolicLink() ? "symlink" : "other";
-	return { kind, dev: info.dev, uid: info.uid };
+	return { kind, dev: info.dev, ino: info.ino, uid: info.uid };
+}
+/** The entry a path names after its symbolic links, or undefined when it cannot be inspected. */
+function statNode(path: string): Node | undefined {
+	try {
+		const info = statSync(path, { throwIfNoEntry: false });
+		return info === undefined ? undefined : nodeOf(info);
+	} catch {
+		return undefined;
+	}
 }
 /** The outcome of Git's discovery walk from one directory upward. */
 type Walk =
@@ -199,6 +316,7 @@ class Probe {
 	private readonly canonicals = new Map<string, Entry<string>>();
 	private readonly walks = new Map<string, Walk>();
 	private readonly repositories = new Map<string, string | undefined>();
+	private readonly formats = new Map<string, boolean>();
 	private readonly identities = new Map<string, string | undefined>();
 	readonly markers = new Map<string, MarkerStamp | undefined>();
 	readonly validities = new Map<string, string | undefined>();
@@ -319,7 +437,7 @@ class Probe {
 		const text = readMarker(join(directory, ".git"));
 		if (text === undefined || !text.startsWith("gitdir: ")) return undefined;
 		const raw = text.slice(8).replace(/[\r\n]+$/u, "");
-		const target = raw ? nativeRealpath(isAbsolute(raw) ? raw : join(directory, raw)) : undefined;
+		const target = raw ? pointerTarget(directory, raw) : undefined;
 		const owner = target === undefined ? undefined : this.lstat(target);
 		return owner && owner.uid === this.uid ? target : undefined;
 	}
@@ -334,10 +452,10 @@ class Probe {
 		const common = this.validHead(gitDirectory) ? this.commonDirectory(gitDirectory) : undefined;
 		let value: string | undefined;
 		try {
-			if (common !== undefined) {
+			if (common !== undefined && this.plainFormat(common)) {
 				accessSync(join(common, "objects"), constants.X_OK);
 				accessSync(join(common, "refs"), constants.X_OK);
-				value = nativeRealpath(common);
+				value = common;
 			}
 		} catch {
 			value = undefined;
@@ -346,20 +464,33 @@ class Probe {
 		return value;
 	}
 
-	/** HEAD is a regular file that names a ref under `refs/` or an object, as Git validates it. */
+	/**
+	 * HEAD is a regular file that names a ref under `refs/` or an object, as Git validates it; Git's
+	 * whitespace after `ref:` is space, tab, newline and carriage return only.
+	 */
 	private validHead(gitDirectory: string): boolean {
 		const head = this.lstat(join(gitDirectory, "HEAD"));
 		const text = head?.kind === "file" ? readMarker(join(gitDirectory, "HEAD")) : undefined;
-		return text !== undefined && text.length >= 4 && /^(?:ref:[ \t\n\v\f\r]*refs\/|[0-9a-fA-F]{40})/u.test(text);
+		return text !== undefined && text.length >= 4 && /^(?:ref:[ \t\n\r]*refs\/|[0-9a-fA-F]{40})/u.test(text);
 	}
 
-	/** The Git directory itself, or the directory that its `commondir` file names. */
+	/** The canonical Git directory itself, or the canonical directory that its `commondir` file names. */
 	private commonDirectory(gitDirectory: string): string | undefined {
 		const pointer = this.lstat(join(gitDirectory, "commondir"));
 		if (pointer === null) return gitDirectory;
 		const named =
 			pointer?.kind === "file" ? readMarker(join(gitDirectory, "commondir"))?.replace(/[\r\n]+$/u, "") : undefined;
-		return named ? (isAbsolute(named) ? named : join(gitDirectory, named)) : undefined;
+		return named ? pointerTarget(gitDirectory, named) : undefined;
+	}
+
+	/** Whether the common directory's config is one that Git reads without question. */
+	private plainFormat(common: string): boolean {
+		const known = this.formats.get(common);
+		if (known !== undefined) return known;
+		const text = readMarker(join(common, "config"), CONFIG_BYTES);
+		const value = text !== undefined && plainRepositoryFormat(text);
+		this.formats.set(common, value);
+		return value;
 	}
 }
 
@@ -386,6 +517,8 @@ interface MarkerStamp {
 	readonly targetRevision?: string;
 	readonly common?: string;
 	readonly validity?: string;
+	/** Markers of the directories below the nearest `.git`, which Git also checks. */
+	readonly passed?: readonly string[];
 }
 
 function identityOf(info: BigIntStats): string {
@@ -426,7 +559,7 @@ interface CommonMarkers {
 
 /** Resolve a commondir pointer target and describe its identity and required markers. */
 function commonMarkers(probe: Probe, path: string, text: string): CommonMarkers | undefined {
-	const resolved = nativeRealpath(resolve(path, text.replace(/[\r\n]+$/u, "")));
+	const resolved = pointerTarget(path, text.replace(/[\r\n]+$/u, ""));
 	if (resolved === undefined) return undefined;
 	const identity = probe.repositoryIdentity(resolved);
 	if (identity === undefined) return undefined;
@@ -450,6 +583,12 @@ function directoryMarkers(probe: Probe, path: string): string | undefined {
 	return value;
 }
 
+/** Git reads the repository format from the common directory's config; null when it is absent. */
+function configRevision(probe: Probe, common: string): string | null | undefined {
+	const info = probe.lstatBig(join(common, "config"));
+	return info === undefined || info === null ? info : stampOfInfo(info);
+}
+
 function describeDirectory(probe: Probe, path: string): string | undefined {
 	const head = headContents(probe, join(path, "HEAD"));
 	if (head === undefined) return undefined;
@@ -470,7 +609,9 @@ function describeDirectory(probe: Probe, path: string): string | undefined {
 		common = commonMarkers(probe, path, text);
 		if (common === undefined) return undefined;
 	}
-	return JSON.stringify({ head, objects, refs, commondir, ...(common === undefined ? {} : { common }) });
+	const config = configRevision(probe, common?.resolved ?? path);
+	if (config === undefined) return undefined;
+	return JSON.stringify({ head, objects, refs, commondir, config, ...(common === undefined ? {} : { common }) });
 }
 
 function markerAt(probe: Probe, candidate: string, info: BigIntStats, directory: string): MarkerStamp | undefined {
@@ -482,12 +623,13 @@ function markerAt(probe: Probe, candidate: string, info: BigIntStats, directory:
 	}
 	if (!info.isFile()) return undefined;
 	const text = readMarker(candidate);
-	if (text === undefined) return undefined;
-	const pointer = /^gitdir:[ \t]*(.+?)[\r\n]*$/u.exec(text);
-	if (!pointer) return undefined;
-	const raw = pointer[1]?.trim();
+	if (text === undefined || !text.startsWith("gitdir: ")) return undefined;
+	const raw = text.slice(8).replace(/[\r\n]+$/u, "");
 	if (!raw) return undefined;
-	const target = isAbsolute(raw) ? raw : resolve(directory, raw);
+	// A target that does not resolve yet is watched at its lexical path, which names the same entry
+	// as the filesystem's resolution only without a `..` component.
+	const target = pointerTarget(directory, raw) ?? (climbs(raw) ? undefined : resolve(directory, raw));
+	if (target === undefined) return undefined;
 	const targetInfo = probe.lstatBig(target);
 	const common = readMarker(join(target, "commondir"));
 	const markers = directoryMarkers(probe, target);
@@ -504,30 +646,46 @@ function markerAt(probe: Probe, candidate: string, info: BigIntStats, directory:
 }
 
 /**
- * Describe the discovery inputs for one canonical cwd. A directory whose own markers are present
- * is reported as a bare repository; otherwise only an absent `.git` along the ancestors is reported
- * as none. Undefined means the marker identity cannot be trusted, so its result must not be cached.
+ * Describe the discovery inputs for one canonical cwd: the nearest `.git` marker, and the entries
+ * that could make each directory below it a Git directory, which Git checks at every directory of
+ * its walk. A directory whose own markers are present is reported as a bare repository; otherwise
+ * only an absent `.git` along the ancestors is reported as none. Undefined means the marker identity
+ * cannot be trusted, so its result must not be cached.
  */
 function markerStamp(probe: Probe, canonical: string): MarkerStamp | undefined {
+	const passed: string[] = [];
 	let directory = canonical;
 	for (let depth = 0; depth < ANCESTOR_LIMIT; depth++) {
 		const candidate = join(directory, ".git");
 		const info = probe.lstatBig(candidate);
 		if (info === undefined) return undefined;
-		if (info !== null) {
-			if (!probe.markers.has(candidate)) probe.markers.set(candidate, markerAt(probe, candidate, info, directory));
-			return probe.markers.get(candidate);
-		}
+		if (info !== null) return nearestMarker(probe, candidate, info, directory, passed);
+		const markers = directoryMarkers(probe, directory);
+		if (markers === undefined) return undefined;
+		passed.push(markers);
 		const parent = dirname(directory);
 		if (parent === directory) break;
 		directory = parent;
 	}
 	const bare = probe.lstatBig(canonical);
 	if (bare === undefined) return undefined;
-	if (bare === null || !bare.isDirectory()) return { kind: "none", path: canonical, revision: "" };
+	if (bare === null || !bare.isDirectory()) return { kind: "none", path: canonical, revision: "", passed };
 	const markers = directoryMarkers(probe, canonical);
 	if (markers === undefined) return undefined;
-	return { kind: "bare", path: canonical, revision: identityOf(bare), validity: markers };
+	return { kind: "bare", path: canonical, revision: identityOf(bare), validity: markers, passed };
+}
+
+/** The stamp of a `.git` entry, shared by every cwd of a batch below it, with the directories one cwd passed. */
+function nearestMarker(
+	probe: Probe,
+	candidate: string,
+	info: BigIntStats,
+	directory: string,
+	passed: readonly string[],
+): MarkerStamp | undefined {
+	if (!probe.markers.has(candidate)) probe.markers.set(candidate, markerAt(probe, candidate, info, directory));
+	const marker = probe.markers.get(candidate);
+	return marker === undefined ? undefined : { ...marker, passed };
 }
 
 function stampDigest(stamp: MarkerStamp): string {
@@ -538,6 +696,21 @@ interface DiscoveryInputs {
 	readonly canonical: string;
 	readonly environment: string;
 	readonly stamp: string;
+}
+
+/** A directory's canonical path and the identity of the directory it named. */
+interface CanonicalPath {
+	readonly canonical: string;
+	readonly dev: number;
+	readonly ino: number;
+	readonly at: number;
+}
+
+/** A Git answer that cannot be cached: its inputs could not be stamped, or Git did not answer. */
+interface UncachedLocation {
+	readonly environment: string;
+	readonly at: number;
+	readonly location: PrimaryLocation;
 }
 
 interface CompletedLocation {
@@ -563,12 +736,16 @@ function inputs(path: string): DiscoveryInputs | undefined {
 
 class RepositoryLocationResolver implements PrimaryLocationResolver {
 	private readonly completed = new Map<string, CompletedLocation>();
+	private readonly uncached = new Map<string, UncachedLocation>();
+	private readonly canonicalPaths = new Map<string, CanonicalPath>();
 	private readonly pending = new Map<string, Promise<PrimaryLocation>>();
 	private readonly entries: number;
+	private readonly now: () => number;
 	private generation = 0;
 
-	constructor(entries: number) {
+	constructor(entries: number, now: () => number) {
 		this.entries = entries;
+		this.now = now;
 	}
 
 	/**
@@ -588,23 +765,48 @@ class RepositoryLocationResolver implements PrimaryLocationResolver {
 		return this.known(probe, key) ?? this.ask(key);
 	}
 
+	/**
+	 * Locations of many directories. Each is canonicalised through the same filesystem call as
+	 * `resolve`, so both name one directory the same way; a later batch reuses that path while it
+	 * names the same directory, for CANONICAL_PATH_MS. Directories that need Git are asked longest ago
+	 * first, never-asked ones before all others, so no batch repeats an earlier batch's window while
+	 * other directories wait.
+	 */
 	async resolveMany(cwds: Iterable<string>): Promise<PrimaryLocationBatch> {
 		const probe = new Probe();
+		const now = this.now();
 		const locations = new Map<string, PrimaryLocation>();
 		const needGit: string[] = [];
-		let read = 0;
-		for (const cwd of new Set(cwds)) {
-			if (++read % BATCH_YIELD === 0) await new Promise<void>((done) => setImmediate(done));
-			const known = this.known(probe, resolve(cwd));
-			if (known === undefined) needGit.push(cwd);
-			else locations.set(cwd, known);
+		const keys = [...new Set(cwds)];
+		for (let start = 0; start < keys.length; start += BATCH_YIELD) {
+			const chunk = keys.slice(start, start + BATCH_YIELD);
+			const canonicals = await this.canonicalise(probe, chunk, now);
+			for (const cwd of chunk) {
+				const key = resolve(cwd);
+				const canonical = canonicals.get(cwd);
+				// A directory that does not resolve is unknown, as Git discovery reports it.
+				if (canonical === undefined) {
+					locations.set(cwd, { cwd: key, repositoryState: "unknown" });
+					continue;
+				}
+				probe.known(key, canonical);
+				const known = this.known(probe, key) ?? this.held(key, probe.environment, now);
+				this.rememberCanonical(probe, key, canonical, now);
+				if (known === undefined) needGit.push(cwd);
+				else locations.set(cwd, known);
+			}
 		}
-		const asked = needGit.slice(0, LOCATION_BATCH_SPAWNS);
+		const askedAt = (cwd: string) => this.uncached.get(resolve(cwd))?.at ?? 0;
+		const asked = needGit.sort((a, b) => askedAt(a) - askedAt(b)).slice(0, LOCATION_BATCH_SPAWNS);
 		let next = 0;
 		const worker = async () => {
 			while (next < asked.length) {
 				const cwd = asked[next++] as string;
-				locations.set(cwd, await this.ask(resolve(cwd)));
+				const key = resolve(cwd);
+				const location = await this.ask(key);
+				locations.set(cwd, location);
+				if (this.completed.has(key)) this.uncached.delete(key);
+				else this.hold(key, { environment: probe.environment, at: this.now(), location });
 			}
 		};
 		await Promise.all(Array.from({ length: Math.min(LOCATION_SPAWN_CONCURRENCY, asked.length) }, worker));
@@ -615,6 +817,8 @@ class RepositoryLocationResolver implements PrimaryLocationResolver {
 		this.generation++;
 		if (cwd === undefined) {
 			this.completed.clear();
+			this.uncached.clear();
+			this.canonicalPaths.clear();
 			return;
 		}
 		const key = resolve(cwd);
@@ -624,20 +828,90 @@ class RepositoryLocationResolver implements PrimaryLocationResolver {
 		} catch {
 			/* A missing path still invalidates its requested key. */
 		}
-		for (const [candidate, entry] of this.completed) {
-			if (
-				candidate === key ||
-				candidate === canonical ||
-				entry.location.cwd === canonical ||
-				entry.location.cwd === key
-			)
-				this.completed.delete(candidate);
-		}
+		for (const [candidate, entry] of this.canonicalPaths)
+			if (candidate === key || entry.canonical === canonical || entry.canonical === key)
+				this.canonicalPaths.delete(candidate);
+		for (const entries of [this.completed, this.uncached])
+			for (const [candidate, entry] of entries) {
+				if (
+					candidate === key ||
+					candidate === canonical ||
+					entry.location.cwd === canonical ||
+					entry.location.cwd === key
+				)
+					entries.delete(candidate);
+			}
 	}
 
 	clear(): void {
 		this.generation++;
 		this.completed.clear();
+		this.uncached.clear();
+		this.canonicalPaths.clear();
+	}
+
+	/** Canonical paths of one chunk: remembered ones that still name their directory, the rest resolved now. */
+	private async canonicalise(probe: Probe, chunk: readonly string[], now: number): Promise<Map<string, string>> {
+		const canonicals = new Map<string, string>();
+		const fresh: string[] = [];
+		for (const cwd of chunk) {
+			const remembered = this.rememberedCanonical(probe, resolve(cwd), now);
+			if (remembered === undefined) fresh.push(cwd);
+			else canonicals.set(cwd, remembered);
+		}
+		if (fresh.length === 0) {
+			await new Promise<void>((done) => setImmediate(done));
+			return canonicals;
+		}
+		const resolved = await Promise.all(fresh.map((cwd) => realpath(resolve(cwd)).catch(() => undefined)));
+		for (const [index, cwd] of fresh.entries()) {
+			const canonical = resolved[index];
+			if (canonical !== undefined) canonicals.set(cwd, canonical);
+		}
+		return canonicals;
+	}
+
+	private rememberedCanonical(probe: Probe, key: string, now: number): string | undefined {
+		const entry = this.canonicalPaths.get(key);
+		if (entry === undefined || now - entry.at >= CANONICAL_PATH_MS) return undefined;
+		const info = entry.canonical === key ? probe.lstat(key) : statNode(key);
+		return info && info.dev === entry.dev && info.ino === entry.ino ? entry.canonical : undefined;
+	}
+
+	private rememberCanonical(probe: Probe, key: string, canonical: string, now: number): void {
+		if (this.canonicalPaths.get(key)?.canonical === canonical) return;
+		const info = probe.lstat(canonical);
+		if (!info) return;
+		this.canonicalPaths.delete(key);
+		this.canonicalPaths.set(key, {
+			canonical: canonical === key ? key : canonical,
+			dev: info.dev,
+			ino: info.ino,
+			at: now,
+		});
+		while (this.canonicalPaths.size > this.entries) {
+			const oldest = this.canonicalPaths.keys().next().value;
+			if (oldest === undefined) break;
+			this.canonicalPaths.delete(oldest);
+		}
+	}
+
+	/** An answer that could not be cached, while it is recent and the environment is unchanged. */
+	private held(key: string, environment: string, now: number): PrimaryLocation | undefined {
+		const entry = this.uncached.get(key);
+		if (entry === undefined || entry.environment !== environment || now - entry.at >= UNCACHED_LOCATION_MS)
+			return undefined;
+		return { ...entry.location };
+	}
+
+	private hold(key: string, entry: UncachedLocation): void {
+		this.uncached.delete(key);
+		this.uncached.set(key, entry);
+		while (this.uncached.size > this.entries) {
+			const oldest = this.uncached.keys().next().value;
+			if (oldest === undefined) break;
+			this.uncached.delete(oldest);
+		}
 	}
 
 	/** The answer of the entries Git reads, or a cached Git answer whose inputs are unchanged; undefined asks Git. */
@@ -719,6 +993,8 @@ class RepositoryLocationResolver implements PrimaryLocationResolver {
 }
 
 /** One resolver caches Git answers and shares one in-flight Git resolution per cwd. */
-export function createPrimaryLocationResolver(options: { cacheEntries?: number } = {}): PrimaryLocationResolver {
-	return new RepositoryLocationResolver(options.cacheEntries ?? LOCATION_CACHE_ENTRIES);
+export function createPrimaryLocationResolver(
+	options: { cacheEntries?: number; now?: () => number } = {},
+): PrimaryLocationResolver {
+	return new RepositoryLocationResolver(options.cacheEntries ?? LOCATION_CACHE_ENTRIES, options.now ?? Date.now);
 }
