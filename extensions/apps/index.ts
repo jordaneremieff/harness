@@ -84,7 +84,7 @@ export default function apps(pi: ExtensionAPI): void {
 				{
 					id: "apps.open",
 					title: "Show an App in a Pane…",
-					description: "Dock a macOS application window to a pane beside the focused one",
+					description: "Show a Mac app window in a pane beside this one",
 					argv: [process.execPath, fileURLToPath(new URL("./palette-command.ts", import.meta.url)), app],
 				},
 			],
