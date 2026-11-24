@@ -19,5 +19,6 @@ extensions/markdown/native/.build/
 extensions/composer/native/.build/
 extensions/explorer/native/.build/
 extensions/explorer/native/.swiftpm/
+extensions/apps/native/.build/
 native-pane/.build/
 extensions/markdown/native/.swiftpm/

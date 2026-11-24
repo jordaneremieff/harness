@@ -142,4 +142,5 @@ it; a command that only shows something needs no answer.
 
 The Rex extension owns the runtime, the registry and `/rex setup`. The
 [Explorer extension](../../extensions/explorer/README.md) publishes
-**Explore a Folder…**.
+**Explore a Folder…**; the [apps extension](../../extensions/apps/README.md)
+publishes **Show an App in a Pane…**.
