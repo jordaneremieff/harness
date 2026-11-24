@@ -99,7 +99,7 @@ it("exposes selected candidate facts from the same publication snapshot when bro
 		assert.equal(result.coverage.output.omittedModels, 0);
 	}
 	assert.equal(JSON.stringify(records), snapshot);
-	assert.deepEqual(catalog.calls, [{ limit: 20 }, { limit: 20 }, { limit: 20 }]);
+	assert.equal(catalog.reads, 3);
 });
 
 it("counts no thread storage as a fleet record, an effort member or a model selection", async () => {
@@ -113,19 +113,23 @@ it("counts no thread storage as a fleet record, an effort member or a model sele
 		),
 		ownerId: primary,
 	};
-	const reference = new FixtureCatalog([page([agent], null, { visited: 3 })]);
-	const threads = threadStorageId(primary, reference.root);
+	const reference = new FixtureCatalog([page([agent])]);
+	const catalog = new FixtureCatalog([page([agent])]);
+	const threads = threadStorageId(primary, catalog.root);
 	const published = {
 		...record(threads, [row(threads, { model: { provider: "zulu", modelId: "model-a", thinkingLevel: "off" } })]),
 		ownerId: primary,
 	};
-	const peerThreads = threadStorageId("another-session", reference.root);
+	const peerThreads = threadStorageId("another-session", catalog.root);
 	const unpublished: CatalogRecord = { ...record(peerThreads), ownerId: "another-session" };
 	delete unpublished.view;
 	const effort = { callerId: primary, callerUsage: { reportedCost: 1, partial: false } };
 	const expected = await readFleetStatus(reference, { now, effort });
-	const result = await readFleetStatus(new FixtureCatalog([page([agent, published, unpublished])]), { now, effort });
+	for (const storage of [published, unpublished]) catalog.records.set(storage.storageId, storage);
+	const result = await readFleetStatus(catalog, { now, effort });
 	check(result);
+	assert.equal(result.coverage.catalog.visited, 3);
+	result.coverage.catalog.visited = expected.coverage.catalog.visited;
 	assert.deepEqual(result, expected);
 	assert.equal(result.coverage.catalog.records, 1);
 	assert.equal(result.coverage.unknownEvidenceStorages, 0);
@@ -189,7 +193,7 @@ it("prioritises selected usable model facts over crowded matching failure detail
 	assert.equal(result.coverage.output.omittedModels, 0);
 	assert.equal(result.coverage.output.byteLimitReached, true);
 	assert.equal(JSON.stringify(frozenRecords), snapshot);
-	assert.deepEqual(catalog.calls, [{ limit: 20 }, { limit: 20 }]);
+	assert.equal(catalog.reads, 2);
 });
 
 it("uses exact provider intersection and preserves nested model paths", async () => {
@@ -336,7 +340,7 @@ it("rejects malformed selectors before traversal and filters outside the fleet v
 	});
 	const catalog = new FixtureCatalog([page([])]);
 	await assert.rejects(readFleetStatus(catalog, { model: "invalid" }), /Fleet model/u);
-	assert.equal(catalog.calls.length, 0);
+	assert.equal(catalog.reads, 0);
 });
 
 it("returns usable model facts with plain and escaped combined selectors at their identity limits", async () => {
@@ -368,7 +372,7 @@ it("returns usable model facts with plain and escaped combined selectors at thei
 		assert.deepEqual(result.models[0]?.currentSelections, [{ thinkingLevel: "high", count: 1 }]);
 		assert.equal(result.models[0]?.usage?.last7d.tokens, 10);
 		assert.equal(result.coverage.output.omittedModels, 0);
-		assert.deepEqual(catalog.calls, [{ limit: 20 }]);
+		assert.equal(catalog.reads, 1);
 	}
 });
 
@@ -385,7 +389,7 @@ it("bounds selected identities without a wider scan or shortened targets", async
 	assert.equal(result.selection?.matched.models, 1);
 	assert.equal(result.models.length + result.coverage.output.omittedModels, 1);
 	if (result.models.length) assert.equal(result.models[0].model, model);
-	assert.deepEqual(catalog.calls, [{ limit: 20 }]);
+	assert.equal(catalog.reads, 1);
 });
 
 it("uses exact inclusive rolling cutoffs at read time, not publication time", async () => {
@@ -650,23 +654,28 @@ function page(
 		coverage: { visited: records.length, skipped: 0, complete: nextCursor === null, ...fields },
 	};
 }
+let fixtureCatalogs = 0;
+/** An in-memory catalog: the fleet index lists, stamps and derives through these three methods. */
 class FixtureCatalog extends AgentCatalog {
-	readonly pages: CatalogPage[];
-	readonly calls: Parameters<AgentCatalog["page"]>[0][] = [];
-	constructor(pages: CatalogPage[]) {
-		super("/work/fleet");
-		this.pages = pages;
+	readonly records = new Map<string, CatalogRecord>();
+	readonly unreadable: string[];
+	reads = 0;
+	constructor(pages: CatalogPage[], unreadable: string[] = []) {
+		super(`/work/fleet-${++fixtureCatalogs}`);
+		for (const page of pages) for (const record of page.records) this.records.set(record.storageId, record);
+		this.unreadable = unreadable;
 	}
-	override async *scanPages(limit: number, maxPages: number): AsyncGenerator<CatalogPage> {
-		assert.equal(limit, 20);
-		for (let index = 0; index < maxPages; index++) {
-			const previous = this.pages[index - 1]?.nextCursor;
-			this.calls.push({ limit, ...(previous == null ? {} : { cursor: previous }) });
-			const page = this.pages[index];
-			assert.ok(page, `unexpected catalog page ${index}`);
-			yield page;
-			if (page.nextCursor === null) return;
-		}
+	override async identities(): Promise<string[]> {
+		this.reads++;
+		return [...this.records.keys(), ...this.unreadable].sort();
+	}
+	override recordStamp(): string {
+		return "unchanged";
+	}
+	override derive<T>(identity: string, project: (record: CatalogRecord) => T): { fileStamp: string; value: T } {
+		const record = this.records.get(identity);
+		if (!record) throw new Error("unreadable fixture record");
+		return { fileStamp: "unchanged", value: project(record) };
 	}
 }
 async function read(records: CatalogRecord[]): Promise<FleetStatus> {
@@ -840,7 +849,7 @@ it("samples warnings as observed conversation state, separate from provider fail
 	assert.deepEqual(result.warnings[0].model, selected());
 });
 
-it("sums all source coverage independently of output omissions across empty and populated pages", async () => {
+it("sums all source coverage independently of output omissions and counts unreadable records as skipped", async () => {
 	const first = evidence({ models: [{ model: "sample/a", reportedCost: 1 }] });
 	first.coverage = {
 		conversationsVisited: 5,
@@ -867,22 +876,18 @@ it("sums all source coverage independently of output omissions across empty and 
 		unavailable: "sample unavailable",
 		coverage: { complete: false, omitted: 2 },
 	});
-	const catalog = new FixtureCatalog([
-		page([], "1", { visited: 256, skipped: 3 }),
-		page([a], "2", { visited: 4, skipped: 1 }),
-		page([a, b, unavailable], null, { visited: 5 }),
-	]);
+	const catalog = new FixtureCatalog([page([a, b, unavailable])], ["storage-x", "storage-y"]);
 	const result = await readFleetStatus(catalog);
 	check(result);
 	assert.deepEqual(result.coverage.catalog, {
-		pages: 3,
+		pages: 1,
 		records: 3,
-		visited: 265,
-		skipped: 4,
+		visited: 5,
+		skipped: 2,
 		complete: true,
 		hasMore: false,
 		scanLimitReached: false,
-		maxPages: 16,
+		maxPages: 4096,
 		pageLimit: 20,
 	});
 	assert.deepEqual(result.coverage.evidence, {
@@ -899,26 +904,90 @@ it("sums all source coverage independently of output omissions across empty and 
 	assert.equal(result.coverage.unknownOperationalStorages, 1);
 	assert.equal(result.coverage.unknownEvidenceStorages, 1);
 	assert.equal(result.coverage.output.omittedModels, 0);
-	assert.deepEqual(catalog.calls, [{ limit: 20 }, { limit: 20, cursor: "1" }, { limit: 20, cursor: "2" }]);
+	assert.equal(catalog.reads, 1);
 });
 
-it("stops at sixteen pages, hides unusable cursors, and restarts on the next call", async () => {
-	const catalog = new FixtureCatalog(
-		Array.from({ length: 17 }, (_, index) => page([], String(index + 1), { visited: 256, skipped: 1 })),
+it("covers every record of a catalog larger than three hundred and twenty records and reads none again", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "fleet-whole-catalog-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const catalog = new AgentCatalog(root);
+	const publish = (storageId: string, thinkingLevel: string) =>
+		catalog.updateView(storageId, {
+			updatedAt: observedAt,
+			storageId,
+			rows: [row(storageId, { storageId, model: { provider: "zulu", modelId: "model-a", thinkingLevel } })],
+			coverage: { complete: true, omitted: 0 },
+			modelEvidence: evidence(),
+		});
+	const records = Array.from({ length: 400 }, () =>
+		catalog.create({
+			cwd: root,
+			agentDir: root,
+			packageDir: root,
+			model: { provider: "zulu", modelId: "model-a" },
+			thinkingLevel: "off",
+		}),
 	);
+	for (const record of records) publish(record.storageId, "high");
+	const derived = t.mock.method(catalog, "derive");
+	const whole = t.mock.method(catalog, "read");
+	const first = await readFleetStatus(catalog);
+	check(first);
+	assert.deepEqual(first.coverage.catalog, {
+		pages: 20,
+		records: 400,
+		visited: 400,
+		skipped: 0,
+		complete: true,
+		hasMore: false,
+		scanLimitReached: false,
+		maxPages: 4096,
+		pageLimit: 20,
+	});
+	assert.equal(first.conversations.observed, 400);
+	assert.deepEqual(first.models[0]?.currentSelections, [{ thinkingLevel: "high", count: 400 }]);
+	assert.equal(derived.mock.callCount(), 400);
+	assert.deepEqual((await readFleetStatus(catalog)).coverage.catalog, first.coverage.catalog);
+	assert.equal(derived.mock.callCount(), 400, "an unchanged catalog costs a listing and one stat per record");
+	whole.mock.resetCalls();
+	new AgentCatalog(root).updateView(records[7].storageId, {
+		updatedAt: observedAt,
+		storageId: records[7].storageId,
+		rows: [
+			row(records[7].storageId, {
+				storageId: records[7].storageId,
+				model: { provider: "zulu", modelId: "model-a", thinkingLevel: "low" },
+			}),
+		],
+		coverage: { complete: true, omitted: 0 },
+		modelEvidence: evidence(),
+	});
+	const changed = await readFleetStatus(catalog);
+	assert.deepEqual(changed.models[0]?.currentSelections, [
+		{ thinkingLevel: "high", count: 399 },
+		{ thinkingLevel: "low", count: 1 },
+	]);
+	assert.equal(derived.mock.callCount(), 401, "only the changed record is read again");
+	assert.equal(whole.mock.callCount(), 0, "a fleet read takes no whole record through the validated-record cache");
+});
+
+it("stops at the page bound of a larger catalog, hides cursors, and restarts on the next call", async () => {
+	const bound = 4096 * 20;
+	const catalog = new FixtureCatalog([
+		page(Array.from({ length: bound + 1 }, (_, index) => record(`storage-${String(index).padStart(6, "0")}`))),
+	]);
 	const result = await readFleetStatus(catalog);
 	check(result);
-	assert.equal(catalog.calls.length, 16);
-	assert.equal(result.coverage.catalog.pages, 16);
-	assert.equal(result.coverage.catalog.visited, 4096);
-	assert.equal(result.coverage.catalog.skipped, 16);
+	assert.equal(result.coverage.catalog.pages, 4096);
+	assert.equal(result.coverage.catalog.visited, bound);
+	assert.equal(result.coverage.catalog.records, bound);
 	assert.equal(result.coverage.catalog.complete, false);
 	assert.equal(result.coverage.catalog.hasMore, true);
 	assert.equal(result.coverage.catalog.scanLimitReached, true);
 	assert.equal(JSON.stringify(result).includes("cursor"), false);
 	assert.match(result.notes.join(" "), /restarts the scan; no continuation/u);
 	await readFleetStatus(catalog);
-	assert.deepEqual(catalog.calls[16], { limit: 20 });
+	assert.equal(catalog.reads, 2);
 });
 
 it("orders exact model keys alphabetically and caps rows with selection omissions", async () => {

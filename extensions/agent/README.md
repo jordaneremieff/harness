@@ -1300,8 +1300,13 @@ status that still exceeds the bound is refused with a pointer to
 `status-overview.ts` (`projectSelectedStatus`, `validateStatusDetail`).
 
 `agent_status {view: "fleet"}` is a separate local observation on both ordinary
-and native tools. It scans bounded catalog pages without opening hosts or
-reading transcripts. Model rows sort by exact provider/model identity and show
+and native tools. It reads every catalog record without opening hosts or
+reading transcripts, up to 4,096 pages of 20 records; only a larger catalog
+reports `scanLimitReached`. Each process keeps what a record contributes by
+record file stamp: a call lists the catalog directory, stats each record,
+reads only the records that changed since its previous call, takes no whole
+record through the validated-record cache, and yields to the event loop
+between batches. Model rows sort by exact provider/model identity and show
 reported model costs, sampled last-response times, current selections grouped
 by thinking level, and active conversation counts. Active means a published
 Starting or Working state, not a live host check. Tool costs stay separate.
@@ -1310,8 +1315,10 @@ stable identity tie-breakers. Warning samples describe observed conversation
 state, not proven provider faults. The response bounds rows, samples, and
 serialized text; coverage separates catalog limits, unknown publications,
 source omissions, and output omissions. Each call starts a fresh scan of one
-filename listing; record contents can change as the reader scans them. It
-reports whether more catalog entries remain but exposes no unusable cursor.
+filename listing; record contents can change as the reader scans them.
+`coverage.catalog` counts the records listed as `visited`, unreadable records
+as `skipped`, and the pages of 20 records they fill as `pages`. It reports
+whether more catalog entries remain but exposes no unusable cursor.
 Missing evidence is unknown, not zero. Reported costs are not invoices or
 remaining allowance; past use is not preference. This view does not query
 provider health, quotas, account balances, or billing services.

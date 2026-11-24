@@ -1,6 +1,7 @@
 import { str, num, int, bool, nul, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 /** Machine-local observations from bounded catalog publications, without host or transcript reads. */
 import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
+import { CatalogIndex } from "./catalog-index.ts";
 import { isThreadStorage } from "./identity.ts";
 import type { CatalogView, CatalogViewRow } from "./catalog-view.ts";
 import {
@@ -18,7 +19,10 @@ import {
 
 const BYTE_LIMIT = 4096;
 const PAGE_LIMIT = 20;
-const MAX_PAGES = 16;
+/** One call covers at most this many pages of records; only a larger catalog reaches the scan limit. */
+const MAX_PAGES = 4096;
+/** Records between yields while a call sums the catalog, so a large catalog never holds the event loop. */
+const OBSERVE_BATCH = 128;
 const MODEL_LIMIT = 12;
 const FAILURE_LIMIT = 4;
 const WARNING_LIMIT = 4;
@@ -301,7 +305,7 @@ function modelRow(models: Map<string, FleetModel>, model: string): FleetModel {
 function observeSelection(
 	value: FleetStatus,
 	models: Map<string, FleetModel>,
-	row: CatalogViewRow,
+	row: FleetRow,
 	selection: FleetSelection,
 ): void {
 	const active = row.state === "starting" || row.state === "working";
@@ -451,7 +455,7 @@ class FleetCollector {
 	readonly value: FleetStatus;
 	private readonly providers = new Map<string, FleetStatus["providers"][number]>();
 	private readonly members = new Set<string>();
-	private readonly memberRows = new Map<string, CatalogViewRow>();
+	private readonly memberRows = new Map<string, FleetRow>();
 	private readonly now: number;
 	private readonly effort?: FleetEffortScope;
 	private readonly sampleTotals = new Map<string, SampleTotal>();
@@ -485,18 +489,15 @@ class FleetCollector {
 	private readonly models = new Map<string, FleetModel>();
 	private readonly failures = new Map<string, ModelFailure>();
 	private readonly warnings: ModelWarning[] = [];
-	private readonly storages = new Set<string>();
 	private readonly conversations = new Set<string>();
 
-	observe(record: CatalogRecord): void {
-		if (this.storages.has(record.storageId)) return;
-		this.storages.add(record.storageId);
+	observe(storageId: string, source: FleetSource): void {
 		this.value.coverage.catalog.records++;
-		if (this.effort?.created === undefined && record.ownerId === this.effort?.callerId && this.effort)
-			this.members.add(record.storageId);
-		this.operational(record.view);
-		this.usage(record.view?.modelEvidence);
-		const evidence = record.view?.modelEvidence;
+		if (this.effort?.created === undefined && source.ownerId === this.effort?.callerId && this.effort)
+			this.members.add(storageId);
+		this.operational(source.view);
+		this.usage(source.view?.modelEvidence);
+		const evidence = source.view?.modelEvidence;
 		if (!evidence) {
 			this.value.coverage.unknownEvidenceStorages++;
 			this.value.coverage.evidence.conversationsComplete = false;
@@ -588,7 +589,7 @@ class FleetCollector {
 			});
 		return true;
 	}
-	private operational(view: CatalogView | undefined): void {
+	private operational(view: FleetSource["view"]): void {
 		this.value.coverage.omittedOperationalRows += view?.coverage.omitted ?? 0;
 		if (!view || view.unavailable !== undefined) {
 			this.value.coverage.unknownOperationalStorages++;
@@ -659,9 +660,38 @@ class FleetCollector {
 	}
 }
 
+type FleetRow = Pick<CatalogViewRow, "id" | "model" | "state" | "cost" | "partial">;
+/** What one catalog record contributes to fleet status. */
+interface FleetSource {
+	ownerId?: string;
+	view?: Pick<CatalogView, "unavailable" | "coverage" | "modelEvidence"> & { rows: FleetRow[] };
+}
+function fleetSource(record: CatalogRecord): FleetSource {
+	const view = record.view;
+	return structuredClone({
+		...(record.ownerId === undefined ? {} : { ownerId: record.ownerId }),
+		...(view === undefined
+			? {}
+			: {
+					view: {
+						...(view.unavailable === undefined ? {} : { unavailable: view.unavailable }),
+						...(view.modelEvidence === undefined ? {} : { modelEvidence: view.modelEvidence }),
+						coverage: view.coverage,
+						rows: view.rows.map(({ id, model, state, cost, partial }) => ({ id, model, state, cost, partial })),
+					},
+				}),
+	});
+}
 /**
- * Each call starts a bounded scan; cached costs never inherit a conversation's current selection.
- * A thread storage runs no agent work, so it is no fleet record, no effort member and no model selection.
+ * The fleet source of every catalog record, kept by record file stamp: a call lists the catalog,
+ * stats each record and reads only the records that changed since the previous call.
+ */
+const fleetSources = new CatalogIndex(fleetSource);
+
+/**
+ * Each call reads the whole catalog, up to the page bound; cached costs never inherit a conversation's
+ * current selection. A thread storage runs no agent work, so it is no fleet record, no effort member
+ * and no model selection.
  */
 export async function readFleetStatus(
 	catalog: AgentCatalog,
@@ -670,14 +700,17 @@ export async function readFleetStatus(
 	const selection = validateFleetSelection({ ...options, view: "fleet" });
 	const collector = new FleetCollector(options.now ?? Date.now(), options.effort, selection);
 	const coverage = collector.value.coverage.catalog;
-	for await (const page of catalog.scanPages(PAGE_LIMIT, MAX_PAGES)) {
-		coverage.pages++;
-		coverage.visited += page.coverage.visited;
-		coverage.skipped += page.coverage.skipped;
-		coverage.hasMore = page.nextCursor !== null;
-		coverage.complete = page.coverage.complete && !coverage.hasMore;
-		for (const record of page.records) if (!isThreadStorage(record, catalog.root)) collector.observe(record);
+	const entries = await fleetSources.read(catalog);
+	coverage.visited = Math.min(entries.length, PAGE_LIMIT * MAX_PAGES);
+	coverage.pages = Math.max(1, Math.ceil(coverage.visited / PAGE_LIMIT));
+	coverage.hasMore = entries.length > coverage.visited;
+	coverage.complete = !coverage.hasMore;
+	coverage.scanLimitReached = coverage.hasMore;
+	for (let index = 0; index < coverage.visited; index++) {
+		if (index > 0 && index % OBSERVE_BATCH === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+		const { storageId, value } = entries[index];
+		if (value === undefined) coverage.skipped++;
+		else if (!isThreadStorage({ storageId, ownerId: value.ownerId }, catalog.root)) collector.observe(storageId, value);
 	}
-	coverage.scanLimitReached = coverage.hasMore && coverage.pages === MAX_PAGES;
 	return collector.finish();
 }

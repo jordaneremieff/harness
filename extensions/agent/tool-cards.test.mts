@@ -11,7 +11,7 @@ import { projectReportReceipt } from "./control-result.ts";
 import { briefPreview, briefPreviewText, renderBrief } from "./brief.ts";
 import { fixtures, rows, targetId } from "./tool-card-fixture.mts";
 import { buildStatusOverview, projectStorageStatus } from "./status-overview.ts";
-import { AgentCatalog } from "./catalog.ts";
+import { AgentCatalog, type CatalogRecord } from "./catalog.ts";
 import { readFleetStatus } from "./fleet-status.ts";
 import type { OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { coverage as rosterCoverage } from "./dashboard-test-fixture.mts";
@@ -194,6 +194,20 @@ const snapshotResult = (status: Record<string, unknown>, outer: Record<string, u
 		lifetime: "independent host process",
 	});
 
+let fleetCatalogs = 0;
+/** An in-memory catalog for a fleet read: the named records, plus identities whose record cannot be read. */
+function fleetCatalog(records: CatalogRecord[], unreadable: string[] = []): AgentCatalog {
+	const catalog = new AgentCatalog(`/work/catalog-${++fleetCatalogs}`);
+	catalog.identities = async () => [...records.map((record) => record.storageId), ...unreadable].sort();
+	catalog.recordStamp = () => "unchanged";
+	catalog.derive = (identity, project) => {
+		const record = records.find((item) => item.storageId === identity);
+		if (!record) throw new Error("unreadable fixture record");
+		return { fileStamp: "unchanged", value: project(record) };
+	};
+	return catalog;
+}
+
 describe("status cards", () => {
 	const card = createAgentToolCards().agent_status;
 	const options = { ...cardKeys, expanded: false, isPartial: false };
@@ -231,67 +245,62 @@ describe("status cards", () => {
 		const now = Date.UTC(2026, 9, 1);
 		const observedAt = new Date(now).toISOString();
 		const model = "sample/runner";
-		const catalog = new AgentCatalog("/work/catalog");
-		catalog.scanPages = async function* () {
-			yield {
-				records: [
-					{
-						storageId: "storage-a",
-						storagePath: "/work/agent.sqlite",
-						cwd: "/work",
-						agentDir: "/work",
-						packageDir: "/work",
-						model: { provider: "sample", modelId: "runner" },
-						thinkingLevel: "high",
-						createdAt: observedAt,
-						view: {
-							updatedAt: observedAt,
-							rows: [],
-							coverage: { complete: false, omitted: 1 },
-							modelEvidence: {
-								models: [{ model, reportedCost: 0.2 }],
-								failures: [
-									{
-										provider: "sample",
-										modelId: "runner",
-										at: now,
-										conversationId: "storage-a",
-										entryId: 2,
-										message: "Request refused",
-									},
+		const catalog = fleetCatalog(
+			[
+				{
+					storageId: "storage-a",
+					storagePath: "/work/agent.sqlite",
+					cwd: "/work",
+					agentDir: "/work",
+					packageDir: "/work",
+					model: { provider: "sample", modelId: "runner" },
+					thinkingLevel: "high",
+					createdAt: observedAt,
+					view: {
+						updatedAt: observedAt,
+						rows: [],
+						coverage: { complete: false, omitted: 1 },
+						modelEvidence: {
+							models: [{ model, reportedCost: 0.2 }],
+							failures: [
+								{
+									provider: "sample",
+									modelId: "runner",
+									at: now,
+									conversationId: "storage-a",
+									entryId: 2,
+									message: "Request refused",
+								},
+							],
+							warnings: [],
+							toolReportedCost: 0,
+							sampling: {
+								observedAt,
+								entriesVisited: 2,
+								entriesOmitted: 0,
+								messagesOmitted: 0,
+								invalidSamples: 0,
+								omittedSamples: 0,
+								samples: [
+									{ model, at: now, tokens: 100, reportedCost: 0.2 },
+									{ model: "other/runner", at: now, tokens: 24, reportedCost: 0.1 },
 								],
-								warnings: [],
-								toolReportedCost: 0,
-								sampling: {
-									observedAt,
-									entriesVisited: 2,
-									entriesOmitted: 0,
-									messagesOmitted: 0,
-									invalidSamples: 0,
-									omittedSamples: 0,
-									samples: [
-										{ model, at: now, tokens: 100, reportedCost: 0.2 },
-										{ model: "other/runner", at: now, tokens: 24, reportedCost: 0.1 },
-									],
-								},
-								coverage: {
-									conversationsVisited: 1,
-									conversationsComplete: false,
-									unavailableUsage: 0,
-									incompleteHistory: 1,
-									omittedModels: 0,
-									omittedFailures: 0,
-									omittedWarnings: 0,
-								},
+							},
+							coverage: {
+								conversationsVisited: 1,
+								conversationsComplete: false,
+								unavailableUsage: 0,
+								incompleteHistory: 1,
+								omittedModels: 0,
+								omittedFailures: 0,
+								omittedWarnings: 0,
 							},
 						},
 					},
-				],
-				nextCursor: null,
-				observedAt,
-				coverage: { visited: 2, skipped: 1, complete: false },
-			};
-		};
+				},
+			],
+			["storage-b"],
+		);
 		const args = { view: "fleet", model, provider: "sample" };
 		const call = screen(card.renderCall(args, theme, context()));
 		assert.match(call, /agent_status sample\/runner\nfleet · provider filter sample/u);
@@ -314,10 +323,7 @@ describe("status cards", () => {
 		assert.match(none, /2 machine-wide usage samples/u);
 		assert.doesNotMatch(none, /Last 7 days|\$0|healthy/u);
 
-		const empty = new AgentCatalog("/work/catalog");
-		empty.scanPages = async function* () {
-			yield { records: [], nextCursor: null, observedAt, coverage: { visited: 0, skipped: 0, complete: true } };
-		};
+		const empty = fleetCatalog([]);
 		assert.match(screen(card.renderCall({ view: "fleet" }, theme, context())), /^agent_status fleet/u);
 		const unfiltered = render(await readFleetStatus(empty, { now }), { view: "fleet" });
 		assert.match(unfiltered, /No machine-wide usage samples; use is not established/u);
