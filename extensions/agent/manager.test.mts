@@ -32,6 +32,7 @@ import {
 	acquireHost,
 	connectHost,
 	HostBusyEndpointUnavailableError,
+	HostLaunchDemandEnded,
 	HostEndpointUnavailableError,
 	HostReadinessUnavailableError,
 	type HostConnection,
@@ -3051,6 +3052,50 @@ it("tries a failing launch once for two reads that overlap, and again for a late
 	notice();
 	await settleCatalogueRecovery(manager);
 	assert.deepEqual(acquired.slice().sort(), [...due, ...due].sort());
+});
+
+it("leaves a storage to a later batch when the launch of an earlier batch was no longer needed", {
+	timeout: 60000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	const acquired = eventLog<string>();
+	let release = () => {};
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			locations: immediateLocations,
+			acquire: async (metadata) => {
+				acquired.push(metadata.storageId);
+				if (acquired.length === 1) {
+					// The first read's demand ends while its acquisition is open, so no host is launched for it.
+					await new Promise<void>((done) => {
+						release = done;
+					});
+					throw new HostLaunchDemandEnded();
+				}
+				return fakeConnection(metadata, async (method) => {
+					if (method !== "recovery-state") return {};
+					manager.catalog.markRecoveryDue(metadata.storageId, false);
+					return { workPending: false, deliveriesPending: false, deliveriesActive: false };
+				});
+			},
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+		}),
+	);
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	await catalogNoticesSent(manager, root);
+	const registering = manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await acquired.waitForCount(1);
+	// A second read lists the same record while the first acquisition is open; its own demand still holds.
+	(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([record.storageId]);
+	release();
+	await registering;
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(acquired.slice(), [record.storageId, record.storageId], "the second read acquires the storage");
+	assert.equal(manager.catalog.read(record.storageId).recoveryDue, false);
 });
 
 it("launches a host that never starts at most three times a minute under a burst of catalog notices", {

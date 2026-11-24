@@ -2458,15 +2458,20 @@ export class AgentManager {
 		primary: RecoveryOwner,
 		launchNeeded: () => boolean,
 	): Promise<HostConnection> {
+		let outcome = true;
 		try {
 			return await (this.options.acquire ?? acquireHost)(
 				hostMetadata(this.catalog.read(storageId), this.options.packageDir),
 				{ ...MANAGED_LINK, launchNeeded },
 			);
+		} catch (error) {
+			// A launch that this read no longer needs says nothing about what another read needs.
+			outcome = !(error instanceof HostLaunchDemandEnded);
+			throw error;
 		} finally {
 			// A stopped owner's acquisition proves nothing for the reads of other owners.
 			if (this.stopping(primary)) this.recoveryOrder.withdraw(storageId);
-			else this.recoveryOrder.settled(storageId);
+			else if (outcome) this.recoveryOrder.settled(storageId);
 		}
 	}
 

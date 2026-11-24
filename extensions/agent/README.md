@@ -4966,7 +4966,9 @@ or status-probe every storage. Recovery acquisitions run at most two at a time.
 Reads of the due records overlap: a primary registration starts one and each
 catalog notice starts one, and their batches run in turn. An acquisition that
 settled after a read began completes that read's entry for the storage, so reads
-that overlap share one acquisition, whether it connected a host or failed. A
+that overlap share one acquisition, whether it connected a host or failed. An
+acquisition that ended because its own read no longer needed a launch completes
+no other read's entry. A
 read that begins later acts on the marker again: a record that is still due
 with no link is acquired again, which tries a failed launch once more. A
 storage gets at most three failed recovery acquisitions in 60 seconds from
