@@ -123,7 +123,7 @@ The model receives an identity and coverage header followed by the exact source 
 
 ## Work references
 
-In ordinary Pi, a successful `markdown_publish` and a successful `markdown_read` of a document revision emit one `harness:work-reference` event with kind `document`, the document ID and its title, as the [work references convention](../../docs/conventions/work-references.md) defines. Listing, finding, failed operations and native tool runs emit nothing. Another extension can then find other sessions that use the same document; Markdown does not depend on a listener.
+In ordinary Pi, a successful `markdown_publish` and a successful `markdown_read` of a document revision emit one `harness:work-reference` event with kind `document`, the document ID and its title, as the [work references convention](../../docs/conventions/work-references.md) defines. So do a `markdown_live` show that navigates a pane to a stored document or offers its launch (a launch offer has no title yet), a `markdown_live` read or apply on a pane whose view names a stored document, and `/markdown` opening, editing or copying a stored document by ID or from the published list. Listing, finding, scratchpads, responses and local files, failed or uncertain operations and native tool runs emit nothing. Another extension can then find other sessions that use the same document; Markdown does not depend on a listener.
 
 ## Live collaboration
 

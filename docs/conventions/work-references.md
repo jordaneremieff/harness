@@ -33,8 +33,8 @@ identifies an item.
 
 | Kind | Item | Producer | Emitted when the session |
 |---|---|---|---|
-| `document` | A stored Markdown document, by document ID | Markdown | publishes a document or reads one of its revisions |
-| `handover` | A handover artifact, by its ID | Stash | writes a handover, reads one, or picks one up |
+| `document` | A stored Markdown document, by document ID | Markdown | publishes a document, reads one of its revisions, shows, reads or edits it in a live pane, or opens it with `/markdown` |
+| `handover` | A handover artifact, by its ID | Stash | writes a handover, reads, edits or picks one up |
 
 Checkpoints and other provisional material are not handovers and produce no
 event. A new kind needs only a row here and the producer's own emission; a

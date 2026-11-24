@@ -521,11 +521,37 @@ async function executeOnBridge(
 function output(value: unknown): { type: "text"; text: string }[] {
 	return [{ type: "text", text: JSON.stringify(value) }];
 }
+/**
+ * The stored document that a successful operation showed, read or edited, from the outcome only. A
+ * launch offer names its document before any pane shows it, so it has no title yet.
+ */
+function usedDocument(op: Input["op"], result: LiveOutcome): { id: string; title?: string } | undefined {
+	const outcome = result as {
+		status?: string;
+		documentId?: unknown;
+		view?: { documentId?: unknown; title?: unknown; kind?: unknown };
+		pane?: { view?: { documentId?: unknown; title?: unknown; kind?: unknown } };
+	};
+	if (op === "show" && outcome.status === "launch" && typeof outcome.documentId === "string")
+		return { id: outcome.documentId };
+	const view =
+		op === "show" && outcome.status === "navigated"
+			? outcome.view
+			: (op === "read" && (outcome.status === "complete" || outcome.status === "page")) ||
+					(op === "apply" && outcome.status === "applied")
+				? outcome.pane?.view
+				: undefined;
+	if (typeof view?.documentId !== "string" || view.kind === "loading") return undefined;
+	return { id: view.documentId, ...(typeof view.title === "string" ? { title: view.title } : {}) };
+}
+
 export function createLiveTool(
 	find: (ctx: ExtensionContext) => Promise<LiveBridge | undefined>,
 	show?: Omit<ShowOptions, "connection"> & {
 		lifecycle?: () => AbortSignal;
 		connection: (ctx: ExtensionContext) => ReturnType<ShowOptions["connection"]>;
+		/** Reports a stored document that this session used through a pane; see docs/conventions/work-references.md. */
+		workReference?: (sessionId: string, document: { id: string; title: string }) => void;
 	},
 ): ToolDefinition<typeof LiveParameters> {
 	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_live");
@@ -556,6 +582,8 @@ export function createLiveTool(
 			const lifetime = local?.lifecycle?.();
 			const active = lifetime && signal ? AbortSignal.any([lifetime, signal]) : (lifetime ?? signal);
 			const result = await execute(() => find(ctx), input, active, undefined, undefined, local);
+			const used = usedDocument(input.op, result);
+			if (used) show?.workReference?.(ctx.sessionManager.getSessionId(), { id: used.id, title: used.title ?? "" });
 			return {
 				content: output(result),
 				details: result,

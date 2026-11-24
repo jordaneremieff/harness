@@ -432,14 +432,17 @@ test("a published row opens its own revision, refuses a changed digest and an un
 		assert.equal(pinned.revision, 1);
 		assert.equal(pinned.digest, f.saved.digest);
 		assert.equal(pinned.newlySaved, false);
+		const used: unknown[] = [];
 		assert.equal(
 			await openStored(f.store.root, f.saved.documentId, new AbortController().signal, {
 				gui: false,
 				storeId: f.saved.storeId,
 				pin: listed,
+				used: (document) => used.push(document),
 			}),
 			`Selected ${f.saved.documentId} revision 1. No window was opened.`,
 		);
+		assert.deepEqual(used, [{ id: f.saved.documentId, title: "Saved" }], "an open reports the stored document");
 		await assert.rejects(
 			selectStored(f.store.root, f.saved.documentId, f.saved.storeId, {
 				revision: 1,

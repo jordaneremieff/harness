@@ -13,6 +13,7 @@ import { liveArguments } from "./live-launch.ts";
 import { isRecord, type LiveConfig } from "./live-protocol.ts";
 import { createLiveTool, createNativeLiveTool } from "./live-tool.ts";
 import type { PaneInventory } from "./pane-state.ts";
+import { responseDigest } from "./responses.ts";
 import { MarkdownStore } from "./store.ts";
 
 async function fixture(t: TestContext) {
@@ -132,12 +133,22 @@ test("show requests current-follow or an exact revision, and reports only what t
 			inventory.panes[1] = { ...agent, handle: receipt.handle, document: receipt.document, view: receipt.view };
 		return receipt;
 	});
-	const tool = createLiveTool(async () => host, { store, connection: forbidden });
+	const reports: unknown[] = [];
+	const tool = createLiveTool(async () => host, {
+		store,
+		connection: forbidden,
+		workReference: (sessionId, used) => reports.push([sessionId, used]),
+	});
 	const current = { op: "show", document } as const;
 	assert.deepEqual(await ordinary(tool, current), receipts[0]);
 	assert.deepEqual(await ordinary(tool, { ...current, revision: 1, newPane: false }), receipts[1]);
 	assert.deepEqual(await ordinary(tool, current), receipts[2]);
 	const uncertain = await ordinary(tool, { ...current, handle: nextHandle, newPane: false });
+	assert.deepEqual(
+		reports,
+		[0, 1].map(() => ["original", { id: document, title: "Plan" }]),
+		"each navigated show reports the document; stale and uncertain shows report nothing",
+	);
 	assert.equal(uncertain.status, "uncertain");
 	assert.ok(String(uncertain.message).includes("Lost display acknowledgement."));
 	assert.ok(!("argv" in uncertain));
@@ -446,4 +457,48 @@ test("a completed comment change returns its exact saved receipt on task recover
 	assert.deepEqual(await native(tool, input, api), receipt);
 	const { handle, ...action } = input;
 	assert.deepEqual(calls, [[handle, action]]);
+});
+
+test("an edit in a pane that shows a stored document reports it; scratchpads and refusals report nothing", async (t) => {
+	const { store, storeId, document } = await fixture(t);
+	const stored = {
+		...pane("agent"),
+		view: {
+			kind: "published" as const,
+			mode: "writing" as const,
+			title: "Plan",
+			dirty: false,
+			conflict: false,
+			storeId,
+			documentId: document,
+			revision: 2,
+		},
+	};
+	const scratch = pane("agent");
+	const inventory = { panes: [stored, scratch], pending: [] };
+	let refuse = false;
+	const host = recipient(inventory, () =>
+		refuse
+			? { status: "stale", message: "The buffer changed." }
+			: { status: "applied", generation: 2, digest: "next", retained: true },
+	);
+	const reports: unknown[] = [];
+	const tool = createLiveTool(async () => host, {
+		store,
+		connection: forbidden,
+		workReference: (sessionId, used) => reports.push([sessionId, used]),
+	});
+	const edit = (handle: string): Input => ({
+		op: "apply",
+		handle,
+		operationId: randomUUID(),
+		baseGeneration: 1,
+		baseDigest: responseDigest("Draft two"),
+		edits: [{ start: 0, end: 1, expected: "D", replacement: "d" }],
+	});
+	assert.equal((await ordinary(tool, edit(stored.handle))).status, "applied");
+	assert.equal((await ordinary(tool, edit(scratch.handle))).status, "applied");
+	refuse = true;
+	assert.notEqual((await ordinary(tool, edit(stored.handle))).status, "applied");
+	assert.deepEqual(reports, [["original", { id: document, title: "Plan" }]]);
 });

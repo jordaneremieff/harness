@@ -55,6 +55,7 @@ export function ordinaryOperations(
 	presentation: Presentation = "pane",
 	connection?: Connection,
 	level?: (level: RevealLevel) => void,
+	used?: (document: { id: string; title: string }) => void,
 ): MarkdownOperations {
 	const source = ctx.sessionManager;
 	const sessionId = source.getSessionId();
@@ -102,6 +103,7 @@ export function ordinaryOperations(
 						...(row.kind === "document"
 							? { pin: { revision: row.document.revision, digest: row.document.digest } }
 							: {}),
+						used,
 					}));
 			check(signal);
 			return result;
@@ -143,6 +145,7 @@ export function ordinaryOperations(
 				presentation,
 				live,
 				pin: { revision: row.document.revision, digest: row.document.digest },
+				used,
 			});
 		},
 	};
@@ -276,6 +279,7 @@ async function openFile(
 					root: settings.dir,
 					storeId: identity.storeId,
 					documentId: result.document.id,
+					title: result.document.title,
 					revision: result.revision.revision,
 					digest: result.revision.digest,
 					newlySaved: !result.replayed,
@@ -296,11 +300,12 @@ async function readSelection(
 	presentation: Presentation,
 	connection?: Connection,
 	level?: (level: RevealLevel) => void,
+	used?: (document: { id: string; title: string }) => void,
 ): Promise<string> {
 	if (!value) return operations.latest(signal);
 	if (value === "new") return operations.newScratchpad(signal);
 	if (value === "edit" || value === "copy" || value.startsWith("edit ") || value.startsWith("copy "))
-		return editSelection(value, ctx, signal, presentation, connection, level);
+		return editSelection(value, ctx, signal, presentation, connection, level, used);
 	if (value === "file" || value.startsWith("file "))
 		return openFile(
 			ctx,
@@ -318,7 +323,13 @@ async function readSelection(
 	signal.throwIfAborted();
 	const live = await connection?.();
 	signal.throwIfAborted();
-	return reveal.openStored(localSettings().dir, value, signal, { gui: ctx.mode === "tui", presentation, live, level });
+	return reveal.openStored(localSettings().dir, value, signal, {
+		gui: ctx.mode === "tui",
+		presentation,
+		live,
+		level,
+		used,
+	});
 }
 async function editSelection(
 	value: string,
@@ -327,6 +338,7 @@ async function editSelection(
 	presentation: Presentation,
 	connection?: Connection,
 	level?: (level: RevealLevel) => void,
+	used?: (document: { id: string; title: string }) => void,
 ): Promise<string> {
 	if (ctx.mode !== "tui")
 		throw new Error("Use the Markdown operator view or native app to edit. No editor was opened.");
@@ -348,6 +360,7 @@ async function editSelection(
 		presentation,
 		live,
 		level,
+		used,
 	});
 }
 function readPresentation(value: string): { value: string; presentation: Presentation } {
@@ -426,12 +439,15 @@ export default function markdown(pi: ExtensionAPI): void {
 		const observe = (value: RevealLevel) => {
 			level = value;
 		};
-		const operations = ordinaryOperations(ctx, lifecycle, presentation, connection, observe);
+		// Other extensions learn which stored documents this session opened.
+		const sessionId = ctx.sessionManager.getSessionId();
+		const used = (document: { id: string; title: string }) => workReference(sessionId, document);
+		const operations = ordinaryOperations(ctx, lifecycle, presentation, connection, observe, used);
 		if (presentation === "pane" && ["recent", "published"].includes(value)) {
 			await browse(value as MarkdownScope, ctx, operations, signal);
 			return;
 		}
-		const result = await readSelection(value, ctx, signal, operations, presentation, connection, observe);
+		const result = await readSelection(value, ctx, signal, operations, presentation, connection, observe, used);
 		if (!signal.aborted) notice(ctx, result, level);
 	};
 	const action = async (args: string, ctx: ExtensionContext) => {
@@ -498,7 +514,7 @@ export default function markdown(pi: ExtensionAPI): void {
 		}),
 	);
 	pi.registerTool(createReadTool({ store, workReference }));
-	pi.registerTool(createLiveTool(live.find, { store, app, connection: live.connection, lifecycle }));
+	pi.registerTool(createLiveTool(live.find, { store, app, connection: live.connection, lifecycle, workReference }));
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
 	pi.events.on("harness:tool-display:request", (request) => {
 		if (typeof request === "object" && request !== null && "version" in request && request.version === 1)

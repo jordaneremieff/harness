@@ -17,6 +17,7 @@ export interface SavedDocument {
 	root: string;
 	storeId: string;
 	documentId: string;
+	title: string;
 	revision: number;
 	digest: string;
 	newlySaved: boolean;
@@ -158,6 +159,7 @@ function savedDocument(root: string, storeId: string, value: StoredDocument, new
 		root,
 		storeId,
 		documentId: value.document.id,
+		title: value.document.title,
 		revision: value.revision.revision,
 		digest: value.revision.digest,
 		newlySaved,
@@ -404,12 +406,17 @@ export async function openStored(
 		presentation?: Presentation;
 		live?: LiveConfig;
 		level?: (level: RevealLevel) => void;
+		/** Reports the stored document that this open showed or selected. */
+		used?: (document: { id: string; title: string }) => void;
 	},
 ): Promise<string> {
-	return revealNotice(
-		await materializeAndReveal(() => selectStored(root, id, options.storeId, options.pin), signal, options),
-		options.level,
+	const outcome = await materializeAndReveal(
+		() => selectStored(root, id, options.storeId, options.pin),
+		signal,
+		options,
 	);
+	if (outcome.state !== "reveal-failed") options.used?.({ id: outcome.documentId, title: outcome.title });
+	return revealNotice(outcome, options.level);
 }
 export type RevealLevel = "info" | "warning" | "error";
 type EditorRevealOptions = {
@@ -535,9 +542,21 @@ export async function openEditorStored(
 	id: string,
 	intent: "edit" | "copy",
 	signal: AbortSignal,
-	options: EditorRevealOptions & { storeId?: string; pin?: PinnedRevision } = {},
+	options: EditorRevealOptions & {
+		storeId?: string;
+		pin?: PinnedRevision;
+		/** Reports the stored document that this editor opened. */
+		used?: (document: { id: string; title: string }) => void;
+	} = {},
 ): Promise<string> {
-	return openEditorSelection(() => selectStored(root, id, options.storeId, options.pin), intent, signal, options);
+	let selected: SavedDocument | undefined;
+	const select = async () => {
+		selected = await selectStored(root, id, options.storeId, options.pin);
+		return selected;
+	};
+	const result = await openEditorSelection(select, intent, signal, options);
+	if (selected) options.used?.({ id: selected.documentId, title: selected.title });
+	return result;
 }
 export async function openEditorResponse(
 	response: ResponseSnapshot,
