@@ -134,6 +134,7 @@ import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
 import { publishSettings } from "./settings.ts";
 import {
 	createAgentToolCards,
+	NO_AGENT_ROWS,
 	ordinaryWorkCard,
 	renderAgentApplicationMessage,
 	renderAgentCompactionMessage,
@@ -500,7 +501,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	let observedManager: AgentManager | undefined;
 	// One record per tool owns its registration, its renderer fallback and its display publication. An ordinary
 	// session registers `agent_yield`, whose record is the state note card.
-	const observedRows = () => observedManager?.observedToolCardRows() ?? [];
+	const observedRows = () => observedManager?.observedToolCardRows() ?? NO_AGENT_ROWS;
 	const yieldCard = ordinaryWorkCard(ORDINARY_YIELD_TOOL, observedRows);
 	const cards: Readonly<Record<string, AgentToolCard>> = {
 		...createAgentToolCards(observedRows),

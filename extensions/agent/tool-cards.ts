@@ -54,9 +54,12 @@ export type AgentCardLookup = (() => readonly AgentConversationSummary[]) & {
 	readonly modelFor?: (identity: string) => AgentConversationSummary["model"] | undefined;
 };
 
-const NO_ROWS: readonly AgentConversationSummary[] = [];
-/** The lookup of a view that observed no roster; one array serves every call. */
-const noRows: AgentCardLookup = () => NO_ROWS;
+/**
+ * The rows of a view that observed no roster. A card compares the rows array of two frames, so a lookup
+ * returns this one array, not a new empty array at each call.
+ */
+export const NO_AGENT_ROWS: readonly AgentConversationSummary[] = [];
+const noRows: AgentCardLookup = () => NO_AGENT_ROWS;
 
 /** Maximum UTF-16 code units retained for a displayed message body. */
 export const SOURCE_DISPLAY_LIMIT = 32_000;
@@ -3280,8 +3283,10 @@ class StateNoteCard implements Component {
 	render(width: number): string[] {
 		const theme = this.theme;
 		if (!theme || this.hidden()) return [];
-		// Only the expanded card reads the roster: it shows the state of each awaited agent now.
-		const rows = this.context?.expanded === true ? this.context.lookup?.() : undefined;
+		// Only the expanded card reads the roster: it shows the state of each awaited agent now. Every empty
+		// roster is the same roster, whichever array the lookup returns for it.
+		const observed = this.context?.expanded === true ? this.context.lookup?.() : undefined;
+		const rows = observed?.length === 0 ? NO_AGENT_ROWS : observed;
 		// The end time omits its date on the day it names.
 		const day = this.facts.at === undefined ? "" : localDay();
 		if (this.drawn?.width === width && this.drawn.rows === rows && this.drawn.day === day) return this.drawn.lines;

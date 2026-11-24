@@ -58,7 +58,7 @@ import {
 	titleOf,
 	unplacedText,
 } from "./dashboard-roster.ts";
-import type { AgentCardLookup } from "./tool-cards.ts";
+import { NO_AGENT_ROWS, type AgentCardLookup } from "./tool-cards.ts";
 import {
 	agentState,
 	dashboardSessionState,
@@ -448,7 +448,7 @@ export class AgentDashboard implements Component, Focusable {
 			},
 			operations.readLineage,
 		);
-		this.cardLookup = Object.assign(() => this.page?.rows ?? [], {
+		this.cardLookup = Object.assign(() => this.page?.rows ?? NO_AGENT_ROWS, {
 			threadTitle: (id: string) => this.threadTitle(id),
 			nameFor: (identity: string) => this.knownName(identity),
 			modelFor: (identity: string) => this.knownModelFacts(identity),

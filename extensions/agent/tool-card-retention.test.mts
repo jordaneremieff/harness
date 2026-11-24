@@ -233,3 +233,17 @@ it("draws a state note once for unchanged frames, with the awaited agents as the
 	t.mock.timers.tick(24 * 60 * 60 * 1000);
 	assert.match(text(collapsed.render(100)), /1 agent result due · 24 Nov 10:42 PM/u);
 });
+
+it("keeps the lines of an expanded state note while its lookup returns a new empty array at each call", () => {
+	const card = ordinaryWorkCard("agent_yield", () => []);
+	const args = { note: "Not the result: one agent result is due." };
+	const details = { at: 1, waiting: [{ sessionId: targetId, state: "admitted" }], waitingOmitted: 0 };
+	const expanded = card.renderResult(
+		{ content: [{ type: "text" as const, text: "Turn ended" }], details },
+		{ expanded: true, isPartial: false },
+		theme,
+		context({ args, expanded: true }),
+	);
+	const lines = expanded.render(100);
+	for (let frame = 0; frame < 20; frame++) assert.equal(expanded.render(100), lines);
+});
