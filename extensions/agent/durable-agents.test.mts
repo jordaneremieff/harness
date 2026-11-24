@@ -3560,3 +3560,24 @@ it("creates idle native children for blank spawn and fork prompts", { timeout: 2
 	assert.ok(!forkTexts.some((text) => text.trim() === ""), "the fork receives no blank input");
 	assert.deepEqual(Object.keys(state?.reporters ?? {}).length, 0, "no reporter delivers a blank prompt");
 });
+
+it("refuses native sends, steers and reports addressed to the calling conversation", { timeout: 20000 }, async (t) => {
+	const route = createRoute();
+	const { registry } = buildRegistry();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.batch.push([
+		{ tool: "agent_send", args: { sessionId: storageId, message: "CONTRACT: reply SELF" } },
+		{ tool: "agent_steer", args: { sessionId: storageId, message: "CORRECTION SELF" } },
+		{ tool: "agent_send", args: { sessionId: `${storageId}:${root.id}`, message: "Progress", mode: "report" } },
+	]);
+	await say(root, "SELF");
+	await settle(harness, root.id);
+	const outcomes = (await toolOutcomes(harness, root.id)).filter((outcome) => outcome.name !== "agent_work");
+	assert.equal(outcomes.length, 3);
+	for (const outcome of outcomes) {
+		assert.equal(outcome.isError, true, outcome.text);
+		assert.match(outcome.text, /A session cannot send to itself/u);
+	}
+	assert.deepEqual(await userTexts(harness, root.id), ["SELF"], "no input reaches the calling conversation");
+});

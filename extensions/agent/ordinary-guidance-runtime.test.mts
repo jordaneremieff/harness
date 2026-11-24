@@ -636,3 +636,24 @@ it("refuses an append-before-persist failure and retries after the write becomes
 	assert.equal(await fixture.deliver("peer:write-failure", "RETRY_WRITE", false), true);
 	assert.equal(fixture.retained("peer:write-failure").length, 1);
 });
+
+it("refuses a direct message whose sender is the receiving session", { timeout: 20000 }, async (t) => {
+	const fixture = await guidanceFixture(t);
+	await fixture.session.prompt("Flush first conversation");
+	const own = fixture.sessionManager.getSessionId();
+	const connection = await connectPrimaryChannel({ id: own, sessionsRoot: fixture.sessionsRoot });
+	try {
+		await assert.rejects(
+			connection.deliver({
+				sourceId: "self:direct",
+				requireRetained: false,
+				text: "SELF_MESSAGE",
+				details: { kind: "message", senderKind: "session", senderIdentity: own, source: "self:direct", wake: true },
+			}),
+			/A session cannot send to itself/u,
+		);
+	} finally {
+		await connection.close();
+	}
+	assert.equal(fixture.retained("self:direct").length, 0);
+});

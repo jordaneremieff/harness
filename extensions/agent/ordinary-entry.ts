@@ -107,6 +107,7 @@ import {
 	peerQuestionDetail,
 	primarySessionEnded,
 	questionInputRefusal,
+	SELF_MESSAGE_REFUSAL,
 } from "./peer-questions.ts";
 import { primaryEndpointOwnerState, verifyPrimaryOwners } from "./primary-channel.ts";
 import { PrimaryRetention } from "./primary-retention.ts";
@@ -1630,6 +1631,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			resumeInbox: flush,
 			send: (text, details, sourceId, requireRetained) => {
 				if (!requireRetained) {
+					// The sending manager can be older code that a reload kept, so the receiver also refuses a session's message to itself.
+					const sender = details as { senderKind?: unknown; senderIdentity?: unknown } | undefined;
+					if (sender?.senderKind === "session" && sender.senderIdentity === sessionId)
+						throw new Error(SELF_MESSAGE_REFUSAL);
 					if (retention.hasQueued(sourceId)) throw new Error("Primary delivery awaits its queued source-ledger notice");
 					inbox.admit(sourceId, text, details);
 					flush();

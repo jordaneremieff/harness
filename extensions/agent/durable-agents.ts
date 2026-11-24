@@ -33,6 +33,7 @@ import {
 	primarySessionEnded,
 	questionReceipt,
 	questionText,
+	SELF_MESSAGE_REFUSAL,
 } from "./peer-questions.ts";
 import { verifyPrimaryOwners } from "./primary-channel.ts";
 import { realpathSync } from "node:fs";
@@ -882,6 +883,15 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (resolved.kind === "root") return conversationId === durable.ROOT_CONVERSATION_ID;
 		if (resolved.kind === "local") return resolved.conversationId === conversationId;
 		return false;
+	};
+
+	/** An identity that names the calling conversation; a selector that does not parse names no conversation. */
+	const addressesSelf = (sessionId: string, conversationId: Durable.ConversationId): boolean => {
+		try {
+			return resolvesToSelf(sessionId, conversationId);
+		} catch {
+			return false;
+		}
 	};
 
 	const isSelfCompact = (sessionId: string | undefined, conversationId: Durable.ConversationId): boolean =>
@@ -2102,6 +2112,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		replyTo?: string,
 		minutes = 0,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
+		if (addressesSelf(sessionId, api.conversationId)) return errorResult(SELF_MESSAGE_REFUSAL);
 		await rememberRunInputs(api, context);
 		return target(sessionId).kind === "foreign"
 			? sendForeign(api, context, sessionId, message, whenBusy, replyTo, minutes)
@@ -2177,6 +2188,26 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			args.expectReply === true ? askPrimary(api, context, args) : sendMessage(args, api, context),
 	});
 
+	function sendReport(
+		args: SendInput,
+		api: Durable.ToolExecutionApi<ControlDetails>,
+	): Promise<Durable.ToolExecutionResult<ControlDetails>> | Durable.ToolExecutionResult<ControlDetails> {
+		if (args.deliverAt !== undefined || args.replyTo !== undefined || args.checkInMinutes !== undefined)
+			return errorResult("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
+		if (addressesSelf(args.sessionId, api.conversationId)) return errorResult(SELF_MESSAGE_REFUSAL);
+		return dispatchControl(
+			"report",
+			{
+				sessionId: args.sessionId,
+				senderIdentity: identity(api.conversationId),
+				message: args.message,
+				requestId: `report:${host.storageId}:${api.taskId}`,
+				...(args.passive === undefined ? {} : { passive: args.passive }),
+			},
+			"Report delivery failed",
+		);
+	}
+
 	async function sendMessage(
 		args: SendInput,
 		api: Durable.ToolExecutionApi<ControlDetails>,
@@ -2184,21 +2215,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> {
 		if (args.passive !== undefined && args.mode !== "report")
 			return errorResult("passive is valid only for report mode");
-		if (args.mode === "report") {
-			if (args.deliverAt !== undefined || args.replyTo !== undefined || args.checkInMinutes !== undefined)
-				return errorResult("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
-			return dispatchControl(
-				"report",
-				{
-					sessionId: args.sessionId,
-					senderIdentity: identity(api.conversationId),
-					message: args.message,
-					requestId: `report:${host.storageId}:${api.taskId}`,
-					...(args.passive === undefined ? {} : { passive: args.passive }),
-				},
-				"Report delivery failed",
-			);
-		}
+		if (args.mode === "report") return sendReport(args, api);
 		return args.deliverAt === undefined
 			? sendTarget(
 					api,

@@ -4725,3 +4725,26 @@ it("creates an idle agent for a blank creation prompt on spawn, handle spawn and
 	await manager.place({ area, prompt: "   " }, caller);
 	assert.deepEqual(submits, [], "a blank prompt admits no task");
 });
+
+it("refuses a message, steer or report that a primary addresses to itself", async (t) => {
+	const root = fixtureRoot(t);
+	const ownerId = randomUUID();
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	const primary = fakePrimary(new AbortController().signal);
+	await manager.registerPrimary(ownerId, primary.client);
+	for (const [method, whenBusy] of [
+		["submit", "followUp"],
+		["submit", "steer"],
+		["report", "followUp"],
+	] as const)
+		await assert.rejects(
+			manager.control(
+				method,
+				{ sessionId: ownerId, message: "to myself", origin: "model", whenBusy },
+				{ id: ownerId, cwd: root },
+			),
+			/A session cannot send to itself; continue the work in this run, or name another session/u,
+		);
+	assert.deepEqual(primary.sent, [], "nothing reaches the primary's own channel");
+});

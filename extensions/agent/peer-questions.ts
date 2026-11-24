@@ -413,6 +413,10 @@ export function peerQuestionFields(
 	return {};
 }
 
+/** A message, steer, task or report addressed to the sending session itself. */
+export const SELF_MESSAGE_REFUSAL =
+	"A session cannot send to itself; continue the work in this run, or name another session";
+
 /** Why an agent_send input with expectReply or inReplyTo refuses before any delivery. */
 export function questionInputRefusal(input: Record<string, unknown>, self: string): string | undefined {
 	if (input.mode === "report" || input.deliverAt !== undefined || input.replyTo !== undefined)

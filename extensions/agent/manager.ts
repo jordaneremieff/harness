@@ -21,7 +21,13 @@ import {
 	threadStorageRefusal,
 	threadStorageServes,
 } from "./identity.ts";
-import { durableTargetInput, peerMessageText, peerQuestionFields, questionReceipt } from "./peer-questions.ts";
+import {
+	durableTargetInput,
+	peerMessageText,
+	peerQuestionFields,
+	questionReceipt,
+	SELF_MESSAGE_REFUSAL,
+} from "./peer-questions.ts";
 import { profileText, type AgentProfile } from "./profile-schema.ts";
 import { NativeListOutputSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
 import {
@@ -401,6 +407,14 @@ function publishedRows(
 		if (claim.kind !== "live") row.currentTool = undefined;
 		return enrichDashboardRow(row, view.profiles);
 	});
+}
+
+/** Why a control that names the calling primary session refuses, or undefined when the caller may name itself. */
+function callerTargetRefusal(method: string): string | undefined {
+	if (["abort", "release", "interrupt-continue", "fork", "rewind", "compact", "configure", "command"].includes(method))
+		return "This control cannot target the calling primary session";
+	if (["submit", "task-submit", "report"].includes(method)) return SELF_MESSAGE_REFUSAL;
+	return undefined;
 }
 
 export class AgentManager {
@@ -1135,11 +1149,8 @@ export class AgentManager {
 		if (typeof input.replyTo === "string")
 			input = { ...input, replyTo: await this.resolveReplyTo(input.replyTo, options?.signal) };
 		options?.signal?.throwIfAborted();
-		if (
-			sessionId === caller.id &&
-			["abort", "release", "interrupt-continue", "fork", "rewind", "compact", "configure", "command"].includes(method)
-		)
-			throw new Error("This control cannot target the calling primary session");
+		const selfRefusal = sessionId === caller.id ? callerTargetRefusal(method) : undefined;
+		if (selfRefusal !== undefined) throw new Error(selfRefusal);
 		let record: CatalogRecord;
 		try {
 			record = this.nativeTarget(sessionId);
