@@ -234,6 +234,59 @@ it("draws a state note once for unchanged frames, with the awaited agents as the
 	assert.match(text(collapsed.render(100)), /1 agent result due · 24 Nov 10:42 PM/u);
 });
 
+it("draws the expand hint of every card again after the expand key changed", () => {
+	let key = "ctrl+o";
+	const keys = { keyText: () => key, keyHint: (_binding: string, description: string) => `${key} ${description}` };
+	const args = { sessionId: targetId, message: Array.from({ length: 30 }, (_, line) => `Line ${line}`).join("\n") };
+	const card = createAgentToolCards(() => rows).agent_send;
+	const call = card.renderCall(args, theme, context({ args, ...keys }));
+	const callLines = call.render(100);
+	assert.match(text(callLines), /ctrl\+o to expand/u);
+	assert.equal(call.render(100), callLines);
+
+	const message = renderAgentPeerMessage(
+		{
+			role: "custom",
+			customType: "agent.peer",
+			display: true,
+			timestamp: 1,
+			content: "The parser accepts the frame.",
+			details: { identity: targetId, name: "Catalog reader", kind: "receipt", status: "done" },
+		} as Parameters<typeof renderAgentPeerMessage>[0],
+		{ expanded: false, outputPad: 0, ...keys } as Parameters<typeof renderAgentPeerMessage>[1],
+		theme,
+	);
+	assert.ok(message);
+	const messageLines = message.render(100);
+	assert.match(text(messageLines), /ctrl\+o to expand/u);
+	assert.equal(message.render(100), messageLines);
+
+	const note = ordinaryWorkCard("agent_yield", () => rows);
+	const noteArgs = { note: Array.from({ length: 12 }, (_, line) => `Note line ${line}.`).join("\n") };
+	const collapsed = note.renderResult(
+		{ content: [{ type: "text" as const, text: "Turn ended" }], details: { at: 1, waiting: [], waitingOmitted: 0 } },
+		{ expanded: false, isPartial: false },
+		theme,
+		context({ args: noteArgs, ...keys }),
+	);
+	const noteLines = collapsed.render(100);
+	assert.match(text(noteLines), /ctrl\+o to expand/u);
+	assert.equal(collapsed.render(100), noteLines);
+
+	// Pi builds the cards of a reloaded session before it reads the changed keybindings.
+	key = "ctrl+e";
+	for (const [name, component] of [
+		["call card", call],
+		["message card", message],
+		["state note", collapsed],
+	] as const) {
+		const lines = component.render(100);
+		assert.match(text(lines), /ctrl\+e to expand/u, name);
+		assert.doesNotMatch(text(lines), /ctrl\+o/u, name);
+		assert.equal(component.render(100), lines, `${name}: an unchanged frame keeps its lines`);
+	}
+});
+
 it("keeps the lines of an expanded state note while its lookup returns a new empty array at each call", () => {
 	const card = ordinaryWorkCard("agent_yield", () => []);
 	const args = { note: "Not the result: one agent result is due." };

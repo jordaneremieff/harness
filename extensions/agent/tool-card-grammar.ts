@@ -131,16 +131,18 @@ function argumentsText(args: Readonly<Record<string, unknown>>): string {
 }
 
 /**
- * A card that draws once per width and per value of the state that the other card of its tool shares with it.
+ * A card that draws once per width, per value of the state that the other card of its tool shares with it,
+ * and per expand key: Pi builds the cards of a reloaded session before it reads the changed keybindings.
  * An unchanged frame returns the same line array, so Pi's containers keep their own lines too.
  */
-function component(draw: (width: number) => string[], shared: () => unknown): Component {
-	let cached: { width: number; shared: unknown; lines: string[] } | undefined;
+function component(draw: (width: number) => string[], shared: () => unknown, keys: Keys): Component {
+	let cached: { width: number; shared: unknown; key: string; lines: string[] } | undefined;
 	return {
 		render(width) {
 			const current = shared();
-			if (cached?.width !== width || cached.shared !== current)
-				cached = { width, shared: current, lines: width > 0 ? draw(width) : draw(1).map(() => "") };
+			const key = keys.keyText("app.tools.expand");
+			if (cached?.width !== width || cached.shared !== current || cached.key !== key)
+				cached = { width, shared: current, key, lines: width > 0 ? draw(width) : draw(1).map(() => "") };
 			return cached.lines;
 		},
 		invalidate() {
@@ -200,7 +202,7 @@ export function toolCallCard(call: ToolCallPresentation, theme: Theme, context: 
 	if (state) state.grammarCall = disclosure;
 	// Pi constructs the call first, then the result (if present), and only then measures the card.
 	const owned = () => !state?.grammarHasResult;
-	return component((width) => {
+	const draw = (width: number): string[] => {
 		const lines = heading(name, subject, width, theme, expanded);
 		lines.push(...paint(theme, "muted", facts, width, expanded));
 		if (expanded)
@@ -211,7 +213,8 @@ export function toolCallCard(call: ToolCallPresentation, theme: Theme, context: 
 		lines.push(...limitRows(theme, width, expanded, [hidden.limit]));
 		if (!expanded) lines.push(...hint(theme, keys, hidden, width, false));
 		return lines;
-	}, owned);
+	};
+	return component(draw, owned, keys);
 }
 
 function resultDisclosure(
@@ -267,7 +270,7 @@ export function toolResultCard(
 	const sourceRole = error ? "error" : "toolOutput";
 	// The call card can be built again after this card; its disclosure then replaces the earlier one.
 	const callDisclosure = () => state?.grammarCall;
-	return component((width) => {
+	const draw = (width: number): string[] => {
 		const lines = [
 			"",
 			...paint(theme, error ? "error" : partial ? "muted" : "toolOutput", outcome.text, width, expanded),
@@ -303,5 +306,6 @@ export function toolResultCard(
 			...bounds,
 			...hint(theme, keys, disclosure, width, true),
 		];
-	}, callDisclosure);
+	};
+	return component(draw, callDisclosure, keys);
 }

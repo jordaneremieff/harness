@@ -387,12 +387,12 @@ indistinguishable targets. An expanded call retains the supplied selector.
 The synchronous lookup uses roster facts already observed by the primary footer;
 it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
-A card draws its lines once for each width and returns the same lines for every
-later frame. A call card is built again only when its row observes a result,
-when the identity, name, handle or model of a roster row changes, or when the
-local day ends; a roster read that changed only activity, cost or times builds
-no card. An expanded state note shows the state of each awaited agent, so it
-also follows roster activity.
+A card draws its lines once for each width and expand key, and returns the same
+lines for every later frame. A call card is built again only when its row
+observes a result, when the identity, name, handle or model of a roster row
+changes, or when the local day ends; a roster read that changed only activity,
+cost or times builds no card. An expanded state note shows the state of each
+awaited agent, so it also follows roster activity.
 No card keeps a reference to the card of an earlier display update, and a
 collapsed call card does not serialise its arguments, so the memory of a
 transcript does not grow with the frames it draws.

@@ -241,8 +241,8 @@ class PeerCardBody implements Component {
 	private readonly theme: Theme;
 	private readonly options: CardLayoutOptions;
 	private readonly disclosure: CardDisclosure;
-	/** The lines of the last paint. A click on the card and an invalidation discard them. */
-	private drawn?: { width: number; lines: string[] };
+	/** The lines of the last paint. A click on the card, an invalidation and another expand key discard them. */
+	private drawn?: { width: number; key: string; lines: string[] };
 	constructor(
 		header: readonly string[],
 		content: readonly (string | Component)[],
@@ -276,7 +276,9 @@ class PeerCardBody implements Component {
 			: "";
 	}
 	render(width: number): string[] {
-		if (this.drawn?.width !== width) this.drawn = { width, lines: this.draw(width) };
+		// Pi builds the cards of a reloaded session before it reads the changed keybindings.
+		const key = this.options.keys?.keyText("app.tools.expand") ?? "";
+		if (this.drawn?.width !== width || this.drawn.key !== key) this.drawn = { width, key, lines: this.draw(width) };
 		return this.drawn.lines;
 	}
 	private draw(width: number): string[] {
@@ -3164,8 +3166,8 @@ class StateNoteCard implements Component {
 	private context: NoteCardContext | undefined;
 	/** The call slot hides itself once the result slot draws the card. */
 	private hidden: () => boolean = () => false;
-	/** The lines of the last paint, with the roster rows and the local day that it read. */
-	private drawn?: { width: number; rows: unknown; day: string; lines: string[] };
+	/** The lines of the last paint, with the roster rows, the local day and the expand key that it read. */
+	private drawn?: { width: number; rows: unknown; day: string; key: string; lines: string[] };
 	set(facts: NoteCardFacts, theme: Theme, context: NoteCardContext, hidden: () => boolean): void {
 		this.facts = facts;
 		this.theme = theme;
@@ -3283,13 +3285,17 @@ class StateNoteCard implements Component {
 	render(width: number): string[] {
 		const theme = this.theme;
 		if (!theme || this.hidden()) return [];
+		const expanded = this.context?.expanded === true;
 		// Only the expanded card reads the roster: it shows the state of each awaited agent now. Every empty
 		// roster is the same roster, whichever array the lookup returns for it.
-		const observed = this.context?.expanded === true ? this.context.lookup?.() : undefined;
+		const observed = expanded ? this.context?.lookup?.() : undefined;
 		const rows = observed?.length === 0 ? NO_AGENT_ROWS : observed;
 		// The end time omits its date on the day it names.
 		const day = this.facts.at === undefined ? "" : localDay();
-		if (this.drawn?.width === width && this.drawn.rows === rows && this.drawn.day === day) return this.drawn.lines;
+		// Only the collapsed card names the expand key, and Pi reads changed keybindings after it builds the cards.
+		const key = expanded ? "" : (this.context?.keyText("app.tools.expand") ?? "");
+		if (this.drawn?.width === width && this.drawn.rows === rows && this.drawn.day === day && this.drawn.key === key)
+			return this.drawn.lines;
 		const pad = Math.max(0, Math.min(this.context?.outputPad ?? 1, Math.floor((width - 1) / 2)));
 		const inner = Math.max(1, width - pad * 2);
 		const color = this.facts.error === undefined ? "customMessageBg" : "toolErrorBg";
@@ -3299,7 +3305,7 @@ class StateNoteCard implements Component {
 			return theme.bg(color, " ".repeat(pad) + content + " ".repeat(Math.max(0, inner - visibleWidth(line)) + pad));
 		};
 		const lines = ["", ...this.body(theme, inner), ""].map(fill);
-		this.drawn = { width, rows, day, lines };
+		this.drawn = { width, rows, day, key, lines };
 		return lines;
 	}
 }
