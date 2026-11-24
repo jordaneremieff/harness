@@ -215,3 +215,56 @@ for (const retained of ["manager/0.0.0", "manager/8.0.0", "manager/999.0.0"])
 				error.message.includes("Restart Pi before agent controls"),
 		);
 	});
+
+it("keeps ordinary event handlers quiet over a retained manager with a different interface", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-handlers-reload-")));
+	const previousRoot = process.env.PI_AGENT_SESSIONS_DIR;
+	process.env.PI_AGENT_SESSIONS_DIR = root;
+	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[
+		Symbol.for("pi.extension.agent.owners")
+	];
+	owners.managers.set(root, { managerProtocol: "manager/8.0.0" } as unknown as AgentManager);
+	t.after(() => {
+		owners.managers.delete(root);
+		if (previousRoot === undefined) delete process.env.PI_AGENT_SESSIONS_DIR;
+		else process.env.PI_AGENT_SESSIONS_DIR = previousRoot;
+		rmSync(root, { recursive: true, force: true });
+	});
+	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
+	const pi = {
+		events: { emit: () => {}, on: () => () => {} },
+		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+			return () => {};
+		},
+		registerTool: () => {},
+		registerCommand: () => {},
+		registerShortcut: () => {},
+		registerMessageRenderer: () => {},
+		registerToolRenderer: () => {},
+		getThinkingLevel: () => "off",
+	} as unknown as ExtensionAPI;
+	await registerAgentExtension(pi);
+	const notices: Array<[string, string]> = [];
+	const ctx = {
+		cwd: root,
+		hasUI: true,
+		sessionManager: { getSessionId: () => "reloaded-primary", getSessionName: () => undefined },
+		ui: { notify: (text: string, level: string) => notices.push([text, level]) },
+	};
+	const events: Array<[string, unknown]> = [
+		["input", { source: "interactive", text: "Continue" }],
+		["tool_execution_end", {}],
+		["agent_settled", { aborted: false }],
+		["model_select", { model: { provider: "fixture", id: "model" } }],
+		["thinking_level_select", { level: "off" }],
+		["session_info_changed", { name: "renamed" }],
+	];
+	for (const [name, event] of events)
+		for (const handler of handlers.get(name) ?? [])
+			assert.doesNotThrow(() => handler(event, ctx), `${name} handler throws over a retained manager`);
+	assert.deepEqual(notices, [], "events add no notice");
+	for (const handler of handlers.get("session_start") ?? []) await handler({ reason: "reload" }, ctx);
+	assert.equal(notices.length, 1, "one notice at session start");
+	assert.match(notices[0][0], /manager\/8\.0\.0.*Quit Pi and resume this session/u);
+});

@@ -145,10 +145,11 @@ test("ordinary shutdown awaits close even when the status callback throws", asyn
 	assert.match(JSON.stringify(status), /UI unavailable/u);
 	assert.doesNotMatch(JSON.stringify(status), /"sessionId":/u);
 	Object.defineProperty(manager, "managerProtocol", { value: "manager/2.0.0" });
-	await assert.rejects(
-		events.get("session_start")?.({ reason: "reload" }, ctx) ?? Promise.resolve(),
-		/retained agent manager.*Restart Pi/u,
-	);
+	const notices: string[] = [];
+	(ctx.ui as unknown as { notify: (text: string) => void }).notify = (text) => notices.push(text);
+	await events.get("session_start")?.({ reason: "reload" }, ctx);
+	assert.equal(notices.length, 1);
+	assert.match(notices[0] ?? "", /retained agent manager uses manager\/2\.0\.0.*Quit Pi and resume this session/u);
 	assert.equal(closes, 1, "an old retained manager refuses before registration");
 });
 

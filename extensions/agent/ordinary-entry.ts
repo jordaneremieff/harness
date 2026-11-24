@@ -1,7 +1,7 @@
 /** Agent controls for independent Pi Durable hosts and the ordinary primary UI. */
 import { createHash } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import {
@@ -474,6 +474,14 @@ function ordinaryThreadSources(ctx: ExtensionContext): ThreadNoticeSource<Contex
 	return sources;
 }
 
+/** The resolved directory of agent sessions, created when absent; one manager serves each. */
+function sessionsRoot(): string {
+	const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
+	const configured = resolve(process.env.PI_AGENT_SESSIONS_DIR ?? join(agentDir, "agent-sessions"));
+	mkdirSync(configured, { recursive: true, mode: 0o700 });
+	return realpathSync(configured);
+}
+
 export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypoint = defaultOriginalEntrypoint): void {
 	const settingsAgentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
 	const disposeFactorySettings = publishSettings(pi.events, { agentDir: settingsAgentDir });
@@ -523,11 +531,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		workReferences.set(event.sessionId, list);
 		if (!changed) return;
 		pi.appendEntry(WORK_REFERENCES_ENTRY, { refs: list });
-		getManager().setPrimaryWorkRefs(event.sessionId, list);
+		eventManager()?.setPrimaryWorkRefs(event.sessionId, list);
 	});
 	const peerQuestions = new Map<string, { questions: PeerQuestions; notices: OwedNotices }>();
 	/** One endpoint read: the asked primary's process has ended. */
-	const sessionEnded = (peer: string) => primarySessionEnded(dirname(getManager().catalog.root), peer);
+	const sessionEnded = (peer: string) => primarySessionEnded(sessionsRoot(), peer);
 	/**
 	 * Probe the asked sessions of open questions before a reconciliation, so one whose crashed process left
 	 * its PID to another process reads as ended. Current probes make this free; nothing open costs nothing.
@@ -536,7 +544,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const asked = questions?.open().asked;
 		if (asked === undefined || asked.length === 0) return;
 		await verifyPrimaryOwners(
-			dirname(getManager().catalog.root),
+			sessionsRoot(),
 			asked.map((question) => question.peer),
 		);
 	};
@@ -546,10 +554,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	 * no endpoint exists.
 	 */
 	const askerGone = (peer: string): boolean => {
-		const manager = getManager();
-		const state = primaryEndpointOwnerState(dirname(manager.catalog.root), peer);
+		const state = primaryEndpointOwnerState(sessionsRoot(), peer);
 		if (state === "dead") return true;
-		if (state !== "absent") return false;
+		const manager = eventManager();
+		if (state !== "absent" || manager === undefined) return false;
 		try {
 			manager.nativeTarget(peer);
 			return false;
@@ -646,11 +654,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		threadNoticeLifecycle++;
 		threadNoticeSnapshots = [];
 	};
-	const getManager = (): AgentManager => {
-		const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
-		const configured = resolve(process.env.PI_AGENT_SESSIONS_DIR ?? join(agentDir, "agent-sessions"));
-		mkdirSync(configured, { recursive: true, mode: 0o700 });
-		const root = realpathSync(configured);
+	const getManager = (root = sessionsRoot()): AgentManager => {
 		const existing = owners.managers.get(root);
 		if (existing) {
 			if (existing.managerProtocol !== MANAGER_PROTOCOL)
@@ -660,10 +664,23 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			observedManager = existing;
 			return existing;
 		}
-		const manager = new AgentManager({ root, agentDir, packageDir: getPackageDir() });
+		const manager = new AgentManager({
+			root,
+			agentDir: process.env.PI_AGENT_DIR ?? getAgentDir(),
+			packageDir: getPackageDir(),
+		});
 		owners.managers.set(root, manager);
 		observedManager = manager;
 		return manager;
+	};
+	/**
+	 * The manager for an event handler. A manager that earlier code of this process created with another
+	 * protocol gives undefined: session start reports it once, and events change nothing until Pi restarts.
+	 */
+	const eventManager = (): AgentManager | undefined => {
+		const root = sessionsRoot();
+		const existing = owners.managers.get(root);
+		return existing !== undefined && existing.managerProtocol !== MANAGER_PROTOCOL ? undefined : getManager(root);
 	};
 	pi.events.on("durable:launch-provider", (query) => {
 		if (query === null || typeof query !== "object" || typeof (query as { provide?: unknown }).provide !== "function")
@@ -687,7 +704,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		},
 		budget: (provider, modelId) =>
 			currentPreferences.document?.preferences?.contextBudgetTokens?.[`${provider}/${modelId}`],
-		diagnose: (sessionId, text) => getManager().continuityNoteFailure(sessionId, text),
+		diagnose: (sessionId, text) => eventManager()?.continuityNoteFailure(sessionId, text),
 	});
 	const refreshRegistrations = new Map<string, (snapshot: PreferenceSnapshot) => void>();
 	const refreshPreferences = (ctx?: ExtensionContext): PreferenceSnapshot => {
@@ -1547,6 +1564,14 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		selfCompaction.clear();
 		refreshPreferences(ctx);
 		agentFigures = "";
+		const retainedProtocol = owners.managers.get(sessionsRoot())?.managerProtocol;
+		if (retainedProtocol !== undefined && retainedProtocol !== MANAGER_PROTOCOL) {
+			ctx.ui.notify(
+				`The retained agent manager uses ${retainedProtocol}; this code requires ${MANAGER_PROTOCOL}. Agent controls and agent events are off in this Pi process. Quit Pi and resume this session to use them.`,
+				"warning",
+			);
+			return;
+		}
 		const sessionId = ctx.sessionManager.getSessionId();
 		primaries.get(sessionId)?.abort();
 		primaryDeliveries.get(sessionId)?.inbox.close();
@@ -1661,15 +1686,15 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		if (!abort.signal.aborted) noticeUnanswered(ctx);
 	});
 	pi.on("model_select", (event, ctx) => {
-		getManager().updatePrimary(ctx.sessionManager.getSessionId(), {
+		eventManager()?.updatePrimary(ctx.sessionManager.getSessionId(), {
 			model: { provider: event.model.provider, modelId: event.model.id },
 		});
 	});
 	pi.on("thinking_level_select", (event, ctx) => {
-		getManager().updatePrimary(ctx.sessionManager.getSessionId(), { thinkingLevel: event.level });
+		eventManager()?.updatePrimary(ctx.sessionManager.getSessionId(), { thinkingLevel: event.level });
 	});
 	pi.on("session_info_changed", (event, ctx) => {
-		getManager().updatePrimary(ctx.sessionManager.getSessionId(), { name: event.name });
+		eventManager()?.updatePrimary(ctx.sessionManager.getSessionId(), { name: event.name });
 	});
 	pi.on("context", (event, ctx) => {
 		const sources = ordinaryThreadSources(ctx);
@@ -1692,7 +1717,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		if (!primaries.has(id)) return;
 		const refs = retainedWorkReferences(ctx.sessionManager);
 		workReferences.set(id, refs);
-		getManager().setPrimaryWorkRefs(id, refs);
+		eventManager()?.setPrimaryWorkRefs(id, refs);
 	});
 	pi.on("before_agent_start", async (event, ctx) => {
 		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
@@ -1712,8 +1737,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	pi.on("input", (event, ctx) => {
 		const id = ctx.sessionManager.getSessionId();
-		getManager().touchPrimary(id);
-		if (event.source === "interactive" && getManager().recordPrimaryInput(id, event.text, event.source)) {
+		const manager = eventManager();
+		manager?.touchPrimary(id);
+		if (event.source === "interactive" && manager?.recordPrimaryInput(id, event.text, event.source)) {
 			pi.appendEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: purposeExcerpt(event.text) });
 		}
 	});
@@ -1728,11 +1754,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	pi.on("turn_end", inboxBoundary);
 	pi.on("agent_before_settle", inboxBoundary);
 	pi.on("tool_execution_end", (_event, ctx) => {
-		getManager().touchPrimary(ctx.sessionManager.getSessionId());
+		eventManager()?.touchPrimary(ctx.sessionManager.getSessionId());
 	});
 	pi.on("agent_settled", (_event, ctx) => {
 		selfCompaction.clear();
-		getManager().touchPrimary(ctx.sessionManager.getSessionId());
+		eventManager()?.touchPrimary(ctx.sessionManager.getSessionId());
 	});
 	// Pi emits an extension message_end for a peer message that starts a run or a steer taken at a boundary;
 	// a steer dropped by an abort never gets one. A message that starts no run gets none: sendPeer counts its

@@ -369,7 +369,10 @@ The chosen values remain fixed for replay of that invocation.
 
 A retained ordinary manager must match the loaded manager contract. After that
 contract changes, `/reload` does not replace the retained manager: agent controls
-refuse it and require a new Pi process. Refusal is a compatibility backstop, not
+refuse it and require a new Pi process. Session start shows one warning that
+names both contracts; the session registers no endpoint, and agent event
+handlers (input, tool ends, settlement, model and name changes, tree
+navigation) change nothing and report nothing until Pi restarts. Refusal is a compatibility backstop, not
 permission to interrupt live work. Arrange an owner-agreed safe transition before
 restarting Pi or changing live source. Starting a new primary does not restart
 or cancel its independent Durable workers. A command request also requires the
