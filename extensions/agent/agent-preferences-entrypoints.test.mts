@@ -102,7 +102,13 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	} as unknown as ExtensionAPI);
 	const ctx = {
 		cwd: directory,
-		sessionManager: { getSessionId: () => "primary", getSessionName: () => undefined, getBranch: () => entries },
+		sessionManager: {
+			getSessionId: () => "primary",
+			getSessionName: () => undefined,
+			getBranch: () => entries,
+			getLeafId: () => null,
+			getEntry: () => undefined,
+		},
 		modelRegistry: { find: () => undefined, getAll: () => [] },
 	} as unknown as ExtensionContext;
 	for (const name of ["agent_spawn", "agent_place", "agent_configure"]) {
