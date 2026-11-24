@@ -3124,19 +3124,19 @@ intent for those with either shared location. Shared locations
 and declared machine-gate use are marked. Agents judge purpose-level relevance;
 the extension does not infer intent from file names or coordinate work for them.
 Carried operator directions appear as quoted, scoped claims, never as permission
-for the reader. Active peer-thread hints appear newest-first within the covered
-store records. Declared contact-thread owners receive priority catalog reads,
-followed by the caller's own storages and the live efforts that share its
-location or an item, before the directory sample; an effort that shares only a
-topic adds its row, not its threads. These reads share one visit budget. A
-directory entry that names no catalog record, such as a storage file, costs no
-visit, and an absent priority record, such as an ordinary session's identity,
-costs none either. A duplicate record is read once. The sample reports
-unvisited records only when another record remains past the budget. Missing
-hints and unvisited records leave global recency unknown. In the prompt,
-threads from priority sources rank ahead of sampled threads, each group in
-identity order, so the twelve-thread bound never drops a contact's thread for
-a sampled one.
+for the reader. Active peer-thread hints appear newest-first. Every catalog
+record is covered: a process-wide record index lists the catalog directory and
+stats each record, parses only the records whose file changed since its
+previous read, and answers from one directory stat while no record changed
+(the catalog changes records only by link, rename or unlink). The caller's own
+storages and the storages of efforts that share its location or an item are
+priority sources; the contact thread that the caller or such an effort declares
+admits that one thread from its storage. An effort that shares only a topic adds
+its row, not its threads, and its contact thread stays a claim on its row. In
+the prompt, threads from priority sources rank ahead of the other records'
+threads, each group in identity order, so the twelve-thread bound never drops a
+contact's thread for another one. Records without published hints leave global
+recency unknown.
 
 Use `agent_intent({ action: "read" })` in either runtime for current bounded
 awareness without publishing or clearing a claim. Its `awareness` result contains
@@ -3212,11 +3212,12 @@ local roster refresh remain independent of transcript delivery. Direct messages,
 check-ins, and thread notices retain their existing delivery behavior. There is
 no presence polling, file watcher, automatic model wake, or new store. Every view
 reports its presentation omissions; tool observations also report finite traversal
-coverage. Ordinary descriptors, native catalogue
-entries and native claim rows share the visit, result and byte caps in the tool
-result. Ordinary descriptors consume visits first, so a large ordinary sample
-leaves fewer visits for native roots. Sockets and storage files beside those
-records cost no visit. A cut-off scan reports partial coverage.
+coverage. Ordinary descriptors and native claim rows share the visit, result and
+byte caps in the tool result; native catalogue records come from the same record
+index as thread hints and cost no visit, so every record's claims are covered.
+Ordinary descriptors consume visits first, and sockets beside them cost no
+visit. One awareness read lists the record index once for presence and thread
+hints. A cut-off scan reports partial coverage.
 Native producers without intent support count separately from omitted claims;
 their absence is not a lost supported claim.
 

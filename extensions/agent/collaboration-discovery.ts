@@ -1,5 +1,5 @@
-import { opendir } from "node:fs/promises";
-import { CatalogIndex, type AgentCatalog, type CatalogIndexEntry, type CatalogRecord } from "./catalog.ts";
+import { CatalogIndex, type AgentCatalog, type CatalogIndexEntry } from "./catalog.ts";
+import { readEffortRecords, type EffortRecord } from "./effort-catalog.ts";
 import {
 	validateCollaborationAction,
 	type CollaborationList,
@@ -24,23 +24,26 @@ export interface RecentCollaborationPage {
 	limits: { visits: number; results: number; bytes: number; hintsPerRecord: number };
 }
 export const RECENT_COLLABORATION_LIMITS = { visits: 256, results: 12, bytes: 8192, hintsPerRecord: 8 } as const;
-const CATALOG_RECORD_NAME = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u;
-
-type ThreadProjectScope = { prompt: boolean; matches(record: CatalogRecord): Promise<boolean> };
+type ThreadProjectScope = { prompt: boolean; matches(record: { cwd: string }): Promise<boolean> };
 
 function recentPartial(page: RecentCollaborationPage, reason: string): void {
 	page.coverage.complete = false;
 	if (!page.coverage.reasons.includes(reason)) page.coverage.reasons.push(reason);
 }
+
+/** Which threads of one record a read admits: all its active threads, or only named contact threads. */
+type Admission = { rank: number; only?: ReadonlySet<string> };
+
 /**
- * A prompt keeps threads from priority sources (contacts, the reader's own storages, related live
- * efforts) ahead of sampled ones, each group in identity order; an observation shows newest first.
+ * A prompt keeps threads from priority sources (the reader's own storages, related live efforts and
+ * their contact threads) ahead of the other records' threads, each group in identity order; an
+ * observation shows newest first.
  */
 async function collectRecentHints(
 	page: RecentCollaborationPage,
-	record: CatalogRecord,
+	record: EffortRecord,
 	ranks: Map<string, number>,
-	rank: number,
+	admission: Admission,
 	scope?: ThreadProjectScope,
 ): Promise<void> {
 	if (record.threads === undefined) {
@@ -50,14 +53,17 @@ async function collectRecentHints(
 	}
 	page.coverage.omittedHints += record.threads.omitted;
 	if (record.threads.omitted > 0) recentPartial(page, "omitted-thread-hints");
-	const active = record.threads.items.slice(0, page.limits.hintsPerRecord).filter((thread) => !thread.closed);
-	if (active.length > 0 && scope !== undefined && !(await scope.matches(record))) {
+	const active = record.threads.items
+		.slice(0, page.limits.hintsPerRecord)
+		.filter((thread) => !thread.closed && (admission.only === undefined || admission.only.has(thread.id)));
+	// A priority source is related by contact or presence, so project scope does not filter it.
+	if (active.length > 0 && admission.rank > 0 && scope !== undefined && !(await scope.matches(record))) {
 		page.coverage.outOfScope = (page.coverage.outOfScope ?? 0) + active.length;
 		if (scope.prompt) return;
 	}
 	for (const thread of active) {
 		if (ranks.has(thread.id)) continue;
-		ranks.set(thread.id, rank);
+		ranks.set(thread.id, admission.rank);
 		page.items.push(thread);
 		page.items.sort(
 			(a, b) =>
@@ -71,96 +77,31 @@ async function collectRecentHints(
 		}
 	}
 }
-/** An absent priority record, such as an ordinary session's identity, costs no visit. */
-async function collectPriorityRecord(
-	page: RecentCollaborationPage,
-	catalog: AgentCatalog,
-	name: string,
-	ranks: Map<string, number>,
-	scope?: ThreadProjectScope,
-): Promise<void> {
-	let record: CatalogRecord;
-	try {
-		record = catalog.read(name.slice(0, -5));
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-		page.coverage.visited += 1;
-		page.coverage.records += 1;
-		page.coverage.unreadable += 1;
-		recentPartial(page, "unreadable-records");
-		return;
+
+/** Priority storages admit all their active threads; a contact thread alone admits only itself. */
+function threadAdmissions(priorities: readonly string[], contacts: readonly string[]): Map<string, Admission> {
+	const admissions = new Map<string, Admission>();
+	for (const thread of contacts) {
+		const storage = thread.split("/")[0];
+		const only = new Set(admissions.get(storage)?.only ?? []);
+		only.add(thread);
+		admissions.set(storage, { rank: 0, only });
 	}
-	page.coverage.visited += 1;
-	page.coverage.records += 1;
-	// A priority source is related by contact or presence, so project scope does not filter it.
-	await collectRecentHints(page, record, ranks, 0, scope && { prompt: scope.prompt, matches: async () => true });
-}
-async function collectRecentRecord(
-	page: RecentCollaborationPage,
-	catalog: AgentCatalog,
-	entry: import("node:fs").Dirent,
-	ranks: Map<string, number>,
-	scope?: ThreadProjectScope,
-): Promise<void> {
-	page.coverage.records += 1;
-	try {
-		if (!entry.isFile()) throw new Error("Not a catalog file");
-		await collectRecentHints(page, catalog.read(entry.name.slice(0, -5)), ranks, 1, scope);
-	} catch {
-		page.coverage.unreadable += 1;
-		recentPartial(page, "unreadable-records");
-	}
+	for (const identity of priorities) admissions.set(identity.split(":")[0], { rank: 0 });
+	return admissions;
 }
 
 /**
- * Reading directly bounds directory traversal; catalog.page materializes the whole directory.
- * Storage files beside the records cost no visit, and a full budget is unvisited only when another
- * record remains.
+ * Active thread hints of every catalog record, read through the process-wide record index, so no
+ * record is left unvisited. `priorityIdentities` name storages whose threads rank first (an
+ * identity with a conversation suffix names its storage); `contactThreads` admit one thread each
+ * from a storage that is not a priority. Native history remains authoritative.
  */
-async function sampleDirectory(
-	page: RecentCollaborationPage,
-	catalog: AgentCatalog,
-	seen: Set<string>,
-	ranks: Map<string, number>,
-	scope?: ThreadProjectScope,
-): Promise<void> {
-	let directory: Awaited<ReturnType<typeof opendir>>;
-	try {
-		directory = await opendir(catalog.root, { bufferSize: 32 });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-			page.coverage.unvisited = true;
-			recentPartial(page, "directory-unreadable");
-		}
-		return;
-	}
-	try {
-		for (;;) {
-			const entry = await directory.read();
-			if (entry === null) break;
-			if (!CATALOG_RECORD_NAME.test(entry.name) || seen.has(entry.name)) continue;
-			if (page.coverage.visited >= page.limits.visits) {
-				page.coverage.unvisited = true;
-				recentPartial(page, "visit-limit");
-				break;
-			}
-			seen.add(entry.name);
-			page.coverage.visited += 1;
-			await collectRecentRecord(page, catalog, entry, ranks, scope);
-		}
-	} catch {
-		page.coverage.unvisited = true;
-		recentPartial(page, "directory-unreadable");
-	} finally {
-		await directory.close().catch(() => {});
-	}
-}
-
-/** Known contact and live storages precede the bounded directory sample; native history remains authoritative. */
 export async function readRecentCollaboration(
 	catalog: AgentCatalog,
 	priorityIdentities: readonly string[] = [],
 	scope?: ThreadProjectScope,
+	options: { contactThreads?: readonly string[]; records?: readonly CatalogIndexEntry<EffortRecord>[] } = {},
 ): Promise<RecentCollaborationPage> {
 	const page: RecentCollaborationPage = {
 		items: [],
@@ -177,16 +118,34 @@ export async function readRecentCollaboration(
 			reasons: [],
 		},
 	};
-	const seen = new Set<string>();
-	const ranks = new Map<string, number>();
-	for (const identity of priorityIdentities) {
-		if (page.coverage.visited >= page.limits.visits) break;
-		const name = `${identity.split(":")[0]}.json`;
-		if (!CATALOG_RECORD_NAME.test(name) || seen.has(name)) continue;
-		seen.add(name);
-		await collectPriorityRecord(page, catalog, name, ranks, scope);
+	let entries = options.records;
+	if (entries === undefined) {
+		try {
+			entries = await readEffortRecords(catalog);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+				page.coverage.unvisited = true;
+				recentPartial(page, "directory-unreadable");
+			}
+			return page;
+		}
 	}
-	await sampleDirectory(page, catalog, seen, ranks, scope);
+	const admissions = threadAdmissions(priorityIdentities.slice(0, page.limits.visits), options.contactThreads ?? []);
+	const ranks = new Map<string, number>();
+	const ordered = [
+		...entries.filter((entry) => admissions.has(entry.storageId)),
+		...entries.filter((entry) => !admissions.has(entry.storageId)),
+	];
+	for (const entry of ordered) {
+		page.coverage.visited += 1;
+		page.coverage.records += 1;
+		if (entry.value === undefined) {
+			page.coverage.unreadable += 1;
+			recentPartial(page, "unreadable-records");
+			continue;
+		}
+		await collectRecentHints(page, entry.value, ranks, admissions.get(entry.storageId) ?? { rank: 1 }, scope);
+	}
 	while (!scope?.prompt && Buffer.byteLength(JSON.stringify(page)) > page.limits.bytes && page.items.length > 0) {
 		page.items.pop();
 		page.coverage.omittedResults += 1;

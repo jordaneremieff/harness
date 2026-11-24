@@ -4,6 +4,7 @@ import { textPrefix } from "./text-prefix.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
 import { readRecentCollaboration, type RecentCollaborationPage } from "./collaboration-discovery.ts";
+import { readEffortRecords } from "./effort-catalog.ts";
 import { threadStorageId } from "./identity.ts";
 import type { EffortReadResources } from "./effort-presence.ts";
 import {
@@ -108,27 +109,39 @@ export async function readEffortAwareness(
 		},
 	};
 	const projection = selfProjection(self, location, cwdMode);
+	// One record index read serves presence and thread hints.
+	let records: Awaited<ReturnType<typeof readEffortRecords>> | undefined;
+	try {
+		records = await readEffortRecords(resources.catalog);
+	} catch {
+		records = undefined;
+	}
 	const presence = await readRelatedEfforts(
 		resources,
 		self.name === undefined ? projection : { ...projection, name: self.name },
 		scope,
+		records,
 	);
-	const contacts = [
+	// A shared topic alone is a weak signal: it adds a row, never the other session's thread hints,
+	// and its contact thread stays a claim on that row.
+	const related = presence.efforts.filter(
+		(effort) => effort.relationship !== "machine" || (effort.sharedWork?.length ?? 0) > 0,
+	);
+	const live = related.filter((effort) => effort.liveness === "live").map((effort) => effort.id);
+	const contactThreads = [
 		self.intentClaim?.contactThread,
-		...presence.efforts.map((effort) => effort.intentClaim?.contactThread ?? effort.contactThreadClaim),
-	];
-	// A shared topic alone is a weak signal: it adds a row, never the other session's thread hints.
-	const live = presence.efforts
-		.filter((effort) => effort.liveness === "live" && (effort.relationship !== "machine" || effort.sharedWork?.length))
-		.map((effort) => effort.id);
+		...related.map((effort) => effort.intentClaim?.contactThread ?? effort.contactThreadClaim),
+	].filter((thread): thread is string => thread !== undefined);
 	const priorities = [
-		...contacts.filter((thread): thread is string => thread !== undefined).map((thread) => thread.split("/")[0]),
 		self.id,
 		threadStorageId(self.id, resources.catalog.root),
 		...live,
 		...live.map((id) => threadStorageId(id, resources.catalog.root)),
 	];
-	const threads = await readRecentCollaboration(resources.catalog, priorities, scope);
+	const threads = await readRecentCollaboration(resources.catalog, priorities, scope, {
+		contactThreads,
+		...(records === undefined ? {} : { records }),
+	});
 	return { self: projection, presence, threads };
 }
 

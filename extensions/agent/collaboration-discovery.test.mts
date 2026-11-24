@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { opendir } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Session } from "@earendil-works/pi-durable";
 import { tmpdir } from "node:os";
@@ -121,21 +120,21 @@ it("bounds serialized bytes including JSON escapes and preserves coverage", asyn
 	assert.ok(page.coverage.reasons.includes("byte-limit"));
 });
 
-it("bounds directory visits without invoking the unbounded paged catalog listing", async (t) => {
+it("covers every record without the paged listing and reads only records that changed", async (t) => {
 	const { catalog, input } = fixture(t);
 	for (let index = 0; index < 270; index++) publish(catalog, input, [index]);
 	t.mock.method(catalog, "page", () => {
-		throw new Error("Paged traversal is not bounded at the directory source");
+		throw new Error("The record index lists names only");
 	});
-	const read = t.mock.method(catalog, "read");
 	const page = await readRecentCollaboration(catalog);
-	assert.equal(page.coverage.visited, 256);
-	assert.ok(read.mock.callCount() <= 256);
-	assert.equal(page.coverage.unvisited, true);
-	assert.equal(page.coverage.complete, false);
-	assert.ok(page.coverage.reasons.includes("visit-limit"));
+	assert.equal(page.coverage.visited, 270);
+	assert.equal(page.coverage.unvisited, false);
+	assert.ok(!page.coverage.reasons.includes("visit-limit"));
+	const derive = t.mock.method(catalog, "derive");
+	const again = await readRecentCollaboration(catalog);
+	assert.deepEqual(again.items, page.items);
+	assert.equal(derive.mock.callCount(), 0, "an unchanged record is not read again");
 });
-
 it("spends no visits on names that are not catalog records and handles absent or unreadable roots", async (t) => {
 	const { root, catalog, input } = fixture(t);
 	for (let index = 0; index < 260; index++) writeFileSync(join(catalog.root, `irrelevant-${index}.sqlite`), "");
@@ -158,45 +157,18 @@ it("spends no visits on names that are not catalog records and handles absent or
 	assert.deepEqual(unavailable.coverage.reasons, ["directory-unreadable"]);
 });
 
-it("reads priority contacts outside the directory sample without expanding its visit bound", async (t) => {
+it("ranks a priority storage's threads first however many records the catalog holds", async (t) => {
 	const { catalog, input } = fixture(t);
-	const records = Array.from({ length: 270 }, () => catalog.create(input));
-	const sampled = new Set<string>();
-	const directory = await opendir(catalog.root, { bufferSize: 1 });
-	try {
-		for (let visit = 0; visit < RECENT_COLLABORATION_LIMITS.visits; visit++) {
-			const entry = await directory.read();
-			if (entry === null) break;
-			sampled.add(entry.name);
-		}
-	} finally {
-		await directory.close();
-	}
-	const contact = records.find((record) => !sampled.has(`${record.storageId}.json`));
-	assert.ok(contact, "the contact owner lies outside the unprioritized directory prefix");
-	const thread: CollaborationSummary = {
-		id: `${contact.storageId}/${"0".repeat(32)}`,
-		title: "Active contact",
-		purpose: "Current collaboration",
-		updatedAt: 100,
-		closed: false,
-		members: 1,
-	};
-	const originalRead = catalog.read.bind(catalog);
-	const read = t.mock.method(catalog, "read", (identity: string) => {
-		const record = originalRead(identity);
-		return identity === contact.storageId
-			? { ...record, threads: { items: [thread], omitted: 0, updatedAt: "2026-10-04T10:00:00.000Z" } }
-			: record;
+	const threads = Array.from({ length: 270 }, (_, index) => publish(catalog, input, [index])[0].id).sort();
+	const last = threads.at(-1) as string;
+	const page = await readRecentCollaboration(catalog, [last.split("/")[0]], {
+		prompt: true,
+		matches: async () => true,
 	});
-	const page = await readRecentCollaboration(catalog, [contact.storageId]);
-	assert.deepEqual(page.items, [thread]);
-	assert.equal(page.coverage.visited, RECENT_COLLABORATION_LIMITS.visits);
-	assert.equal(page.coverage.unvisited, true);
-	assert.equal(read.mock.calls[0].arguments[0], contact.storageId);
-	assert.ok(read.mock.callCount() <= RECENT_COLLABORATION_LIMITS.visits);
+	assert.equal(page.items[0]?.id, last);
+	assert.equal(page.coverage.visited, 270);
+	assert.equal(page.coverage.unvisited, false);
 });
-
 it("keeps priority threads ahead of sampled ones in a prompt read", async (t) => {
 	const { catalog, input } = fixture(t);
 	const threads = Array.from({ length: RECENT_COLLABORATION_LIMITS.results + 3 }, () => {
@@ -232,22 +204,38 @@ it("keeps priority threads ahead of sampled ones in a prompt read", async (t) =>
 	);
 });
 
-it("visits a priority record once, without duplicate hints, and spends no visit on an absent priority", async (t) => {
+it("reads a priority record once, without duplicate hints, and ignores an absent priority", async (t) => {
 	const { catalog, input } = fixture(t);
 	const [thread] = publish(catalog, input, [10]);
 	const storageId = thread.id.split("/")[0];
 	const baseline = await readRecentCollaboration(catalog);
-	const read = t.mock.method(catalog, "read");
 	const page = await readRecentCollaboration(catalog, [`${storageId}:2`, storageId, randomUUID()]);
 	assert.deepEqual(page.items, baseline.items);
 	assert.equal(page.coverage.records, 1);
-	assert.equal(page.coverage.visited, baseline.coverage.visited, "an ordinary session identity has no record to visit");
+	assert.equal(page.coverage.visited, 1, "an ordinary session identity has no record to visit");
 	assert.equal(page.coverage.unreadable, 0);
 	assert.equal(page.coverage.missingHints, 0);
 	assert.equal(page.coverage.complete, true);
-	assert.equal(read.mock.callCount(), 2);
 });
 
+it("admits only the named contact thread from a storage that is not a priority", async (t) => {
+	const { catalog, input } = fixture(t);
+	const [named, other] = publish(catalog, input, [10, 20]);
+	const page = await readRecentCollaboration(
+		catalog,
+		[],
+		{ prompt: true, matches: async () => false },
+		{
+			contactThreads: [named.id],
+		},
+	);
+	assert.deepEqual(
+		page.items.map((item) => item.id),
+		[named.id],
+		"out-of-scope storage threads stay out; the contact thread alone is admitted",
+	);
+	assert.ok(other);
+});
 it("keeps old active threads ahead of newer closed hints with activity and stable ID ordering", async () => {
 	const storageId = randomUUID();
 	const keys = Array.from({ length: 256 }, (_, index) => `${storageId}/${index.toString(16).padStart(32, "0")}`);

@@ -309,9 +309,18 @@ it("reads thread hints of shared-work peers but not of peers that share only a t
 				updatedAt: "2026-10-04T10:00:00.000Z",
 			},
 		);
+		return id;
 	};
-	peerThread(topical, "Topic peer thread");
+	const topicContact = peerThread(topical, "Topic peer thread");
 	peerThread(working, "Shared work peer thread");
+	// The topic peer declares its own thread as its contact; the claim stays on its row only.
+	publish(
+		root,
+		topical,
+		{ ...claim("Payment refund ledger reconciliation"), contactThread: topicContact },
+		other,
+		first("Payment refund ledger reconciliation"),
+	);
 	const current = {
 		...self,
 		cwd: project,
@@ -321,6 +330,7 @@ it("reads thread hints of shared-work peers but not of peers that share only a t
 	const view = await readEffortAwareness(resources(root, catalog), current, "canonical", "prompt");
 	const prompt = formatEffortAwareness(view, "prompt");
 	assert.ok(prompt.includes(topical), "the topic peer keeps its row");
+	assert.ok(prompt.includes(`"contactThreadClaim":"${topicContact}"`), "its contact stays a claim on the row");
 	assert.match(prompt, /Shared work peer thread/u);
 	assert.doesNotMatch(prompt, /Topic peer thread/u, "a shared topic alone never promotes thread hints");
 });

@@ -460,18 +460,18 @@ it("retains unknown native efforts and omits ended generations with their declar
 	assert.deepEqual((await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() })).efforts, []);
 });
 
-it("shares visit, result and byte caps across ordinary and native roots without counting unsupported claims as omissions", async (t) => {
+it("covers every native record and shares result and byte caps with ordinary records without counting unsupported claims as omissions", async (t) => {
 	const root = rootFor(t);
 	for (let index = 0; index < 140; index++) {
 		record(root);
 		unsupportedNative(root);
 	}
 	const page = await readPage(root, self());
-	assert.equal(page.coverage.visited, page.limits.visits);
+	assert.equal(page.coverage.visited, 140, "native records cost no visit; only claim rows do");
 	assert.equal(page.efforts.length, page.limits.results);
 	assert.equal(page.coverage.omitted, 140 - page.limits.results);
-	assert.equal(page.coverage.unsupported, page.limits.visits - 140);
+	assert.equal(page.coverage.unsupported, 140, "every native record is covered");
 	assert.equal(page.coverage.complete, false);
-	assert.ok(page.coverage.reasons.includes("visit-limit"));
+	assert.deepEqual(page.coverage.reasons, ["result-limit"]);
 	assert.ok(Buffer.byteLength(JSON.stringify(page)) <= page.limits.bytes);
 });

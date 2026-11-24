@@ -11,7 +11,9 @@ import type {
 import { sharedWorkReferences } from "./work-references.ts";
 import { sharedTopics, topicTerms } from "./effort-topics.ts";
 import type { Dirent } from "node:fs";
-import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
+import type { AgentCatalog } from "./catalog.ts";
+import type { CatalogIndexEntry } from "./catalog-index.ts";
+import { readEffortRecords, type EffortRecord } from "./effort-catalog.ts";
 import { isThreadStorage } from "./identity.ts";
 import type { PrimaryLocationResolver } from "./effort-location.ts";
 import { hostPaths } from "./host-protocol.ts";
@@ -71,7 +73,6 @@ export interface RelatedEffort {
 	/** Distinctive words that both sessions' stated purposes, names and item titles use, in alphabetical order. */
 	readonly sharedTopics?: string[];
 }
-const CATALOG_RECORD_NAME = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u;
 /** Prompt rows that a shared topic alone adds, strongest first; shared items and location add more. */
 export const PROMPT_TOPIC_ROWS = 4;
 /** Shared work items an observation shows per related effort, newest first for the other session. */
@@ -376,7 +377,7 @@ async function visitDirectory(
 	}
 }
 async function nativeRow(
-	record: CatalogRecord,
+	record: EffortRecord,
 	id: string,
 	metadata: NativeIntentMetadata,
 	self: PresenceSelf,
@@ -388,6 +389,7 @@ async function nativeRow(
 		page.coverage.unrelated++;
 		return;
 	}
+	const name = record.names[id];
 	const info: EffortFacts = {
 		id,
 		cwd: metadata.cwd,
@@ -396,9 +398,7 @@ async function nativeRow(
 		repositoryState: metadata.repositoryState,
 		intentClaim: metadata.claim,
 		...(metadata.repository === null ? {} : { repository: metadata.repository }),
-		...(record.view?.rows.find((row) => row.id === id)?.name === undefined
-			? {}
-			: { name: record.view.rows.find((row) => row.id === id)?.name }),
+		...(name === undefined ? {} : { name }),
 	};
 	if (info.repositoryState === "unknown") markPartial(page, "repository-unknown");
 	let ownership = claims.get(record.storageId);
@@ -415,34 +415,18 @@ async function nativeRow(
 }
 async function visitNativeRecord(
 	catalog: AgentCatalog,
-	entry: Dirent,
+	record: EffortRecord,
 	self: PresenceSelf,
 	page: EffortPresencePage,
 	claims: Map<string, ClaimObservation>,
 	scope?: EffortProjectScope,
 ): Promise<void> {
-	if (!entry.isFile()) {
-		page.coverage.unrelated++;
-		return;
-	}
-	let record: CatalogRecord;
-	try {
-		record = catalog.read(entry.name.slice(0, -5));
-	} catch {
-		page.coverage.unreadable++;
-		markPartial(page, "native-record-unreadable");
-		return;
-	}
-	if (isThreadStorage(record, catalog.root)) {
-		page.coverage.unrelated++;
-		return;
-	}
-	const claimRows = record.view?.intentClaims;
+	if (isThreadStorage(record, catalog.root)) return;
+	const claimRows = record.intentClaims;
 	if (!claimRows) {
 		page.coverage.unsupported = (page.coverage.unsupported ?? 0) + 1;
 		return;
 	}
-	page.coverage.unrelated++;
 	page.coverage.omitted += claimRows.coverage.omitted;
 	if (!claimRows.coverage.complete) markPartial(page, "native-intent-incomplete");
 	for (const [id, metadata] of Object.entries(claimRows.rows)) {
@@ -455,20 +439,38 @@ async function visitNativeRecord(
 		else await nativeRow(record, id, metadata, self, page, claims, scope);
 	}
 }
+/**
+ * Every catalog record through the process-wide record index: a record costs a stat, and only its
+ * claim rows spend visits, so native efforts are covered however many records the catalog holds.
+ */
 async function visitNativeRoot(
 	catalog: AgentCatalog,
 	self: PresenceSelf,
 	page: EffortPresencePage,
+	records: readonly CatalogIndexEntry<EffortRecord>[] | undefined,
 	scope?: EffortProjectScope,
 ): Promise<void> {
+	let entries = records;
+	if (entries === undefined) {
+		try {
+			entries = await readEffortRecords(catalog);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") markPartial(page, "directory-unreadable");
+			return;
+		}
+	}
 	// One writer claim observation serves every claim row in this record during one pass.
 	const claims = new Map<string, ClaimObservation>();
-	await visitDirectory(
-		catalog.root,
-		page,
-		(name) => CATALOG_RECORD_NAME.test(name),
-		(entry) => visitNativeRecord(catalog, entry, self, page, claims, scope),
-	);
+	for (const entry of entries) {
+		if (page.coverage.visited >= page.limits.visits) {
+			markPartial(page, "visit-limit");
+			return;
+		}
+		if (entry.value === undefined) {
+			page.coverage.unreadable++;
+			markPartial(page, "native-record-unreadable");
+		} else await visitNativeRecord(catalog, entry.value, self, page, claims, scope);
+	}
 }
 
 /** Read-only presence page; ordinary records and native projections share all visit, result and byte caps. */
@@ -476,6 +478,7 @@ export async function readRelatedEfforts(
 	resources: EffortReadResources,
 	reader: EffortPresenceSelf,
 	scope?: EffortProjectScope,
+	records?: readonly CatalogIndexEntry<EffortRecord>[],
 ): Promise<EffortPresencePage> {
 	const self: PresenceSelf = { ...reader, topics: effortTopics(reader) };
 	const sessionsRoot = dirname(resources.catalog.root);
@@ -500,7 +503,7 @@ export async function readRelatedEfforts(
 		(name) => name.endsWith(".json"),
 		(entry) => visitEntry(sessionsRoot, self, page, entry, scope),
 	);
-	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(resources.catalog, self, page, scope);
+	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(resources.catalog, self, page, records, scope);
 	if (scope?.prompt)
 		page.efforts.splice(0, page.efforts.length, ...selectPromptEfforts(page.efforts, page.limits.results));
 	page.efforts.sort((a, b) => a.id.localeCompare(b.id));
