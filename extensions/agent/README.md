@@ -2961,7 +2961,7 @@ in the same Git repository (including linked worktrees), or the same working
 directory outside Git. It also names live sessions elsewhere on this machine
 that share work with the caller, with their purpose-level claim, contact thread,
 session name, first-request excerpt (`request`, at most 200 characters, only
-without a claim) and up to four shared items as `sharedWork`. A session that
+without a claim) and up to four shared items in identity order as `sharedWork`. A session that
 shares no item and no location stays out of the section, so the section grows
 with related work rather than with every open session. A thread uses its owning
 storage's working directory; a contact link alone does not establish a match.
