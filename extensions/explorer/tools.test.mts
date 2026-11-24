@@ -16,7 +16,7 @@ test("batch receipts keep every ID without returning large quotes", async (t) =>
 	await writeFile(join(cwd, "long.txt"), "x".repeat(NOTES_OUTPUT_BYTES));
 	await writeFile(join(cwd, "binary.dat"), Buffer.from([0, 1]));
 	const context = { cwd, dir: join(temp, "store") };
-	const line = { path: "long.txt", start: 1, end: 1, text: "Inspect" };
+	const line = { path: "long.txt", start: 1, text: "Inspect" };
 	const result = await runNotes(
 		{
 			op: "note",
@@ -159,7 +159,6 @@ test("review tools pin ranges, create freeform targets, update agents and refuse
 					id: "1",
 					path: "file.ts",
 					start: 1,
-					end: 1,
 					text: "Comment",
 					by: "Someone",
 					url: "https://review.example.test/42#discussion",

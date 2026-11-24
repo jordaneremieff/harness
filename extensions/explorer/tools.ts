@@ -25,6 +25,7 @@ import type { AgentPane } from "./settings.ts";
 const pathInput = str({ minLength: 1, maxLength: 4096 });
 const noteId = str({ pattern: "^n-[a-f0-9]{20}$" });
 const line = int({ minimum: 1, maximum: 2_147_483_647 });
+const lastLine = int({ minimum: 1, maximum: 2_147_483_647, description: "Last line; defaults to start" });
 const title = str({ minLength: 1, maxLength: 200 });
 const text = str({ minLength: 1, maxLength: 16384 });
 const url = str({
@@ -81,7 +82,7 @@ const comment = obj(
 			}),
 		),
 		start: opt(line),
-		end: opt(line),
+		end: opt(lastLine),
 		side: opt(side),
 		commit: opt(commitId),
 		by: str({
@@ -101,7 +102,7 @@ const noteInput = obj(
 		path: opt(pathInput),
 		side: opt(side),
 		start: opt(line),
-		end: opt(line),
+		end: opt(lastLine),
 		target: opt(target),
 		title: opt(title),
 		text,
@@ -139,7 +140,7 @@ export const NotesParameters = obj(
 		ids: opt(arr(noteId, { minItems: 1, maxItems: 100 })),
 		state: opt(union([lit("draft"), lit("open"), lit("sent"), lit("answered"), lit("resolved")])),
 		start: opt(line),
-		end: opt(line),
+		end: opt(lastLine),
 		side: opt(side),
 		text: opt(text),
 		title: opt(nullable(title)),
@@ -283,6 +284,10 @@ async function lineNote(
 		...(review === undefined ? {} : { reviewKey: review.key }),
 	};
 }
+// A comment with a start line and no end covers that one line.
+function singleLine<T extends { start?: number; end?: number }>(comment: T): T {
+	return comment.start !== undefined && comment.end === undefined ? { ...comment, end: comment.start } : comment;
+}
 async function noteFromSpec(
 	repo: Repo,
 	store: NotesStore,
@@ -292,8 +297,8 @@ async function noteFromSpec(
 	if (spec.target) return targetNoteFromSpec(repo, store, spec, spec.target, review);
 	const path = spec.path;
 	if (!path) throw new Error("A line note requires a path.");
-	if (spec.start === undefined || spec.end === undefined) throw new Error("A line note requires start and end lines.");
-	return lineNote(repo, path, spec.start, spec.end, spec.text, spec.title, review, spec.side, spec.url);
+	if (spec.start === undefined) throw new Error("A line note requires a start line.");
+	return lineNote(repo, path, spec.start, spec.end ?? spec.start, spec.text, spec.title, review, spec.side, spec.url);
 }
 async function targetNoteFromSpec(
 	repo: Repo,
@@ -629,7 +634,7 @@ export async function runNotes(input: NotesInput, context: Context): Promise<Out
 				const review = reviewInput(required(input.review, "review"));
 				const result = await store.request(
 					op,
-					{ review, comments: required(input.comments, "comments") },
+					{ review, comments: required(input.comments, "comments").map(singleLine) },
 					context.signal,
 				);
 				const { created, updated, skipped } = result as {
