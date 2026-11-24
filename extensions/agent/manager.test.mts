@@ -4686,7 +4686,7 @@ it("names a remedy for unknown handles, malformed identities and threads whose s
 	await assert.rejects(
 		manager.collaborate({ action: "read", threadId: `${gone}/${"a".repeat(32)}` }, caller),
 		noPath(
-			/Thread .* is not retained: its storage .* no longer exists\. Find current threads with agent_collaborate action list/u,
+			/Thread .* is not retained: its storage .* does not exist\. Find current threads with agent_collaborate action list/u,
 		),
 	);
 	await assert.rejects(

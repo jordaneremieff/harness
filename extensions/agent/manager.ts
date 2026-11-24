@@ -1936,7 +1936,7 @@ export class AgentManager {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 			if (typeof input.threadId === "string")
 				throw new Error(
-					`Thread ${input.threadId} is not retained: its storage ${sessionId} no longer exists. Find current threads with agent_collaborate action list.`,
+					`Thread ${input.threadId} is not retained: its storage ${sessionId} does not exist. Find current threads with agent_collaborate action list.`,
 				);
 			if (session === sessionId)
 				throw new Error(`No retained storage ${sessionId}. Find current agents and threads with agent_list.`);
