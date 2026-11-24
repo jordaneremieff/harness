@@ -10,7 +10,7 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { awaitWithContext, withAbortSignal, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PluginError, isChordError } from "@earendil-works/chord";
@@ -380,6 +380,45 @@ export class HostBusyEndpointUnavailableError extends HostError {
 	}
 }
 
+/** The host refused before admission because it is ending; a fresh host can take the same operation. */
+export class HostRetiringError extends HostError {
+	constructor(message: string) {
+		super(message, "unavailable");
+		this.name = "HostRetiringError";
+	}
+}
+
+/** A retiring host ends within its shutdown deadline; this wait adds a margin for transport close. */
+export const RETIRING_HOST_WAIT_MS = 25_000;
+
+/**
+ * Resolve true when the connection has closed and, for a host this process launched, its process has exited; false
+ * when the wait ends first. The exit follows the transport close, and only it lets this process launch the next host.
+ */
+export function connectionEnded(connection: HostConnection, waitMs: number, signal?: AbortSignal): Promise<boolean> {
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (ended: boolean) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			unsubscribe();
+			signal?.removeEventListener("abort", aborted);
+			resolve(ended);
+		};
+		const closed = () => {
+			if (!connection.ownedExit) finish(true);
+			else void connection.ownedExit.then(() => finish(true));
+		};
+		const aborted = () => finish(false);
+		const timer = setTimeout(() => finish(false), waitMs);
+		const unsubscribe = connection.onClose(closed);
+		signal?.addEventListener("abort", aborted, { once: true });
+		if (signal?.aborted) finish(false);
+		else if (connection.closed) closed();
+	});
+}
+
 export class HostLaunchDemandEnded extends HostError {
 	constructor() {
 		super("Host launch demand ended", "unavailable");
@@ -395,6 +434,12 @@ export class HostReadinessUnavailableError extends HostError {
 			{ cause },
 		);
 	}
+}
+
+function isRetiringRefusal(error: unknown): error is Error {
+	if (!isChordError(error) || error.code !== "unavailable") return false;
+	const details = error.details;
+	return details !== null && typeof details === "object" && !Array.isArray(details) && details.retiring === true;
 }
 
 /** Find the readiness line in already-captured stdout; a malformed matching line throws. */
@@ -541,6 +586,16 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions, 
 	let attempt = ownedLaunches.get(paths.socket);
 	if (attempt?.state === "uncertain")
 		throw new HostReadinessUnavailableError(new Error("The previous launch has no terminal child-exit event"));
+	// An ending host this process launched removes its endpoint just before its process exits; that exit, not a
+	// replacement guess, admits the next launch.
+	if (
+		attempt?.state === "ready" &&
+		!attempt.writerReleased &&
+		lstatSync(paths.socket, { throwIfNoEntry: false }) === undefined
+	) {
+		await withinBudget(attempt.exited, deadline, options.signal);
+		attempt = ownedLaunches.get(paths.socket);
+	}
 	if (!attempt || attempt.state === "exited" || attempt.writerReleased) {
 		if (options.launchNeeded?.() === false) throw new HostLaunchDemandEnded();
 		attempt = startOwnedLaunch(metadata, options, deadline);
@@ -1279,7 +1334,11 @@ class HostConnectionImpl implements HostConnection {
 		if (this.client.connected || (isChordError(error) && error.code !== "unavailable")) {
 			this.pending.delete(call);
 			call.reject(
-				isChordError(error) || error instanceof PluginError ? new HostError(error.message, error.code) : toError(error),
+				isRetiringRefusal(error)
+					? new HostRetiringError(error.message)
+					: isChordError(error) || error instanceof PluginError
+						? new HostError(error.message, error.code)
+						: toError(error),
 			);
 			return;
 		}

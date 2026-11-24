@@ -88,6 +88,9 @@ import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
 import {
 	acquireHost,
+	connectionEnded,
+	HostRetiringError,
+	RETIRING_HOST_WAIT_MS,
 	connectHost,
 	HostBusyEndpointUnavailableError,
 	HostLaunchDemandEnded,
@@ -1230,7 +1233,9 @@ export class AgentManager {
 		if (method === "abort" || method === "release")
 			return this.abortControl(record, params, caller, signal, launch, method);
 		try {
-			return await this.controlClient(await this.connection(record, undefined, launch), method, params, caller, signal);
+			return await this.afterRetirement(record, launch, signal, (client) =>
+				this.controlClient(client, method, params, caller, signal),
+			);
 		} catch (error) {
 			if (method !== "configure" || !selector.startsWith("@")) throw error;
 			throw new Error(`Configure of ${String(params.sessionId)} (${selector}) failed: ${errorText(error)}`, {
@@ -1327,6 +1332,26 @@ export class AgentManager {
 				client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" }),
 			);
 		return client.request(method, params, signal ? { signal } : undefined);
+	}
+
+	/**
+	 * A host that began to end refuses before admission. Wait for that host to close, then send once through a fresh
+	 * host; the refusal proves that the first attempt admitted nothing.
+	 */
+	private async afterRetirement<T>(
+		record: CatalogRecord,
+		launch: boolean,
+		signal: AbortSignal | undefined,
+		run: (client: HostConnection) => Promise<T>,
+	): Promise<T> {
+		const client = await this.connection(record, undefined, launch);
+		try {
+			return await run(client);
+		} catch (error) {
+			if (!(error instanceof HostRetiringError)) throw error;
+			if (!(await connectionEnded(client, RETIRING_HOST_WAIT_MS, signal))) throw error;
+			return run(await this.connection(record, undefined, launch));
+		}
 	}
 
 	private async controlClient(

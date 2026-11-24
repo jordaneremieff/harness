@@ -4263,6 +4263,11 @@ A connection retains its initial acquire or attach-only policy. A safe read does
 not grant launch authority. Recovery first attempts attachment; an automatic
 replacement also requires retryable work and an exact owned failed-child exit.
 A clean child exit or successful owner close does not trigger a replacement.
+One case sends again: a host that has begun to end (idle retirement, release, a
+close request, a lost writer lease) refuses every new operation before admission
+and marks the refusal as retiring. An agent control or thread change that meets
+that refusal waits up to 25 s for that host's connection to close, then sends the
+same request once through a fresh host.
 When a runner reports BUSY and no endpoint is verified, registration retains an
 unavailable note without adding a recovery fault or clearing a genuine earlier
 error. This proves neither a live owner nor that another startup will succeed.

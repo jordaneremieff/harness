@@ -45,6 +45,14 @@ function hostOperationError(error: unknown): ChordError | PluginError {
 	);
 }
 
+/**
+ * A refusal before admission from a host that is ending. `details.retiring` tells a caller that the operation was not
+ * admitted and that a fresh host can take it once this one has ended.
+ */
+function retiringRefusal(message: string): ChordError {
+	return new ChordError({ code: "unavailable", message, details: { retiring: true } });
+}
+
 /** The host-side surface the parent runtime must supply. */
 export interface HostRuntime {
 	/**
@@ -333,8 +341,7 @@ class HostProcessServer implements HostProcess {
 			request: (request, peer) => this.invoke(request, this.attachment(peer)),
 			subscribe: async (kind, token, peer, publish) => {
 				const state = this.attachment(peer);
-				if (this.closing)
-					throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
+				if (this.closing) throw retiringRefusal("The durable host process is shutting down");
 				if (kind === "changes") return this.subscribeChanges(publish, state);
 				this.beginActivity();
 				try {
@@ -427,7 +434,7 @@ class HostProcessServer implements HostProcess {
 
 	private async invoke(request: TransportRequest, state: AttachmentState): Promise<unknown> {
 		if (this.closing)
-			throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
+			throw retiringRefusal("The durable host process is shutting down");
 		const active = request.method !== HOST_CONTRACT_MEMBER && request.method !== "close";
 		if (active) this.beginActivity();
 		try {
@@ -575,12 +582,9 @@ class HostProcessServer implements HostProcess {
 			return {};
 		}
 		if (this.closing)
-			throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
+			throw retiringRefusal("The durable host process is shutting down");
 		if (!this.writerNamed())
-			throw new ChordError({
-				code: "unavailable",
-				message: "The durable host lost its writer lease; no operation was admitted",
-			});
+			throw retiringRefusal("The durable host lost its writer lease; no operation was admitted");
 		const token = this.prepareObservationToken(method, params, state);
 		try {
 			if (method === "observe-close" && token !== undefined) await state.closingTokens.get(token);

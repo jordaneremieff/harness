@@ -35,6 +35,7 @@ import {
 	HostLaunchDemandEnded,
 	HostEndpointUnavailableError,
 	HostReadinessUnavailableError,
+	HostRetiringError,
 	type HostConnection,
 	type OwnedHostExit,
 } from "./host-client.ts";
@@ -403,6 +404,36 @@ it("omits undefined control fields, which the host transport refuses, before the
 	assert.ok(call);
 	assert.equal(isJsonValue(call.params), true);
 	assert.equal(Object.hasOwn(call.params as object, "instructions"), false);
+});
+
+it("sends a control once more through a fresh host after a retiring host refused it", async (t) => {
+	const root = fixtureRoot(t);
+	const seen: string[] = [];
+	let acquisitions = 0;
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: async (metadata) => {
+				const generation = ++acquisitions;
+				const connection: FakeConnection = fakeConnection(metadata, async (method) => {
+					if (method !== "compact") return {};
+					seen.push(`host ${generation}`);
+					if (generation === 1) {
+						setImmediate(() => void connection.close());
+						throw new HostRetiringError("The durable host process is shutting down");
+					}
+					return { compacted: generation };
+				});
+				return connection;
+			},
+		}),
+	);
+	t.after(() => manager.close());
+	const target = createRecord(manager, root, "owner").storageId;
+	assert.deepEqual(await manager.control("compact", { sessionId: target }, { id: "terminal", cwd: root }), {
+		compacted: 2,
+	});
+	assert.deepEqual(seen, ["host 1", "host 2"]);
+	assert.equal(acquisitions, 2);
 });
 
 it("stops a live target once and never acquires a serving host for a cold stop", async (t) => {
