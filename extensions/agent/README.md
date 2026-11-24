@@ -2989,14 +2989,21 @@ therefore also carries `sharedTopics` when both sessions' stated purposes use
 at least two of the same distinctive words: up to eight in alphabetical order.
 The words come from text the endpoint and catalogue already hold: the declared
 purpose, or without one the first-request excerpt, plus the session name and
-the titles of reported items. Function words, words that describe agent work in
-general (session, agent, extension, test, review, fix and similar), words
-shorter than four characters, numbers and identifiers do not count; plural
-forms fold to one word. The rule uses no statistics over other sessions, so
+the titles of reported items. Function words, words that describe agent or
+engineering work in general (session, agent, extension, test, review, fix,
+error, config, service, operator, worker and similar) with their -s, -es, -ing
+and -ed forms, model names, numbers, identifiers, and paths, URLs, addresses
+and snake_case names do not count. Words shorter than four characters count
+only as three-letter acronyms written in capitals within mixed-case text (SQL,
+MCP); generic acronyms such as API and CLI do not. Plural forms fold to one
+word, including -es after ch, sh and x (branches, fixes, batches), while cache
+and niche keep their e. Camel case splits around an acronym prefix
+(HTTPProxy, OAuthToken). The rule uses no statistics over other sessions, so
 a row changes only when one of the two sessions changes its own text. Terms are
-memoised by their source text, so an unchanged session is not tokenized again
-and a topic comparison adds no file read. Shared words are a weaker signal than
-shared items: they say that two purposes look alike, not that the work overlaps.
+memoised by their source text in a least-recently-used cache of 1,024 texts, so
+an unchanged session is not tokenized again and a topic comparison adds no file
+read. Shared words are a weaker signal than shared items: they say that two
+purposes look alike, not that the work overlaps.
 
 The extension retains its own attributed first-input projection in the session.
 Resume discovery follows a bounded parent chain from the public leaf ID, without

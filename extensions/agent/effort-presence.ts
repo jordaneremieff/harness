@@ -194,8 +194,9 @@ export function effortTopics(value: {
 	];
 	const key = texts.join("\u0000");
 	const cached = topicCache.get(key);
-	if (cached) return cached;
-	const terms = topicTerms(texts);
+	// Least recently used order: a hit moves the key to the newest end, so long-lived sessions stay.
+	topicCache.delete(key);
+	const terms = cached ?? topicTerms(texts);
 	if (topicCache.size >= TOPIC_CACHE_ENTRIES) topicCache.delete(topicCache.keys().next().value as string);
 	topicCache.set(key, terms);
 	return terms;
