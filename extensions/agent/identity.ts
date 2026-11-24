@@ -146,6 +146,10 @@ export function threadStorageServes(operation: string, params?: { readonly model
 export function threadStorageRefusal(storageId: string, ownerId: string): string {
 	return `${storageId} is a thread storage of ${ownerId}; it holds threads and runs no agent work. Use agent_collaborate with a threadId it holds, or message its owner ${ownerId}`;
 }
+/** Why an input that an earlier host admitted into a thread storage ends without an answer. */
+export function threadStorageUnanswered(storageId: string, ownerId: string): string {
+	return `${storageId} is a thread storage of ${ownerId}; it holds threads and runs no agent work, so this input started no run. Use agent_collaborate with a threadId it holds, or message its owner ${ownerId}`;
+}
 /** A route that names a thread storage as the recipient of an answer, a report or a notice. */
 export function threadStorageRecipientRefusal(field: string, storageId: string, ownerId: string): string {
 	return `${field} ${storageId} is a thread storage of ${ownerId}; it holds threads and receives no agent input. Name its owner ${ownerId} instead`;

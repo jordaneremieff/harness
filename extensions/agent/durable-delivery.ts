@@ -55,7 +55,7 @@ import {
 } from "./open-work.ts";
 import type { ConversationId, Harness, Tx } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
-import { isThreadStorage } from "./identity.ts";
+import { isThreadStorage, threadStorageUnanswered } from "./identity.ts";
 import { foldContinuity } from "./continuity-facts.ts";
 import { ContinuityDoc } from "./continuity-native.ts";
 import { validQuestionId } from "./peer-questions.ts";
@@ -2147,7 +2147,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			native.conversationId === row.receipt.conversationId &&
 			native.requestId === row.receipt.requestId
 		)
-			row.displayReason = modelFailureText(native.reason, native.detail, row.receipt.providerBlock);
+			row.displayReason =
+				eligibilityOptions.threadStorageOwner === undefined
+					? modelFailureText(native.reason, native.detail, row.receipt.providerBlock)
+					: `${native.reason}: ${threadStorageUnanswered(metadata.storageId, eligibilityOptions.threadStorageOwner)}`;
 	};
 	const prepareReceiptGroups = async (rows: readonly DeliveryRow[]): Promise<void> => {
 		for (const row of rows) if (row.kind === "receipt") await prepareReceiptRow(row);

@@ -93,8 +93,8 @@ export function quietWhileStopped(inputClass: InputClass, expectsAnswer: boolean
 	return !expectsAnswer && QUIET_CLASSES.has(inputClass);
 }
 
-/** Why an input was kept as context without a run. */
-export type QuietReason = "stopped" | "state-note";
+/** Why an input was kept in the transcript without a run. */
+export type QuietReason = "stopped" | "state-note" | "thread-storage";
 
 /**
  * The quiet decision of one new admission, read in its commit so that an abort cannot fall between the decision and
@@ -115,6 +115,8 @@ const QUIET_NOTICES: Readonly<Record<QuietReason, (inputClass: InputClass) => st
 		`This ${inputClass} arrived while this conversation was stopped. It started no run; read it with the next input.`,
 	"state-note": () =>
 		"This state note arrived while the producer's declared work continues. It started no run; the final report arrives as a separate report.",
+	"thread-storage": (inputClass) =>
+		`This ${inputClass} was admitted into this thread storage by an earlier host. A thread storage holds threads and runs no agent work: the host withdrew it, and it started no run.`,
 };
 
 /** The passive entry that keeps one quiet input as context for the next run. */
@@ -324,7 +326,8 @@ export async function stopScope(
 	return { settled: false, pendingTasks: await pendingTasks(store, scope, background, context), work, scope };
 }
 
-async function* liveTasks(tx: Tx, query: TaskQuery) {
+/** Every task that has not ended, by status so that ended tasks never fill a page. */
+export async function* liveTasks(tx: Tx, query: TaskQuery) {
 	for (const status of LIVE_STATUSES) {
 		let cursor: Cursor | undefined;
 		do {

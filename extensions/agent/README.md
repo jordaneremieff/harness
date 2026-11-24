@@ -2646,7 +2646,20 @@ acquires the host, the thread storage's own host runtime for every operation it
 receives, and the Durable host object under it. A thread storage is also no
 recipient: `replyTo`, a report, an answer route, a `notify` entry and an
 `integrator` that name it refuse and name its owner, and a delivery row that
-already names it ends as terminal without a delivery attempt. Agent rosters,
+already names it ends as terminal without a delivery attempt. Agent work that
+an earlier host admitted into a thread storage never runs: when the host
+starts, before its scheduler resumes, it marks every live task for its stop and
+withdraws every queued input. A scheduled input that has not fired ends as
+`cancelled` in the timer list; a queued input and the input of a created run
+settle `unanswered` with reason `aborted`, and their sender's result reads
+`aborted: <storage> is a thread storage of <owner>; it holds threads and runs
+no agent work, so this input started no run`. Each withdrawn scheduled or
+queued input stays in its conversation's transcript as an `agent.quiet-input`
+entry with reason `thread-storage`, its full text and a line that states why it
+started no run; `agent_inspect` reads it. A storage that retains no agent work
+gets no write. The harness of a thread storage also resolves no model, so a
+run that starts there by any path ends `unanswered` with reason `no_model`
+before a provider request. Agent rosters,
 `agent_list`, dashboard counts and `agent_status view: fleet` (records, effort
 members, conversations and model selections) omit it. Its host starts on the
 first mutation, delivers thread notices like any participant storage, and

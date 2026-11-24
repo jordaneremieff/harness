@@ -63,6 +63,7 @@ import {
 } from "./delivery-store.ts";
 import { abortScopeConversations } from "./abort-scope.ts";
 import { captureStoppedWork, PENDING_TASKS_LIMIT, recoverStoppedTasks, stopScope } from "./conversation-stop.ts";
+import { withdrawStorageWork } from "./thread-storage-work.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { threadStorageRefusal, threadStorageServes } from "./identity.ts";
 import { checkInMinutes } from "./check-in-options.ts";
@@ -539,7 +540,7 @@ export class DurableHost {
 		let continuity: ContinuityMirror | undefined;
 		let harness: Harness;
 		const providerModels = new ProviderModels(
-			options.models,
+			options.threadStorageOwner === undefined ? options.models : withoutModels(options.models),
 			() => harness,
 			options.storageId,
 			now,
@@ -718,6 +719,8 @@ export class DurableHost {
 		await this.requireOpen();
 		this.resumeWork ??= (async () => {
 			await recoverStoppedTasks(this.harness, context, await this.harness.inspect(context), install);
+			if (this.threadStorageOwner !== undefined)
+				await withdrawThreadStorageWork(this.harness, this.storageId, this.now, context);
 			this.recovery = new StrandedInputRecovery(this.harness, (error) => this.recoveryError?.(error));
 			try {
 				await reconcileInputCommunications(this.harness, this.storageId, context);
@@ -1870,6 +1873,44 @@ export async function stopLiveConversation(
 		background,
 		...stopped,
 	};
+}
+
+/**
+ * Model access that resolves no model. The harness of a thread storage gets it, so no task there can make a
+ * provider request, whatever admitted the task: a generation or a compaction ends before its request.
+ */
+function withoutModels(models: Models): Models {
+	return new Proxy(models, {
+		get(target, property) {
+			if (property === "getModel") return () => undefined;
+			const value: unknown = Reflect.get(target, property, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+}
+
+/**
+ * A thread storage runs no agent work: before its scheduler resumes, stop every task and withdraw every input
+ * that an earlier host admitted. The task definitions are installed, so each marked task ends through its own
+ * abort once the scheduler runs.
+ */
+async function withdrawThreadStorageWork(
+	harness: Harness,
+	storageId: string,
+	now: () => number,
+	context: Context,
+): Promise<void> {
+	const withdrawn = await harness.commit(
+		(tx) =>
+			withdrawStorageWork(tx, {
+				now: now(),
+				captureWork: (tx, id, scope) => closeSettledAtStop(tx, storageId, now, scope, id),
+			}),
+		context,
+	);
+	if (withdrawn === undefined) return;
+	for (const id of withdrawn.tasks) await harness.abortTask(id, context);
+	await closeStoppedWork(harness, storageId, now, withdrawn.scope, withdrawn.work, context);
 }
 
 /** Apply a single stop under a cold writer lease. The scheduler and delivery driver must not start. */
