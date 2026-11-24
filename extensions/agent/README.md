@@ -2503,6 +2503,31 @@ tracks the 32 newest received questions and ignores a repeated delivery of one
 it already answered or noticed. Each session keeps its open questions in
 memory, updated per fact; session start folds the entries it already read.
 
+### Questions to ended sessions
+
+A question to a session whose Pi process has ended closes as unanswered. A
+session counts as ended when its primary endpoint is absent or names a process
+that no longer runs; an unreadable, foreign or incompatible endpoint keeps the
+question open, and so does a live session that has not run yet. The check runs
+only at points that already read the questions, and only when questions are
+open, with one endpoint read per distinct asked session:
+
+- an ordinary asker checks before each new question, before its open-question
+  limit, and reports the closed questions in that receipt as `endedQuestions`;
+- `agent_yield` checks when it builds its card and adds the lines to its result;
+- session start checks after it restores the questions and adds one
+  `agent.peer-question-ended` message for the model;
+- the continuity note checks once per context head and lists the closed
+  questions in their own section;
+- a Durable asker checks before it reserves a new question, in the same commit,
+  and adds the lines to that tool result, and at the first request of each
+  context head with its declared open work, where the continuity note lists
+  them.
+
+Each closed question is reported once, as `Question <ID> to session <ID> closed
+unanswered: that session has ended, so no reply will come`. A reply that the
+session sends after a later resume still arrives as a message.
+
 ### Durable askers
 
 A Durable agent asks an ordinary primary with its own `agent_send` and
@@ -2524,6 +2549,11 @@ an agent whose routed task needs the answer to declare `agent_work continue`
 with an empty results list and end the run, and to complete the work when the
 reply or notice arrives. After a compaction the agent's continuity note lists
 its open questions, read once per context head with its declared open work.
+An agent's `agent_status` for a conversation of its own storage lists them as
+`questions`: in the compact conversation with question ID, asked session and
+time, and at the top of full status with the excerpt as well. The agent's host
+reads them, so the host status contract is unchanged and another session's
+status of the agent omits them. The field is absent when none is open.
 
 ## Peer threads
 

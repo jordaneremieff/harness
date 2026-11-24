@@ -145,12 +145,22 @@ function listed(label: string, lines: readonly string[]): string {
 	return `${label}: ${shown.length === 0 ? "none" : `\n${shown.join("\n")}`}${lines.length > shown.length ? `\n${lines.length - shown.length} more not listed` : ""}`;
 }
 
-/** Inputs are already cut at the exact context boundary. No clock or live status enters this text. */
+/** Open questions, and the questions that the read for this note closed because their asked session ended. */
+export type QuestionState = {
+	readonly asked: readonly OpenQuestion[];
+	readonly received: readonly OpenQuestion[];
+	readonly ended?: readonly OpenQuestion[];
+};
+
+/**
+ * Inputs are already cut at the exact context boundary. No clock or live status enters this text; the
+ * question state is the one that the caller read once for this head.
+ */
 export function continuityText(
 	ownerId: string,
 	headId: string | number,
 	facts: readonly ContinuityFact[],
-	questions?: ReturnType<typeof foldPeerQuestions>,
+	questions?: QuestionState,
 ): string {
 	if (
 		!validIdentity(ownerId) ||
@@ -187,6 +197,14 @@ export function continuityText(
 					listed(
 						"Questions this session asked other sessions, with no reply or non-reply notice here",
 						questions.asked.map((item) => JSON.stringify({ sessionId: item.peer, question: item.id })),
+					),
+				]
+			: []),
+		...(questions?.ended !== undefined && questions.ended.length > 0
+			? [
+					listed(
+						"Questions closed unanswered because the asked session ended; no reply will come",
+						questions.ended.map((item) => JSON.stringify({ sessionId: item.peer, question: item.id })),
 					),
 				]
 			: []),
@@ -236,20 +254,26 @@ export function nativeContinuityText(
 	headId: number,
 	events: readonly ContinuityEvent[],
 	work?: ContinuityWork,
-	questions?: readonly OpenQuestion[],
+	questions?: { readonly open: readonly OpenQuestion[]; readonly ended?: readonly OpenQuestion[] },
 ): string {
 	return `${continuityText(
 		ownerId,
 		headId,
 		events.filter((event) => event.afterHead < headId),
-		questions === undefined ? undefined : { asked: [...questions], received: [] },
+		questions === undefined ? undefined : { asked: questions.open, received: [], ended: questions.ended },
 	)}\n${continuityWorkText(ownerId, work?.headId === headId ? work.items : undefined)}`;
 }
 
 /** Pi supplies the current compaction entry ID through buildContextEntries()[0]. */
-export function ordinaryContinuityText(ownerId: string, headId: string, entries: readonly SessionEntry[]): string {
+/** `questions` replaces the questions folded from the entries before the head with the session's current state. */
+export function ordinaryContinuityText(
+	ownerId: string,
+	headId: string,
+	entries: readonly SessionEntry[],
+	questions?: QuestionState,
+): string {
 	const facts: ContinuityFact[] = [];
-	const questions: PeerQuestionFact[] = [];
+	const retained: PeerQuestionFact[] = [];
 	let found = false;
 	for (const entry of entries) {
 		if (entry.id === headId) {
@@ -260,9 +284,14 @@ export function ordinaryContinuityText(ownerId: string, headId: string, entries:
 			validateContinuityFact(entry.data);
 			facts.push(entry.data);
 		}
-		if (entry.type === "custom" && entry.customType === PEER_QUESTION_ENTRY && isPeerQuestionFact(entry.data))
-			questions.push(entry.data);
+		if (
+			questions === undefined &&
+			entry.type === "custom" &&
+			entry.customType === PEER_QUESTION_ENTRY &&
+			isPeerQuestionFact(entry.data)
+		)
+			retained.push(entry.data);
 	}
 	if (!found) throw new TypeError("Continuity head is absent from the retained ordinary entries");
-	return continuityText(ownerId, headId, facts, foldPeerQuestions(questions));
+	return continuityText(ownerId, headId, facts, questions ?? foldPeerQuestions(retained));
 }

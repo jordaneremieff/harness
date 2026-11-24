@@ -1,7 +1,7 @@
 /** Agent controls for independent Pi Durable hosts and the ordinary primary UI. */
 import { createHash } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import {
@@ -90,7 +90,15 @@ import { ORDINARY_CONTINUITY_ENTRY } from "./continuity-facts.ts";
 import { OrdinaryContinuity, PLANNING_BUDGET_NOTICE, deliveredResults } from "./ordinary-continuity.ts";
 import { formatPrimaryObservation } from "./primary-observation.ts";
 import { PrimaryInbox } from "./primary-inbox.ts";
-import { noticeText, PEER_QUESTION_ENTRY, PeerQuestions, peerQuestionDetail } from "./peer-questions.ts";
+import {
+	endedQuestionText,
+	noticeText,
+	PEER_QUESTION_ENDED,
+	PEER_QUESTION_ENTRY,
+	PeerQuestions,
+	peerQuestionDetail,
+	primarySessionEnded,
+} from "./peer-questions.ts";
 import { PrimaryRetention } from "./primary-retention.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { HandleSchema, ProfileOutputSchema, ProfileParams } from "./profile-schema.ts";
@@ -506,6 +514,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		getManager().setPrimaryWorkRefs(event.sessionId, list);
 	});
 	const peerQuestions = new Map<string, PeerQuestions>();
+	/** One endpoint read: the asked primary's process has ended. */
+	const sessionEnded = (peer: string) => primarySessionEnded(dirname(getManager().catalog.root), peer);
 	/** Session start supplies the entries it already read, so the session is scanned once. */
 	const questionsOf = (
 		ctx: ExtensionContext,
@@ -601,6 +611,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	let currentPreferences = registrationPreferences;
 	const continuity = new OrdinaryContinuity({
 		append: (fact) => pi.appendEntry(ORDINARY_CONTINUITY_ENTRY, fact),
+		questions: (sessionId) => {
+			const questions = peerQuestions.get(sessionId);
+			if (questions === undefined) return undefined;
+			const ended = questions.reconcile(sessionEnded);
+			return { ...questions.open(), ended };
+		},
 		budget: (provider, modelId) =>
 			currentPreferences.document?.preferences?.contextBudgetTokens?.[`${provider}/${modelId}`],
 		diagnose: (sessionId, text) => getManager().continuityNoteFailure(sessionId, text),
@@ -672,11 +688,19 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			questions.replied(question.id, question.peer);
 			return receipt;
 		}
-		questions.assertCanAsk();
+		// Questions to ended sessions close first, so they no longer count against the limit.
+		const ended = questions.reconcile(sessionEnded);
+		const endedQuestions = ended.length === 0 ? {} : { endedQuestions: endedQuestionText(ended) };
+		try {
+			questions.assertCanAsk();
+		} catch (error) {
+			if (ended.length === 0) throw error;
+			throw new Error(`${(error as Error).message}\n${endedQuestions.endedQuestions}`);
+		}
 		const id = `question:${ctx.sessionManager.getSessionId()}:${callId}`;
 		const receipt = await sendImmediate({ ...input, requestId: id, expectReply: true }, ctx, signal);
 		questions.asked(id, String(input.sessionId), message);
-		return receipt;
+		return { ...(receipt as Record<string, unknown>), ...endedQuestions };
 	};
 	const steer = (input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) =>
 		control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx, signal);
@@ -767,7 +791,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	registerOrdinaryWork(pi, yieldCard, {
 		waiting: (sessionId) => continuity.open(sessionId),
-		questions: (sessionId) => peerQuestions.get(sessionId)?.open().asked ?? [],
+		questions: (sessionId) => {
+			const questions = peerQuestions.get(sessionId);
+			if (questions === undefined) return { open: [] };
+			const ended = questions.reconcile(sessionEnded);
+			return { open: questions.open().asked, ...(ended.length === 0 ? {} : { ended: endedQuestionText(ended) }) };
+		},
 	});
 	register(
 		"agent_profile",
@@ -1474,7 +1503,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		primaryDeliveries.set(sessionId, { retention, inbox, flush });
 		peerQuestions.delete(sessionId);
 		const retained = ctx.sessionManager.getEntries();
-		questionsOf(ctx, retained);
+		const ended = questionsOf(ctx, retained).reconcile(sessionEnded);
+		if (ended.length > 0)
+			pi.sendMessage(
+				{ customType: PEER_QUESTION_ENDED, content: endedQuestionText(ended), display: true },
+				{ triggerTurn: false },
+			);
 		continuity.start(sessionId, retained);
 		await getManager().registerPrimary(sessionId, {
 			sentWork: retainedSentWork(retained),

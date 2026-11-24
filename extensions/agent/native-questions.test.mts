@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -13,12 +13,18 @@ import { fixtureRegistry, fixtureRuntime, hostOptions } from "./durable-host-fix
 import { acquireHost } from "./host-client.ts";
 import { AgentManager } from "./manager.ts";
 import {
-	NATIVE_QUESTIONS_FULL,
 	openNativeQuestions,
+	reconcileNativeQuestions,
 	releaseNativeQuestion,
 	reserveNativeQuestion,
 } from "./native-questions.ts";
-import { DURABLE_TARGET_QUESTION, MAX_OPEN_QUESTIONS, noticeText } from "./peer-questions.ts";
+import {
+	DURABLE_TARGET_QUESTION,
+	endedQuestionText,
+	MAX_OPEN_QUESTIONS,
+	noticeText,
+	primarySessionEnded,
+} from "./peer-questions.ts";
 
 const ROOT = ROOT_CONVERSATION_ID as ConversationId;
 const context = BACKGROUND_CONTEXT;
@@ -75,7 +81,7 @@ it("keeps a Durable asker's open questions in its storage, closes them only from
 	assert.equal((await open()).length, 0);
 
 	for (let index = 0; index < MAX_OPEN_QUESTIONS; index++) await ask(`question:${storageId}:full-${index}`);
-	await assert.rejects(ask(`question:${storageId}:one-more`), { message: NATIVE_QUESTIONS_FULL });
+	assert.equal(await ask(`question:${storageId}:one-more`), "full");
 
 	await host.close();
 	host = await DurableHost.open(options, context);
@@ -87,7 +93,7 @@ it("keeps a Durable asker's open questions in its storage, closes them only from
 		at: 1,
 		excerpt: "Are retries idempotent?",
 	});
-	const note = nativeContinuityText(storageId, 9, [], { headId: 9, items: [] }, retained.slice(0, 1));
+	const note = nativeContinuityText(storageId, 9, [], { headId: 9, items: [] }, { open: retained.slice(0, 1) });
 	assert.match(
 		note,
 		new RegExp(
@@ -95,7 +101,10 @@ it("keeps a Durable asker's open questions in its storage, closes them only from
 			"u",
 		),
 	);
-	assert.doesNotMatch(nativeContinuityText(storageId, 9, [], { headId: 9, items: [] }, []), /Questions this session/u);
+	assert.doesNotMatch(
+		nativeContinuityText(storageId, 9, [], { headId: 9, items: [] }, { open: [] }),
+		/Questions this session/u,
+	);
 });
 
 it("delivers a Durable agent's question to an ordinary primary and returns its reply and non-reply notice as reports", {
@@ -137,7 +146,7 @@ it("delivers a Durable agent's question to an ordinary primary and returns its r
 	const caller = { id: primary, cwd: f.cwd, name: "Docs" };
 
 	let arrived = nextQuestion();
-	const asked = f.marker("question-asked");
+	const asked = f.marker("question-asked-1");
 	await manager.control(
 		"submit",
 		{ sessionId: asker, message: `QUESTION_TO:${primary}`, requestId: "ask-1", origin: "model" },
@@ -170,7 +179,7 @@ it("delivers a Durable agent's question to an ordinary primary and returns its r
 	await replied;
 
 	arrived = nextQuestion();
-	const askedAgain = f.marker("question-asked");
+	const askedAgain = f.marker("question-asked-2");
 	await manager.control(
 		"submit",
 		{ sessionId: asker, message: `QUESTION_TO:${primary}`, requestId: "ask-2", origin: "model" },
@@ -213,4 +222,116 @@ it("delivers a Durable agent's question to an ordinary primary and returns its r
 		manager.control("submit", { sessionId: asker, message: "Ready?", expectReply: true, origin: "model" }, caller),
 		{ message: DURABLE_TARGET_QUESTION },
 	);
+
+	// A question to a primary whose session then ends closes when the agent asks its next question.
+	const leaving = randomUUID();
+	const leavingController = new AbortController();
+	let leavingDelivered: () => void = () => {};
+	const leavingArrived = new Promise<void>((resolve) => {
+		leavingDelivered = resolve;
+	});
+	await manager.registerPrimary(leaving, {
+		cwd: f.cwd,
+		signal: leavingController.signal,
+		send(_text, details) {
+			if ((details as { kind?: unknown }).kind === "report") leavingDelivered();
+		},
+	});
+	const askedLeaving = f.marker("question-asked-3");
+	await manager.control(
+		"submit",
+		{ sessionId: asker, message: `QUESTION_TO:${leaving}`, requestId: "ask-3", origin: "model" },
+		caller,
+	);
+	await askedLeaving;
+	await leavingArrived;
+	leavingController.abort();
+	await manager.closePrimary(leaving, leavingController.signal);
+	assert.equal(primarySessionEnded(f.root, leaving), true);
+	const askedAfter = f.marker("question-asked-4");
+	await manager.control(
+		"submit",
+		{ sessionId: asker, message: `QUESTION_TO:${primary}`, requestId: "ask-4", origin: "model" },
+		caller,
+	);
+	await askedAfter;
+	const returns = readFileSync(join(f.testDir, "question-returns.jsonl"), "utf8").trim().split("\n");
+	const last = JSON.parse(returns.at(-1) ?? "{}") as { content: Array<{ text: string }> };
+	const ended = last.content.map((part) => part.text).filter((text) => text.includes("closed unanswered"));
+	assert.equal(ended.length, 1, JSON.stringify(last.content));
+	assert.match(ended[0], new RegExp(`to session ${leaving} closed unanswered: that session has ended`, "u"));
+	const statusRead = f.marker("question-status");
+	await manager.control(
+		"submit",
+		{ sessionId: asker, message: `STATUS_OF:${asker}`, requestId: "status-1", origin: "model" },
+		caller,
+	);
+	await statusRead;
+	const status = JSON.parse(readFileSync(join(f.testDir, "question-status.json"), "utf8")) as {
+		content: Array<{ text: string }>;
+	};
+	const selected = JSON.parse(status.content[0].text) as {
+		conversation: { questions?: Array<{ question: string; sessionId: string }> };
+	};
+	assert.deepEqual(
+		selected.conversation.questions?.map((item) => item.sessionId),
+		[primary],
+		"the ended question closed; the live recipient's question stays open in the agent's own status",
+	);
+});
+
+it("closes a Durable asker's questions to ended primaries as unanswered, once each, with one read per session", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "native-questions-ended-"));
+	const storageId = randomUUID();
+	mkdirSync(join(root, "durable"));
+	const options = {
+		...hostOptions(join(root, "durable", "host.sqlite"), await fixtureRuntime("answer"), fixtureRegistry()),
+		storageId,
+	};
+	const host = await DurableHost.open(options, context);
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
+	const controller = new AbortController();
+	t.after(async () => {
+		controller.abort();
+		await manager.close();
+		await host.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const live = randomUUID();
+	const ended = randomUUID();
+	await manager.registerPrimary(live, { cwd: root, signal: controller.signal, send() {} });
+	for (const [id, peer] of [
+		[`question:${storageId}:live`, live],
+		[`question:${storageId}:ended-1`, ended],
+		[`question:${storageId}:ended-2`, ended],
+	] as const)
+		await host.harness.commit((tx) => reserveNativeQuestion(tx, ROOT, { id, peer, message: "Ready?", at: 5 }), context);
+	const reads: string[] = [];
+	const check = (peer: string) => {
+		reads.push(peer);
+		return primarySessionEnded(root, peer);
+	};
+	const result = await host.harness.commit((tx) => reconcileNativeQuestions(tx, ROOT, check), context);
+	assert.deepEqual(
+		result.ended.map((item) => item.id),
+		[`question:${storageId}:ended-1`, `question:${storageId}:ended-2`],
+	);
+	assert.deepEqual(
+		result.open.map((item) => item.id),
+		[`question:${storageId}:live`],
+	);
+	assert.deepEqual(reads, [live, ended], "one endpoint read per distinct asked session");
+	assert.match(
+		endedQuestionText(result.ended),
+		new RegExp(
+			`^Question question:${storageId}:ended-1 to session ${ended} closed unanswered: that session has ended`,
+			"u",
+		),
+	);
+	const again = await host.harness.commit((tx) => reconcileNativeQuestions(tx, ROOT, check), context);
+	assert.deepEqual(again.ended, [], "a closed question is reported once");
+	reads.length = 0;
+	await host.harness.commit((tx) => releaseNativeQuestion(tx, ROOT, `question:${storageId}:live`), context);
+	await host.harness.commit((tx) => reconcileNativeQuestions(tx, ROOT, check), context);
+	assert.deepEqual(reads, [], "no endpoint read without open questions");
 });

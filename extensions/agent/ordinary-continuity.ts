@@ -12,6 +12,7 @@ import {
 	ORDINARY_CONTINUITY_ENTRY,
 	foldContinuity,
 	ordinaryContinuityText,
+	type QuestionState,
 	validateContinuityDelivered,
 	validateContinuityFact,
 	type ContinuityFact,
@@ -88,6 +89,8 @@ export interface OrdinaryContinuityOptions {
 	readonly budget: (provider: string, modelId: string) => number | undefined;
 	/** Report a note that could not be built or placed; undefined clears the report. */
 	readonly diagnose: (sessionId: string, text: string | undefined) => void;
+	/** The session's questions at the first request of a context head; it may close those whose asked session ended. */
+	readonly questions?: (sessionId: string) => QuestionState | undefined;
 	readonly now?: () => number;
 }
 type Note = { readonly headId: string; readonly text?: string };
@@ -199,7 +202,12 @@ export class OrdinaryContinuity {
 			try {
 				state.note = {
 					headId: head.id,
-					text: ordinaryContinuityText(sessionId, head.id, ctx.sessionManager.getEntries()),
+					text: ordinaryContinuityText(
+						sessionId,
+						head.id,
+						ctx.sessionManager.getEntries(),
+						this.options.questions?.(sessionId),
+					),
 				};
 			} catch (error) {
 				state.note = { headId: head.id };

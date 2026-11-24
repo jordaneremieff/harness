@@ -28,10 +28,10 @@ export async function reserveNativeQuestion(
 	tx: Tx,
 	conversationId: ConversationId,
 	question: { id: string; peer: string; message: string; at: number },
-): Promise<"reserved" | "known"> {
+): Promise<"reserved" | "known" | "full"> {
 	const state = await tx.doc(NativeQuestionsDoc, conversationId);
 	if (state.closed.includes(question.id) || state.open.some((item) => item.id === question.id)) return "known";
-	if (state.open.length >= MAX_OPEN_QUESTIONS) throw new Error(NATIVE_QUESTIONS_FULL);
+	if (state.open.length >= MAX_OPEN_QUESTIONS) return "full";
 	state.open.push({
 		id: question.id,
 		peer: question.peer,
@@ -66,6 +66,36 @@ export async function closeNativeQuestion(
 
 export async function openNativeQuestions(tx: Tx, conversationId: ConversationId): Promise<OpenQuestion[]> {
 	return JSON.parse(JSON.stringify((await tx.doc(NativeQuestionsDoc, conversationId)).open)) as OpenQuestion[];
+}
+
+/**
+ * Close, as unanswered, each open question whose asked session has ended, and return the closed and
+ * the remaining questions. `ended` runs at most once per distinct session and not at all when none is open.
+ */
+export async function reconcileNativeQuestions(
+	tx: Tx,
+	conversationId: ConversationId,
+	ended: (peer: string) => boolean,
+): Promise<{ open: OpenQuestion[]; ended: OpenQuestion[] }> {
+	const state = await tx.doc(NativeQuestionsDoc, conversationId);
+	if (state.open.length === 0) return { open: [], ended: [] };
+	const checked = new Map<string, boolean>();
+	const gone = (peer: string) => {
+		let value = checked.get(peer);
+		if (value === undefined) {
+			value = ended(peer);
+			checked.set(peer, value);
+		}
+		return value;
+	};
+	const items = JSON.parse(JSON.stringify(state.open)) as OpenQuestion[];
+	const closed = items.filter((item) => gone(item.peer));
+	if (closed.length > 0) {
+		state.open = state.open.filter((item) => !closed.some((question) => question.id === item.id));
+		state.closed.push(...closed.map((item) => item.id));
+		if (state.closed.length > MAX_CLOSED) state.closed.splice(0, state.closed.length - MAX_CLOSED);
+	}
+	return { open: items.filter((item) => !closed.includes(item)), ended: closed };
 }
 
 /** The question that an admitted report input closes; a plain prefix check rejects every other input. */

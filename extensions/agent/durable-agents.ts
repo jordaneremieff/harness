@@ -17,8 +17,20 @@
  * that callback: a child is an owned conversation in the calling storage.
  */
 
-import { releaseNativeQuestion, reserveNativeQuestion } from "./native-questions.ts";
-import { DURABLE_TARGET_QUESTION, questionText } from "./peer-questions.ts";
+import {
+	NativeQuestionsDoc,
+	NATIVE_QUESTIONS_FULL,
+	reconcileNativeQuestions,
+	releaseNativeQuestion,
+	reserveNativeQuestion,
+} from "./native-questions.ts";
+import {
+	DURABLE_TARGET_QUESTION,
+	endedQuestionText,
+	type OpenQuestion,
+	primarySessionEnded,
+	questionText,
+} from "./peer-questions.ts";
 import { realpathSync } from "node:fs";
 import { hostname } from "node:os";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
@@ -1908,6 +1920,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		);
 	};
 
+	/** One endpoint read: the ordinary primary that a question asked has ended. */
+	const endedPrimary = (peer: string): boolean =>
+		host.catalogRoot !== undefined && primarySessionEnded(dirname(host.catalogRoot), peer);
 	const questionRefusal = (args: SendInput): string | undefined => {
 		if (args.mode === "report" || args.deliverAt !== undefined || args.replyTo !== undefined)
 			return "expectReply asks an immediate question: omit mode report, deliverAt and replyTo, and repeat the call";
@@ -1929,12 +1944,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			message: args.message,
 			at: Date.now(),
 		};
-		try {
-			await api.commit((tx) => reserveNativeQuestion(tx, api.conversationId, question), context);
-		} catch (error) {
-			if (context.abortSignal?.aborted) throw error;
-			return errorResult(error instanceof Error ? error.message : String(error));
-		}
+		const reserved = await reserveQuestion(api, context, question);
+		if ("error" in reserved) return errorResult(reserved.error);
+		if (reserved.full) return withEndedQuestions(errorResult(NATIVE_QUESTIONS_FULL), reserved.ended);
 		const result = await dispatchControl(
 			"submit",
 			{
@@ -1952,8 +1964,32 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			{ api, context },
 		);
 		if (result.isError === true) await api.commit((tx) => releaseNativeQuestion(tx, api.conversationId, id), context);
-		return result;
+		return withEndedQuestions(result, reserved.ended);
 	};
+	/** One commit closes questions to ended sessions first, so they no longer count against the limit. */
+	const reserveQuestion = async (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+		question: { id: string; peer: string; message: string; at: number },
+	): Promise<{ ended: OpenQuestion[]; full: boolean } | { error: string }> => {
+		try {
+			return await api.commit(async (tx) => {
+				const closed = (await reconcileNativeQuestions(tx, api.conversationId, endedPrimary)).ended;
+				const full = (await reserveNativeQuestion(tx, api.conversationId, question)) === "full";
+				return { ended: closed, full };
+			}, context);
+		} catch (error) {
+			if (context.abortSignal?.aborted) throw error;
+			return { error: error instanceof Error ? error.message : String(error) };
+		}
+	};
+	const withEndedQuestions = (
+		result: Durable.ToolExecutionResult<ControlDetails>,
+		ended: readonly OpenQuestion[],
+	): Durable.ToolExecutionResult<ControlDetails> =>
+		ended.length === 0
+			? result
+			: { ...result, output: [...(result.output ?? []), { type: "text", text: endedQuestionText(ended) }] };
 
 	const sendLocal = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
@@ -2530,6 +2566,37 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		};
 	};
 
+	/** A conversation of this storage adds its open questions, read here; the host status contract stays unchanged. */
+	const selectedStatus = async (
+		args: StatusInput,
+		result: Durable.ToolExecutionResult<ControlDetails>,
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
+		const local = localConversation(args.sessionId, api.conversationId);
+		const open = local === undefined ? [] : ((await api.snapshot(NativeQuestionsDoc, local, context))?.open ?? []);
+		if (args.detail === true) {
+			if (open.length === 0) return result;
+			return publicStatus({
+				...(result.details as Record<string, unknown>),
+				questions: open.map((item) => ({
+					question: item.id,
+					sessionId: item.peer,
+					at: item.at,
+					excerpt: item.excerpt,
+				})),
+			});
+		}
+		const projected = projectSelectedStatus(result.details);
+		if (open.length > 0 && projected.format === "compact")
+			projected.conversation.questions = open.map((item) => ({
+				question: item.id,
+				sessionId: item.peer,
+				at: item.at,
+			}));
+		return publicStatus(projected);
+	};
+
 	const readStoragePage = async (args: StatusInput): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		let input = storageStatusPageInput(args);
 		let result = await hostObservation("status", { ...input }, "Storage status failed", StatusToolOutputSchema);
@@ -2589,8 +2656,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				if (args.view === "storage-page") return readStoragePage(args);
 				const result = await readStatus(args, api, context, selection);
 				if (result.isError || args.view === "fleet") return result;
-				if (args.sessionId !== undefined)
-					return args.detail === true ? result : publicStatus(projectSelectedStatus(result.details));
+				if (args.sessionId !== undefined) return selectedStatus(args, result, api, context);
 				const projected = projectStorageStatus(result.details);
 				if (projected.format === "refused" && projected.cause === "byte-limit") {
 					const input = storageStatusPageInput({ view: "storage-page", storageId: host.storageId });

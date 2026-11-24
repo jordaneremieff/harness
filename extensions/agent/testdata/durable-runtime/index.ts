@@ -19,7 +19,9 @@
  *     result, and answer without an external provider.
  *   - `question`: on `QUESTION_TO:<identity>` the agent asks that primary with
  *     `agent_send` and `expectReply`, appends the tool result to
- *     `question-returns.jsonl` and marks `question-asked`; a later reply or
+ *     `question-returns.jsonl` and marks `question-asked-<n>` for its nth
+ *     question; on `STATUS_OF:<identity>` it writes its `agent_status` result
+ *     to `question-status.json` and marks `question-status`; a later reply or
  *     non-reply notice is appended to `question-arrivals.jsonl` and marked
  *     `question-reply` or `question-notice`.
  *   - `spawn`: the owner calls `agent_spawn` for `DURABLE_TEST_CHILD_CWD`, the
@@ -300,10 +302,29 @@ function question(context: TranscriptContext) {
 		return answer();
 	}
 	const target = text.split("QUESTION_TO:")[1]?.split(/\s/u)[0];
+	const statusTarget = text.split("STATUS_OF:")[1]?.split(/\s/u)[0];
 	const last = context.messages.at(-1);
+	if (last?.role === "toolResult" && last.toolName === "agent_status") {
+		writeFileSync(join(controlDir(), "question-status.json"), JSON.stringify(last));
+		mark("question-status");
+		return answer();
+	}
+	if (statusTarget !== undefined && last?.role !== "toolResult")
+		return completed(
+			[
+				{
+					type: "toolCall",
+					id: `status-${context.messages.length}`,
+					name: "agent_status",
+					arguments: { sessionId: statusTarget },
+				},
+			],
+			"toolUse",
+		);
 	if (last?.role === "toolResult") {
-		appendFileSync(join(controlDir(), "question-returns.jsonl"), `${JSON.stringify(last)}\n`);
-		mark("question-asked");
+		const returns = join(controlDir(), "question-returns.jsonl");
+		appendFileSync(returns, `${JSON.stringify(last)}\n`);
+		mark(`question-asked-${readFileSync(returns, "utf8").trim().split("\n").length}`);
 		return answer();
 	}
 	if (target === undefined) return answer();

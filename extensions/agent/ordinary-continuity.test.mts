@@ -436,3 +436,40 @@ it("retains no own-budget notice without a budget, at the window, or on a compac
 		"a boundary that compacts takes no sample",
 	);
 });
+
+it("reads the session's questions once per context head and lists those it closed because the asked session ended", () => {
+	const session = SessionManager.inMemory("/tmp");
+	const id = session.getSessionId();
+	let reads = 0;
+	const asked = { id: "question:owner:1", peer: WORKER, at: 1, excerpt: "Live?" };
+	const ended = { id: "question:owner:2", peer: "22222222-2222-4333-8444-555555555555", at: 2, excerpt: "Gone?" };
+	const continuity = new OrdinaryContinuity({
+		append: (fact) => {
+			session.appendCustomEntry(ORDINARY_CONTINUITY_ENTRY, fact);
+		},
+		budget: () => undefined,
+		diagnose: () => {},
+		questions: () => {
+			reads++;
+			return { asked: [asked], received: [], ended: reads === 1 ? [ended] : [] };
+		},
+	});
+	continuity.start(id, session.getEntries());
+	const request = () => {
+		const messages = session.buildSessionContext().messages;
+		return continuity.context({ type: "context", messages }, { sessionManager: session })?.messages ?? messages;
+	};
+	const kept = session.appendMessage({ role: "user", content: "kept input", timestamp: 1 });
+	session.appendCompaction("Summary", kept, 100);
+	const [note] = noteText(request());
+	request();
+	assert.equal(reads, 1, "one read for the head, none per request");
+	assert.match(
+		note,
+		/Questions this session asked other sessions[^\n]*\n\{"sessionId":"11111111[^"]*","question":"question:owner:1"\}/u,
+	);
+	assert.match(
+		note,
+		/Questions closed unanswered because the asked session ended; no reply will come: \n\{"sessionId":"22222222[^"]*","question":"question:owner:2"\}/u,
+	);
+});

@@ -311,6 +311,9 @@ const timerStatusRow = obj({
 });
 
 /** One conversation's observation status, as returned by every status variant. */
+/** A question that a conversation asked an ordinary primary, with no reply or non-reply notice yet. */
+const OpenQuestionStatusSchema = obj({ question: string, sessionId: string, at: count, excerpt: opt(string) });
+
 export const ConversationStatusSchema = obj({
 	providerBlock: opt(ProviderBlockFactSchema),
 	conversationId: id,
@@ -648,7 +651,11 @@ const toolOverviewProperties = {
 		...overviewSampleSummaryProperties,
 	}),
 };
-const awarenessProperties = { awareness: opt(EffortAwarenessSchema) };
+const awarenessProperties = {
+	awareness: opt(EffortAwarenessSchema),
+	/** Tool-only: the selected conversation's open questions to ordinary primaries, read in its own host. */
+	questions: opt(arr(OpenQuestionStatusSchema, { maxItems: 16 })),
+};
 const singleProperties = { ...singlePayload, conversations: absent, createdAgents: absent, coverage: absent };
 const pluralProperties = {
 	...pluralPayload,
@@ -669,6 +676,7 @@ const toolSelected = all([
 	union([partial(liveProperties), partial(coldProperties), partial(bareProperties)]),
 	onlyKeys([
 		"awareness",
+		"questions",
 		"conversation",
 		"conversations",
 		"coverage",
@@ -698,6 +706,7 @@ export const CompactConversationSchema = obj({
 	openWorkCount: opt(count),
 	openWorkOldest: opt(count),
 	ageObservedAt: opt(count),
+	questions: opt(arr(OpenQuestionStatusSchema, { maxItems: 16 })),
 	providerBlock: opt(obj({ blockId: string, recovery: string })),
 	runFailure: opt(
 		obj({

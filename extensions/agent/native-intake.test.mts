@@ -37,7 +37,7 @@ function tool(dispatch: AgentControlDispatch, name: string, storageId?: string) 
 	assert.ok(selected);
 	return selected;
 }
-const api = { conversationId: 2, taskId: 7 } as unknown as Durable.ToolExecutionApi;
+const api = { conversationId: 2, taskId: 7, snapshot: async () => undefined } as unknown as Durable.ToolExecutionApi;
 type NativeOutcome = Durable.ToolExecutionResult | Durable.ToolPark;
 
 function text(output: NativeOutcome): string {

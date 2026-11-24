@@ -13,7 +13,9 @@
  * power loss. `DurableObservation` reads a cold copy of the same file without a
  * writer claim.
  */
+import { dirname } from "node:path";
 import { closeNativeQuestion, closingInput } from "./native-questions.ts";
+import { primarySessionEnded } from "./peer-questions.ts";
 import { randomUUID } from "node:crypto";
 import { reconcileInputCommunications } from "./communication-retention.ts";
 import { parseCommunication, parseCommunicationPassive } from "./communication.ts";
@@ -580,7 +582,8 @@ export class DurableHost {
 				},
 			});
 			// Request hooks read this mirror from memory only, so it must hold every retained fact and head before any act that enables scheduling.
-			continuity = new ContinuityMirror(harness, options.storageId);
+			const sessionsRoot = dirname(dirname(options.storagePath));
+			continuity = new ContinuityMirror(harness, options.storageId, (peer) => primarySessionEnded(sessionsRoot, peer));
 			await continuity.initialize(context);
 			await reconcileProfiles(harness, options.storageId, context, report);
 			await reconcileProviderControls(harness, context);

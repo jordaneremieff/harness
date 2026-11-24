@@ -295,7 +295,7 @@ it("records when the turn ended and the open requests of the session for the car
 		},
 		questions: (sessionId) => {
 			asked.push(sessionId);
-			return [{ peer: "primary-b" }];
+			return { open: [{ peer: "primary-b" }], ended: "Question q-1 to session primary-c closed unanswered." };
 		},
 	});
 	const result = await f.run({ note: "Three requests and a question are open." });
@@ -310,6 +310,11 @@ it("records when the turn ended and the open requests of the session for the car
 			{ sessionId: "primary-b", state: "question" },
 		],
 	});
+	assert.deepEqual(
+		result.content,
+		[{ type: "text", text: `${ORDINARY_CONTINUE_TEXT}\nQuestion q-1 to session primary-c closed unanswered.` }],
+		"the model reads a question that the card's read closed",
+	);
 
 	const many = Array.from(
 		{ length: ORDINARY_WAITING_ROWS + 3 },

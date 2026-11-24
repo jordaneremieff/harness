@@ -63,7 +63,11 @@ export interface OrdinaryWorkOptions {
 	/** The open requests of one session, as the continuity facts of this session hold them. */
 	readonly waiting?: (sessionId: string) => readonly ContinuityFact[];
 	/** The questions this session asked other ordinary sessions with no reply or non-reply notice yet. */
-	readonly questions?: (sessionId: string) => readonly { readonly peer: string }[];
+	readonly questions?: (sessionId: string) => {
+		readonly open: readonly { readonly peer: string }[];
+		/** Lines for the model about questions that this read closed because their asked session ended. */
+		readonly ended?: string;
+	};
 	readonly now?: () => number;
 }
 
@@ -75,17 +79,27 @@ function waitingRow(fact: ContinuityFact): OrdinaryWaitingRow {
 }
 
 /** Reads the session ID only when a provider needs it. */
-function waitingRows(options: OrdinaryWorkOptions, session: () => string): OrdinaryWaitingRow[] {
-	if (!options.waiting && !options.questions) return [];
+function waitingRows(
+	options: OrdinaryWorkOptions,
+	session: () => string,
+): { rows: OrdinaryWaitingRow[]; ended?: string } {
+	if (!options.waiting && !options.questions) return { rows: [] };
 	const sessionId = session();
-	return [
-		...(options.waiting?.(sessionId).map(waitingRow) ?? []),
-		...(options.questions?.(sessionId).map((item) => ({ sessionId: item.peer, state: "question" as const })) ?? []),
-	];
+	const questions = options.questions?.(sessionId);
+	return {
+		rows: [
+			...(options.waiting?.(sessionId).map(waitingRow) ?? []),
+			...(questions?.open.map((item) => ({ sessionId: item.peer, state: "question" as const })) ?? []),
+		],
+		...(questions?.ended === undefined ? {} : { ended: questions.ended }),
+	};
 }
 
 export const ORDINARY_CONTINUE_TEXT =
 	"The state note is shown to the operator. The turn ends here: write no chat text.";
+function continueText(ended: string | undefined): string {
+	return ended === undefined ? ORDINARY_CONTINUE_TEXT : `${ORDINARY_CONTINUE_TEXT}\n${ended}`;
+}
 
 /**
  * Print and JSON runs answer with their last message, and no person reads the card there. Text print mode
@@ -223,7 +237,7 @@ export function registerOrdinaryWork(
 				}
 				return { content: [{ type: "text", text: ORDINARY_TEXT_ANSWER }], details, structuredContent: details };
 			}
-			const open = waitingRows(options, () => ctx.sessionManager.getSessionId());
+			const { rows: open, ended } = waitingRows(options, () => ctx.sessionManager.getSessionId());
 			const shown: OrdinaryWorkDetails = {
 				...details,
 				at: (options.now ?? Date.now)(),
@@ -231,7 +245,7 @@ export function registerOrdinaryWork(
 				...(open.length > ORDINARY_WAITING_ROWS ? { waitingOmitted: open.length - ORDINARY_WAITING_ROWS } : {}),
 			};
 			return {
-				content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }],
+				content: [{ type: "text", text: continueText(ended) }],
 				details: shown,
 				structuredContent: shown,
 				terminate: true,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,7 @@ import {
 	foldPeerQuestions,
 	MAX_OPEN_QUESTIONS,
 	noticeText,
+	PEER_QUESTION_ENDED,
 	PEER_QUESTION_ENTRY,
 	PeerQuestions,
 	peerQuestionDetail,
@@ -28,6 +30,7 @@ import {
 	questionText,
 	type PeerQuestionFact,
 } from "./peer-questions.ts";
+import type { AgentManager } from "./manager.ts";
 import { machineConfig } from "./settings-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
@@ -234,10 +237,12 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 		rmSync(root, { recursive: true, force: true });
 	});
 	const { default: agent } = await import("./index.ts");
-	const open = async (name: string): Promise<Scripted> => {
+	const open = async (name: string, file?: string): Promise<Scripted> => {
 		const cwd = join(root, name);
-		mkdirSync(cwd);
-		execFileSync("git", ["init", "--quiet", cwd]);
+		if (file === undefined) {
+			mkdirSync(cwd);
+			execFileSync("git", ["init", "--quiet", cwd]);
+		}
 		const scripted = { steps: [] as Step[] } as Scripted;
 		const runtime = await createTestRuntime();
 		const stream = (_model: unknown, context: { messages: Message[] }) => {
@@ -279,7 +284,8 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 			extensionFactories: [async (pi) => agent(pi)],
 		});
 		await loader.reload();
-		const manager = SessionManager.create(cwd, sessionsRoot);
+		const manager =
+			file === undefined ? SessionManager.create(cwd, sessionsRoot) : SessionManager.open(file, sessionsRoot);
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir,
@@ -289,7 +295,8 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 			model: testModel,
 			resourceLoader: loader,
 		});
-		await session.bindExtensions({});
+		// A session with an operator view: agent_yield ends the turn with its card.
+		await session.bindExtensions({ mode: "rpc" });
 		sessions.push(session);
 		return Object.assign(scripted, { session, manager });
 	};
@@ -349,4 +356,82 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 	);
 	assert.deepEqual(facts(a), ["asked", "answered", "asked", "unanswered"]);
 	assert.deepEqual(facts(b), ["received", "replied", "received", "noticed"]);
+
+	// Questions to sessions that end close as unanswered at the next reconciliation point, once each.
+	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[
+		Symbol.for("pi.extension.agent.owners")
+	];
+	const manager = owners.managers.get(sessionsRoot);
+	assert.ok(manager);
+	const primary = async () => {
+		const id = randomUUID();
+		const controller = new AbortController();
+		await manager.registerPrimary(id, { cwd: root, signal: controller.signal, send() {} });
+		return {
+			id,
+			end: async () => {
+				controller.abort();
+				await manager.closePrimary(id, controller.signal);
+			},
+		};
+	};
+	const ask = (id: string, message: string) => ({
+		tool: "agent_send",
+		args: { sessionId: id, message, expectReply: true },
+	});
+	const lastResult = (s: Scripted, tool: string) => {
+		const entry = [...s.manager.getEntries()]
+			.reverse()
+			.find((item) => item.type === "message" && item.message.role === "toolResult" && item.message.toolName === tool);
+		assert.ok(entry?.type === "message" && entry.message.role === "toolResult");
+		return entry.message.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
+	};
+	const live = await primary();
+	const leaving = await primary();
+	await run(a, "Ask the live and the leaving session", [
+		ask(live.id, "Live?"),
+		ask(leaving.id, "Leaving?"),
+		{ text: "Asked." },
+	]);
+	await leaving.end();
+	await run(a, "Wait for answers", [{ tool: "agent_yield", args: { note: "Two questions are open." } }]);
+	const yielded = lastResult(a, "agent_yield");
+	assert.equal(yielded.split("closed unanswered").length - 1, 1, yielded);
+	assert.match(yielded, new RegExp(`to session ${leaving.id} closed unanswered: that session has ended`, "u"));
+
+	const second = await primary();
+	await run(a, "Ask the second session", [ask(second.id, "Second?"), { text: "Asked." }]);
+	await second.end();
+	await run(a, "Ask the live session again", [ask(live.id, "Still live?"), { text: "Asked." }]);
+	const asked = lastResult(a, "agent_send");
+	assert.match(asked, new RegExp(`to session ${second.id} closed unanswered`, "u"));
+	assert.doesNotMatch(asked, new RegExp(leaving.id, "u"), "a closed question is reported once");
+
+	const fourth = await primary();
+	await run(a, "Ask the fourth session", [ask(fourth.id, "Fourth?"), { text: "Asked." }]);
+	await fourth.end();
+	const file = a.manager.getSessionFile();
+	assert.ok(file);
+	await a.session.abort();
+	a.session.dispose();
+	const reopened = await open("a", file);
+	const notices = reopened.manager
+		.getEntries()
+		.flatMap((entry) =>
+			entry.type === "custom_message" && entry.customType === PEER_QUESTION_ENDED ? [String(entry.content)] : [],
+		);
+	assert.equal(notices.length, 1, JSON.stringify(notices));
+	assert.match(notices[0], new RegExp(`to session ${fourth.id} closed unanswered`, "u"));
+	const stillOpen = foldPeerQuestions(
+		reopened.manager
+			.getEntries()
+			.flatMap((entry) =>
+				entry.type === "custom" && entry.customType === PEER_QUESTION_ENTRY ? [entry.data as PeerQuestionFact] : [],
+			),
+	).asked;
+	assert.deepEqual(
+		stillOpen.map((item) => item.peer),
+		[live.id, live.id],
+		"only the live recipient's questions stay open",
+	);
 });
