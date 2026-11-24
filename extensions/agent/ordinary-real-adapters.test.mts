@@ -158,9 +158,17 @@ async function liveShapes(t: TestContext): Promise<void> {
 		tools.execute("agent_collaborate", { action: "read", threadId, before: 2, after: 0 }),
 		/after and before are exclusive/u,
 	);
+	// A notice prescribes a backward read; a known frame revision added to it is ignored, and the frame returns.
+	for (const input of [
+		{ action: "read", threadId, knownFrameRevision: 1 },
+		{ action: "read", threadId, before: 3, limit: 1, knownFrameRevision: 1 },
+	]) {
+		const page = await tools.execute("agent_collaborate", input);
+		assert.equal((page.details as { thread: { sequence: number } }).thread.sequence, 2);
+	}
 	await assert.rejects(
-		tools.execute("agent_collaborate", { action: "read", threadId, knownFrameRevision: 1 }),
-		/knownFrameRevision requires after/u,
+		tools.execute("agent_collaborate", { action: "read", threadId, before: 9 }),
+		/the newest event is 2, so before is at most 3\. Omit before to read the newest events/u,
 	);
 	await tools.execute("agent_abort", { sessionId, release: true });
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(20000) });

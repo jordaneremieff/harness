@@ -160,7 +160,8 @@ export const CollaborationParams = obj({
 		int({
 			minimum: 1,
 			maximum: Number.MAX_SAFE_INTEGER,
-			description: "Read only with after: omit an unchanged frame at this revision.",
+			description:
+				"Read only: with after, omit an unchanged frame at this revision. A read without after returns the frame and ignores it.",
 		}),
 	),
 	limit: opt(int({ minimum: 1, maximum: 20, description: "List or read: maximum returned rows or events." })),

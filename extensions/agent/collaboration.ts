@@ -599,7 +599,10 @@ async function readBackward(
 	const id = thread.id;
 	const before = input.before === undefined ? thread.sequence + 1 : (input.before as number);
 	if (before > thread.sequence + 1)
-		throw new CollaborationReadError("invalid_request", "before must be a retained event cursor");
+		throw new CollaborationReadError(
+			"invalid_request",
+			`before must be a retained event cursor: the newest event is ${thread.sequence}, so before is at most ${thread.sequence + 1}. Omit before to read the newest events`,
+		);
 	const page: CollaborationPage = {
 		thread,
 		events: [],

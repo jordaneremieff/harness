@@ -1864,6 +1864,11 @@ export class AgentManager {
 	}
 
 	async collaborationTargets(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+		// A known frame revision only shortens a forward read; any other read returns the frame and needs no hint.
+		if (input.action === "read" && input.after === undefined && input.knownFrameRevision !== undefined) {
+			const { knownFrameRevision: _known, ...read } = input;
+			input = read;
+		}
 		validateCollaborationAction(input);
 		const { collaborationIdentity } = await loadCollaboration();
 		const params = { ...input };
