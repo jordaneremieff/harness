@@ -26,6 +26,8 @@ import { testModel } from "./test-runtime.mts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { AwaitDoc } from "./awaited-results.ts";
+import { bindDispatch, confirmDispatch, recoverFailedDelegations } from "./delegated-recovery.ts";
+import { OpenWorkDoc } from "./open-work.ts";
 
 function settingsDirectory(t: { after(fn: () => void): void }): string {
 	const directory = mkdtempSync(join(tmpdir(), "check-in-settings-"));
@@ -130,6 +132,97 @@ it("ends retained deadline work when recovery finds an already settled submissio
 	await harness.waitForTask(ids.parent, withAbortSignal(AbortSignal.timeout(1000), BACKGROUND_CONTEXT));
 	assert.equal((await harness.getTask(ids.child, BACKGROUND_CONTEXT))?.state.status, "terminal");
 	assert.equal((await readRetainedDelivery(harness, BACKGROUND_CONTEXT, true))?.reports.length ?? 0, 0);
+});
+
+it("keeps the check-in of an input whose failure leaves delegated work for its receipt to recover", {
+	timeout: 10000,
+}, async (t) => {
+	const registry = createRegistry();
+	registry.install(defineExtension({ name: "fixture.check-in", tasks: [CheckInTask, CheckInDeadlineTask] }));
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{ models: createModels(), registry, now: () => 1000 },
+		BACKGROUND_CONTEXT,
+	);
+	t.after(() => harness.close(BACKGROUND_CONTEXT));
+	const root = await harness.root(BACKGROUND_CONTEXT);
+	const input = {
+		conversationId: Number(root.id),
+		requestId: "failed-with-delegations",
+		ownerId: "recipient",
+		senderIdentity: "storage",
+		message: "delegate and report",
+		whenBusy: "followUp" as const,
+		origin: "model" as const,
+		admittedAt: 1000,
+		intervalMs: 1800000,
+	};
+	const ids = await harness.commit(async (tx) => {
+		const entry = await tx.appendEntry(root.id, {
+			kind: "agent.input",
+			model: [{ role: "user", content: "delegate and report", timestamp: 1000 }],
+		});
+		const submission = await tx.createSubmission({
+			conversationId: root.id,
+			requestId: input.requestId,
+			type: "input",
+			status: "placed",
+			entry: entry.id,
+		});
+		// The run sent one child request, its admission is confirmed, and then a provider error ended the run.
+		const parent = {
+			requestId: input.requestId,
+			requester: "recipient",
+			replyTo: "recipient",
+			origin: "model" as const,
+			submissionId: submission.id,
+			entry: entry.id,
+			self: "storage",
+		};
+		await bindDispatch(tx, root.id, "dispatch", parent, "child-storage", "child-request");
+		await confirmDispatch(tx, root.id, "dispatch", {
+			sessionId: "child-storage",
+			submissionId: 7,
+			requestId: "child-request",
+		});
+		tx.settleSubmission(submission.id, {
+			status: "unanswered",
+			reason: "model_error",
+			detail: "WebSocket closed 1012",
+		});
+		const checkIn = await tx.createTask(CheckInTask, input, {
+			ownership: { kind: "conversation" },
+			conversationId: root.id,
+			background: true,
+		});
+		const deadline = await tx.createTask(
+			CheckInDeadlineTask,
+			{ ...input, next: 1 },
+			{ ownership: { kind: "task", taskId: checkIn }, conversationId: root.id },
+		);
+		return { submission: submission.id, checkIn, deadline };
+	}, BACKGROUND_CONTEXT);
+	harness.resume();
+	// The check-in decides when its input settles; the receipt pass of the delivery watcher runs after that. A
+	// check-in that ends does so at once, and one that keeps its deadline stays in its wait.
+	const ended = await harness
+		.waitForTask(ids.checkIn, withAbortSignal(AbortSignal.timeout(300), BACKGROUND_CONTEXT))
+		.then(
+			() => true,
+			() => false,
+		);
+	const recovered = await harness.commit(async (tx) => {
+		const record = await tx.submission(ids.submission);
+		assert.ok(record);
+		return recoverFailedDelegations(tx, record, 1000);
+	}, BACKGROUND_CONTEXT);
+	assert.equal(recovered, true, "the receipt opens recovered work for the request");
+	const work = await harness.snapshot(OpenWorkDoc, root.id, BACKGROUND_CONTEXT);
+	assert.equal(work?.items[0]?.recovered, true);
+	assert.equal(work?.items[0]?.requestId, input.requestId);
+	assert.equal(ended, false, "the check-in ended before the receipt opened the recovered work");
+	assert.notEqual((await harness.getTask(ids.checkIn, BACKGROUND_CONTEXT))?.state.status, "terminal");
+	assert.equal((await harness.getTask(ids.deadline, BACKGROUND_CONTEXT))?.state.status, "sleeping");
 });
 
 it("cancels the owned sleeping deadline without cancelling the producer input", { timeout: 60000 }, async (t) => {

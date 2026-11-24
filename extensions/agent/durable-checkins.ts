@@ -22,6 +22,7 @@ import { checkInFallback, currentCheckInReport, retainedReport, storeDeliveryRow
 import { producerRetryFact, retryFactLines } from "./await-facts.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
 import { openWorkCheckInLines, requestHasOpenWork } from "./open-work.ts";
+import { recoveryAwaitsReceipt } from "./delegated-recovery.ts";
 
 export type CheckInInput = {
 	conversationId: number;
@@ -165,7 +166,8 @@ export const CheckInDeadlineTask = defineTask<CheckInInput & { next: number }, C
 				const retained = await tx.submissionByRequest(id, input.requestId);
 				if (
 					(retained?.status === "done" || retained?.status === "unanswered") &&
-					!(await requestHasOpenWork(tx, id, input.requestId))
+					!(await requestHasOpenWork(tx, id, input.requestId)) &&
+					!(await recoveryAwaitsReceipt(tx, retained))
 				)
 					return { status: "terminal", outcome: { status: "completed", result: null } };
 				// Collapse overdue boundaries into one current notice, then return to the admission's fixed cadence.
@@ -289,9 +291,12 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 				await submission.wait(context);
 			}
 			// A request with open declared work keeps its check-in: the deadline task ends itself once the item closes.
+			// The receipt of a failed input can still open recovered work for its request; that work counts here.
 			let open = false;
 			await runtime.commit(async (tx) => {
-				open = await requestHasOpenWork(tx, input.conversationId as ConversationId, input.requestId);
+				const id = input.conversationId as ConversationId;
+				const settledInput = await tx.submissionByRequest(id, input.requestId);
+				open = (await requestHasOpenWork(tx, id, input.requestId)) || (await recoveryAwaitsReceipt(tx, settledInput));
 				return undefined;
 			}, context);
 			if (open) await runtime.waitForTask(await watch(), context);

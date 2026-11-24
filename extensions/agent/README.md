@@ -4751,8 +4751,10 @@ and its delivery intent. The task reacquires the input
 by submitting its same request ID, then waits for settlement while its owned
 `agent.check-in-deadline` task commits durable sleeps. On recovery, the parent
 reattaches to that owned task instead of creating another deadline. Settlement
-aborts the owned task. The parent's existing task version and checkpoint remain
-unchanged. Admission time and interval remain in the task input. The host supplies the
+aborts the owned task, unless the request holds open declared work or its failed
+input left confirmed delegations that the receipt will recover as open work; the
+check-in then continues until that work closes. The parent's existing task
+version and checkpoint remain unchanged. Admission time and interval remain in the task input. The host supplies the
 same configured Harness clock to intent admission and deadlines; native
 Reporters and timers use their runtime clock. Production defaults to `Date.now`. A
 notice row and the next interval checkpoint commit together. Stable source IDs

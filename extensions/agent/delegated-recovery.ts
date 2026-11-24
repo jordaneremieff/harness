@@ -101,6 +101,27 @@ export async function discardDispatches(tx: Tx, id: ConversationId, scope?: { be
 		"before" in scope ? e.parent.entry >= scope.before : e.parent.requestId !== scope.request,
 	);
 }
+/**
+ * True when the receipt of this failed input will open recovered work for its request. The receipt is written by
+ * a delivery pass after the settlement, so a reader that decides at the settlement sees no open work yet.
+ */
+export async function recoveryAwaitsReceipt(tx: Tx, input: SubmissionRecord | undefined): Promise<boolean> {
+	if (input?.type !== "input" || !input.requestId || input.status !== "unanswered" || input.reason !== "model_error")
+		return false;
+	const id = input.conversationId;
+	const edges = (await tx.doc(Edges, id)).edges.filter(
+		(e) => e.parent.submissionId === input.id && e.parent.requestId === input.requestId,
+	);
+	if (!edges.some((e) => e.result)) return false;
+	const parent = edges[0].parent;
+	if (await retainedReportRequest(tx, parent.replyTo, finalReportRequestId(id, parent.requestId))) return false;
+	const { items } = await tx.doc(OpenWorkDoc, id);
+	return (
+		!items.some((item) => item.submissionId === parent.submissionId) &&
+		items.filter((item) => !item.close).length < OPEN_WORK_LIMIT
+	);
+}
+
 /** Materialise confirmed edges before the unanswered receipt. Unknown admissions stay provisional until exact evidence arrives. */
 export async function recoverFailedDelegations(tx: Tx, input: SubmissionRecord, now: number) {
 	if (input.type !== "input" || !input.requestId) return;
