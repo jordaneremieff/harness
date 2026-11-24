@@ -449,17 +449,12 @@ async function noticeRequesters(notice: NoticeContext): Promise<void> {
 	if (requesters.length === 0) return;
 	const { due, newer } = stuck(state.inputs, notice.now);
 	if (due.length === 0) return;
+	// One notice for each run. Without a run, inputs wait behind a stop or a failed run; the oldest waiting input
+	// names that wait, so a later wait of other inputs sends its own notice.
+	const wait = run === undefined ? `no-run:${due[0].submissionId}` : `run:${run.taskId}`;
 	for (const [requester, kind] of requesters) {
 		const message = `Unplaced input notice: ${recipient}, ${REQUESTER_RELATION[kind]}, did not place ${plural(due.length)} for more than 5 minutes (oldest admitted ${new Date(due[0].admittedAt).toISOString()})${newerText(newer, "")}. Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round.`;
-		await writeNotice(
-			tx,
-			requester,
-			recipient,
-			`unplaced:${conversationId}:run:${run?.taskId ?? 0}`,
-			message,
-			false,
-			notice.now,
-		);
+		await writeNotice(tx, requester, recipient, `unplaced:${conversationId}:${wait}`, message, false, notice.now);
 	}
 }
 

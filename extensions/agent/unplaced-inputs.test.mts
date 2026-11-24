@@ -679,6 +679,48 @@ it("notifies the reply recipient of open declared work when the current run serv
 	);
 });
 
+it("notifies the reply recipient of open declared work again when inputs wait a second time without a run", async (t) => {
+	const f = await open(t);
+	await f.harness.commit(async (tx) => {
+		(await tx.doc(OpenWorkDoc, f.id)).items.push({
+			requestId: "declared",
+			submissionId: 424_242,
+			requester: "requester-w",
+			replyTo: "requester-w",
+			origin: "model",
+			results: [],
+			note: "own work remains",
+			declaredAt: f.clock.now,
+			updatedAt: f.clock.now,
+		});
+	}, BACKGROUND_CONTEXT);
+	// No run is live: a failed run or a stop left these inputs queued.
+	const first = await admit(f, "stuck-1", "followUp", "sender-a");
+	const firstWatch = await watchTask(f);
+	advance(f, EPOCH + UNPLACED_NOTICE_MS);
+	await f.harness.waitForTask(firstWatch, bounded());
+	const once = (await notices(f)).filter((report) => report.ownerId === "requester-w");
+	assert.equal(once.length, 1);
+	assert.match(once[0].message, /which holds open declared work for your request, did not place 1 admitted input/u);
+
+	// The first input leaves the inbox. An hour later another input waits, again without a run.
+	await settle(f, first);
+	f.clock.now = EPOCH + 60 * 60_000;
+	await admit(f, "stuck-2", "followUp", "sender-b");
+	const secondWatch = await watchTask(f);
+	advance(f, f.clock.now + UNPLACED_NOTICE_MS);
+	await f.harness.waitForTask(secondWatch, bounded());
+	const twice = (await notices(f)).filter((report) => report.ownerId === "requester-w");
+	assert.equal(twice.length, 2, "the second wait of inputs without a run reached the requester of the open work");
+	assert.notEqual(twice[0].sourceId, twice[1].sourceId);
+	assert.deepEqual((await notices(f)).map((report) => report.ownerId).sort(), [
+		"requester-w",
+		"requester-w",
+		"sender-a",
+		"sender-b",
+	]);
+});
+
 it("states withdrawn, not placed, for a submission that is absent or left the inbox before placement", async (t) => {
 	const f = await open(t);
 	const record = (id: number) => f.harness.commit((tx) => tx.submission(id as SubmissionId), BACKGROUND_CONTEXT);
