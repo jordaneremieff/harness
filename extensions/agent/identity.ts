@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 
@@ -53,13 +53,25 @@ function realCatalogRoot(catalogRoot: string): string {
 }
 
 export function canonicalAgentCwd(callerCwd: string, cwd?: string): string {
-	const directory = realpathSync(resolve(callerCwd, cwd ?? "."));
+	const requested = resolve(callerCwd, cwd ?? ".");
+	let directory: string;
+	try {
+		directory = realpathSync(requested);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") throw new Error(`Agent cwd does not exist: ${requested}`);
+		throw error;
+	}
 	if (!statSync(directory).isDirectory()) throw new Error("Agent cwd must be a directory");
 	return directory;
 }
 
 export function assertHandleCwd(handle: string, requested: string, retained: string): void {
 	if (requested === retained) return;
+	if (!existsSync(retained))
+		throw new Error(
+			`@${handle} is retained in ${retained}, which no longer exists, so its host cannot start there. Choose another handle, or omit handle to create a local agent.`,
+		);
 	throw new Error(
 		`@${handle} is retained in a different cwd: ${retained}. Requested cwd: ${requested}. ` +
 			`Pass cwd: ${JSON.stringify(retained)} to reuse it, target @${handle} directly with agent_send or agent_brief(sessionId), or omit handle to create a local agent.`,

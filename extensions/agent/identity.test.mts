@@ -8,6 +8,8 @@ import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { acquireHost, type HostConnection } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState } from "./host-fixture.mts";
 import {
+	assertHandleCwd,
+	canonicalAgentCwd,
 	GenerationMemo,
 	handleStorageId,
 	isThreadStorage,
@@ -122,4 +124,21 @@ it("serves threads, observation, delivery state and stops in a thread storage, a
 		assert.equal(threadStorageServes(operation), false, operation);
 	assert.equal(threadStorageServes("attach", {}), true);
 	assert.equal(threadStorageServes("attach", { model: "acme/model-x" }), false);
+});
+
+it("refuses a handle whose retained directory is gone with remedies that work", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "handle-cwd-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const caller = join(root, "caller");
+	const gone = join(root, "removed-worktree");
+	mkdirSync(caller);
+	assert.throws(
+		() => assertHandleCwd("reviewer", caller, gone),
+		(error: Error) =>
+			error.message.includes(`@reviewer is retained in ${gone}, which no longer exists`) &&
+			/Choose another handle, or omit handle/u.test(error.message) &&
+			!error.message.includes("Pass cwd"),
+	);
+	assert.throws(() => canonicalAgentCwd(caller, gone), { message: `Agent cwd does not exist: ${gone}` });
+	assert.throws(() => assertHandleCwd("reviewer", caller, root), /Pass cwd: /u);
 });
