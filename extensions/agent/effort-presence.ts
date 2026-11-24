@@ -9,6 +9,7 @@ import type {
 	PrimaryWorkReference,
 } from "./primary-channel.ts";
 import { sharedWorkReferences } from "./work-references.ts";
+import { sharedTopics, topicTerms } from "./effort-topics.ts";
 import type { Dirent } from "node:fs";
 import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
 import { isThreadStorage } from "./identity.ts";
@@ -44,8 +45,10 @@ export type PrimaryIntentClaim = {
 
 export type EffortPresenceSelf = Pick<
 	PrimaryInfo,
-	"id" | "cwd" | "repository" | "repositoryState" | "intentClaim" | "observedPurpose" | "workRefs"
+	"id" | "cwd" | "name" | "repository" | "repositoryState" | "intentClaim" | "observedPurpose" | "workRefs"
 >;
+/** The reader's own facts with its topic terms, computed once per read. */
+type PresenceSelf = EffortPresenceSelf & { readonly topics: ReadonlySet<string> };
 export interface RelatedEffort {
 	readonly id: string;
 	readonly cwd: string;
@@ -65,7 +68,11 @@ export interface RelatedEffort {
 	readonly overlap?: { readonly basis: "intentClaim"; readonly paths: string[]; readonly branches: string[] };
 	/** Work items that both sessions reported using, newest first for the other session. */
 	readonly sharedWork?: PrimaryWorkReference[];
+	/** Distinctive words that both sessions' stated purposes, names and item titles use, in alphabetical order. */
+	readonly sharedTopics?: string[];
 }
+/** Prompt rows that a shared topic alone adds, strongest first; shared items and location add more. */
+export const PROMPT_TOPIC_ROWS = 4;
 /** Shared work items shown per related effort. */
 const SHARED_WORK_SHOWN = 8;
 export interface EffortPresenceCoverage {
@@ -134,7 +141,7 @@ function claimOverlap(
 	return paths.size || branches.length ? { basis: "intentClaim", paths: [...paths], branches } : undefined;
 }
 
-function relation(self: EffortPresenceSelf, other: EffortFacts): RelatedEffort["relationship"] | undefined {
+function relation(self: PresenceSelf, other: EffortFacts): RelatedEffort["relationship"] | undefined {
 	if (self.repository && self.repository === other.repository) return "repository";
 	if (self.cwd === other.cwd) return "cwd";
 	return other.hostname === hostname() ? "machine" : undefined;
@@ -159,7 +166,7 @@ function projectIntent(
 }
 
 function sharedSubstrates(
-	self: EffortPresenceSelf,
+	self: PresenceSelf,
 	other: Pick<PrimaryInfo, "cwd" | "repository" | "intentClaim" | "hostname">,
 ): NonNullable<RelatedEffort["sharedSubstrates"]> {
 	const shared: NonNullable<RelatedEffort["sharedSubstrates"]> = [];
@@ -170,11 +177,36 @@ function sharedSubstrates(
 	return shared;
 }
 
+/** Memoised by text, so unchanged descriptors are not tokenized again on later reads. */
+const TOPIC_CACHE_ENTRIES = 1024;
+const topicCache = new Map<string, ReadonlySet<string>>();
+export function effortTopics(value: {
+	name?: string;
+	intentClaim?: { purpose: string };
+	purposeClaim?: string;
+	observedPurpose?: PrimaryObservedPurpose;
+	workRefs?: readonly PrimaryWorkReference[];
+}): ReadonlySet<string> {
+	const texts = [
+		value.intentClaim?.purpose ?? value.purposeClaim ?? value.observedPurpose?.text,
+		value.name,
+		...(value.workRefs ?? []).map((reference) => reference.title),
+	];
+	const key = texts.join("\u0000");
+	const cached = topicCache.get(key);
+	if (cached) return cached;
+	const terms = topicTerms(texts);
+	if (topicCache.size >= TOPIC_CACHE_ENTRIES) topicCache.delete(topicCache.keys().next().value as string);
+	topicCache.set(key, terms);
+	return terms;
+}
+
 function effortRow(
 	info: EffortFacts,
-	self: EffortPresenceSelf,
+	self: PresenceSelf,
 	liveness: RelatedEffort["liveness"],
 	relationship: RelatedEffort["relationship"],
+	topics: string[],
 ): RelatedEffort {
 	const { id, cwd, name, repository, repositoryState, startedAt, lastActivityAt, intentClaim, observedPurpose } = info;
 	const overlap = relationship === "machine" ? undefined : claimOverlap(self.intentClaim, intentClaim);
@@ -194,15 +226,42 @@ function effortRow(
 		...observedPurposeFallback({ intentClaim, observedPurpose }),
 		...(overlap === undefined ? {} : { overlap }),
 		...(sharedWork.length === 0 ? {} : { sharedWork }),
+		...(topics.length === 0 ? {} : { sharedTopics: topics }),
 	};
 }
 
+/** Project rows, then rows that share items, then rows that share only a topic. */
+function promptTier(row: RelatedEffort): number {
+	return row.relationship !== "machine" ? 0 : row.sharedWork?.length ? 1 : 2;
+}
+
+/**
+ * The prompt keeps project rows in identity order, then the rows with the most shared items, then
+ * at most PROMPT_TOPIC_ROWS rows with the most shared topic terms, and shows them in identity order.
+ */
+function selectPromptEfforts(rows: RelatedEffort[], limit: number): RelatedEffort[] {
+	const strength = (row: RelatedEffort, tier: number) =>
+		tier === 1 ? (row.sharedWork?.length ?? 0) : tier === 2 ? (row.sharedTopics?.length ?? 0) : 0;
+	const ranked = rows
+		.map((row) => ({ row, tier: promptTier(row) }))
+		.sort(
+			(a, b) =>
+				a.tier - b.tier || strength(b.row, b.tier) - strength(a.row, a.tier) || a.row.id.localeCompare(b.row.id),
+		);
+	const selected: RelatedEffort[] = [];
+	let topicRows = 0;
+	for (const { row, tier } of ranked) {
+		if (selected.length >= limit) break;
+		if (tier === 2 && topicRows++ >= PROMPT_TOPIC_ROWS) continue;
+		selected.push(row);
+	}
+	return selected;
+}
+
 function appendEffort(page: EffortPresencePage, row: RelatedEffort, prompt: boolean): void {
-	// Prompt bytes are bounded after removing observed fields, not by their current sizes.
+	// Prompt rows are selected once after the traversal; prompt bytes are bounded by the formatter.
 	if (prompt) {
 		page.efforts.push(row);
-		page.efforts.sort((a, b) => a.id.localeCompare(b.id));
-		if (page.efforts.length > page.limits.results) page.efforts.pop();
 		return;
 	}
 	const reason =
@@ -219,20 +278,21 @@ function appendEffort(page: EffortPresencePage, row: RelatedEffort, prompt: bool
 
 /**
  * A prompt names project efforts and, outside the project, only live sessions that reported using
- * the same work items; null leaves the effort out of the prompt.
+ * the same work items or share a topic; null leaves the effort out of the prompt.
  */
 function promptRelation(
-	self: EffortPresenceSelf,
+	self: PresenceSelf,
 	info: EffortFacts,
 	matches: boolean,
+	topics: string[],
 ): RelatedEffort["relationship"] | null {
 	if (matches) return self.repository === undefined ? "cwd" : "repository";
-	return sharedWorkReferences(self.workRefs, info.workRefs).length > 0 ? "machine" : null;
+	return topics.length > 0 || sharedWorkReferences(self.workRefs, info.workRefs).length > 0 ? "machine" : null;
 }
 
 async function collectEffort(
 	page: EffortPresencePage,
-	self: EffortPresenceSelf,
+	self: PresenceSelf,
 	info: EffortFacts,
 	liveness: RelatedEffort["liveness"],
 	scope?: EffortProjectScope,
@@ -240,18 +300,19 @@ async function collectEffort(
 	if (scope?.prompt && liveness !== "live") return;
 	const matches = scope === undefined || (await scope.matches(info));
 	if (!matches && liveness === "live") page.coverage.outOfScope = (page.coverage.outOfScope ?? 0) + 1;
-	const relationship = scope?.prompt ? promptRelation(self, info, matches) : relation(self, info);
+	const topics = sharedTopics(self.topics, effortTopics(info));
+	const relationship = scope?.prompt ? promptRelation(self, info, matches, topics) : relation(self, info);
 	if (relationship === null) return;
 	if (!relationship) {
 		page.coverage.unrelated++;
 		return;
 	}
-	appendEffort(page, effortRow(info, self, liveness, relationship), scope?.prompt ?? false);
+	appendEffort(page, effortRow(info, self, liveness, relationship, topics), scope?.prompt ?? false);
 }
 
 async function visitEntry(
 	sessionsRoot: string,
-	self: EffortPresenceSelf,
+	self: PresenceSelf,
 	page: EffortPresencePage,
 	entry: Dirent,
 	scope?: EffortProjectScope,
@@ -308,7 +369,7 @@ async function nativeRow(
 	record: CatalogRecord,
 	id: string,
 	metadata: NativeIntentMetadata,
-	self: EffortPresenceSelf,
+	self: PresenceSelf,
 	page: EffortPresencePage,
 	claims: Map<string, ClaimObservation>,
 	scope?: EffortProjectScope,
@@ -345,7 +406,7 @@ async function nativeRow(
 async function visitNativeRecord(
 	catalog: AgentCatalog,
 	entry: Dirent,
-	self: EffortPresenceSelf,
+	self: PresenceSelf,
 	page: EffortPresencePage,
 	claims: Map<string, ClaimObservation>,
 	scope?: EffortProjectScope,
@@ -386,7 +447,7 @@ async function visitNativeRecord(
 }
 async function visitNativeRoot(
 	catalog: AgentCatalog,
-	self: EffortPresenceSelf,
+	self: PresenceSelf,
 	page: EffortPresencePage,
 	scope?: EffortProjectScope,
 ): Promise<void> {
@@ -398,9 +459,10 @@ async function visitNativeRoot(
 /** Read-only presence page; ordinary records and native projections share all visit, result and byte caps. */
 export async function readRelatedEfforts(
 	resources: EffortReadResources,
-	self: EffortPresenceSelf,
+	reader: EffortPresenceSelf,
 	scope?: EffortProjectScope,
 ): Promise<EffortPresencePage> {
+	const self: PresenceSelf = { ...reader, topics: effortTopics(reader) };
 	const sessionsRoot = dirname(resources.catalog.root);
 	const page: EffortPresencePage = {
 		efforts: [],
@@ -421,6 +483,8 @@ export async function readRelatedEfforts(
 		visitEntry(sessionsRoot, self, page, entry, scope),
 	);
 	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(resources.catalog, self, page, scope);
+	if (scope?.prompt)
+		page.efforts.splice(0, page.efforts.length, ...selectPromptEfforts(page.efforts, page.limits.results));
 	page.efforts.sort((a, b) => a.id.localeCompare(b.id));
 	return page;
 }

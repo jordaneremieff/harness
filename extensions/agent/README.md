@@ -2910,6 +2910,23 @@ session's order, and the caller's own `workRefs` appear in its awareness. A
 reference is the producer's report of use, not verified access, a lock or
 authority over the item or the other session.
 
+### Shared topics
+
+Sessions on one subject often share no stored item, for example two sessions
+that review the same service from different repositories. Each presence row
+therefore also carries `sharedTopics` when both sessions' stated purposes use
+at least two of the same distinctive words: up to eight in alphabetical order.
+The words come from text the endpoint and catalogue already hold: the declared
+purpose, or without one the first-request excerpt, plus the session name and
+the titles of reported items. Function words, words that describe agent work in
+general (session, agent, extension, test, review, fix and similar), words
+shorter than four characters, numbers and identifiers do not count; plural
+forms fold to one word. The rule uses no statistics over other sessions, so
+a row changes only when one of the two sessions changes its own text. Terms are
+memoised by their source text, so an unchanged session is not tokenized again
+and a topic comparison adds no file read. Shared words are a weaker signal than
+shared items: they say that two purposes look alike, not that the work overlaps.
+
 The extension retains its own attributed first-input projection in the session.
 Resume discovery follows a bounded parent chain from the public leaf ID, without
 materializing the branch or full session. A complete scan is not proof that the
@@ -2990,9 +3007,13 @@ in the same Git repository (including linked worktrees), or the same working
 directory outside Git. It also names live sessions elsewhere on this machine
 that share work with the caller, with their purpose-level claim, contact thread,
 session name, first-request excerpt (`request`, at most 200 characters, only
-without a claim) and up to four shared items in identity order as `sharedWork`. A session that
-shares no item and no location stays out of the section, so the section grows
-with related work rather than with every open session. A thread uses its owning
+without a claim) and up to four shared items in identity order as `sharedWork`.
+Live sessions elsewhere that share only a topic appear with up to four of the
+shared words as `sharedTopics`; at most four such rows appear, those with the
+most shared words first, after every row from the same location and every row
+that shares an item, within the section's twenty rows. A session that shares
+no item, no topic and no location stays out of the section, so the section
+grows with related work rather than with every open session. A thread uses its owning
 storage's working directory; a contact link alone does not establish a match.
 Relative scope paths describe work within their declared location and cannot
 match across repositories. Prompt rows use identity order and omit activity,

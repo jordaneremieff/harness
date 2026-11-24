@@ -250,6 +250,64 @@ it("names live sessions in other repositories that used the same work items, wit
 	assert.equal(observation.presence.efforts.find((effort) => effort.id === unrelated)?.sharedWork, undefined);
 });
 
+it("names sessions in other repositories whose purposes share a topic, strongest four, after project rows", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const project = join(root, "project");
+	const other = join(root, "other");
+	mkdirSync(project);
+	mkdirSync(other);
+	for (const cwd of [project, other]) execFileSync("git", ["init", "--quiet", cwd], { timeout: 3000 });
+	const first = (text: string) => ({ source: "interactive-input" as const, text });
+	const local = randomUUID();
+	publish(root, local, null, project, first("Unrelated local chores"));
+	const strong = randomUUID();
+	publish(root, strong, null, other, first("Payment refund ledger reconciliation timeout"));
+	const declared = randomUUID();
+	publish(root, declared, claim("Audit payment refund ledger exports"), other);
+	const weak: string[] = Array.from({ length: 5 }, () => randomUUID());
+	for (const id of weak) publish(root, id, null, other, first("Refund ledger overview"));
+	const single = randomUUID();
+	publish(root, single, null, other, first("Ledger tidy-up"));
+	const noise = randomUUID();
+	publish(root, noise, null, other, first("Please check and fix the agent extension tests in this session"));
+	const current = {
+		...self,
+		cwd: project,
+		observedPurpose: first("Reconcile the payment refund ledger after the timeout incident"),
+	};
+	const shared = resources(root, catalog);
+	const view = await readEffortAwareness(shared, current, "canonical", "prompt");
+	const prompt = formatEffortAwareness(view, "prompt");
+	const shown = view.presence.efforts.map((effort) => effort.id);
+	assert.ok(shown.includes(local), "project rows stay");
+	assert.ok(shown.includes(strong) && shown.includes(declared));
+	assert.equal(shown.filter((id) => weak.includes(id)).length, 2, "topic-only rows stop at four");
+	assert.equal(shown.includes(single), false, "one shared word is not a topic");
+	assert.equal(shown.includes(noise), false, "generic words are not a topic");
+	assert.match(prompt, /"sharedTopics":\["ledger","payment","refund","timeout"\]/u);
+	assert.match(
+		prompt,
+		/"purposeClaim":"Audit payment refund ledger exports",.*"sharedTopics":\["ledger","payment","refund"\]/u,
+	);
+	assert.doesNotMatch(prompt, /Unrelated local chores"[^\n]*sharedTopics/u, "project rows carry no topic list");
+	assert.equal(
+		formatEffortAwareness(await readEffortAwareness(shared, current, "canonical", "prompt"), "prompt"),
+		prompt,
+	);
+	const observation = await readEffortAwareness(shared, current);
+	assert.equal(
+		matchesSchema(EffortAwarenessSchema, observation),
+		true,
+		JSON.stringify(schemaErrors(EffortAwarenessSchema, observation, 10)),
+	);
+	assert.deepEqual(observation.presence.efforts.find((effort) => effort.id === strong)?.sharedTopics, [
+		"ledger",
+		"payment",
+		"refund",
+		"timeout",
+	]);
+});
+
 it("unifies self-published purpose, related presence and active thread hints without schema drift", async (t) => {
 	const { root, catalog, self } = fixture(t);
 	const intentClaim = claim();

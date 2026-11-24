@@ -87,6 +87,7 @@ export const RelatedEffortSchema = obj({
 	sharedSubstrates: opt(arr(union([lit("repository"), lit("cwd"), lit("machine-gates")]))),
 	overlap: opt(obj({ basis: lit("intentClaim"), paths: arr(text), branches: arr(text) })),
 	sharedWork: opt(arr(WorkReferenceSchema)),
+	sharedTopics: opt(arr(text)),
 });
 export const EffortSelfSchema = obj({
 	id: text,

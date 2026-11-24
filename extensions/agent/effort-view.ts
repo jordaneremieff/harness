@@ -582,6 +582,7 @@ export class EffortView {
 	}
 	private relationOf(row: RelatedEffort): string {
 		if (row.relationship === "machine" && row.sharedWork?.length) return "shared work on this machine";
+		if (row.relationship === "machine" && row.sharedTopics?.length) return "similar purpose on this machine";
 		return (
 			{ cwd: "same folder", repository: "same repository", machine: "this machine" }[row.relationship as string] ??
 			row.relationship
@@ -664,6 +665,8 @@ export class EffortView {
 			groups.push([`Integration · next shared acts, declared ${this.time(claim.updatedAt)}`, plain(claim.integration)]);
 		const shared = this.sharedWorkText(row);
 		if (shared) groups.push(["Shared work · items both sessions used", shared]);
+		if (row.sharedTopics?.length)
+			groups.push(["Shared topics · words both purposes use", row.sharedTopics.map(plain).join(", ")]);
 		if (this.contactId()) groups.push(["Contact thread", this.contactSummary()]);
 		return groups;
 	}
@@ -685,6 +688,12 @@ export class EffortView {
 		if (purpose) groups.push(["Purpose", plain(purpose)]);
 		return [...groups, ...this.intentGroups(row), ...this.hostGroups(row), ...this.contactGroups()];
 	}
+	private purposeOnlyReason(row: RelatedEffort): string {
+		if (row.relationship !== "machine") return "No stated integration plan";
+		if (row.sharedWork?.length) return "Shared work in another repository or folder";
+		if (row.sharedTopics?.length) return "Similar purpose in another repository or folder";
+		return "No shared repository or cwd";
+	}
 	/** Carried intent, or the purpose-only view for a machine peer. */
 	private intentGroups(row: RelatedEffort): Array<[string, string]> {
 		const claim = row.relationship === "machine" ? undefined : row.intentClaim;
@@ -693,14 +702,7 @@ export class EffortView {
 				...(row.contactThreadClaim
 					? ([["Contact thread", plain(row.contactThreadClaim)]] as Array<[string, string]>)
 					: []),
-				[
-					"Purpose-only view",
-					row.relationship === "machine"
-						? row.sharedWork?.length
-							? "Shared work in another repository or folder"
-							: "No shared repository or cwd"
-						: "No stated integration plan",
-				],
+				["Purpose-only view", this.purposeOnlyReason(row)],
 			];
 		}
 		return [
