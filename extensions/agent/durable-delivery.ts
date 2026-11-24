@@ -1268,6 +1268,19 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let activityPending = false;
 	let nextRetryDelayMs = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	/**
+	 * Active routes to owners outside this storage that failed, by source and owner. Any commit of the source
+	 * starts a pass, but no commit of this storage changes what such an owner accepts: a live primary that queued
+	 * the notice refuses every attempt until it retains the notice at its next boundary. A held route is sent
+	 * again only by the pass that the retry timer or an explicit refresh starts, so the count of transmissions
+	 * follows the wait of the owner and not the activity of the source.
+	 */
+	const heldRoutes = new Set<string>();
+	const metHolds = new Set<string>();
+	/** The next traversal attempts held routes; the first traversal of a watcher attempts every route. */
+	let retryDue = true;
+	let attemptHeld = false;
+	let retryTimer: ReturnType<typeof setTimeout> | undefined;
 	let inFlight: Promise<void> | undefined;
 	let closePromise: Promise<void> | undefined;
 	let unsubscribe: (() => void) | undefined;
@@ -2047,6 +2060,31 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 	};
 
+	/** A commit of this storage can change what an owner inside it accepts, so such a route has no hold. */
+	const holdKey = (row: DeliveryRow, owner: string): string | undefined =>
+		ownerStorageId(owner) === metadata.storageId ? undefined : `${rowSourceId(metadata, row)}\n${owner}`;
+
+	/** True for a held route in a pass that does not attempt held routes. */
+	const waitsForRetry = (key: string | undefined): boolean => {
+		if (key === undefined || !heldRoutes.has(key)) return false;
+		metHolds.add(key);
+		return !attemptHeld;
+	};
+
+	const releaseHold = (key: string | undefined): void => {
+		if (key !== undefined) heldRoutes.delete(key);
+	};
+
+	const holdFailedRoute = (key: string | undefined, failure: Error | undefined): void => {
+		if (key === undefined) return;
+		if (failure === undefined) {
+			heldRoutes.delete(key);
+			return;
+		}
+		heldRoutes.add(key);
+		metHolds.add(key);
+	};
+
 	const tryRouteOwner = async (row: DeliveryRow, owner: string): Promise<{ accepted: boolean; failure?: Error }> => {
 		const state = ownerEligibility(row, owner);
 		if (state.state === "terminal") return { accepted: false };
@@ -2054,10 +2092,16 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			await tryParkedFallback(row, owner);
 			return { accepted: false };
 		}
+		const key = holdKey(row, owner);
+		if (waitsForRetry(key)) return { accepted: false };
 		try {
-			return { accepted: await routeOwner(row, owner) };
+			const accepted = await routeOwner(row, owner);
+			releaseHold(key);
+			return { accepted };
 		} catch (error) {
-			return { accepted: false, failure: routeFailure(row, owner, error) };
+			const failure = routeFailure(row, owner, error);
+			holdFailedRoute(key, failure);
+			return { accepted: false, failure };
 		}
 	};
 
@@ -2094,11 +2138,16 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let automaticCursor: string | null | undefined;
 	let traversing = false;
 	let traversalFailure: Error | undefined;
+	/** A hold whose route a complete traversal did not meet belongs to a row that is no longer pending or active. */
+	const forgetUnmetHolds = (): void => {
+		for (const key of heldRoutes) if (!metHolds.has(key)) heldRoutes.delete(key);
+	};
 	const finishTraversal = async (): Promise<void> => {
 		if (pendingCursor !== null || automaticCursor !== null) return;
 		const pendingCount = await deliveryPendingCount(host.harness, BACKGROUND_CONTEXT);
 		if (recipientsChanged(parked)) activityPending = true;
 		traversing = false;
+		forgetUnmetHolds();
 		if (activityPending) dirty = true;
 		if (traversalFailure !== undefined) throw traversalFailure;
 		if (activityPending) return;
@@ -2209,6 +2258,9 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			routingFailed = false;
 			fallbackFailures.clear();
 			fallbackFailureTexts.clear();
+			metHolds.clear();
+			attemptHeld = retryDue;
+			retryDue = false;
 			retryOwners.clear();
 			traversalFailure = undefined;
 			parked = new Map();
@@ -2259,16 +2311,21 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		await finishTraversal();
 	};
 
+	/** A held route keeps its reported failure and its backoff until it is accepted or its row ends. */
+	const settleTraversal = (): void => {
+		if (heldRoutes.size === 0) {
+			if (!routingFailed) host.reportDeliveryError(undefined);
+			nextRetryDelayMs = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
+		} else if (retryDue) dirty = true;
+		else armRetry();
+	};
+
 	const run = async (): Promise<void> => {
 		if (closed || signal.aborted) return;
 		running = true;
-		let retry: number | undefined;
 		try {
 			await scan();
-			if (!traversing) {
-				if (!routingFailed) host.reportDeliveryError(undefined);
-				nextRetryDelayMs = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
-			}
+			if (!traversing) settleTraversal();
 		} catch (error) {
 			observationFailure = `Delivery observation failed: ${asError(error).message}`;
 			invalidated = true;
@@ -2277,18 +2334,47 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			pendingCursor = undefined;
 			automaticCursor = undefined;
 			traversalFailure = undefined;
-			retry = nextRetryDelayMs;
-			nextRetryDelayMs = Math.min(nextRetryDelayMs * 2, MAX_RETRY_DELAY_MS);
+			armRetry();
 		} finally {
 			running = false;
 			if (dirty) {
 				dirty = false;
 				schedule(0);
-			} else if (retry !== undefined) schedule(retry);
+			}
 		}
 	};
 
-	/** New activity preempts backoff; commits during a pass coalesce into one follow-up. */
+	const startPass = (): void => {
+		inFlight = run().finally(() => {
+			inFlight = undefined;
+			if (!closed) options.onIdle?.();
+		});
+	};
+
+	/**
+	 * One retry time stands until it passes; each new one doubles to the cap. The pass that it starts attempts
+	 * the held routes. New activity starts its own pass and leaves this time in place.
+	 */
+	function armRetry(): void {
+		if (retryTimer !== undefined || closed || signal.aborted) return;
+		const delay = nextRetryDelayMs;
+		nextRetryDelayMs = Math.min(nextRetryDelayMs * 2, MAX_RETRY_DELAY_MS);
+		retryTimer = setTimeout(() => {
+			retryTimer = undefined;
+			retryDue = true;
+			if (running) {
+				dirty = true;
+				return;
+			}
+			if (timer) {
+				clearTimeout(timer);
+				timer = undefined;
+			}
+			startPass();
+		}, delay);
+	}
+
+	/** New activity starts a pass at once; commits during a pass coalesce into one follow-up. */
 	function schedule(delayMs: number, activity = false): void {
 		if (closed || signal.aborted) return;
 		if (activity) {
@@ -2306,10 +2392,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		timer = setTimeout(
 			() => {
 				timer = undefined;
-				inFlight = run().finally(() => {
-					inFlight = undefined;
-					if (!closed) options.onIdle?.();
-				});
+				startPass();
 			},
 			Math.max(0, delayMs),
 		);
@@ -2320,6 +2403,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (timer) {
 			clearTimeout(timer);
 			timer = undefined;
+		}
+		if (retryTimer) {
+			clearTimeout(retryTimer);
+			retryTimer = undefined;
 		}
 	};
 
@@ -2372,6 +2459,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		refresh: () => {
 			unavailableTargets.clear();
 			failedLinks.clear();
+			heldRoutes.clear();
 			schedule(0, true);
 		},
 		sealAdmission,

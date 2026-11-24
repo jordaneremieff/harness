@@ -4022,23 +4022,44 @@ it("waits for each doubled delivery retry delay through the cap and cancels on c
 	assert.equal(f.commits.mock.callCount(), commits, "close cancels the pending retry");
 });
 
-for (const trigger of ["commit", "refresh"] as const)
-	it(`starts a delivery pass immediately after ${trigger} during backoff`, { timeout: 10000 }, async (t) => {
-		const f = await retryFixture(t);
-		t.mock.timers.tick(0);
-		await f.idle.waitForCount(1);
-		const commits = f.commits.mock.callCount();
-		t.mock.timers.tick(100);
-		assert.equal(f.commits.mock.callCount(), commits, "the watcher is still in backoff");
-		if (trigger === "commit") await f.publish();
-		else f.watcher.refresh();
-		t.mock.timers.tick(0);
-		await f.idle.waitForCount(2);
-		assert.equal(f.errors.length, 2, "new activity does not wait for the retry deadline");
-		const after = f.commits.mock.callCount();
-		t.mock.timers.tick(400);
-		assert.equal(f.commits.mock.callCount(), after, "the replaced deadline does not start another pass");
-	});
+it("starts a delivery pass immediately after refresh during backoff", { timeout: 10000 }, async (t) => {
+	const f = await retryFixture(t);
+	t.mock.timers.tick(0);
+	await f.idle.waitForCount(1);
+	const commits = f.commits.mock.callCount();
+	t.mock.timers.tick(100);
+	assert.equal(f.commits.mock.callCount(), commits, "the watcher is still in backoff");
+	f.watcher.refresh();
+	t.mock.timers.tick(0);
+	await f.idle.waitForCount(2);
+	assert.equal(f.errors.length, 2, "an explicit refresh does not wait for the retry deadline");
+	const after = f.commits.mock.callCount();
+	t.mock.timers.tick(400);
+	assert.equal(f.commits.mock.callCount(), after, "the earlier deadline does not start another pass");
+});
+
+it("starts a pass at once after a commit during backoff and leaves the failed route to its deadline", {
+	timeout: 10000,
+}, async (t) => {
+	const f = await retryFixture(t);
+	t.mock.timers.tick(0);
+	await f.idle.waitForCount(1);
+	assert.equal(f.entered.length, 1);
+	t.mock.timers.tick(100);
+	const commits = f.commits.mock.callCount();
+	await f.publish();
+	t.mock.timers.tick(0);
+	await f.idle.waitForCount(2);
+	assert.ok(f.commits.mock.callCount() > commits + 1, "the commit started a delivery pass at once");
+	assert.equal(f.entered.length, 1, "the pass did not send the failed route to its owner again");
+	assert.equal(f.errors.length, 1);
+	t.mock.timers.tick(399);
+	assert.equal(f.entered.length, 1, "no attempt before the retry deadline");
+	t.mock.timers.tick(1);
+	await f.idle.waitForCount(3);
+	assert.equal(f.entered.length, 2, "one attempt at the retry deadline");
+	assert.equal(f.errors.length, 2);
+});
 
 it("coalesces commits during a failed delivery pass into one immediate follow-up", { timeout: 10000 }, async (t) => {
 	let release!: () => void;
@@ -4056,10 +4077,14 @@ it("coalesces commits during a failed delivery pass into one immediate follow-up
 	await f.idle.waitForCount(1);
 	t.mock.timers.tick(0);
 	await f.idle.waitForCount(2);
-	assert.equal(f.errors.length, 2);
+	assert.equal(f.errors.length, 1);
+	assert.equal(f.entered.length, 1, "the follow-up pass does not send the failed route again");
 	const commits = f.commits.mock.callCount();
 	t.mock.timers.tick(0);
-	assert.equal(f.commits.mock.callCount(), commits, "the coalesced follow-up resumes normal backoff");
+	assert.equal(f.commits.mock.callCount(), commits, "the coalesced follow-up starts no further pass");
+	t.mock.timers.tick(500);
+	await f.idle.waitForCount(3);
+	assert.equal(f.entered.length, 2, "the failed route keeps its retry deadline");
 });
 
 it("preserves the live owner's wake when an absent owner shares its answer", { timeout: 15000 }, async (t) => {

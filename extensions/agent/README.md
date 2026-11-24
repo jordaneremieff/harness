@@ -4625,9 +4625,18 @@ and reason without changing the response shape. Only active rows and pending
 intents keep delivery active. A live or unknown owner endpoint refuses fallback.
 Active failed passes wait
 for the configured retry delay, which doubles after each failure up to 30 seconds
-and resets after a successful pass. A native commit or explicit refresh starts a
-pass immediately, even during that wait. Commits during an active pass coalesce
-into one immediate follow-up pass. Closing the watcher cancels its retry timer.
+and resets when no failed route remains. A native commit or explicit refresh
+starts a pass immediately, even during that wait. Commits during an active pass
+coalesce into one immediate follow-up pass. A pass that a commit starts does not
+send a failed route to an owner outside the storage again: that route waits for
+the retry time or an explicit refresh. A live primary that queued a notice
+refuses each attempt until its session retains the notice, and no commit of the
+source changes that, so the count of transmissions follows the wait of the owner
+and not the activity of the source. The acknowledgement of such a notice can
+therefore follow its retention by up to the retry delay. The reported failure
+stays in `deliveryError` until the route is accepted or its row ends. A route to
+an owner inside the storage has no such hold. Closing the watcher cancels its
+retry timer.
 The timer alone is not an in-flight delivery effect; active rows still prevent
 host retirement and retain recovery state. Parked and terminal rows do not.
 An owner endpoint carries the primary channel contract version. A host
