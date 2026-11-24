@@ -70,6 +70,7 @@ import { readEffortAwareness, type EffortAwareness } from "./effort-awareness.ts
 import {
 	createPrimaryChannel,
 	connectPrimaryChannel,
+	type PrimaryChannelConnection,
 	primaryEndpointStatus,
 	readPrimaryEndpointDescriptor,
 	type PrimaryChannel,
@@ -239,6 +240,9 @@ interface ListCursor {
 const DEFAULT_DELIVERED_LIMIT = 1024;
 /** The refusal of a delivery to a session whose extension reloads; its source keeps the delivery for a retry. */
 export const PRIMARY_RELOADING_REFUSAL = "Primary session is reloading; the delivery stays unacknowledged for a retry";
+/** How long a message to a reloading ordinary primary waits for its next registration, and between attempts. */
+const PRIMARY_RELOAD_WAIT_MS = 15_000;
+const PRIMARY_RELOAD_RETRY_MS = 200;
 /** How long a reloading session's channel stays published while its extension registers again. */
 const PRIMARY_RELOAD_GRACE_MS = 60_000;
 const DEFAULT_FAILURE_LIMIT = 256;
@@ -1442,47 +1446,104 @@ export class AgentManager {
 		caller: AgentCaller,
 	): Promise<unknown> {
 		const channel = await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root });
-		try {
-			if (method !== "submit" && method !== "report")
-				throw new Error("A registered primary accepts messages, not Durable session controls");
-			const sourceId = typeof input.requestId === "string" ? input.requestId : randomUUID();
-			const origin: DeliveryOrigin = input.origin === "operator" ? "operator" : "model";
-			const sender = this.primaryChannels.get(caller.id)?.info();
-			const name = "name" in caller ? caller.name : sender?.name;
-			const observedPurpose = caller.observedPurpose ?? sender?.observedPurpose;
-			const question = peerQuestionFields(input, method, sourceId);
-			const text = peerMessageText(String(input.message ?? ""), question, caller.id, name);
-			await channel.deliver({
-				sourceId,
-				requireRetained: false,
-				text,
-				details: {
-					...question,
-					kind: method === "report" ? "report" : "message",
-					senderKind: "session",
-					senderIdentity: caller.id,
-					source: sourceId,
-					liveOwner: true,
-					saved: false,
-					origin,
-					wake: origin !== "operator",
-					...(name === undefined ? {} : { name }),
-					...(observedPurpose === undefined ? {} : { observedPurpose: observedPurpose.text }),
-					...(caller.model === undefined ? {} : { provider: caller.model.provider, modelId: caller.model.modelId }),
-					...(caller.thinkingLevel === undefined ? {} : { thinkingLevel: caller.thinkingLevel }),
-				},
-				...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}),
-			});
-			return {
-				sessionId,
-				admitted: true,
-				sourceId,
-				...questionReceipt(question),
-				boundary:
-					"The recipient retained the message for delivery. Admission does not prove placement, action, or task acceptance.",
-			};
-		} finally {
+		if (method !== "submit" && method !== "report") {
 			await channel.close();
+			throw new Error("A registered primary accepts messages, not Durable session controls");
+		}
+		const sourceId = typeof input.requestId === "string" ? input.requestId : randomUUID();
+		const origin: DeliveryOrigin = input.origin === "operator" ? "operator" : "model";
+		const sender = this.primaryChannels.get(caller.id)?.info();
+		const name = "name" in caller ? caller.name : sender?.name;
+		const observedPurpose = caller.observedPurpose ?? sender?.observedPurpose;
+		let question: ReturnType<typeof peerQuestionFields>;
+		try {
+			question = peerQuestionFields(input, method, sourceId);
+		} catch (error) {
+			await channel.close();
+			throw error;
+		}
+		const text = peerMessageText(String(input.message ?? ""), question, caller.id, name);
+		const message = {
+			sourceId,
+			requireRetained: false,
+			text,
+			details: {
+				...question,
+				kind: method === "report" ? "report" : "message",
+				senderKind: "session",
+				senderIdentity: caller.id,
+				source: sourceId,
+				liveOwner: true,
+				saved: false,
+				origin,
+				wake: origin !== "operator",
+				...(name === undefined ? {} : { name }),
+				...(observedPurpose === undefined ? {} : { observedPurpose: observedPurpose.text }),
+				...(caller.model === undefined ? {} : { provider: caller.model.provider, modelId: caller.model.modelId }),
+				...(caller.thinkingLevel === undefined ? {} : { thinkingLevel: caller.thinkingLevel }),
+			},
+			...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}),
+		};
+		await this.deliverPrimaryMessage(sessionId, channel, message);
+		return {
+			sessionId,
+			admitted: true,
+			sourceId,
+			...questionReceipt(question),
+			boundary:
+				"The recipient retained the message for delivery. Admission does not prove placement, action, or task acceptance.",
+		};
+	}
+
+	/**
+	 * Deliver one message through `channel` and close every connection it used. A reloading primary refuses until
+	 * it registers again, so the message waits for that registration within a bound; its source identity makes
+	 * a retry arrive once.
+	 */
+	private async deliverPrimaryMessage(
+		sessionId: string,
+		channel: PrimaryChannelConnection,
+		message: Parameters<PrimaryChannelConnection["deliver"]>[0],
+	): Promise<void> {
+		const deadline = Date.now() + PRIMARY_RELOAD_WAIT_MS;
+		let open: PrimaryChannelConnection | undefined = channel;
+		try {
+			for (let connection = channel; ; ) {
+				try {
+					await connection.deliver(message);
+					return;
+				} catch (error) {
+					if (!errorText(error).includes(PRIMARY_RELOADING_REFUSAL)) throw error;
+				}
+				open = undefined;
+				await connection.close();
+				connection = await this.reconnectReloadingPrimary(sessionId, deadline);
+				open = connection;
+			}
+		} finally {
+			await open?.close();
+		}
+	}
+
+	/** A new connection to a primary that reloads, after a short wait; past the deadline the message is not delivered. */
+	private async reconnectReloadingPrimary(sessionId: string, deadline: number): Promise<PrimaryChannelConnection> {
+		let absent = 0;
+		for (;;) {
+			if (Date.now() >= deadline)
+				throw new Error(
+					`Primary session ${sessionId} was still reloading after ${Math.round(PRIMARY_RELOAD_WAIT_MS / 1000)} s; the message was not delivered. Send it again after the reload.`,
+				);
+			await new Promise((resolve) => setTimeout(resolve, PRIMARY_RELOAD_RETRY_MS));
+			try {
+				return await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root });
+			} catch {
+				// The old channel can close between the record read and the connection; the new one follows. A reload
+				// keeps the endpoint published, so a dead owner, or an endpoint absent at two attempts, ended the session.
+				const state = primaryEndpointStatus(this.options.root, sessionId).state;
+				absent = state === "absent" ? absent + 1 : 0;
+				if (state === "dead" || absent >= 2)
+					throw new Error(`Primary session ${sessionId} ended during its reload; the message was not delivered.`);
+			}
 		}
 	}
 

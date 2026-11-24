@@ -488,3 +488,70 @@ test("an ordinary registration that its extension shut down for a reload refuses
 	assert.throws(() => clients[0].send("Hi", {}, "source-1", false), /Primary session is reloading/u);
 	assert.throws(() => clients[0].send("Result", {}, "source-2", true), /Primary session is reloading/u);
 });
+
+test("a message to a reloading ordinary primary arrives once the session registers again", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-reload-message-")));
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const sender = randomUUID();
+	const target = randomUUID();
+	await manager.registerPrimary(sender, { signal: new AbortController().signal, cwd: root, send() {} });
+	const first = new AbortController();
+	await manager.registerPrimary(target, { signal: first.signal, cwd: root, send() {} });
+	assert.equal(manager.suspendPrimary(target, first), true);
+	const delivered: string[] = [];
+	const registered = new Promise<void>((done) => {
+		setTimeout(() => {
+			void manager
+				.registerPrimary(target, {
+					signal: new AbortController().signal,
+					cwd: root,
+					send: (text) => delivered.push(text),
+				})
+				.then(done);
+		}, 300);
+	});
+	const receipt = (await manager.control(
+		"submit",
+		{ sessionId: target, message: "sent during the reload", origin: "model" },
+		{ id: sender, cwd: root },
+	)) as { admitted?: boolean };
+	await registered;
+	assert.equal(receipt.admitted, true);
+	assert.equal(delivered.length, 1);
+	assert.match(delivered[0] ?? "", /sent during the reload/u);
+});
+
+test("a message to an ordinary primary that quits during its reload fails at once as not delivered", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-reload-quit-")));
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const sender = randomUUID();
+	const target = randomUUID();
+	await manager.registerPrimary(sender, { signal: new AbortController().signal, cwd: root, send() {} });
+	const first = new AbortController();
+	const delivered: string[] = [];
+	await manager.registerPrimary(target, { signal: first.signal, cwd: root, send: (text) => delivered.push(text) });
+	assert.equal(manager.suspendPrimary(target, first), true);
+	const quit = new Promise<void>((done) => {
+		setTimeout(() => void manager.closePrimary(target, first.signal).finally(done), 300);
+	});
+	const started = Date.now();
+	await assert.rejects(
+		manager.control(
+			"submit",
+			{ sessionId: target, message: "sent before the quit", origin: "model" },
+			{ id: sender, cwd: root },
+		),
+		/ended during its reload; the message was not delivered/u,
+	);
+	await quit;
+	assert.ok(Date.now() - started < 5000, "the sender stops before the reload wait ends");
+	assert.deepEqual(delivered, []);
+});

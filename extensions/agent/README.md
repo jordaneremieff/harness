@@ -2600,7 +2600,12 @@ reload never reads as an end; deliveries in between refuse as retryable. The
 refusal holds until the new registration is current: while it opens its
 channel, both the old and the new channel refuse, and a registration whose
 extension has shut down refuses before it stores anything. A delivery is
-therefore either refused with nothing stored or accepted. The
+therefore either refused with nothing stored or accepted. A message from an
+ordinary session to a reloading ordinary primary waits up to 15 s for the new
+registration and arrives once under its source identity; after that wait the
+sender's call fails and states that the message was not delivered. When the
+target session ends during the reload, the call fails at once with the same
+statement. The
 check runs only at points that already read the questions, and only when
 questions are open, with one endpoint read per distinct asked session:
 
