@@ -131,7 +131,8 @@ function git(args: string[]): string | undefined {
 	}
 }
 
-function sourceRecord(): { commit: string | null; dirty: boolean; digest: string } {
+/** The digest of the app's build inputs and the Git commit they come from; `dirty` marks uncommitted input changes. */
+export function sourceRecord(): { commit: string | null; dirty: boolean; digest: string } {
 	const inputs = [
 		"build.mts",
 		"Package.swift",
@@ -277,6 +278,17 @@ function replaceBundle(staged: string, app: string): void {
 	if (previous) rmSync(previous, { recursive: true, force: true });
 }
 
+/** The lock that an install holds beside the app for its whole run. */
+function installLock(parent: string): string {
+	return join(parent, ".explorer-install.lock");
+}
+
+/** True while another process holds the install lock beside the app. */
+export async function installRunning(app: string): Promise<boolean> {
+	const parent = dirname(app);
+	return lockfile.check(parent, { lockfilePath: installLock(parent), stale: 120_000 }).catch(() => false);
+}
+
 async function install(app: string): Promise<number> {
 	const parent = dirname(app);
 	mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -284,7 +296,7 @@ async function install(app: string): Promise<number> {
 	let compromised: Error | undefined;
 	try {
 		release = await lockfile.lock(parent, {
-			lockfilePath: join(parent, ".explorer-install.lock"),
+			lockfilePath: installLock(parent),
 			stale: 120_000,
 			onCompromised: (error) => {
 				compromised = error;

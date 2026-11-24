@@ -33,7 +33,7 @@ const linear: Ancestry = (ancestor, descendant) => {
 	return ancestor === descendant || (ancestor === A && descendant === B);
 };
 
-test("the installed app is replaced on its own only when it is missing, unreadable, unrecorded or older", () => {
+test("the installed app is replaced on its own unless it is current or built from a later commit", () => {
 	const loaded = { digest: "sha256:new", source: { commit: B, modified: false } };
 	const state = (installed: InstalledBuild | "missing" | "unreadable") => readerState(installed, loaded, linear);
 	assert.deepEqual(state("missing"), { state: "update", reason: "missing" });
@@ -46,41 +46,39 @@ test("the installed app is replaced on its own only when it is missing, unreadab
 	});
 	assert.deepEqual(state({ digest: "sha256:old", source: { commit: A, modified: true } }), {
 		state: "update",
-		reason: "older",
+		reason: "modified",
 	});
+	assert.deepEqual(state({ digest: "sha256:other", source: { commit: C, modified: false } }), {
+		state: "update",
+		reason: "unordered",
+	});
+	assert.deepEqual(readerState({ digest: "sha256:other" }, { digest: "sha256:new" }, linear), {
+		state: "update",
+		reason: "untracked",
+	});
+	assert.deepEqual(
+		readerState(
+			{ digest: "sha256:other", source: { commit: A, modified: false } },
+			{ digest: "sha256:new", source: { commit: B, modified: true } },
+			linear,
+		),
+		{ state: "update", reason: "modified" },
+	);
 });
 
-test("a newer build and a local build of the same commit stay installed without a notice", () => {
+test("only a clean build from a later commit stays installed", () => {
 	const loaded = { digest: "sha256:old", source: { commit: A, modified: false } };
 	assert.deepEqual(readerState({ digest: "sha256:new", source: { commit: B, modified: false } }, loaded, linear), {
 		state: "keep",
 		reason: "newer",
 	});
-	assert.deepEqual(readerState({ digest: "sha256:local", source: { commit: A, modified: true } }, loaded, linear), {
-		state: "keep",
+	assert.deepEqual(readerState({ digest: "sha256:new", source: { commit: B, modified: true } }, loaded, linear), {
+		state: "update",
 		reason: "modified",
 	});
-});
-
-test("a build that cannot be ordered against this harness stays installed with a notice", () => {
-	const clean = { digest: "sha256:new", source: { commit: B, modified: false } };
-	assert.deepEqual(readerState({ digest: "sha256:other", source: { commit: C, modified: false } }, clean, linear), {
-		state: "notice",
-		reason: "unordered",
-		commit: C,
-	});
-	assert.deepEqual(readerState({ digest: "sha256:other", source: { commit: B, modified: false } }, clean, linear), {
-		state: "notice",
-		reason: "unordered",
-		commit: B,
-	});
-	assert.deepEqual(
-		readerState({ digest: "sha256:other" }, { digest: "sha256:new", source: { commit: B, modified: true } }, linear),
-		{ state: "notice", reason: "loaded-modified" },
-	);
-	assert.deepEqual(readerState({ digest: "sha256:other" }, { digest: "sha256:new" }, linear), {
-		state: "notice",
-		reason: "loaded-untracked",
+	assert.deepEqual(readerState({ digest: "sha256:local", source: { commit: A, modified: true } }, loaded, linear), {
+		state: "update",
+		reason: "modified",
 	});
 });
 
@@ -268,29 +266,26 @@ const settled = (outcome: UpdateOutcome): UpdateRun => ({
 });
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-test("the report names the process and log, then the outcome and the readers that still run the previous build", async () => {
+test("the report names the log, then the outcome and the readers that still run the previous build", async () => {
 	const r = reporterFixture();
 	reportUpdate(settled({ status: "installed", running: 2 }), r.reporter, false);
 	await flush();
 	assert.deepEqual(r.statuses, ["Markdown reader update", undefined]);
 	assert.deepEqual(r.notices, [
+		["Markdown reader app update started in the background; log: /apps/update.log.", undefined],
 		[
-			"Updating the Markdown reader app for this harness in the background (process 7); log: /apps/update.log.",
-			undefined,
-		],
-		[
-			"The Markdown reader app is up to date; close the 2 readers that still use the previous build to load the update.",
+			"Markdown reader app is up to date; open a new pane to use it. 2 open readers still run the previous build until it closes.",
 			"warning",
 		],
 	]);
 	const one = reporterFixture();
 	reportUpdate(settled({ status: "installed", running: 1 }), one.reporter, false);
 	await flush();
-	assert.match(one.notices[1][0], /close the reader that still uses the previous build to load the update\.$/u);
+	assert.match(one.notices[1][0], /1 open reader still runs the previous build until it closes\.$/u);
 	const none = reporterFixture();
 	reportUpdate(settled({ status: "installed", running: 0 }), none.reporter, false);
 	await flush();
-	assert.equal(none.notices[1][0], "The Markdown reader app is up to date.");
+	assert.equal(none.notices[1][0], "Markdown reader app is up to date; open a new pane to use it.");
 });
 
 test("failures are errors, a busy outcome reaches only an explicit request, and an ended session hears nothing", async () => {
@@ -302,7 +297,7 @@ test("failures are errors, a busy outcome reaches only an explicit request, and 
 	);
 	await flush();
 	assert.deepEqual(failed.notices[1], [
-		"The Markdown reader update failed: the build exited with status 1; the previous app stays installed, so see /apps/update.log and run /markdown update to try again.",
+		"Markdown reader app update failed: the build exited with status 1; the previous app stays installed. See /apps/update.log and run /markdown update to try again.",
 		true,
 	]);
 	const automatic = reporterFixture();
@@ -312,7 +307,7 @@ test("failures are errors, a busy outcome reaches only an explicit request, and 
 	const explicit = reporterFixture();
 	reportUpdate(settled({ status: "busy" }), explicit.reporter, true);
 	await flush();
-	assert.match(explicit.notices[1][0], /in progress/u);
+	assert.match(explicit.notices[1][0], /already running/u);
 	const ended = reporterFixture(false);
 	reportUpdate(settled({ status: "installed", running: 0 }), ended.reporter, false);
 	await flush();
@@ -382,31 +377,28 @@ test("at startup a build from an earlier commit is replaced and a newer one is k
 	assert.equal(older.runs[0].nativeDir, f.native);
 	assert.equal(older.runs[0].busy, INSTALL_BUSY);
 	assert.equal(older.runs[0].running, runningReaders);
-	assert.match(
-		older.notices[0][0],
-		/^Updating the Markdown reader app for this harness in the background \(process 9\)/u,
-	);
-	const newer = startup(t, f.native, { sourceDigest: "sha256:later", source: { commit: f.second, modified: true } });
-	assert.deepEqual(await newer.check(), { state: "keep", reason: "modified" });
-	assert.equal(newer.runs.length + newer.notices.length, 0);
+	assert.match(older.notices[0][0], /^Markdown reader app update started in the background; log: /u);
+	const local = startup(t, f.native, { sourceDigest: "sha256:later", source: { commit: f.second, modified: true } });
+	assert.deepEqual(await local.check(), { state: "update", reason: "modified" });
+	assert.equal(local.runs.length, 1);
 	git(f.root, "checkout", "-q", f.first);
 	const ahead = startup(t, f.native, { sourceDigest: "sha256:second", source: { commit: f.second, modified: false } });
 	assert.deepEqual(await ahead.check(), { state: "keep", reason: "newer" });
 	assert.equal(ahead.runs.length + ahead.notices.length, 0);
 });
 
-test("at startup uncommitted reader changes and an unknown commit produce a notice instead of an update", async (t) => {
+test("at startup uncommitted reader changes and an unknown commit start an update without a manual step", async (t) => {
 	const f = checkoutFixture(t);
 	const unknown = startup(t, f.native, { sourceDigest: "sha256:other", source: { commit: C, modified: false } });
-	assert.deepEqual(await unknown.check(), { state: "notice", reason: "unordered", commit: C });
-	assert.equal(unknown.runs.length, 0);
-	assert.equal(unknown.notices[0][1], "warning");
-	assert.match(unknown.notices[0][0], /built from commit c{40}, which is not an earlier version of this harness/u);
+	assert.deepEqual(await unknown.check(), { state: "update", reason: "unordered" });
+	assert.equal(unknown.runs.length, 1);
+	assert.equal(unknown.notices.length, 1);
+	assert.doesNotMatch(unknown.notices[0][0], /\/markdown update/u);
 	writeFileSync(join(f.native, "web", "page.css"), "/* new */");
 	const modified = startup(t, f.native, { sourceDigest: "sha256:first", source: { commit: f.first, modified: false } });
-	assert.deepEqual(await modified.check(), { state: "notice", reason: "loaded-modified" });
-	assert.equal(modified.runs.length, 0);
-	assert.match(modified.notices[0][0], /uncommitted reader changes/u);
+	assert.deepEqual(await modified.check(), { state: "update", reason: "modified" });
+	assert.equal(modified.runs.length, 1);
+	assert.doesNotMatch(modified.notices[0][0], /\/markdown update/u);
 });
 
 test("at startup a running install and a failure for the same inputs start nothing", async (t) => {
@@ -426,7 +418,10 @@ test("at startup a running install and a failure for the same inputs start nothi
 	writeFileSync(updateFiles(repeated.app).failure, JSON.stringify({ digest: repeated.runs[0].digest }));
 	assert.deepEqual(await repeated.check(), { state: "failed" });
 	assert.equal(repeated.runs.length, 1);
-	assert.match(repeated.notices.at(-1)?.[0] ?? "", /^The last Markdown reader update failed and was not retried;/u);
+	assert.match(
+		repeated.notices.at(-1)?.[0] ?? "",
+		/^Markdown reader app update failed earlier for these sources and was not retried;/u,
+	);
 	assert.equal(repeated.notices.at(-1)?.[1], true);
 });
 
@@ -467,6 +462,6 @@ test("/markdown update installs whatever is installed, unless an install is runn
 	assert.equal(current.runs.length, 1);
 	assert.match(
 		current.notices.at(-1)?.[0] ?? "",
-		new RegExp(`^A Markdown reader update is already running \\(process ${process.pid}\\)`, "u"),
+		new RegExp(`^Markdown reader app update is already running \\(process ${process.pid}\\)`, "u"),
 	);
 });

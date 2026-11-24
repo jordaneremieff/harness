@@ -22,6 +22,7 @@ export type PaneBuild = {
 	ignoredOption: boolean;
 	commit: string | null;
 	dirty: boolean;
+	digest: string | null;
 };
 export type PaneLaunch =
 	| { show: string[]; paneInput?: string; live: boolean }
@@ -61,6 +62,7 @@ export async function readBuild(app: string): Promise<PaneBuild | undefined> {
 					? source.commit
 					: null,
 			dirty: source.dirty === true,
+			digest: typeof source.digest === "string" && /^sha256:[0-9a-f]{64}$/u.test(source.digest) ? source.digest : null,
 		};
 	} catch {
 		return undefined;
