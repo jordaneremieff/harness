@@ -2580,8 +2580,10 @@ work or calls `agent_yield`, whose card lists each open question as
 lists the questions this session asked with no reply or notice, and the
 questions it received with no reply. The sections appear only while such
 questions are open. The note text of each context head is retained as one
-`agent.continuity-note` entry, so the head states the same note after a
-reload, reopen or tree return. One session holds at most 16 open questions at
+`agent.continuity-note` entry with the session's ID, so the head states the
+same note after a reload, reopen or tree return. A fork keeps the head's entry
+ID and can copy the parent's note entry; only a note entry of the session
+itself counts, so a fork computes its own note at its first request. One session holds at most 16 open questions at
 once; it tracks the 256 newest received questions, sends the oldest its notice
 when a newer one passes that bound, and ignores a repeated delivery of one it
 already answered or noticed. Each session keeps its open questions in memory,

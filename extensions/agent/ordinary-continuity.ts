@@ -27,10 +27,18 @@ export const PLANNING_BUDGET_NOTICE = "agent.planning-budget";
 /** Custom entry that retains the note text of one context head, so a reopened or reloaded session states it again. */
 export const CONTINUITY_NOTE_ENTRY = "agent.continuity-note";
 const MAX_NOTE_TEXT = 64 * 1024;
-function retainedNote(data: unknown): { headId: string; text: string } | undefined {
+/**
+ * A retained note of `sessionId`. A fork copies the compaction head with its entry ID and can copy the parent's
+ * note entry too, so a note counts only for the session that retained it; an entry without a session counts for none.
+ */
+function retainedNote(data: unknown, sessionId: string): { headId: string; text: string } | undefined {
 	if (data === null || typeof data !== "object") return undefined;
-	const { headId, text } = data as { headId?: unknown; text?: unknown };
-	return typeof headId === "string" && headId !== "" && typeof text === "string" && text.length <= MAX_NOTE_TEXT
+	const { headId, text, sessionId: owner } = data as { headId?: unknown; text?: unknown; sessionId?: unknown };
+	return owner === sessionId &&
+		typeof headId === "string" &&
+		headId !== "" &&
+		typeof text === "string" &&
+		text.length <= MAX_NOTE_TEXT
 		? { headId, text }
 		: undefined;
 }
@@ -101,8 +109,8 @@ export interface OrdinaryContinuityOptions {
 	readonly diagnose: (sessionId: string, text: string | undefined) => void;
 	/** The session's questions at the first request of a context head; it may close those whose asked session ended. */
 	readonly questions?: (sessionId: string) => QuestionState | undefined;
-	/** Retain the note text of a head as a `CONTINUITY_NOTE_ENTRY` session entry. */
-	readonly retainNote?: (note: { headId: string; text: string }) => void;
+	/** Retain the note text of a head as a `CONTINUITY_NOTE_ENTRY` session entry of the session it belongs to. */
+	readonly retainNote?: (note: { sessionId: string; headId: string; text: string }) => void;
 	readonly now?: () => number;
 }
 type Note = { readonly headId: string; readonly text?: string };
@@ -143,7 +151,7 @@ export class OrdinaryContinuity {
 		const { facts, notes } = this.session(sessionId);
 		for (const entry of entries) {
 			if (entry.type === "custom" && entry.customType === CONTINUITY_NOTE_ENTRY) {
-				const note = retainedNote(entry.data);
+				const note = retainedNote(entry.data, sessionId);
 				if (note !== undefined && !notes.has(note.headId)) notes.set(note.headId, note.text);
 				continue;
 			}
@@ -266,7 +274,7 @@ export class OrdinaryContinuity {
 		}
 		state.notes.set(headId, text);
 		try {
-			this.options.retainNote?.({ headId, text });
+			this.options.retainNote?.({ sessionId, headId, text });
 		} catch {
 			// The note still holds in this process; a later process computes it again.
 		}

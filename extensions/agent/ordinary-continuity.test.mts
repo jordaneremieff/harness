@@ -519,3 +519,80 @@ it("states the retained note of a head again in a reopened session instead of re
 		"a retained note is not retained again",
 	);
 });
+
+it("a fork that copied the parent's retained note computes its own note for the same head", () => {
+	const session = SessionManager.inMemory("/tmp");
+	const parent = session.getSessionId();
+	const fork = "33333333-3333-4333-8444-555555555555";
+	const continuity = () =>
+		new OrdinaryContinuity({
+			append: (fact) => {
+				session.appendCustomEntry(ORDINARY_CONTINUITY_ENTRY, fact);
+			},
+			retainNote: (note) => {
+				session.appendCustomEntry(CONTINUITY_NOTE_ENTRY, note);
+			},
+			budget: () => undefined,
+			diagnose: () => {},
+		});
+	const view = (id: string) =>
+		({
+			getSessionId: () => id,
+			buildContextEntries: () => session.buildContextEntries(),
+			getEntries: () => session.getEntries(),
+		}) as unknown as ExtensionContext["sessionManager"];
+	const request = (target: OrdinaryContinuity, id: string) => {
+		const messages = session.buildSessionContext().messages;
+		return target.context({ type: "context", messages }, { sessionManager: view(id) })?.messages ?? messages;
+	};
+	const first = continuity();
+	first.start(parent, session.getEntries());
+	first.record(parent, { phase: "requested", sessionId: WORKER, requestId: "send-1", replyTo: parent });
+	first.record(parent, { phase: "admitted", sessionId: WORKER, requestId: "send-1", replyTo: parent, submissionId: 7 });
+	const kept = session.appendMessage({ role: "user", content: "kept input", timestamp: 1 });
+	session.appendCompaction("Summary", kept, 100);
+	const [parentNote] = noteText(request(first, parent));
+	assert.match(
+		parentNote,
+		/routed to itself, with no delivered result here: \n\{"sessionId":"11111111[^"]*","submissionId":7/u,
+	);
+
+	// A fork after the note entry copies the compaction head with its ID and the parent's note entry.
+	const forked = continuity();
+	forked.start(fork, session.getEntries());
+	const [forkNote] = noteText(request(forked, fork));
+	assert.notEqual(forkNote, parentNote);
+	assert.match(forkNote, /routed to itself, with no delivered result here: none/u);
+	assert.match(forkNote, /Routed elsewhere: 1\./u);
+
+	const reopened = continuity();
+	reopened.start(parent, session.getEntries());
+	assert.deepEqual(noteText(request(reopened, parent)), [parentNote], "the parent keeps its own retained note");
+});
+
+it("does not state a retained note entry that names no session", () => {
+	const session = SessionManager.inMemory("/tmp");
+	const id = session.getSessionId();
+	const retained: unknown[] = [];
+	const continuity = new OrdinaryContinuity({
+		append: (fact) => {
+			session.appendCustomEntry(ORDINARY_CONTINUITY_ENTRY, fact);
+		},
+		retainNote: (note) => retained.push(note),
+		budget: () => undefined,
+		diagnose: () => {},
+	});
+	const kept = session.appendMessage({ role: "user", content: "kept input", timestamp: 1 });
+	const head = session.appendCompaction("Summary", kept, 100);
+	session.appendCustomEntry(CONTINUITY_NOTE_ENTRY, {
+		headId: head,
+		text: "Host-held continuity facts without a session",
+	});
+	continuity.start(id, session.getEntries());
+	const messages = session.buildSessionContext().messages;
+	const [note] = noteText(
+		continuity.context({ type: "context", messages }, { sessionManager: session })?.messages ?? [],
+	);
+	assert.match(note, new RegExp(`for context head entry ${head}\\.`, "u"));
+	assert.deepEqual(retained, [{ sessionId: id, headId: head, text: note }]);
+});
