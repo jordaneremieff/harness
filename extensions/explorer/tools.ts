@@ -25,12 +25,20 @@ const url = str({ minLength: 1, maxLength: 2048, description: "HTTP or HTTPS URL
 const reply = obj({ by: title, text, at: opt(str({ maxLength: 40, description: "ISO 8601 date and time" })) }, {});
 const comment = obj(
 	{
-		id: title,
-		path: pathInput,
+		id: str({ minLength: 1, maxLength: 200, description: "Remote comment or discussion ID, unique in the repository" }),
+		path: str({
+			minLength: 1,
+			maxLength: 4096,
+			description: "Path on the comment's side: the new path for head, the old path for base",
+		}),
 		start: line,
 		end: line,
-		side: opt(union([lit("head"), lit("base")])),
-		by: title,
+		side: opt(
+			union([lit("head"), lit("base")], {
+				description: "head (default) for new or unchanged lines, base for removed lines with old line numbers",
+			}),
+		),
+		by: str({ minLength: 1, maxLength: 200, description: "Display name of the remote author" }),
 		text,
 		url: opt(url),
 		resolved: opt(bool()),
