@@ -1918,7 +1918,9 @@ export class AgentManager {
 				"Creating a thread storage needs this session's selected model; select a model and repeat create",
 			);
 		const name = `Threads of ${caller.name?.trim() || caller.id}`;
-		this.catalog.createThreadStorage({
+		// The record's own address: the catalog computes it after it made its directory, so it holds also
+		// when the address above came from a catalog path that did not exist yet.
+		return this.catalog.createThreadStorage({
 			cwd: canonicalAgentCwd(caller.cwd),
 			model: caller.model,
 			thinkingLevel: "off",
@@ -1927,8 +1929,7 @@ export class AgentManager {
 			ownerId: caller.id,
 			agentDir: this.options.agentDir,
 			packageDir: this.options.packageDir,
-		});
-		return storageId;
+		}).record.storageId;
 	}
 
 	private async selectedStatus(selector: string): Promise<unknown> {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -3280,6 +3281,41 @@ it("creates an ordinary primary's thread in its own thread storage without an ag
 	manager.catalog.create({ ...hostMetadata(record), ownerId: primary, name: "Agent" });
 	const page = (await manager.list({})) as { coverage: { catalog: { storages: number } } };
 	assert.equal(page.coverage.catalog.storages, 1, "agent views count the agent and omit the thread storage");
+});
+
+it("addresses the thread storage that the first create made when the catalog path crosses a symbolic link", async (t) => {
+	const real = fixtureRoot(t);
+	const root = join(real, "sessions-link");
+	mkdirSync(join(real, "sessions"));
+	symlinkSync(join(real, "sessions"), root);
+	const manager = new AgentManager(managerOptions(root, { agentDir: join(real, "agent") }));
+	t.after(() => manager.close());
+	assert.equal(existsSync(manager.catalog.root), false, "no catalog directory exists before the first create");
+	const primary = randomUUID();
+	const addressed: string[] = [];
+	const control = manager.control.bind(manager);
+	manager.control = async (method, input, caller, options) => {
+		if (method !== "collaboration-mutate") return control(method, input, caller, options);
+		addressed.push(String(input.sessionId));
+		// The real control resolves the target record before it starts a host.
+		manager.nativeTarget(String(input.sessionId));
+		return { threadId: `${String(input.sessionId)}/${"0".repeat(32)}`, sequence: 1, deduped: false };
+	};
+	const frame = {
+		action: "create",
+		title: "Review",
+		purpose: "Test",
+		authority: "Task",
+		source: "Test",
+		restrictions: "Local",
+		acceptance: "Verified",
+	};
+	const caller = { id: primary, cwd: real, name: "Docs", model: { provider: "acme", modelId: "model-x" } };
+	await manager.collaborate(frame, caller);
+	await manager.collaborate(frame, caller);
+	const storageId = threadStorageId(primary, manager.catalog.root);
+	assert.deepEqual(addressed, [storageId, storageId]);
+	assert.equal(isThreadStorage(manager.catalog.read(storageId), manager.catalog.root), true);
 });
 
 it("admits no agent work or input into a thread storage from an ordinary session", async (t) => {
