@@ -44,7 +44,8 @@ import {
 
 /**
  * Observed display facts for cards: the roster rows, and in the dashboard also known thread titles and
- * participant names. Every lookup is optional; an unknown value keeps the exact identity.
+ * participant names. Every lookup is optional; an unknown value keeps the exact identity. A view returns
+ * another array when a row changed: a mounted call card reads the rows of one array once.
  */
 export type AgentCardLookup = (() => readonly AgentConversationSummary[]) & {
 	readonly threadTitle?: (id: string) => string | undefined;
@@ -52,6 +53,10 @@ export type AgentCardLookup = (() => readonly AgentConversationSummary[]) & {
 	/** The model of an agent or main session the view has observed, for identities beyond the roster rows. */
 	readonly modelFor?: (identity: string) => AgentConversationSummary["model"] | undefined;
 };
+
+const NO_ROWS: readonly AgentConversationSummary[] = [];
+/** The lookup of a view that observed no roster; one array serves every call. */
+const noRows: AgentCardLookup = () => NO_ROWS;
 
 /** Maximum UTF-16 code units retained for a displayed message body. */
 export const SOURCE_DISPLAY_LIMIT = 32_000;
@@ -233,6 +238,8 @@ class PeerCardBody implements Component {
 	private readonly theme: Theme;
 	private readonly options: CardLayoutOptions;
 	private readonly disclosure: CardDisclosure;
+	/** The lines of the last paint. A click on the card and an invalidation discard them. */
+	private drawn?: { width: number; lines: string[] };
 	constructor(
 		header: readonly string[],
 		content: readonly (string | Component)[],
@@ -266,6 +273,10 @@ class PeerCardBody implements Component {
 			: "";
 	}
 	render(width: number): string[] {
+		if (this.drawn?.width !== width) this.drawn = { width, lines: this.draw(width) };
+		return this.drawn.lines;
+	}
+	private draw(width: number): string[] {
 		if (this.expanded) this.fullBody ??= this.sections.expandedBody?.();
 		const lines = PeerCardBody.lines((this.expanded && this.fullBody) || this.content, width);
 		const shown = this.expanded ? lines : previewWindow(lines, this.sections.previewLines ?? lines.length);
@@ -289,6 +300,7 @@ class PeerCardBody implements Component {
 		return { handled: true };
 	}
 	invalidate(): void {
+		this.drawn = undefined;
 		for (const part of this.content) if (typeof part !== "string") part.invalidate();
 		for (const part of this.fullBody ?? []) if (typeof part !== "string") part.invalidate();
 		for (const part of this.details ?? []) if (typeof part !== "string") part.invalidate();
@@ -413,7 +425,8 @@ function snapshotFacts(context: AgentCardContext, snapshot: Record<string, unkno
 	if (!identity) return context;
 	const agent = record(snapshot.agent);
 	const model = record(agent.model);
-	const previous = context.lookup?.() ?? [];
+	const lookup = context.lookup;
+	const previous = lookup?.() ?? [];
 	const known = previous.find((row) => row.id === identity);
 	const row: AgentConversationSummary = {
 		id: identity,
@@ -431,7 +444,9 @@ function snapshotFacts(context: AgentCardContext, snapshot: Record<string, unkno
 				? { provider: text(model.provider), modelId: text(model.modelId), thinkingLevel: text(agent.thinkingLevel) }
 				: known?.model,
 	};
-	return { ...context, lookup: () => [row, ...previous.filter((item) => item.id !== identity)] };
+	const rows = [row, ...previous.filter((item) => item.id !== identity)];
+	// The observed target leads the rows; thread titles and names stay those of the view.
+	return { ...context, lookup: Object.assign(() => rows, { ...lookup }) };
 }
 
 function headerHasName(identity: string, name: string, context: AgentCardContext): boolean {
@@ -2899,41 +2914,84 @@ function cardContext(context: AgentCardContext, lookup: AgentCardLookup): AgentC
 	return { ...context, lookup, lastComponent: undefined };
 }
 
-function sameRows(left: readonly AgentConversationSummary[], right: readonly AgentConversationSummary[]): boolean {
-	return left === right || (left.length === right.length && left.every((row, index) => row === right[index]));
+type RosterMark = (rows: readonly AgentConversationSummary[]) => object;
+
+/**
+ * Marks the roster facts that a call card draws: the identity, name, handle and model of every row.
+ * Consecutive roster reads with the same facts share one mark, so a read that changed only activity, cost
+ * or times builds no card. The facts are joined once for each rows array; a card then compares two references
+ * and keeps the mark, not the rows.
+ */
+function rosterMarker(): RosterMark {
+	const marks = new WeakMap<readonly AgentConversationSummary[], object>();
+	const empty = {};
+	let last: { facts: string; mark: object } | undefined;
+	let recent: { rows: readonly AgentConversationSummary[]; mark: object } | undefined;
+	const read = (rows: readonly AgentConversationSummary[]): object => {
+		if (rows.length === 0) return empty;
+		const known = marks.get(rows);
+		if (known) return known;
+		const facts = rows
+			.map((row) =>
+				[
+					row.id,
+					row.name ?? "",
+					row.profile?.handle ?? "",
+					row.model?.provider ?? "",
+					row.model?.modelId ?? "",
+					row.model?.thinkingLevel ?? "",
+				].join("\u0000"),
+			)
+			.join("\u0001");
+		if (last?.facts !== facts) last = { facts, mark: {} };
+		marks.set(rows, last.mark);
+		return last.mark;
+	};
+	return (rows) => {
+		if (recent?.rows !== rows) recent = { rows, mark: read(rows) };
+		return recent.mark;
+	};
 }
 
 /**
- * A call card whose target facts can change after Pi built it: the result renderer observes the target after
- * the call renderer ran, and the roster changes without a display update. A frame builds the card again only
- * when one of these two observed values changed; an unchanged frame returns the line array of the built card.
+ * A call card whose facts can change after Pi built it: the result renderer observes the target after the
+ * call renderer ran, the roster changes without a display update, and a delivery time omits its date only on
+ * the day it names. A frame builds the card again only when one of these three changed; an unchanged frame
+ * returns the line array of the built card.
  */
 class ObservedCallCard implements Component {
 	private readonly build: (observation: Record<string, unknown> | undefined) => Component;
 	private readonly state: NonNullable<AgentCardContext["state"]>;
 	private readonly lookup: AgentCardLookup;
+	private readonly mark: RosterMark;
 	private observation: Record<string, unknown> | undefined;
-	private rows: readonly AgentConversationSummary[];
+	private roster: object;
+	private day: string;
 	private component: Component | undefined;
 	constructor(
 		build: (observation: Record<string, unknown> | undefined) => Component,
 		state: NonNullable<AgentCardContext["state"]>,
 		lookup: AgentCardLookup,
+		mark: RosterMark,
 	) {
 		this.build = build;
 		this.state = state;
 		this.lookup = lookup;
+		this.mark = mark;
 		this.observation = state.observation;
-		this.rows = lookup();
+		this.roster = mark(lookup());
+		this.day = localDay();
 		this.component = build(this.observation);
 	}
 	render(width: number): readonly string[] {
 		const observation = this.state.observation;
-		const rows = this.lookup();
-		if (!this.component || observation !== this.observation || !sameRows(rows, this.rows))
+		const roster = this.mark(this.lookup());
+		const day = localDay();
+		if (!this.component || observation !== this.observation || roster !== this.roster || day !== this.day)
 			this.component = this.build(observation);
 		this.observation = observation;
-		this.rows = rows;
+		this.roster = roster;
+		this.day = day;
 		return this.component.render(width);
 	}
 	invalidate(): void {
@@ -2947,10 +3005,11 @@ function observedCall(
 	theme: Theme,
 	context: AgentCardContext,
 	lookup: AgentCardLookup,
+	mark: RosterMark,
 ): Component {
 	const build = (observation: Record<string, unknown> | undefined) =>
 		card.renderCall(args, theme, snapshotFacts(context, observation));
-	return context.state ? new ObservedCallCard(build, context.state, lookup) : build(undefined);
+	return context.state ? new ObservedCallCard(build, context.state, lookup, mark) : build(undefined);
 }
 
 function observeResult(result: AgentToolResult<unknown>, context: AgentCardContext, name: string): AgentCardContext {
@@ -3040,6 +3099,21 @@ function workPresentation(
 
 const STATE_NOTE_LINES = 3;
 
+let localDayNow = { text: "", from: 0, until: 0 };
+
+/** The local calendar day, read from the clock once per day. */
+function localDay(): string {
+	const now = Date.now();
+	if (now >= localDayNow.until || now < localDayNow.from) {
+		const from = new Date(now);
+		from.setHours(0, 0, 0, 0);
+		const until = new Date(now);
+		until.setHours(24, 0, 0, 0);
+		localDayNow = { text: from.toDateString(), from: from.getTime(), until: until.getTime() };
+	}
+	return localDayNow.text;
+}
+
 /** The parts of Pi's tool render context that the state note card reads. */
 type NoteCardContext = AgentCardContext & {
 	readonly outputPad?: number;
@@ -3087,13 +3161,18 @@ class StateNoteCard implements Component {
 	private context: NoteCardContext | undefined;
 	/** The call slot hides itself once the result slot draws the card. */
 	private hidden: () => boolean = () => false;
+	/** The lines of the last paint, with the roster rows and the local day that it read. */
+	private drawn?: { width: number; rows: unknown; day: string; lines: string[] };
 	set(facts: NoteCardFacts, theme: Theme, context: NoteCardContext, hidden: () => boolean): void {
 		this.facts = facts;
 		this.theme = theme;
 		this.context = context;
 		this.hidden = hidden;
+		this.drawn = undefined;
 	}
-	invalidate(): void {}
+	invalidate(): void {
+		this.drawn = undefined;
+	}
 	private title(theme: Theme): string {
 		const { error, at, settled } = this.facts;
 		const head = error !== undefined ? "Turn did not end" : at !== undefined ? "Turn ended" : settled ? "" : "End turn";
@@ -3201,6 +3280,11 @@ class StateNoteCard implements Component {
 	render(width: number): string[] {
 		const theme = this.theme;
 		if (!theme || this.hidden()) return [];
+		// Only the expanded card reads the roster: it shows the state of each awaited agent now.
+		const rows = this.context?.expanded === true ? this.context.lookup?.() : undefined;
+		// The end time omits its date on the day it names.
+		const day = this.facts.at === undefined ? "" : localDay();
+		if (this.drawn?.width === width && this.drawn.rows === rows && this.drawn.day === day) return this.drawn.lines;
 		const pad = Math.max(0, Math.min(this.context?.outputPad ?? 1, Math.floor((width - 1) / 2)));
 		const inner = Math.max(1, width - pad * 2);
 		const color = this.facts.error === undefined ? "customMessageBg" : "toolErrorBg";
@@ -3209,7 +3293,9 @@ class StateNoteCard implements Component {
 			const content = line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background);
 			return theme.bg(color, " ".repeat(pad) + content + " ".repeat(Math.max(0, inner - visibleWidth(line)) + pad));
 		};
-		return ["", ...this.body(theme, inner), ""].map(fill);
+		const lines = ["", ...this.body(theme, inner), ""].map(fill);
+		this.drawn = { width, rows, day, lines };
+		return lines;
 	}
 }
 
@@ -3219,7 +3305,7 @@ function noteText(args: unknown): string {
 		.trim();
 }
 
-export function ordinaryWorkCard(name: string, lookup: AgentCardLookup = () => []): AgentToolCard {
+export function ordinaryWorkCard(name: string, lookup: AgentCardLookup = noRows): AgentToolCard {
 	return {
 		renderShell: "self",
 		renderCall: (value, theme, context) => {
@@ -3229,7 +3315,7 @@ export function ordinaryWorkCard(name: string, lookup: AgentCardLookup = () => [
 			component.set(
 				{ note: noteText(value), waiting: [], waitingOmitted: 0, settled: false },
 				theme,
-				{ ...context, lookup },
+				cardContext(context, lookup),
 				() => state?.workNoteResult === true,
 			);
 			return component;
@@ -3258,7 +3344,7 @@ export function ordinaryWorkCard(name: string, lookup: AgentCardLookup = () => [
 					settled: true,
 				},
 				theme,
-				{ ...context, lookup },
+				cardContext(context, lookup),
 				() => false,
 			);
 			return component;
@@ -3267,7 +3353,7 @@ export function ordinaryWorkCard(name: string, lookup: AgentCardLookup = () => [
 }
 
 /** Call and result renderers for every registered agent tool, keyed by tool name. */
-export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readonly<Record<string, AgentToolCard>> {
+export function createAgentToolCards(lookup: AgentCardLookup = noRows): Readonly<Record<string, AgentToolCard>> {
 	const cards: Record<string, AgentToolCard> = {
 		agent_spawn: { renderCall: bindCall("agent_spawn"), renderResult: renderAgentResult("agent_spawn") },
 		agent_brief: { renderCall: bindCall("agent_brief"), renderResult: renderBriefResult },
@@ -3300,12 +3386,13 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 		agent_compact: { renderCall: renderCompactCall, renderResult: renderCompactResult },
 		agent_reset: { renderCall: bindCall("agent_reset"), renderResult: renderAgentResult("agent_reset") },
 	};
+	const mark = rosterMarker();
 	return Object.fromEntries(
 		Object.entries(cards).map(([name, card]) => [
 			name,
 			{
 				renderCall(args: unknown, theme: Theme, context: AgentCardContext) {
-					return observedCall(card, args, theme, cardContext(context, lookup), lookup);
+					return observedCall(card, args, theme, cardContext(context, lookup), lookup, mark);
 				},
 				renderResult(
 					result: AgentToolResult<unknown>,
