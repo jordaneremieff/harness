@@ -64,6 +64,7 @@ struct ReadingStateFile: Codable, Sendable {
     var settings = PageSettings()
     var locks: [String: ReaderBridgeLock]?
     var appearance: String?
+    var darkTheme: String?
     var outlineWidth: Double?
     var outlineOpen: Bool?
 }
@@ -226,11 +227,15 @@ public final class ReadingStateStore {
     }
 
     public var appearance: String { state.appearance ?? "system" }
+    /// The Catppuccin flavour of the dark appearance; the light appearance is always Latte.
+    public var darkTheme: String { state.darkTheme ?? "frappe" }
+    nonisolated public static let darkThemes = ["frappe", "macchiato", "mocha"]
     public var outlineWidth: Double { state.outlineWidth ?? 240 }
     public var outlineOpen: Bool { state.outlineOpen ?? true }
 
-    public func setPresentation(appearance: String? = nil, outlineWidth: Double? = nil, outlineOpen: Bool? = nil) {
+    public func setPresentation(appearance: String? = nil, darkTheme: String? = nil, outlineWidth: Double? = nil, outlineOpen: Bool? = nil) {
         if let appearance, ["system", "light", "dark"].contains(appearance) { state.appearance = appearance }
+        if let darkTheme, Self.darkThemes.contains(darkTheme) { state.darkTheme = darkTheme }
         if let outlineWidth, outlineWidth.isFinite { state.outlineWidth = min(640, max(120, outlineWidth)) }
         if let outlineOpen { state.outlineOpen = outlineOpen }
         mark(.settings)
@@ -307,6 +312,7 @@ public final class ReadingStateStore {
         if changes.settings {
             result.settings = ours.settings
             result.appearance = ours.appearance
+            result.darkTheme = ours.darkTheme
             result.outlineWidth = ours.outlineWidth
             result.outlineOpen = ours.outlineOpen
         }
@@ -349,6 +355,7 @@ public final class ReadingStateStore {
         var kept = ReadingStateFile()
         kept.settings = state.settings
         kept.appearance = state.appearance
+        kept.darkTheme = state.darkTheme
         kept.outlineWidth = state.outlineWidth
         kept.outlineOpen = state.outlineOpen
         kept.selectedStoreRoot = state.selectedStoreRoot

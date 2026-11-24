@@ -34,8 +34,8 @@ import ReaderFeature
 
     @Test(arguments: [-1, 0, 3, 4, 9, 99])
     func textSizeOptionsKeepTheirIndexAtTheNativeBoundary(_ index: Int) throws {
-        guard case .present(_, _, _, _, _, _, _, _, let presented, _, _) = LaunchMode.parse(["--present", "--text-size", String(index), "document.md"]),
-              case .exportImage(_, _, _, _, _, let exported, _) = LaunchMode.parse(["--export-image", "--out", "document.png", "--text-size", String(index), "document.md"]) else {
+        guard case .present(_, _, _, _, _, _, _, _, let presented, _, _, _) = LaunchMode.parse(["--present", "--text-size", String(index), "document.md"]),
+              case .exportImage(_, _, _, _, _, let exported, _, _, _, _) = LaunchMode.parse(["--export-image", "--out", "document.png", "--text-size", String(index), "document.md"]) else {
             Issue.record("The text-size option did not reach the check mode")
             return
         }
@@ -45,6 +45,24 @@ import ReaderFeature
         #expect(settings.textSize == clamped)
         #expect(settings.textSizeMultiplier == Double(PageSettings.textSizes[clamped]) / 16)
         #expect(PageSettings.textSizeMultipliers[clamped] == settings.textSizeMultiplier)
+    }
+
+    @Test func exportOptionsCarryTheDarkThemeTheControlToClickAndTheAnswer() {
+        guard case .exportImage(_, _, _, _, _, _, _, let theme, let click, let answer) = LaunchMode.parse(["--export-image", "--out", "page.png", "--dark-theme", "mocha", "--click", "#b-view", "--answer", "answer.md", "document.md"]) else {
+            Issue.record("The export options did not parse")
+            return
+        }
+        #expect(theme == "mocha" && click == "#b-view" && answer == "answer.md")
+    }
+
+    @Test func nativePaperTakesTheBaseOfTheThemeInForce() {
+        #expect(ReaderTheme.base(light: true, darkTheme: "mocha") == (239, 241, 245))
+        #expect(ReaderTheme.base(light: false, darkTheme: "frappe") == (48, 52, 70))
+        #expect(ReaderTheme.base(light: false, darkTheme: "macchiato") == (36, 39, 58))
+        #expect(ReaderTheme.base(light: false, darkTheme: "mocha") == (30, 30, 46))
+        #expect(ReaderTheme.appearance(for: "dark")?.name == .darkAqua)
+        #expect(ReaderTheme.appearance(for: "light")?.name == .aqua)
+        #expect(ReaderTheme.appearance(for: "system") == nil)
     }
 
     @Test func offscreenHostAttachesTheWebViewWithoutActivation() {

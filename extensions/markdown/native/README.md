@@ -30,10 +30,21 @@ The page assets live in `web/` and ship at `Contents/Resources/web/`.
 The host uses `WKWebView` directly, not SwiftUI `WebView` or `WebPage`.
 Its non-persistent data store retains no browsing session. Background drawing and
 back/forward gestures are disabled. The native paper colour appears behind the page.
-The page uses the [Catppuccin](https://github.com/catppuccin/catppuccin) palette: Macchiato in
-dark appearance and Latte in light, with colours assigned by its style guide. Latte text colours
-that fall below 4.5:1 on a page surface are darkened for legibility; `web/styles/tokens.css`
-marks them. The native paper colour matches the base of each flavour.
+The page uses the [Catppuccin](https://github.com/catppuccin/catppuccin) palette, with colours
+assigned by its style guide: Latte in the light appearance and, in the dark appearance, the
+flavour chosen under Text and appearance: Frappé (the default), Macchiato or Mocha. The choice of
+appearance (System, Light or Dark) and of dark flavour are page settings saved per machine in
+`reading-state.json` (`appearance`, `darkTheme`). Text colours that fall below 4.5:1 on a page
+surface are darkened in Latte and lightened in the dark flavours; `web/styles/tokens.css` marks
+them. The saved appearance also sets the application's appearance, so the web view's colour
+scheme and the native paper behind the page agree with the page's choice; the paper takes the
+base colour of the flavour in force.
+The chrome shares one scale in `tokens.css`: control heights (`--ctl`, `--ctl-s`), spacing
+(`--sp-*`), nested radii (`--r-s`, `--r`, `--r-l`, `--r-xl`) and one icon line weight
+(`--icon-stroke`, drawn at the same width at every icon size).
+An agent's answer in an Ask card is Markdown rendered with the document's renderer, as text that
+belongs to no file: no raw HTML, and images as placeholders. A long answer also opens as a page of
+its own in the document's type and measure.
 Code blocks whose language label the page knows, such as TypeScript, Swift, JSON, shell, Python,
 YAML, CSS, HTML, SQL, Rust, Go and diff, take the style guide's syntax colours by role: keywords,
 strings with their escapes and interpolated code, numbers, comments, types, functions, parameters,
@@ -294,7 +305,8 @@ Check modes use private pasteboard and in-memory reading state:
 
 ```text
 MarkdownReader --verify [--out report.json]
-MarkdownReader --export-image --out page.png [--width 900] [--max-height 6000] <input>
+MarkdownReader --export-image --out page.png [--width 900] [--max-height 6000] [--appearance light|dark]
+               [--dark-theme frappe|macchiato|mocha] [--text-size n] [--click <selector>] [--answer <answer.md>] <input>
 MarkdownReader --measure [--sizes 51200,512000,2097152] [--out report.json] [<corpus.md>...]
 MarkdownReader --return-check <open request>
 ```
@@ -304,7 +316,10 @@ find, code copy, lock, edits and page recovery. Checks that send real key and mo
 panel that WebKit treats as the key window but that never becomes the system's key window, and
 they deliver the events to it directly. A check run never activates the app or takes a person's
 typing, and typing elsewhere never reaches a check. Missing bundled page assets are a failure,
-not a substituted interface. `--export-image` snapshots the same page. `--measure` reports
+not a substituted interface. `--export-image` snapshots the same page. `--click` clicks one
+control, named by CSS selector, before the capture, to show a menu or panel such as `#b-view`
+(Text and appearance) or `#b-title` (the document menu). `--answer` asks about the document and
+shows the given Markdown file as the agent's answer in the Ask card. `--measure` reports
 read, render, display, find and process observations with their evidence limits.
 `--return-check` performs the explicit terminal-return operation with the request's origin.
 `--present` is a separate visible presentation mode, not an offscreen check.

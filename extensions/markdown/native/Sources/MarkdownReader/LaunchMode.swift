@@ -40,8 +40,11 @@ enum LaunchMode {
     private static let paneUsage = "--pane <open request.json> | --pane --store <store directory> [--revision <positive integer> --digest <sha256:digest>] <document ID>"
     /// Renders one document into a PNG image of the page. `review` names the revision to compare
     /// the document's revision with (`previous` for the one before it); the image then shows the
-    /// comparison.
-    case exportImage(input: String, output: String, width: Double, maxHeight: Double, appearance: String?, textSize: Int?, review: String?)
+    /// comparison. `darkTheme` names the Catppuccin flavour of the dark appearance; `click` names a
+    /// control, by CSS selector, that the export clicks before the capture, to show a menu or panel.
+    /// `answer` names a Markdown file: the export asks about the document and shows that file's text
+    /// as the agent's answer in the Ask card.
+    case exportImage(input: String, output: String, width: Double, maxHeight: Double, appearance: String?, textSize: Int?, review: String?, darkTheme: String?, click: String?, answer: String?)
     /// Runs the fixed WebKit checks and prints one JSON report.
     case verify(output: String?)
     /// Measures opening, refresh, CPU and memory for documents built from a corpus at the given
@@ -50,7 +53,7 @@ enum LaunchMode {
     /// Opens one visible reader window in a prepared state for screen capture, and keeps running.
     /// `inspect` names an image to open in the inspection, counted from 1: `2` shows it at Fit,
     /// `2:actual` at actual size.
-    case present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool, embedded: Bool, textSize: Int?, review: String?, inspect: String?)
+    case present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool, embedded: Bool, textSize: Int?, review: String?, inspect: String?, darkTheme: String?)
     /// Opens an open request's document offscreen with the real platform operations and runs
     /// Return to Rex once, printing its result.
     case returnCheck(request: String)
@@ -112,7 +115,7 @@ enum LaunchMode {
             return .usage(paneUsage)
         case "--export-image":
             guard let output = options["out"], let input = positional.first else {
-                return .usage("--export-image --out <image.png> [--width 900] [--max-height 6000] [--appearance light|dark] [--text-size n] [--review previous|n] <file.md | open request>")
+                return .usage("--export-image --out <image.png> [--width 900] [--max-height 6000] [--appearance light|dark] [--dark-theme frappe|macchiato|mocha] [--text-size n] [--review previous|n] [--click <selector>] [--answer <answer.md>] <file.md | open request>")
             }
             return .exportImage(
                 input: input,
@@ -121,11 +124,14 @@ enum LaunchMode {
                 maxHeight: options["max-height"].flatMap(Double.init) ?? 6000,
                 appearance: options["appearance"],
                 textSize: options["text-size"].flatMap(Int.init),
-                review: options["review"]
+                review: options["review"],
+                darkTheme: options["dark-theme"],
+                click: options["click"],
+                answer: options["answer"]
             )
         case "--present":
             guard let input = positional.first else {
-                return .usage("--present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] [--embedded yes] [--text-size n] [--review previous|n] [--inspect n[:actual]] <file.md | open request>")
+                return .usage("--present [--width 960] [--height 900] [--appearance light|dark] [--dark-theme frappe|macchiato|mocha] [--find text] [--source yes] [--outline no] [--embedded yes] [--text-size n] [--review previous|n] [--inspect n[:actual]] <file.md | open request>")
             }
             return .present(
                 input: input,
@@ -138,7 +144,8 @@ enum LaunchMode {
                 embedded: options["embedded"] == "yes",
                 textSize: options["text-size"].flatMap(Int.init),
                 review: options["review"],
-                inspect: options["inspect"]
+                inspect: options["inspect"],
+                darkTheme: options["dark-theme"]
             )
         case "--return-check":
             guard let request = positional.first else { return .usage("--return-check <open request>") }

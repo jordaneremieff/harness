@@ -200,6 +200,7 @@
 			views = api.createViewsUI(context, navigation),
 			contextMenu = api.createContextMenu(context, (id, c) => runMenu(id, c));
 		context.reveal = (node) => codeViews.reveal(node);
+		context.showAnswer = (html) => views.show("answer", { html });
 		context.annotationAt = (x, y) => ask.annotationAt(x, y);
 		const findbar = get(".find");
 		bar.insertBefore(findbar, bar.querySelector(".spacer"));
@@ -672,7 +673,7 @@
 					const tip = get("#tip"),
 						r = target.getBoundingClientRect();
 					tip.replaceChildren(el("span", {}, target.dataset.tip ?? ""));
-					if (target.dataset.key) tip.append(el("kbd", {}, target.dataset.key));
+					if (target.dataset.key) tip.append(el("kbd", {}, api.uiDOM.keys(target.dataset.key)));
 					tip.hidden = false;
 					tip.style.left = `${Math.max(8, Math.min(r.left, innerWidth - tip.offsetWidth - 8))}px`;
 					tip.style.top = `${Math.min(innerHeight - tip.offsetHeight - 8, r.bottom + 7)}px`;

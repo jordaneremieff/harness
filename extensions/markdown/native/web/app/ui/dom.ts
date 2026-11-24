@@ -38,6 +38,10 @@
 		new: "M6 3h8l5 5v13H6z M12 10v7 M9 13.5h6",
 		image: "M3 5h18v14H3z m1 12 5-5 4 4 3-3 4 4 M8 8h.01",
 		response: "M12 3c.5 5 2 6.5 7 7-5 .5-6.5 2-7 7-.5-5-2-6.5-7-7 5-.5 6.5-2 7-7",
+		sun: "M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M12 2v2 M12 20v2 M4.9 4.9l1.4 1.4 M17.7 17.7l1.4 1.4 M2 12h2 M20 12h2 M4.9 19.1l1.4-1.4 M17.7 6.3l1.4-1.4",
+		moon: "M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5",
+		system: "M3 4h18v12H3z M8 20h8 M12 16v4",
+		expand: "M14 4h6v6 M20 4l-7 7 M10 20H4v-6 M4 20l7-7",
 	};
 	function element<K extends keyof HTMLElementTagNameMap>(
 		tag: K,
@@ -79,7 +83,21 @@
 		b.addEventListener("click", action);
 		return b;
 	}
+	/** Writes a key combination such as "cmd+shift+C" in the Mac menu form "⇧⌘C". */
+	function keys(combination: string) {
+		const glyphs: Record<string, string> = { ctrl: "⌃", option: "⌥", shift: "⇧", cmd: "⌘" };
+		const parts = combination.split("+");
+		const key = parts.pop() ?? "";
+		const named: Record<string, string> = { esc: "esc", return: "↩", enter: "↩", up: "↑", down: "↓" };
+		return (
+			["ctrl", "option", "shift", "cmd"]
+				.filter((modifier) => parts.includes(modifier))
+				.map((modifier) => glyphs[modifier])
+				.join("") + (named[key.toLowerCase()] ?? key.toUpperCase())
+		);
+	}
 	api.uiDOM = {
+		keys,
 		element,
 		icon,
 		button,

@@ -639,14 +639,14 @@
 			const send = () => {
 				if (thread === session.current) void sendMessage();
 			};
-			if (followUp) return { primary: "Send", run: send, hint: "cmd+return send" };
+			if (followUp) return { primary: "Send", run: send, hint: "⌘↩ send" };
 			if (thread.pendingComment)
 				return {
 					primary: "Done",
 					run: () => ask.close(),
 					secondary: `Send all ${session.comments.length}`,
 					runSecondary: () => void sendBatch(),
-					hint: "cmd+return done · cmd+shift+return send",
+					hint: "⌘↩ done · ⇧⌘↩ send",
 				};
 			const add = () => addComment(thread);
 			if (!session.comments.length)
@@ -655,7 +655,7 @@
 					run: send,
 					secondary: "Add to batch",
 					runSecondary: add,
-					hint: "cmd+return send · cmd+shift+return add",
+					hint: "⌘↩ send · ⇧⌘↩ add",
 				};
 			return {
 				primary: "Add to batch",
@@ -664,7 +664,7 @@
 				runSecondary: () => {
 					if (add()) void sendBatch();
 				},
-				hint: "cmd+return add · cmd+shift+return send",
+				hint: "⌘↩ add · ⇧⌘↩ send",
 			};
 		}
 		function composerField(thread: ReaderThread, followUp: boolean) {
@@ -1168,10 +1168,99 @@
 				list,
 			);
 		}
+		// An answer is Markdown. Native renders it with the document's renderer, as text that belongs
+		// to no file; the plain text shows until the rendering arrives and stays if it fails. Renderings
+		// are kept by text, so a card that redraws shows them at once.
+		const renderedAnswers = new Map<string, string>(),
+			renderingAnswers = new Set<string>(),
+			answerText = new WeakMap<HTMLElement, string>();
+		const blockParents = new Set(["DIV", "UL", "OL", "BLOCKQUOTE", "FIGURE", "TABLE", "THEAD", "TBODY", "TR"]);
+		function fillAnswer(body: HTMLElement, html: string) {
+			api.setRenderedHTML(body, html.trim());
+			// Line breaks between the renderer's block elements are layout, not answer text.
+			const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+			const breaks: Text[] = [];
+			for (let node = walker.nextNode(); node; node = walker.nextNode())
+				if (!node.nodeValue?.trim() && blockParents.has(node.parentElement?.tagName ?? "")) breaks.push(node as Text);
+			for (const node of breaks) node.remove();
+			for (const node of body.querySelectorAll("[id]")) node.removeAttribute("id");
+			api.highlightCode?.(body);
+			body.classList.remove("plain");
+		}
+		function rememberAnswer(text: string, html: string) {
+			renderedAnswers.set(text, html);
+			if (renderedAnswers.size > 40) renderedAnswers.delete(renderedAnswers.keys().next().value as string);
+		}
+		function showRenderedAnswer(text: string, html: string) {
+			rememberAnswer(text, html);
+			const log = card.querySelector<HTMLElement>(".ask-messages");
+			if (!log) return;
+			const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 4;
+			const bodies = [...log.querySelectorAll<HTMLElement>('[data-role="ask-answer"].plain')].filter(
+				(body) => answerText.get(body) === text,
+			);
+			for (const body of bodies) fillAnswer(body, html);
+			if (atEnd || bodies.some((body) => body.parentElement === log.lastElementChild)) showNewest(log);
+		}
+		async function renderAnswer(text: string) {
+			renderingAnswers.add(text);
+			try {
+				const reply = (await host.request("query", { kind: "markdown", text })) as { html?: unknown } | undefined;
+				if (typeof reply?.html === "string") showRenderedAnswer(text, reply.html);
+			} catch {
+				// The plain text stays.
+			} finally {
+				renderingAnswers.delete(text);
+			}
+		}
+		function answerBody(text: string) {
+			const body = el("div", { class: "reply-md plain", "data-role": "ask-answer" });
+			answerText.set(body, text);
+			const html = renderedAnswers.get(text);
+			if (html !== undefined) fillAnswer(body, html);
+			else {
+				body.textContent = text;
+				if (!renderingAnswers.has(text)) void renderAnswer(text);
+			}
+			body.addEventListener("click", (event) => {
+				const link = (event.target as Element).closest("a[href]");
+				if (!link) return;
+				event.preventDefault();
+				const href = link.getAttribute("href") ?? "";
+				if (!href.startsWith("#")) void ctx.hostCommand("openLink", { href });
+			});
+			return body;
+		}
+		// The page takes the card's place; the answer stays in the card for the next opening.
+		async function openAnswerPage(text: string) {
+			let html = renderedAnswers.get(text);
+			if (html === undefined) {
+				const reply = (await host.request("query", { kind: "markdown", text })) as { html?: unknown } | undefined;
+				if (typeof reply?.html !== "string") throw new Error("the reply held no HTML");
+				html = reply.html;
+				rememberAnswer(text, html);
+			}
+			ask.close();
+			ctx.showAnswer?.(html);
+		}
+		function answerHead(text: string) {
+			const head = el("div", { class: "from" }, el("span", {}, "Agent"));
+			// A long answer also opens as a page of its own, at the document's width and type.
+			if (text.length > 480 || /\n(#|```|\||\s*[-*] |\s*\d+\. )/.test(text))
+				head.append(
+					button(
+						"Open answer as a page",
+						"expand",
+						() => void openAnswerPage(text).catch(() => ctx.notice("The reader did not render this answer.", "warn")),
+						{ iconOnly: true },
+					),
+				);
+			return head;
+		}
 		function promptAnswer(message: ReaderAskMessage) {
 			if (!message.detail) return null;
 			if (message.state === "answered")
-				return el("div", { class: "reply" }, el("span", { class: "from" }, "Agent"), message.detail);
+				return el("div", { class: "reply" }, answerHead(message.detail), answerBody(message.detail));
 			if (message.state === "unanswered") return el("p", { class: "send-failure" }, message.detail);
 			return null;
 		}
@@ -1243,8 +1332,17 @@
 			shownLatest = latest;
 			// The message list scrolls on its own inside the card; both end at the newest exchange.
 			const messages = card.querySelector<HTMLElement>(".ask-messages");
-			if (messages) messages.scrollTop = messages.scrollHeight;
+			if (messages) showNewest(messages);
 			card.scrollTop = card.scrollHeight;
+		}
+		// The newest exchange ends the list. An answer taller than the list shows from its start, so it
+		// reads from the top.
+		function showNewest(log: HTMLElement) {
+			log.scrollTop = log.scrollHeight;
+			const last = log.lastElementChild;
+			if (!(last instanceof HTMLElement) || !last.classList.contains("reply") || last.offsetHeight <= log.clientHeight)
+				return;
+			log.scrollTop += last.getBoundingClientRect().top - log.getBoundingClientRect().top;
 		}
 		function drawQuote(thread: ReaderThread) {
 			if (!thread.comments)

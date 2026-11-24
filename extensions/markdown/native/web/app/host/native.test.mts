@@ -323,6 +323,19 @@ test("a refused document leaves capabilities and installed content untouched", (
 	assert.equal(source, "original");
 	host.dispose();
 });
+test("document settings accept only a Catppuccin dark flavour", () => {
+	for (const [darkTheme, accepted] of [
+		["mocha", true],
+		["latte", false],
+		[1, false],
+	] as const) {
+		const api = bridge(),
+			host = api.createNativeHost();
+		const message = documentMessage("themed");
+		assert.equal(api.receive({ ...message, settings: { ...message.settings, darkTheme } }), accepted);
+		host.dispose();
+	}
+});
 test("the native entry propagates an exception after document installation begins", () => {
 	const api = bridge(),
 		host = api.createNativeHost();

@@ -512,7 +512,7 @@ public final class ReaderModel {
             "blocks": blockPayload(rendered, incremental: false), "headings": headings,
             "settings": ["lock": (captured ? ReaderBridgeLock.reading : lock).rawValue,
                          "textSize": settings.textSizeMultiplier, "textSizeSteps": PageSettings.textSizeMultipliers,
-                         "codeWrap": settings.wrapCode, "appearance": state.appearance,
+                         "codeWrap": settings.wrapCode, "appearance": state.appearance, "darkTheme": state.darkTheme,
                          "outlineWidth": state.outlineWidth, "outlineOpen": state.outlineOpen] as [String: Any],
             "chrome": chrome, "live": live,
         ]
@@ -655,7 +655,7 @@ public final class ReaderModel {
                 index = PageSettings.nearestTextSize(to: multiplier)
             }
             settings = PageSettings(textSize: index, wrapCode: patch["codeWrap"] as? Bool ?? settings.wrapCode)
-            state.setPresentation(appearance: patch["appearance"] as? String, outlineWidth: patch["outlineWidth"] as? Double, outlineOpen: patch["outlineOpen"] as? Bool)
+            state.setPresentation(appearance: patch["appearance"] as? String, darkTheme: patch["darkTheme"] as? String, outlineWidth: patch["outlineWidth"] as? Double, outlineOpen: patch["outlineOpen"] as? Bool)
             if let open = patch["outlineOpen"] as? Bool { outlineVisible = open }
         default: throw ReaderBridgeError.invalid("Unsupported command")
         }
@@ -699,6 +699,9 @@ public final class ReaderModel {
             return ["address": inspection.address, "facts": rows, "width": inspection.naturalSize?.width ?? 0, "height": inspection.naturalSize?.height ?? 0]
         case "library":
             return try await queryLibrary(fields)
+        case "reviewDraft":
+            // Only a reader surface keeps review batches; a page without one has none to offer.
+            return ["available": false, "version": 0]
         case "markdown":
             // The rendered view of a code block: its text is Markdown that belongs to no file.
             guard let text = fields["text"] as? String else { throw ReaderBridgeError.invalid("text") }
@@ -1200,7 +1203,8 @@ public final class ReaderModel {
 
     private func applySettings() async {
         await sendCommand("applySettings", args: ["textSize": settings.textSizeMultiplier, "codeWrap": settings.wrapCode,
-                                                  "appearance": state.appearance, "outlineWidth": state.outlineWidth, "outlineOpen": state.outlineOpen])
+                                                  "appearance": state.appearance, "darkTheme": state.darkTheme,
+                                                  "outlineWidth": state.outlineWidth, "outlineOpen": state.outlineOpen])
     }
 
     public func toggleSource() async {

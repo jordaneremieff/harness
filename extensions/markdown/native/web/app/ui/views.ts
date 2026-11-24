@@ -48,7 +48,7 @@
 			b.setAttribute("role", "menuitem");
 			for (const [k, v] of Object.entries(attributes)) b.setAttribute(k, v);
 			b.append(el("span", { class: "lbl" }, label));
-			if (key) b.append(el("kbd", {}, key));
+			if (key) b.append(el("kbd", {}, api.uiDOM.keys(key)));
 			return b;
 		}
 		function age(value: unknown) {
@@ -88,6 +88,7 @@
 			if (Array.isArray(patch.textSizeSteps)) textSizeSteps = patch.textSizeSteps.filter(positiveNumber);
 			if ("textSize" in patch) applyTextSize(patch.textSize);
 			if (typeof patch.appearance === "string") document.documentElement.dataset.theme = patch.appearance;
+			if (typeof patch.darkTheme === "string") document.documentElement.dataset.dark = patch.darkTheme;
 			if (typeof patch.codeWrap === "boolean") app.toggleAttribute("data-wrap", patch.codeWrap);
 		}
 		function size(direction: number | null) {
@@ -364,6 +365,22 @@
 			}
 			await load();
 		}
+		// An agent's answer as a page of its own, in the document's type and measure.
+		function answerContent(body: HTMLElement, html: string) {
+			const answer = el("div", { class: "doc answer-doc", "data-reader-view": "" });
+			api.setRenderedHTML(answer, html);
+			for (const node of answer.querySelectorAll("[id]")) node.removeAttribute("id");
+			api.highlightCode?.(answer);
+			answer.addEventListener("click", (event) => {
+				const link = (event.target as Element).closest("a[href]");
+				if (!link) return;
+				event.preventDefault();
+				const href = link.getAttribute("href") ?? "";
+				if (!href.startsWith("#")) void ctx.hostCommand("openLink", { href });
+			});
+			body.append(answer);
+			return body;
+		}
 		async function content(view: string, args: Record<string, unknown>) {
 			const body = el("div", { class: `overlay-body ${view}-view` });
 			if (view === "source") {
@@ -374,6 +391,7 @@
 				void libraryView(body);
 				return body;
 			}
+			if (view === "answer") return answerContent(body, typeof args.html === "string" ? args.html : "");
 			const result = (await host.request("query", { kind: view, ...args })) as Record<string, unknown>;
 			return resultContent(view, body, result, args);
 		}
@@ -605,6 +623,48 @@
 			},
 			appearance() {
 				panel.replaceChildren();
+				const root = document.documentElement;
+				function save(patch: Record<string, unknown>) {
+					applySettings(patch);
+					void ctx.hostCommand("saveSettings", { patch });
+					views.appearance();
+				}
+				function section(title: string, ...children: Node[]) {
+					return el("section", { class: "set-sec" }, el("h3", { class: "set-head" }, title), ...children);
+				}
+				const modes = el("div", { class: "seg seg-fill", role: "group", "aria-label": "Appearance" });
+				for (const [mode, image] of [
+					["system", "system"],
+					["light", "sun"],
+					["dark", "moon"],
+				]) {
+					const b = button(mode[0].toUpperCase() + mode.slice(1), image, () => save({ appearance: mode }), {
+						className: "seg-b",
+					});
+					b.setAttribute("aria-pressed", String((root.dataset.theme ?? "system") === mode));
+					modes.append(b);
+				}
+				const flavours = el("div", { class: "swatches", role: "radiogroup", "aria-label": "Dark theme" });
+				for (const [flavour, name] of [
+					["frappe", "Frappé"],
+					["macchiato", "Macchiato"],
+					["mocha", "Mocha"],
+				]) {
+					const b = el(
+						"button",
+						{ type: "button", class: "swatch", role: "radio", "data-flavour": flavour },
+						el(
+							"span",
+							{ class: "sw-preview", "aria-hidden": "true" },
+							el("span", { class: "sw-aa" }, "Aa"),
+							el("span", { class: "sw-dots" }, el("i", {}), el("i", {}), el("i", {})),
+						),
+						el("span", { class: "sw-name" }, name),
+					);
+					b.setAttribute("aria-checked", String((root.dataset.dark ?? "frappe") === flavour));
+					b.addEventListener("click", () => save({ darkTheme: flavour }));
+					flavours.append(b);
+				}
 				const out = el("output", {}, `${Math.round(zoom * 100)}%`),
 					stepper = el(
 						"span",
@@ -613,26 +673,20 @@
 						out,
 						button("Bigger text", "plus", () => size(1), { iconOnly: true }),
 					);
-				const wrap = el("input", { type: "checkbox", class: "switch", "aria-label": "Wrap code lines" });
+				const wrap = el("input", { type: "checkbox", class: "switch", id: "set-wrap" });
 				wrap.checked = app.hasAttribute("data-wrap");
 				wrap.addEventListener("change", () => {
 					applySettings({ codeWrap: wrap.checked });
 					void ctx.hostCommand("saveSettings", { patch: { codeWrap: wrap.checked } });
 				});
-				const appearance = el("span", { class: "seg" });
-				for (const mode of ["system", "light", "dark"]) {
-					const b = button(mode[0].toUpperCase() + mode.slice(1), "", () => {
-						applySettings({ appearance: mode });
-						void ctx.hostCommand("saveSettings", { patch: { appearance: mode } });
-						views.appearance();
-					});
-					b.setAttribute("aria-pressed", String((document.documentElement.dataset.theme ?? "system") === mode));
-					appearance.append(b);
-				}
 				panel.append(
-					el("div", { class: "row" }, el("span", { class: "lbl" }, "Text size"), stepper),
-					el("div", { class: "row" }, el("span", { class: "lbl" }, "Wrap code lines"), wrap),
-					el("div", { class: "row" }, el("span", { class: "lbl" }, "Appearance"), appearance),
+					section("Appearance", modes),
+					section("Dark theme", flavours, el("p", { class: "set-note" }, "Light appearance uses Latte.")),
+					section(
+						"Text",
+						el("div", { class: "row" }, el("span", { class: "lbl" }, "Size"), stepper),
+						el("label", { class: "row", for: "set-wrap" }, el("span", { class: "lbl" }, "Wrap code lines"), wrap),
+					),
 				);
 			},
 			open() {
@@ -687,6 +741,7 @@
 									image: "Image",
 									source: "Markdown source",
 									library: "Library",
+									answer: "Agent answer",
 								}[view] ?? view,
 							),
 							body,

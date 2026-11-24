@@ -374,6 +374,17 @@ import Testing
         }
     }
 
+    @Test func savedDarkThemeIsACatppuccinDarkFlavour() throws {
+        for theme in ["frappe", "macchiato", "mocha"] {
+            let command: [String: Any] = ["name": "saveSettings", "args": ["patch": ["darkTheme": theme]]]
+            #expect(try ReaderBridgeCodec.decode(body: envelope("command", command)).type == .command)
+        }
+        for theme: Any in ["latte", "Mocha", "", 1, NSNull()] {
+            let command: [String: Any] = ["name": "saveSettings", "args": ["patch": ["darkTheme": theme]]]
+            #expect(throws: (any Error).self) { try ReaderBridgeCodec.decode(body: envelope("command", command)) }
+        }
+    }
+
     @Test func libraryMatchAndStoreChooserValidateTheirArguments() throws {
         for collection in ["drafts", "recent", "published"] {
             let fields: [String: Any] = ["kind": "library", "collection": collection, "query": "needle"]

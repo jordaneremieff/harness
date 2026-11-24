@@ -40,21 +40,16 @@ final class ReaderSurface: NSView {
     private var draftReferenceKeys: [String: String] = [:]
     private var draftCursor: (token: String, query: String, offset: Int)?
 
-    /// The page's paper behind the web view: Catppuccin Frappé base in dark, Latte base in light.
-    static var paperColour: NSColor {
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                ? NSColor(srgbRed: 48 / 255, green: 52 / 255, blue: 70 / 255, alpha: 1)
-                : NSColor(srgbRed: 239 / 255, green: 241 / 255, blue: 245 / 255, alpha: 1)
-        }
-    }
+    /// The page's paper behind the web view, in the reader's current theme.
+    static var paperColour: NSColor { ReaderTheme.paper }
 
     init(model: ReaderModel, state: ReadingStateStore, chrome: String, workspace: EditorWorkspace? = nil, draftDirectory: URL? = nil) {
         self.model = model; self.state = state; self.workspace = workspace
         self.draftDirectory = draftDirectory ?? AppDelegate.stateDirectory().appendingPathComponent("Drafts")
         super.init(frame: NSRect(x: 0, y: 0, width: 640, height: 480))
         model.chrome = chrome; model.live = workspace?.collaboration != nil
-        wantsLayer = true; layer?.backgroundColor = Self.paperColour.cgColor
+        wantsLayer = true; repaintPaper()
+        NotificationCenter.default.addObserver(self, selector: #selector(themeChanged), name: ReaderTheme.changed, object: nil)
         let view = model.page.webView
         view.frame = bounds; view.autoresizingMask = [.width, .height]
         addSubview(view)
@@ -76,6 +71,25 @@ final class ReaderSurface: NSView {
         Task { [weak self] in try? await self?.model.page.load() }
     }
     required init?(coder: NSCoder) { nil }
+    @objc private func themeChanged() { repaintPaper() }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        repaintPaper()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        repaintPaper()
+    }
+
+    /// A layer keeps the colour it resolved, so the paper is resolved again for each appearance or
+    /// theme change, together with the window and the pane frame around this view.
+    private func repaintPaper() {
+        effectiveAppearance.performAsCurrentDrawingAppearance { layer?.backgroundColor = Self.paperColour.cgColor }
+        if let window, window.contentView === self { window.backgroundColor = Self.paperColour }
+        superview?.needsDisplay = true
+    }
 
     func setWorkspace(_ workspace: EditorWorkspace) {
         self.workspace = workspace

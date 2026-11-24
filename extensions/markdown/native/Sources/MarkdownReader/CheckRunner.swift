@@ -32,13 +32,15 @@ struct CheckRunner {
     func run() async {
         let status: Int32
         switch mode {
-        case .exportImage(let input, let output, let width, let maxHeight, let appearance, let textSize, let review):
-            status = await exportImage(input: input, output: output, width: width, maxHeight: maxHeight, appearance: appearance, textSize: textSize, review: review)
+        case .exportImage(let input, let output, let width, let maxHeight, let appearance, let textSize, let review, let darkTheme, let click, let answer):
+            if let darkTheme { windows.state.setPresentation(darkTheme: darkTheme) }
+            status = await exportImage(input: input, output: output, width: width, maxHeight: maxHeight, appearance: appearance, textSize: textSize, review: review, click: click, answer: answer)
         case .verify(let output):
             status = await Verification(windows: windows).run(output: output)
         case .measure(let corpus, let sizes, let shapes, let output):
             status = await Measurement(windows: windows).run(corpus: corpus, sizes: sizes, shapes: shapes, output: output)
-        case .present(let input, let width, let height, let appearance, let find, let source, let outline, let embedded, let textSize, let review, let inspect):
+        case .present(let input, let width, let height, let appearance, let find, let source, let outline, let embedded, let textSize, let review, let inspect, let darkTheme):
+            if let darkTheme { windows.state.setPresentation(darkTheme: darkTheme) }
             await present(input: input, width: width, height: height, appearance: appearance, find: find, source: source, outline: outline, embedded: embedded, textSize: textSize, review: review, inspect: inspect)
             return
         case .returnCheck(let request):
@@ -99,6 +101,51 @@ struct CheckRunner {
     /// Waits for one display frame, or 60 ms when the window does not draw frames. WebKit
     /// delivers no animation frames to the off-screen windows that check modes use.
     static let settleFrame = "await Promise.race([new Promise(r => requestAnimationFrame(r)), new Promise(r => setTimeout(r, 60))]); return true;"
+
+    /// Accepts the export's own question and answers the page's review queries for a file without
+    /// review data.
+    static func answerExportReply(_ message: [String: Any], accepted: ((request: String, thread: String)) -> Void) -> [String: Any] {
+        if message["type"] as? String == "prompt", let request = message["requestId"] as? String, let thread = message["threadId"] as? String {
+            accepted((request, thread))
+            return ["accepted": true]
+        }
+        guard message["type"] as? String == "query" else { return [:] }
+        switch message["kind"] as? String {
+        case "reviewDraft": return ["available": false, "version": 0]
+        case "reviewComments": return ["available": false, "revision": 0, "comments": []]
+        default: return [:]
+        }
+    }
+
+    /// Opens the Ask card about the document, sends a question and delivers `text` as its answer.
+    static func showAnswer(_ text: String, model: ReaderModel, prompt: () -> (request: String, thread: String)?) async throws {
+        let sent = try await model.page.callJavaScript("""
+        document.getElementById('b-ask').click();
+        await new Promise(r => setTimeout(r, 30));
+        const item = [...document.querySelectorAll('#activity button')].find(b => b.textContent.includes('Ask about this document'));
+        if (!item) return false;
+        item.click();
+        await new Promise(r => setTimeout(r, 30));
+        const field = document.querySelector('[data-role="ask-card"] textarea');
+        if (!field) return false;
+        field.value = 'Summarise the document.';
+        field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: field.value }));
+        const send = document.querySelector('[data-role="ask-card"] .send');
+        if (!send || send.disabled) return false;
+        send.click();
+        return true;
+        """) as? Bool
+        guard sent == true else { throw CheckError.unavailable("The Ask card did not send its question.") }
+        let deadline = Date().addingTimeInterval(3)
+        while prompt() == nil, Date() < deadline { _ = try await model.page.callJavaScript(settleFrame) }
+        guard let current = prompt() else { throw CheckError.unavailable("The question did not reach the export.") }
+        let (request, thread) = current
+        for state in ["sent", "working"] {
+            _ = try await model.sendEnvelope(["v": 1, "type": "promptState", "requestId": request, "threadId": thread, "state": state])
+        }
+        _ = try await model.sendEnvelope(["v": 1, "type": "promptState", "requestId": request, "threadId": thread, "state": "answered", "detail": text])
+        _ = try await model.page.callJavaScript("await new Promise(r => setTimeout(r, 200)); return true;")
+    }
 
     static func preparePageForCheck(_ model: ReaderModel) async throws {
         try requireReady(model)
@@ -190,7 +237,7 @@ struct CheckRunner {
         }
     }
 
-    func exportImage(input: String, output: String, width: Double, maxHeight: Double, appearance: String?, textSize: Int?, review: String?) async -> Int32 {
+    func exportImage(input: String, output: String, width: Double, maxHeight: Double, appearance: String?, textSize: Int?, review: String?, click: String? = nil, answer: String? = nil) async -> Int32 {
         if let appearance { NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
         do {
             let (reference, revision, digest) = try Self.reference(for: input)
@@ -198,8 +245,14 @@ struct CheckRunner {
             if let textSize { model.settings = PageSettings(textSize: textSize, wrapCode: false) }
             let window = Self.offscreenWindow(page: model.page, width: width)
             defer { window.close() }
+            var prompt: (request: String, thread: String)?
+            if answer != nil { model.page.onMessage = { message in Self.answerExportReply(message) { prompt = $0 } } }
             await model.open(revision: revision, digest: digest, origin: nil)
             try await Self.preparePageForCheck(model)
+            if let answer {
+                let text = try String(contentsOfFile: answer, encoding: .utf8)
+                try await Self.showAnswer(text, model: model) { prompt }
+            }
             if let review {
                 await model.reviewChanges(base: Int(review), target: model.snapshot?.revision)
                 guard model.review.shown != nil else {
@@ -207,6 +260,11 @@ struct CheckRunner {
                 }
             }
             let page = model.page
+            if let click {
+                let clicked = try await page.callJavaScript("const target = document.querySelector(selector); if (!target) return false; target.click(); return true;", arguments: ["selector": click]) as? Bool
+                guard clicked == true else { throw CheckError.unavailable("No control matches \(click).") }
+                _ = try await page.callJavaScript(Self.settleFrame)
+            }
             let fullHeight = try await page.callJavaScript("return document.documentElement.scrollHeight") as? Double ?? 1000
             let height = min(max(fullHeight, 400), maxHeight)
             window.setContentSize(NSSize(width: width, height: height))

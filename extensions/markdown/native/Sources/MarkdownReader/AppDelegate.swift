@@ -51,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             platform.savePDF = { try await ExportPanel.pdf($0, name: $1) }
         }
         windows = WindowManager(state: state, platform: platform, defaultRoots: mode.isCheck ? [] : Self.defaultRoots())
+        ReaderTheme.follow(state, setsAppearance: !mode.isCheck)
         if mode.isPane {
             NSApp.mainMenu = buildMenu(pane: true)
         } else if !mode.isAccessory {

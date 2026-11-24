@@ -53,12 +53,14 @@ import Testing
         defer { try? FileManager.default.removeItem(at: directory) }
         let first = ReadingStateStore(directory: directory)
         let second = ReadingStateStore(directory: directory)
-        first.setPresentation(appearance: "dark", outlineWidth: 310, outlineOpen: false)
+        first.setPresentation(appearance: "dark", darkTheme: "macchiato", outlineWidth: 310, outlineOpen: false)
+        first.setPresentation(darkTheme: "latte")
         #expect(await first.flush(timeout: 2) == .saved)
         second.setPosition(Self.position("block", at: 2), for: Self.reference(1))
         #expect(await second.flush(timeout: 2) == .saved)
         let reopened = ReadingStateStore(directory: directory)
         #expect(reopened.appearance == "dark")
+        #expect(reopened.darkTheme == "macchiato")
         #expect(reopened.outlineWidth == 310)
         #expect(!reopened.outlineOpen)
     }

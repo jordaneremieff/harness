@@ -232,7 +232,8 @@
 			optional(s.textSize, multiplier) &&
 				optional(s.textSizeSteps, sizeSteps) &&
 				optional(s.codeWrap, (v) => typeof v === "boolean") &&
-				optional(s.appearance, (v) => one(v, ["system", "light", "dark"])),
+				optional(s.appearance, (v) => one(v, ["system", "light", "dark"])) &&
+				optional(s.darkTheme, (v) => one(v, ["frappe", "macchiato", "mocha"])),
 		);
 		ensure(optional(s.outlineWidth, number) && optional(s.outlineOpen, (v) => typeof v === "boolean"));
 	}
@@ -408,7 +409,8 @@
 	};
 	function state(m: Fields) {
 		ensure(
-			one(m.lock, ["reading", "writing"]) && one(m.overlay, [null, "review", "image", "details", "source", "library"]),
+			one(m.lock, ["reading", "writing"]) &&
+				one(m.overlay, [null, "review", "image", "details", "source", "library", "answer"]),
 		);
 		for (const key of ["canBack", "canForward", "canUndo", "canRedo", "hasSelection", "findOpen", "editingPending"])
 			ensure(typeof m[key] === "boolean");

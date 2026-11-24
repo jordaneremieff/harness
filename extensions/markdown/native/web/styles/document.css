@@ -4,10 +4,10 @@
     --pad:clamp(20px,4cqi,32px);
     max-width:calc(var(--measure-wide) + 2 * var(--pad));margin:0 auto;
     padding:calc(var(--bar-h) + clamp(16px,7cqh,64px) + var(--copy-space)) var(--pad) 40vh;
-    font:1rem/1.68 var(--font);color:var(--ink);font-kerning:normal;
+    font:1rem/1.66 var(--font);color:var(--ink);font-kerning:normal;font-variant-ligatures:common-ligatures;
     hanging-punctuation:first;overflow-wrap:break-word;
   }
-  .doc > .reader-block { max-width:var(--measure);margin:0 auto 1.05em;border-radius:6px;position:relative; }
+  .doc > .reader-block { max-width:var(--measure);margin:0 auto 1em;border-radius:6px;position:relative; }
   /* A code block or table wider than the prose measure takes the whole width beside the prose, so its
      lines scroll or wrap only where the page itself runs out. --need is the block's unwrapped width,
      measured by block-editor.ts; until it is known, the block keeps the prose measure. Two widths
@@ -20,13 +20,13 @@
   .doc h1,.doc h2,.doc h3,.doc h4,.doc h5,.doc h6 { color:var(--heading);text-wrap:balance;font-family:var(--font-display);margin:0; }
   /* Headings scale with the pane, so a small floating pane is not filled by its title. */
   .doc h1 { font-size:clamp(1.55rem,1.15rem + 1.6cqi,2.05rem);font-weight:700;letter-spacing:-.022em;line-height:1.16; }
-  .doc h2 { font-size:clamp(1.24rem,1.06rem + .7cqi,1.42rem);font-weight:650;letter-spacing:-.014em;line-height:1.26; }
-  .doc h3 { font-size:1.16rem;font-weight:650;letter-spacing:-.008em;line-height:1.32; }
-  .doc h4 { font-size:1rem;font-weight:650; }
-  .doc h5,.doc h6 { font-size:.82rem;font-weight:650;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2); }
-  .doc > [data-type="heading1"] { margin-bottom:.7em; }
-  .doc > [data-type="heading2"] { margin-top:2.1em;margin-bottom:.55em; }
-  .doc > [data-type="heading3"] { margin-top:1.7em;margin-bottom:.45em; }
+  .doc h2 { font-size:clamp(1.26rem,1.08rem + .7cqi,1.44rem);font-weight:640;letter-spacing:-.016em;line-height:1.26; }
+  .doc h3 { font-size:1.14rem;font-weight:620;letter-spacing:-.01em;line-height:1.32; }
+  .doc h4 { font-size:1rem;font-weight:620; }
+  .doc h5,.doc h6 { font-size:.8rem;font-weight:620;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3); }
+  .doc > [data-type="heading1"] { margin-bottom:.75em; }
+  .doc > [data-type="heading2"] { margin-top:2em;margin-bottom:.6em; }
+  .doc > [data-type="heading3"] { margin-top:1.75em;margin-bottom:.5em; }
   .doc > :is([data-type="heading4"],[data-type="heading5"],[data-type="heading6"]) { margin-top:1.4em;margin-bottom:.35em; }
   .doc > .reader-block:first-child { margin-top:0; }
   .doc p { margin:0;text-wrap:wrap; }
@@ -36,22 +36,23 @@
   .doc strong,.doc b { font-weight:650;color:var(--heading); }
   .doc code { hanging-punctuation:none;font:500 .86em/1 var(--mono);color:var(--code-ink);background:var(--code-chip);box-shadow:inset 0 0 0 1px var(--code-chip-line);padding:.14em .36em;border-radius:.38em;overflow-wrap:anywhere; }
   .doc del { color:var(--ink-3); }
-  .doc ul,.doc ol { margin:0;padding-left:1.45em; }.doc li { margin:.28em 0; }
-  .doc li::marker { color:var(--list-marker); }.doc ol > li::marker { font-variant-numeric:tabular-nums;font-weight:600; }
+  .doc ul,.doc ol { margin:0;padding-left:1.4em; }.doc li { margin:.34em 0;padding-left:.15em; }.doc li > :is(ul,ol) { margin-top:.34em; }
+  .doc li > p + p { margin-top:.5em; }
+  .doc li::marker { color:var(--list-marker); }.doc ol > li::marker { font-variant-numeric:tabular-nums;font-weight:600;font-size:.94em; }
   /* Task items: the checkbox takes the bullet's place, drawn in the theme rather than as a dimmed control. */
   .doc li:has(> input[type="checkbox"]) { list-style:none; }
   .doc input[type="checkbox"] { appearance:none;width:1.05em;height:1.05em;margin:0 .55em 0 -1.5em;vertical-align:-.17em;border-radius:.32em;border:1.5px solid var(--line-strong);background:var(--sunk); }
   .doc input[type="checkbox"]:checked { border-color:var(--ok);background:var(--ok) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7' fill='none' stroke='%231e2030' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 82% no-repeat; }
-  .doc blockquote { margin:0;padding:.8em 1.15em;border-radius:10px;background:var(--sunk);color:color-mix(in oklch,var(--ink) 88%,var(--paper)); }
+  .doc blockquote { margin:0;padding:.85em 1.2em;border-radius:var(--r-l);background:var(--sunk);color:color-mix(in oklch,var(--ink) 90%,var(--paper));box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--line) 60%,transparent); }
   .doc blockquote blockquote { margin-top:.7em;background:color-mix(in oklch,var(--sunk) 50%,var(--hover)); }.doc blockquote > * + * { margin-top:.7em; }
-  .doc hr { border:0;height:1px;background:var(--line);margin:2.4em 0; }
-  .doc pre { hanging-punctuation:none;position:relative;margin:0;padding:34px 16px 14px;border-radius:11px;background:var(--sunk);box-shadow:inset 0 0 0 1px var(--line);overflow:auto;font:.84rem/1.6 var(--mono);color:var(--ink);tab-size:4; }
+  .doc hr { border:0;height:1px;background:var(--line);margin:2.2em 0; }
+  .doc pre { hanging-punctuation:none;position:relative;margin:0;padding:34px 16px 14px;border-radius:var(--r-l);background:var(--sunk);box-shadow:inset 0 0 0 1px var(--line);overflow:auto;font:.84rem/1.6 var(--mono);color:var(--ink);tab-size:4; }
   .doc pre code { all:unset; }
-  .doc .code-copy { position:absolute;top:5px;right:6px;padding:4px 8px;display:flex;gap:5px;align-items:center;font:500 12px/1.3 var(--font);color:var(--ink-2);border-radius:6px; }
-  .doc figure.code { position:relative;border-radius:11px;background:var(--sunk);box-shadow:inset 0 0 0 1px var(--line); }
-  .doc figure.code > figcaption { display:flex;align-items:center;min-height:30px;margin:0;padding:6px 96px 0 16px;text-align:left;font:500 12px/1.3 var(--font);color:var(--ink-3); }
+  .doc .code-copy { position:absolute;top:5px;right:6px;height:24px;padding:0 8px;display:flex;gap:5px;align-items:center;font:500 12px/1 var(--font);color:var(--ink-3);border-radius:var(--r-s);transition:background-color .12s,color .12s; }
+  .doc figure.code { position:relative;border-radius:var(--r-l);background:var(--sunk);box-shadow:inset 0 0 0 1px var(--line); }
+  .doc figure.code > figcaption { display:flex;align-items:center;min-height:30px;margin:0;padding:6px 96px 0 16px;text-align:left;font:500 12px/1.3 var(--font);letter-spacing:.01em;color:var(--ink-3); }
   .doc figure.code > pre { background:none;box-shadow:none;padding:6px 16px 14px; }
-  .doc .code-copy:hover { background:var(--hover); }.doc .code-copy .i { width:14px;height:14px; }
+  .doc .code-copy:hover { background:var(--hover);color:var(--heading); }.doc .code-copy .i { width:14px;height:14px; }
   /* With its controls, a block's syntax button shows the label; the caption keeps it as document text. */
   /* A label that the reader adds to the document, such as a code block's language or an image
      placeholder's state, is a data-label attribute drawn here. It is not document text, so find,
@@ -63,7 +64,7 @@
   .doc figure.code[data-controls] > figcaption::before { content:none; }
   /* A block's Markdown shown rendered: a small page inside the frame, in the document's own styles. */
   .doc figure.code[data-rendered] > pre { display:none; }
-  .doc .code-rendered { margin:2px 6px 6px;padding:14px 16px 16px;border-radius:8px;background:var(--paper);box-shadow:inset 0 0 0 1px var(--line);overflow-x:auto;font-size:.95em; }
+  .doc .code-rendered { margin:2px 6px 6px;padding:14px 16px 16px;border-radius:var(--r);background:var(--paper);box-shadow:inset 0 0 0 1px var(--line);overflow-x:auto;font-size:.95em; }
   .doc .code-rendered > .blk { margin:0 0 .9em; }.doc .code-rendered > .blk:last-child { margin-bottom:0; }
   .doc .code-rendered > .blk:has(> :is(h1,h2,h3)):not(:first-child) { margin-top:1.5em; }
   .doc .code-rendered h1 { font-size:1.5em; }.doc .code-rendered h2 { font-size:1.28em; }.doc .code-rendered h3 { font-size:1.12em; }
@@ -84,17 +85,19 @@
       radial-gradient(farthest-side at 0 50%,light-dark(rgb(16 24 40 / .16),rgb(0 0 0 / .5)),transparent) left center / 12px 100% no-repeat scroll,
       radial-gradient(farthest-side at 100% 50%,light-dark(rgb(16 24 40 / .16),rgb(0 0 0 / .5)),transparent) right center / 12px 100% no-repeat scroll;
   }
-  .doc table { width:100%;table-layout:auto;border-collapse:separate;border-spacing:0;font-size:.92em;line-height:1.5; }
-  .doc th,.doc td { text-align:left;vertical-align:top;padding:.55em clamp(.4em,1.2cqw,.8em);overflow-wrap:break-word; }
+  .doc table { width:100%;table-layout:auto;border-collapse:separate;border-spacing:0;font-size:.92em;line-height:1.5;font-variant-numeric:tabular-nums; }
+  .doc th,.doc td { text-align:left;vertical-align:top;padding:.6em clamp(.45em,1.2cqw,.85em);overflow-wrap:break-word; }
   .doc :is(th,td) code { overflow-wrap:break-word; }
   .doc :is(th,td) code[data-wrap] { overflow-wrap:anywhere; }
   .doc :is(th,td)[data-prose] { min-width:9em; }
-  .doc th { font-weight:620;color:var(--heading);background:var(--sunk); }.doc th:first-child { border-radius:8px 0 0 8px; }.doc th:last-child { border-radius:0 8px 8px 0; }
+  .doc th { font-weight:600;font-size:.94em;color:var(--heading);background:var(--sunk);padding-block:.5em; }.doc th:first-child { border-radius:8px 0 0 8px; }.doc th:last-child { border-radius:0 8px 8px 0; }
   .doc td { border-bottom:1px solid var(--line); }.doc tr:last-child td { border-bottom:0; }.doc tbody tr:hover td { background:color-mix(in oklch,var(--hover) 55%,transparent); }
-  .doc img { max-width:100%;height:auto;border-radius:10px;display:block;cursor:pointer; }
+  .doc img { max-width:100%;height:auto;border-radius:var(--r-l);display:block;cursor:pointer; }
   .doc figure { margin:0; }.doc figcaption { margin-top:.5em;font-size:.85em;color:var(--ink-3);text-align:center; }
-  .doc .img-ph { display:flex;align-items:center;gap:.6em;padding:.8em 1em;border-radius:10px;background:var(--sunk);color:var(--ink-2);font-size:.9em;box-shadow:inset 0 0 0 1px var(--line); }
-  .doc sup a { font-size:.75em;text-decoration:none;padding:0 .1em; }.doc .footnotes { font-size:.88em;color:var(--ink-2);border-top:1px solid var(--line);padding-top:1em;margin-top:3em; }
+  .doc .img-ph { display:flex;align-items:center;gap:.6em;padding:.8em 1em;border-radius:var(--r-l);background:var(--sunk);color:var(--ink-2);font-size:.9em;box-shadow:inset 0 0 0 1px var(--line); }
+  .doc sup { line-height:0; }.doc sup a { font-size:.75em;font-weight:600;text-decoration:none;padding:0 .15em; }
+  .doc .footnotes { font-size:.88em;line-height:1.6;color:var(--ink-2);border-top:1px solid var(--line);padding-top:1.2em;margin-top:3em; }
+  .doc .footnotes li { margin:.45em 0; }.doc .footnotes li::marker { color:var(--ink-3); }
   .doc [data-role="block-editor"] { background:color-mix(in oklch,var(--sunk) 65%,transparent);box-shadow:0 0 0 6px color-mix(in oklch,var(--sunk) 65%,transparent);caret-color:var(--caret); }
   .doc [data-role="block-editor"] :is(.mark,.prefix) { color:var(--ink-3);font-size:.86em;font-weight:400; }
   .doc [data-role="block-editor"] .bold { font-weight:650; }.doc [data-role="block-editor"] .italic { font-style:italic; }

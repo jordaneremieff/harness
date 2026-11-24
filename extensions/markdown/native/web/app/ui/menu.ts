@@ -130,7 +130,7 @@
 							"aria-disabled": String(!entry.enabled),
 						},
 						el("span", { class: "lbl" }, entry.label),
-						el("span", { class: "key" }, entry.key),
+						el("span", { class: "key" }, api.uiDOM.keys(entry.key)),
 					);
 					item.tabIndex = -1;
 					item.toggleAttribute("data-active", index === active);

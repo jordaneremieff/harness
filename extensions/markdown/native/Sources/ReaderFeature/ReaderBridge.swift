@@ -83,7 +83,7 @@ public struct ReaderBridgePageState: Equatable, Sendable {
         }
         var overlay: String?
         if let value = fields["overlay"], !(value is NSNull) {
-            try BridgeField.choice(fields, "overlay", values: ["review", "image", "details", "source", "library"])
+            try BridgeField.choice(fields, "overlay", values: ["review", "image", "details", "source", "library", "answer"])
             overlay = value as? String
         }
         self.init(lock: lock, canUndo: try BridgeField.bool(fields, "canUndo"),
@@ -566,13 +566,14 @@ public enum ReaderBridgeCodec {
         case "saveSettings":
             try BridgeField.keys(args, allowed: ["patch"])
             let patch = try BridgeField.object(args, "patch")
-            try BridgeField.keys(patch, allowed: ["textSize", "codeWrap", "appearance", "outlineWidth", "outlineOpen"])
+            try BridgeField.keys(patch, allowed: ["textSize", "codeWrap", "appearance", "darkTheme", "outlineWidth", "outlineOpen"])
             if patch["textSize"] != nil {
                 let size = try BridgeField.number(patch, "textSize", magnitude: .greatestFiniteMagnitude)
                 guard size > 0 else { throw ReaderBridgeError.invalid("textSize") }
             }
             for key in ["codeWrap", "outlineOpen"] where patch[key] != nil { _ = try BridgeField.bool(patch, key) }
             if patch["appearance"] != nil { try BridgeField.choice(patch, "appearance", values: ["system", "light", "dark"]) }
+            if patch["darkTheme"] != nil { try BridgeField.choice(patch, "darkTheme", values: Set(ReadingStateStore.darkThemes)) }
             if patch["outlineWidth"] != nil {
                 let width = try BridgeField.number(patch, "outlineWidth", magnitude: 4096)
                 guard width >= 0 else { throw ReaderBridgeError.invalid("outlineWidth") }

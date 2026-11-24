@@ -1813,7 +1813,7 @@ struct Context {
                 """) as? Bool == true
                 let writingSelection = await probeAt("[data-role=\"block-editor\"]", text: "beta")
                 let writingOK = items(writingSelection).first == "ask" && ["cut", "copy", "paste", "bold", "italic", "code", "link", "heading", "bulletList"].allSatisfy(items(writingSelection).contains)
-                    && (writingSelection["keys"] as? [String] ?? []).contains("cmd+X")
+                    && (writingSelection["keys"] as? [String] ?? []).contains("⌘X")
                 _ = await js(model, "document.querySelector('[data-role=\"context-menu\"] .item[data-id=\"cut\"]').click(); return true;")
                 let cut = await wait(seconds: 3) { document.text.source.contains("Alpha gamma") && CheckRunner.checkPasteboard.string(forType: .string) == "beta " }
                 _ = await js(model, """
