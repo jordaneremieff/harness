@@ -189,7 +189,7 @@ it("names live sessions in other repositories that used the same work items, wit
 		null,
 		other,
 		{ source: "interactive-input", text: "Review the service design for edge cases" },
-		{ name: "SomeServiceFile.php", workRefs: [{ kind: "document", id: "md-other" }, design] },
+		{ name: "SomeServiceFile.php", workRefs: [{ kind: "document", id: "md-other" }, design, plan] },
 	);
 	const declared = randomUUID();
 	publish(root, declared, claim("Verify the plan"), other, undefined, { workRefs: [plan] });
@@ -214,7 +214,18 @@ it("names live sessions in other repositories that used the same work items, wit
 	assert.ok(prompt.includes(unrelated) === false);
 	assert.match(prompt, /"sessionName":"SomeServiceFile\.php"/u);
 	assert.match(prompt, /"request":"Review the service design for edge cases"/u);
-	assert.match(prompt, /"sharedWork":\["document md-design \(Service design\)"\]/u);
+	assert.match(
+		prompt,
+		/"sharedWork":\["document md-design \(Service design\)","handover 20261124T010203Z-plan \(Verification plan\)"\]/u,
+	);
+	const reordered = {
+		...view,
+		presence: {
+			...view.presence,
+			efforts: view.presence.efforts.map((effort) => ({ ...effort, sharedWork: effort.sharedWork?.toReversed() })),
+		},
+	};
+	assert.equal(formatEffortAwareness(reordered, "prompt"), prompt, "recency order does not change prompt bytes");
 	assert.match(prompt, /"purposeClaim":"Verify the plan"/u);
 	assert.doesNotMatch(prompt, /Operator: edit only the agent slice/u, "another repository's intent stays purpose-only");
 	assert.equal(
@@ -235,7 +246,7 @@ it("names live sessions in other repositories that used the same work items, wit
 	assert.deepEqual(observation.self.workRefs, [plan, design]);
 	const row = observation.presence.efforts.find((effort) => effort.id === reviewer);
 	assert.equal(row?.relationship, "machine");
-	assert.deepEqual(row?.sharedWork, [design]);
+	assert.deepEqual(row?.sharedWork, [design, plan]);
 	assert.equal(observation.presence.efforts.find((effort) => effort.id === unrelated)?.sharedWork, undefined);
 });
 

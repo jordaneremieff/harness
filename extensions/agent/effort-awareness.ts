@@ -189,7 +189,12 @@ function promptRequest(effort: RelatedEffort): string | undefined {
 
 /** Shared items name what links the sessions; titles are producer text for display only. */
 function promptSharedWork(effort: RelatedEffort): string[] | undefined {
-	return effort.sharedWork?.slice(0, 4).map(({ kind, id, title }) => `${kind} ${id}${title ? ` (${title})` : ""}`);
+	// Identity order keeps the section's bytes when the other session only reorders its recent items.
+	return effort.sharedWork
+		?.map(({ kind, id, title }) => ({ key: `${kind}\u0000${id}`, text: `${kind} ${id}${title ? ` (${title})` : ""}` }))
+		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+		.slice(0, 4)
+		.map(({ text }) => text);
 }
 
 /** One prompt row: stable identity and declarations, never clocks or coverage. */
