@@ -32,7 +32,8 @@ export interface PrimaryLocationResolver {
 	clear(): void;
 }
 
-const COMPLETED_LIMIT = 32;
+/** Resolved locations kept; awareness resolves the working directory of each record with active threads. */
+export const LOCATION_CACHE_ENTRIES = 256;
 const MARKER_BYTES = 4096;
 const ANCESTOR_LIMIT = 256;
 
@@ -421,7 +422,7 @@ class RepositoryLocationResolver implements PrimaryLocationResolver {
 	private remember(key: string, entry: CompletedLocation): void {
 		this.completed.delete(key);
 		this.completed.set(key, entry);
-		while (this.completed.size > COMPLETED_LIMIT) {
+		while (this.completed.size > LOCATION_CACHE_ENTRIES) {
 			const oldest = this.completed.keys().next().value;
 			if (oldest === undefined) break;
 			this.completed.delete(oldest);

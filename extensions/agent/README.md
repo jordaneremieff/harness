@@ -3156,7 +3156,9 @@ its row, not its threads, and its contact thread stays a claim on its row. In
 the prompt, threads from priority sources rank ahead of the other records'
 threads, each group in identity order, so the twelve-thread bound never drops a
 contact's thread for another one. Records without published hints leave global
-recency unknown.
+recency unknown. A record outside the priority sources is matched by its working
+directory: repository discovery runs Git once per directory, and the 256 most
+recently used results are reused while their file stamps are unchanged.
 
 Use `agent_intent({ action: "read" })` in either runtime for current bounded
 awareness without publishing or clearing a claim. Its `awareness` result contains

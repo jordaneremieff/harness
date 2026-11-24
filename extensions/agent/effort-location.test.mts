@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { it } from "node:test";
-import { createPrimaryLocationResolver } from "./effort-location.ts";
+import { createPrimaryLocationResolver, LOCATION_CACHE_ENTRIES } from "./effort-location.ts";
 
 const REAL_GIT = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
 
@@ -431,16 +431,20 @@ it("invalidates one cwd or every cwd on request and bounds completed entries", a
 	resolver.clear();
 	await resolver.resolve(work);
 	assert.equal(calls(), spawned + 1);
-	const directories = Array.from({ length: 34 }, (_, index) => {
+	const directories = Array.from({ length: LOCATION_CACHE_ENTRIES + 2 }, (_, index) => {
 		const directory = join(root, `dir-${index}`);
 		mkdirSync(directory);
 		return directory;
 	});
+	for (const directory of directories.slice(0, 100)) await resolver.resolve(directory);
+	spawned = calls();
+	for (const directory of directories.slice(0, 100)) await resolver.resolve(directory);
+	assert.equal(calls(), spawned, "a second pass over 100 directories runs no Git");
 	for (const directory of directories) await resolver.resolve(directory);
 	spawned = calls();
 	await resolver.resolve(directories[0] as string);
 	assert.equal(calls(), spawned + 1, "the oldest completed location was evicted");
-	await resolver.resolve(directories[33] as string);
+	await resolver.resolve(directories.at(-1) as string);
 	assert.equal(calls(), spawned + 1, "recent completed locations are retained");
 });
 
