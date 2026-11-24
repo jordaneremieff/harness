@@ -3350,6 +3350,50 @@ it("admits no agent work or input into a thread storage from an ordinary session
 	assert.deepEqual(requests, [], "no refused control reaches a host");
 });
 
+it("lists an ordinary session's threads by its identity, before and after its thread storage exists", async (t) => {
+	const root = fixtureRoot(t);
+	const requests: Array<{ storageId: string; method: string; params: unknown }> = [];
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	const primary = randomUUID();
+	const peer = randomUUID();
+	await manager.registerPrimary(peer, { signal: new AbortController().signal, cwd: root, send() {} });
+	const caller = { id: primary, cwd: root, model: { provider: "acme", modelId: "model-x" } };
+	const empty = { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } };
+	assert.deepEqual(await manager.collaborate({ action: "list", sessionId: primary }, caller), empty);
+	assert.deepEqual(await manager.collaborate({ action: "list", sessionId: peer }, caller), empty);
+	await assert.rejects(manager.collaborate({ action: "list", sessionId: randomUUID() }, caller), {
+		message: "The exact native target is not retained and no ordinary primary is registered",
+	});
+	const storageId = manager.catalog.createThreadStorage({
+		cwd: root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
+		model: caller.model,
+		thinkingLevel: "off",
+		ownerId: primary,
+	}).record.storageId;
+	const observe = (manager as unknown as { observe: (...args: unknown[]) => Promise<unknown> }).observe;
+	(manager as unknown as { observe: unknown }).observe = async (
+		record: CatalogRecord,
+		method: string,
+		params: unknown,
+	) => {
+		requests.push({ storageId: record.storageId, method, params });
+		return { items: [], nextCursor: null, coverage: { complete: true, visited: 3, omitted: 0 } };
+	};
+	t.after(() => {
+		(manager as unknown as { observe: unknown }).observe = observe;
+	});
+	const listed = (await manager.collaborate({ action: "list", sessionId: primary }, { id: peer, cwd: root })) as {
+		coverage: { visited: number };
+	};
+	assert.equal(listed.coverage.visited, 3);
+	assert.deepEqual(requests, [
+		{ storageId, method: "collaboration-list", params: { action: "list", sessionId: storageId } },
+	]);
+});
+
 it("refuses a question and a malformed reply to a Durable target, whose answer arrives through its request result", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root));

@@ -1826,12 +1826,7 @@ export class AgentManager {
 		const sessionId = this.collaborationAddress(input, action, threadId, caller);
 		if (action === "list" && !sessionId) return discoverCollaboration(this.catalog, input);
 		if (!sessionId) throw new Error("This action requires threadId");
-		if (action === "list" || action === "read")
-			return this.observe(
-				this.nativeTarget(sessionId),
-				action === "list" ? "collaboration-list" : "collaboration-read",
-				{ ...input, sessionId },
-			);
+		if (action === "list" || action === "read") return this.observeCollaboration(input, action, sessionId, caller);
 		return this.control(
 			"collaboration-mutate",
 			{
@@ -1845,7 +1840,33 @@ export class AgentManager {
 		);
 	}
 
-	/** Create without a storage, or with the caller's own identity, uses the caller's own storage. */
+	private async observeCollaboration(
+		input: Record<string, unknown>,
+		action: "list" | "read",
+		sessionId: string,
+		caller: AgentCaller,
+	): Promise<unknown> {
+		let target: CatalogRecord;
+		try {
+			target = this.nativeTarget(sessionId);
+		} catch (error) {
+			// Only a list that named an ordinary session selects a thread storage that may not exist yet.
+			const session = typeof input.sessionId === "string" && input.threadId === undefined ? input.sessionId : sessionId;
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT" || session === sessionId) throw error;
+			if (session !== caller.id && !readPrimaryEndpointDescriptor(this.options.root, session).info)
+				throw new Error("The exact native target is not retained and no ordinary primary is registered");
+			return { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } };
+		}
+		return this.observe(target, action === "list" ? "collaboration-list" : "collaboration-read", {
+			...input,
+			sessionId,
+		});
+	}
+
+	/**
+	 * Create without a storage, or with the caller's own identity, uses the caller's own storage. A list
+	 * that names an ordinary session reads that session's thread storage.
+	 */
 	private collaborationAddress(
 		input: Record<string, unknown>,
 		action: string,
@@ -1854,6 +1875,8 @@ export class AgentManager {
 	): string | undefined {
 		if (threadId !== undefined) return collaborationStorage(threadId);
 		const sessionId = typeof input.sessionId === "string" ? input.sessionId : undefined;
+		if (action === "list" && sessionId !== undefined && !sessionId.includes(":") && !this.retainedNative(sessionId))
+			return threadStorageId(sessionId, this.catalog.root);
 		if (action !== "create" || (sessionId !== undefined && sessionId !== caller.id)) return sessionId;
 		if (this.retainedNative(caller.id)) return sessionId ?? storageIdOf(caller.id);
 		return this.ownThreadStorage(caller);

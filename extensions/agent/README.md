@@ -2565,11 +2565,23 @@ identity, created on its first `create` without `sessionId`, at an address
 derived from the catalog path and the primary identity. Its catalog record has
 the ordinary host metadata shape, owned by the primary and named `Threads of
 <session name>`, with project trust off, so every host and manager opens it.
-It holds threads and runs no agent work: controls other than thread mutation,
-observation, attach, abort and release refuse with the owner's identity, and
-agent rosters, `agent_list` and dashboard counts omit it. Its host starts on
-the first mutation, delivers thread notices like any participant storage, and
+It holds threads and runs no agent work. It serves thread operations,
+observation, a plain attach, the delivery state of its notices, timer listing
+and cancellation, and stops; every other control refuses with the owner's
+identity, from an ordinary session and from a Durable agent alike. The refusal
+holds at three layers: the caller's manager or Durable runtime before it
+acquires the host, the thread storage's own host runtime for every operation it
+receives, and the Durable host object under it. A thread storage is also no
+recipient: `replyTo`, a report, an answer route, a `notify` entry and an
+`integrator` that name it refuse and name its owner, and a delivery row that
+already names it ends as terminal without a delivery attempt. Agent rosters,
+`agent_list`, dashboard counts and `agent_status view: fleet` (records, effort
+members, conversations and model selections) omit it. Its host starts on the
+first mutation, delivers thread notices like any participant storage, and
 retires when idle. Effort presence does not report it as a related effort.
+`action: "list"` with an ordinary session's identity as `sessionId` reads that
+session's thread storage, and returns an empty list when the session has
+created no thread.
 The primary seeds its purpose, authority and source, restrictions, acceptance,
 and integration owner. Peers choose their contributions, join or leave, share
 findings, and challenge decisions directly. No roster, rounds, roles, votes,
