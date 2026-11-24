@@ -426,7 +426,7 @@ Sources: `transport/{index,endpoint,unix-link}.ts`; Chord 1.5.2
 `dist/host/{host,facet,reference,attempt}.d.ts`, and
 `dist/link/{link,message,part}.d.ts`.
 
-The manager's retained-object identity is `manager/8.0.0`; ordinary primary
+The manager's retained-object identity is `manager/9.0.0`; ordinary primary
 channels use `primary-delivery/4.0.0`. Native tool bindings use
 `native-controls/4.0.0;durable=<loaded Durable version>`.
 The typed `deliver` payload accepts optional

@@ -177,7 +177,8 @@ it("reload refuses a retained manager without dashboard task targets before any 
 	assert.deepEqual(calls, []);
 });
 
-for (const retained of ["manager/0.0.0", "manager/999.0.0"])
+// A manager/8.0.0 manager can lack members that current code calls, such as suspendPrimary.
+for (const retained of ["manager/0.0.0", "manager/8.0.0", "manager/999.0.0"])
 	it(`refuses a retained manager with a different interface (${retained}) before any control executes`, async (t) => {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-card-reload-")));
 		const previousRoot = process.env.PI_AGENT_SESSIONS_DIR;

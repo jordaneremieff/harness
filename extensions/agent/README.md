@@ -396,7 +396,7 @@ also follows roster activity.
 No card keeps a reference to the card of an earlier display update, and a
 collapsed call card does not serialise its arguments, so the memory of a
 transcript does not grow with the frames it draws.
-The manager contract is `manager/8.0.0`; a reload over an older retained manager
+The manager contract is `manager/9.0.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 An inspection can page the answer, final report and receipt references
 independently. Expansion shows each available continuation with the arguments
@@ -4639,7 +4639,8 @@ unplaced-input facts separately from native task state.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/8.0.0` uses the package-level Chord transport and includes
+clearance. `manager/9.0.0` uses the package-level Chord transport and includes
+primary registrations that a reload suspends and replaces, primary work references,
 recipient-scoped receipt associations, paged result inspection,
 retained primary acceptance, joined communication display and awaited primary endpoint teardown,
 preset-first creation resolution and machine

@@ -808,7 +808,7 @@ for (const operation of ["creation", "configure"] as const)
 	});
 
 it("advertises selection-aware manager controls without changing message admission", () => {
-	assert.equal(MANAGER_CONTRACT, "manager/8.0.0");
+	assert.equal(MANAGER_CONTRACT, "manager/9.0.0");
 	assert.match(CONTROL_BINDING_CONTRACT, /^native-controls\/4\.0\.0;durable=/u);
 	for (const method of ["spawn", "resolve-agent"])
 		assert.deepEqual(HOST_CONTRACT.operations[method], { request: `${method}/3.0.0`, response: `${method}/3.0.0` });

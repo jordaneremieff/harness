@@ -270,7 +270,7 @@ test("ordinary fleet calls forward exact selection and reject incompatible query
 		Object.defineProperty(manager, "managerProtocol", { value: version, configurable: true });
 		await assert.rejects(
 			tool.execute("stale", input, new AbortController().signal, undefined, ctx),
-			/retained agent manager uses manager\/[456]\.0\.0.*requires manager\/8\.0\.0.*Restart Pi/u,
+			/retained agent manager uses manager\/[456]\.0\.0.*requires manager\/9\.0\.0.*Restart Pi/u,
 		);
 	}
 });
