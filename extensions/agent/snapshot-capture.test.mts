@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { fork } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import {
 	chmodSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	symlinkSync,
@@ -18,7 +22,7 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { captureSnapshot, SnapshotCaptureError } from "./snapshot-capture.ts";
+import { captureSnapshot, removeAbandonedSnapshots, SnapshotCaptureError } from "./snapshot-capture.ts";
 
 function fixture(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "snapshot-capture-test-"));
@@ -272,4 +276,71 @@ it("cancels and times out at deterministic copy barriers without source mutation
 	assert.ok(scratch);
 	assert.equal(existsSync(scratch), false);
 	assert.deepEqual(sourceState(f.path), before);
+});
+
+const captureChild = `
+import { captureSnapshot } from ${JSON.stringify(new URL("./snapshot-capture.ts", import.meta.url).href)};
+const [source, ending] = process.argv.slice(2);
+await captureSnapshot(source, { maxSourceBytes: 512 * 1024 * 1024, deadline: Date.now() + 30000 });
+if (ending === "exit") process.exit(0);
+if (ending === "throw") setImmediate(() => { throw new Error("uncaught"); });
+if (ending === "hold") { process.send("held"); setInterval(() => {}, 1000); }
+`;
+
+function captureDirectories(scratch: string): string[] {
+	return readdirSync(scratch).filter((name) => name.startsWith("pi-durable-snapshot-"));
+}
+
+/** One child that captures the source into its own scratch root and then ends, or holds the copy. */
+function childCapture(t: TestContext, ending: "exit" | "throw" | "hold") {
+	const f = fixture(t);
+	f.db.close();
+	const scratch = realpathSync(mkdtempSync(join(tmpdir(), "snapshot-scratch-")));
+	t.after(() => rmSync(scratch, { recursive: true, force: true }));
+	const child = fork("-", [f.path, ending], {
+		execArgv: ["--experimental-strip-types", "--no-warnings", "--input-type=module", "--eval", captureChild],
+		env: { ...process.env, TMPDIR: scratch },
+		stdio: ["ignore", "ignore", "ignore", "ipc"],
+	});
+	t.after(() => child.kill("SIGKILL"));
+	return { scratch, child };
+}
+
+for (const ending of ["exit", "throw"] as const) {
+	it(`removes its private copy when the process ends by ${ending}`, async (t) => {
+		const { scratch, child } = childCapture(t, ending);
+		await once(child, "exit");
+		assert.deepEqual(captureDirectories(scratch), []);
+	});
+}
+
+it("removes the copy of a killed process and keeps the copy of a live one", async (t) => {
+	const killed = childCapture(t, "hold");
+	await once(killed.child, "message");
+	const live = childCapture(t, "hold");
+	await once(live.child, "message");
+	assert.equal(await removeAbandonedSnapshots(killed.scratch), 0, "a held owner lock keeps the copy");
+	killed.child.kill("SIGKILL");
+	await once(killed.child, "exit");
+	assert.equal(captureDirectories(killed.scratch).length, 1, "a kill leaves the copy behind");
+
+	assert.equal(await removeAbandonedSnapshots(killed.scratch), 1);
+	assert.deepEqual(captureDirectories(killed.scratch), []);
+	assert.equal(await removeAbandonedSnapshots(live.scratch), 0);
+	assert.equal(captureDirectories(live.scratch).length, 1);
+});
+
+it("removes a directory without an owner file only after its creation allowance", async (t) => {
+	const scratch = realpathSync(mkdtempSync(join(tmpdir(), "snapshot-scratch-")));
+	t.after(() => rmSync(scratch, { recursive: true, force: true }));
+	const unowned = join(scratch, "pi-durable-snapshot-unowned");
+	mkdirSync(unowned);
+	writeFileSync(join(unowned, "snapshot.sqlite"), "retained");
+	mkdirSync(join(scratch, "unrelated"));
+	const created = lstatSync(unowned).mtimeMs;
+
+	assert.equal(await removeAbandonedSnapshots(scratch, created + 60_000), 0);
+	assert.equal(existsSync(unowned), true);
+	assert.equal(await removeAbandonedSnapshots(scratch, created + 11 * 60_000), 1);
+	assert.deepEqual(readdirSync(scratch), ["unrelated"]);
 });

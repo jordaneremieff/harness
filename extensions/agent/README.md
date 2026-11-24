@@ -1531,7 +1531,12 @@ Filesystem-only capture never opens the source through SQLite and never creates
 source sidecars; an absent WAL must remain absent for reuse. SQLite validation and
 delivery preparation use only the private copy. A public Session performs that
 preparation without a scheduler, then closes its Storage. The capture owner reopens
-the same copy for a read-only Harness. Native tasks retain their committed status,
+the same copy for a read-only Harness. Each copy directory holds an owner file
+that its process keeps locked until it removes the directory. A process removes
+its copy directories when it exits. A killed process leaves them, so the first
+cold read of each process removes, in the background, every copy directory whose
+owner lock is free, and every one without an owner file that is older than ten
+minutes. Native tasks retain their committed status,
 restart count, checkpoint, ownership and abort fields. Observation reads do not
 create optional documents or settle deliveries; attempted writes reject. An absent database
 has an empty in-memory internal observation that is not cached, so a later read

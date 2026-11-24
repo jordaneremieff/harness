@@ -1,12 +1,135 @@
-/** Filesystem-only capture of a SQLite database and its WAL into private storage. */
-import { constants, type BigIntStats } from "node:fs";
-import { lstat, mkdtemp, open, realpath, rm, type FileHandle } from "node:fs/promises";
+/**
+ * Filesystem-only capture of a SQLite database and its WAL into private storage.
+ *
+ * Each private directory holds an owner file that its process keeps locked until it removes the directory. A
+ * process removes its directories when it exits. A process that is killed cannot, so every process removes, once,
+ * the directories whose owner lock is free.
+ */
+import { constants, lstatSync, mkdtempSync, rmSync, type BigIntStats } from "node:fs";
+import { lstat, open, readdir, realpath, rm, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Storage } from "@earendil-works/pi-durable";
+import { tryNativeWriterLease, type NativeWriterLease } from "./native-lease.ts";
+
+const DIRECTORY_PREFIX = "pi-durable-snapshot-";
+const OWNER_FILE = "owner.lock";
+/**
+ * A directory without an owner file is between its creation and its owner file, or belongs to a process that writes
+ * no owner file. Removal waits this long; a holder keeps its open files when its directory goes.
+ */
+const UNOWNED_DIRECTORY_GRACE_MS = 10 * 60 * 1000;
+
+interface OwnedDirectory {
+	readonly path: string;
+	readonly lease: NativeWriterLease;
+}
+
+const ownedDirectories = new Map<string, OwnedDirectory>();
+let exitHook = false;
+
+/** Create one private directory and lock its owner file in the same synchronous step. */
+function createOwnedDirectory(scratchRoot: string): OwnedDirectory {
+	if (!exitHook) {
+		exitHook = true;
+		process.once("exit", () => {
+			for (const owned of ownedDirectories.values()) {
+				try {
+					rmSync(owned.path, { recursive: true, force: true });
+				} catch {
+					// The owner lock ends with the process; another process removes the directory.
+				}
+			}
+		});
+	}
+	const path = mkdtempSync(join(scratchRoot, DIRECTORY_PREFIX));
+	try {
+		const attempt = tryNativeWriterLease(join(path, OWNER_FILE));
+		if (attempt.kind !== "held") throw new SnapshotCaptureError("internal");
+		const owned = { path, lease: attempt.lease };
+		ownedDirectories.set(path, owned);
+		return owned;
+	} catch (error) {
+		rmSync(path, { recursive: true, force: true });
+		throw error;
+	}
+}
+
+async function removeOwnedDirectory(path: string): Promise<void> {
+	const owned = ownedDirectories.get(path);
+	try {
+		await rm(path, { recursive: true, force: true });
+	} finally {
+		if (owned) {
+			ownedDirectories.delete(path);
+			owned.lease.release();
+		}
+	}
+}
+
+/** Remove one abandoned directory; a locked owner file or a recent directory without one stays. */
+async function removeAbandonedDirectory(path: string, now: number): Promise<boolean> {
+	const info = lstatSync(path);
+	if (!info.isDirectory() || info.uid !== process.getuid?.()) return false;
+	let ownerFile = true;
+	try {
+		lstatSync(join(path, OWNER_FILE));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		ownerFile = false;
+	}
+	if (!ownerFile) {
+		if (now - info.mtimeMs < UNOWNED_DIRECTORY_GRACE_MS) return false;
+		await rm(path, { recursive: true, force: true });
+		return true;
+	}
+	const attempt = tryNativeWriterLease(join(path, OWNER_FILE));
+	if (attempt.kind !== "held") return false;
+	try {
+		await rm(path, { recursive: true, force: true });
+	} finally {
+		attempt.lease.release();
+	}
+	return true;
+}
+
+/**
+ * Remove the private capture directories that no live process owns and return their count. A directory that cannot
+ * be examined stays for a later run.
+ */
+export async function removeAbandonedSnapshots(
+	scratchRoot: string = tmpdir(),
+	now: number = Date.now(),
+): Promise<number> {
+	let names: string[];
+	try {
+		names = await readdir(scratchRoot);
+	} catch {
+		return 0;
+	}
+	let removed = 0;
+	for (const name of names) {
+		if (!name.startsWith(DIRECTORY_PREFIX)) continue;
+		try {
+			if (await removeAbandonedDirectory(join(scratchRoot, name), now)) removed++;
+		} catch {
+			// Another process removed it, or it is not a private directory of this user.
+		}
+	}
+	return removed;
+}
+
+let abandonedSweep: Promise<number> | undefined;
+
+/** Start the one removal of abandoned capture directories that each process runs; later calls return the same run. */
+export function sweepAbandonedSnapshots(): Promise<number> {
+	abandonedSweep ??= removeAbandonedSnapshots();
+	return abandonedSweep;
+}
+
 export type SnapshotCaptureErrorCode =
 	| "not_found"
 	| "source_changed"
@@ -119,7 +242,7 @@ async function openSourcePair(
 	return { db, wal };
 }
 
-async function createPrivateDirectory(path: string, options: SnapshotCaptureOptions): Promise<string> {
+async function createPrivateDirectory(path: string, options: SnapshotCaptureOptions): Promise<OwnedDirectory> {
 	const sourceRoot = await realpath(options.sourceRoot ?? dirname(path));
 	const scratchRoot = await realpath(tmpdir());
 	const scratchRelative = relative(sourceRoot, scratchRoot);
@@ -129,7 +252,7 @@ async function createPrivateDirectory(path: string, options: SnapshotCaptureOpti
 	)
 		throw new SnapshotCaptureError("source_unreadable");
 	checkSnapshotCapture(options.signal, options.deadline);
-	return mkdtemp(join(scratchRoot, "pi-durable-snapshot-"));
+	return createOwnedDirectory(scratchRoot);
 }
 
 async function writeChunk(
@@ -226,7 +349,7 @@ function validatePrivateDatabase(target: string): void {
 
 async function cleanupFailedCapture(storage: Storage | undefined, directory: string | undefined): Promise<void> {
 	await storage?.close(BACKGROUND_CONTEXT).catch(() => {});
-	if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {});
+	if (directory) await removeOwnedDirectory(directory).catch(() => {});
 }
 
 function captureFailure(error: unknown): SnapshotCaptureError {
@@ -255,7 +378,7 @@ export async function captureSnapshot(
 				absent: true,
 			};
 		}
-		directory = await createPrivateDirectory(path, options);
+		directory = (await createPrivateDirectory(path, options)).path;
 		options.onDirectory?.(directory);
 		const target = join(directory, "snapshot.sqlite");
 		await copySourcePair(pair, target, options);
@@ -271,7 +394,7 @@ export async function captureSnapshot(
 		return {
 			storage,
 			reopen: () => openNodeSqliteStorage(target),
-			cleanup: () => rm(ownedDirectory, { recursive: true, force: true }),
+			cleanup: () => removeOwnedDirectory(ownedDirectory),
 		};
 	} catch (error) {
 		await cleanupFailedCapture(storage, directory);

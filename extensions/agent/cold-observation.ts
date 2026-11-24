@@ -33,6 +33,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { observeClaim } from "./claims.ts";
 import { hostPaths } from "./host-protocol.ts";
 import type { HostMetadata } from "./host-protocol.ts";
+import { sweepAbandonedSnapshots } from "./snapshot-capture.ts";
 
 interface ColdObservationRuntime {
 	readonly createModels: typeof import("@earendil-works/pi-ai").createModels;
@@ -189,6 +190,8 @@ function claimState(metadata: HostMetadata): {
 
 /** The default public snapshot opener: no services, no model runtime, no resume. */
 export async function openColdObservationSnapshot(input: ColdOpenInput): Promise<ColdObservationHandle> {
+	// Copies that a killed process left go in the background; no read waits for their removal.
+	void sweepAbandonedSnapshots().catch(() => undefined);
 	const { createModels, createRegistry, DurableObservation } = await loadColdObservationRuntime();
 	const observation = await DurableObservation.open(
 		{
