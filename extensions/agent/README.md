@@ -2552,7 +2552,8 @@ updated per fact; session start folds the entries it already read.
 
 A question to a session whose Pi process has ended closes as unanswered. A
 session counts as ended when its primary endpoint is absent, names a process
-that no longer runs, or was written before the current boot of the machine;
+that no longer runs, or carries the reuse proof described under delivery (no
+accepting socket and a process holding the PID that started after the record);
 an unreadable, foreign or incompatible endpoint keeps the question open, and so
 does a live session that has not run yet. A reload keeps the session's endpoint
 published until the reloaded extension registers again, within 60 s, so a
@@ -3243,8 +3244,8 @@ index as thread hints and cost no visit, nor does a conversation that declared
 no claim (its row is null), so only declared claims spend visits and every
 record's claims are covered.
 Ordinary descriptors consume visits first, and sockets beside them cost no
-visit. A descriptor whose session is proven dead (its process has ended, or it
-was written before the current boot) costs no visit, and the reader removes it,
+visit. A descriptor whose session is proven dead (no process holds its PID, or
+a probe found the reuse proof) costs no visit, and the reader removes it,
 so records left by crashed, killed or rebooted sessions do not accumulate. One
 read examines at most four times the visit limit in descriptors; the rest wait
 for a later read. One awareness read lists the record index once for presence and thread
@@ -4478,16 +4479,22 @@ that meets a live owner with another version holds that delivery pending and
 reports the endpoint version and the restart that clears it; it never treats the
 owner as dead and never falls back for it. Endpoint identity and local process
 ownership are checked before delivery compatibility. An owner is proven dead
-when no process holds its PID, when its record was written before the current
-boot, or when its socket refuses a connection and the process that now holds
-its PID started after the record was written. A refused connection alone, as
-from a busy owner with a full listen queue, keeps it live. A live foreign PID is
-probed in the background once its last probe is older than 10 s; a reader that
-needs the answer waits only for a record's first probe. A new registration
-replaces a stored endpoint only on such proof and an unchanged file identity,
-regardless of the stored contract tag. `removeDeadPrimaryEndpoint`, which
-readers call so dead records do not accumulate, removes one only for a dead PID
-or a record of an earlier boot; a probe result never removes a file. Foreign or unverified ownership
+when no process holds its PID, or by the reuse proof: its socket accepts no
+connection (refused, or the socket file is missing) and the process that now
+holds its PID started more than 2 s after the record was written. Neither half
+alone proves anything: a busy owner with a full listen queue refuses, and a
+cleaned temporary directory loses a live owner's socket file. The start time
+comes from `ps` elapsed time, which a step of the wall clock moves together with
+the current time, so a clock step fakes no proof; no comparison of the record's
+time with the boot time enters. A live foreign PID is probed in the background
+once its last probe is older than 10 s; a reader that needs the answer waits
+only for a record's first probe. A new registration replaces a stored endpoint
+only on such proof and an unchanged file identity, regardless of the stored
+contract tag. `removeDeadPrimaryEndpoint`, which readers call so dead records do
+not accumulate, removes one for a dead PID or a completed reuse proof of this
+process; a refusal alone never removes a file. A direct report that waits for an
+ended primary names its kind in the host's delivery error: a thread
+notification, a question, or a message, none of which reaches another session. Foreign or unverified ownership
 stays protected. Ownership metadata never authorizes a retired delivery payload.
 A fallback broadcast checks every registered primary before the first delivery,
 so one incompatible candidate

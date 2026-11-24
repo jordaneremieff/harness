@@ -387,7 +387,7 @@ it("reads a record as dead once its PID belongs to a process that started after 
 	assert.equal(primaryEndpointStatus(root, id).state, "live", "an unprobed live PID reads as live");
 	assert.equal((await readVerifiedPrimaryEndpointDescriptor(root, id)).state, "dead");
 	assert.equal(primaryEndpointStatus(root, id).state, "dead", "the proof stands for later synchronous reads");
-	assert.equal(removeDeadPrimaryEndpoint(root, id), false, "a probe result never removes a record");
+	assert.equal(removeDeadPrimaryEndpoint(root, id), true, "a completed reuse proof removes the record");
 });
 
 it("replaces an endpoint whose PID another process took after the owner was killed", async (t) => {
@@ -472,15 +472,72 @@ it("removes only a record whose owner is proven dead", (t) => {
 	assert.equal(removeDeadPrimaryEndpoint(root, dead), false);
 });
 
-it("reads an endpoint written before the current boot as dead whatever holds its PID", (t) => {
+/** A start time that a comparison with the boot time reads as an earlier boot, as after a forward clock step. */
+const beforeBoot = () => new Date(Date.now() - uptime() * 1000 - 3_600_000).toISOString();
+
+it("keeps a live writer's record live and present after a forward clock step of an hour", async (t) => {
 	const root = testRoot(t);
 	const id = uuidV7();
 	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
-	const beforeBoot = new Date(Date.now() - uptime() * 1000 - 3_600_000).toISOString();
-	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { pid: process.pid, startedAt: beforeBoot }));
-	assert.equal(primaryEndpointStatus(root, id).state, "dead");
-	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { pid: process.pid }));
+	// After the step, Date.now() - uptime() moved forward an hour, so the record looks older than the boot.
+	const socketPath = join(root, "writer.sock");
+	const writer = createServer();
+	await new Promise<void>((done) => writer.listen(socketPath, done));
+	t.after(() => writer.close());
+	writeFileSync(
+		primaryEndpointPath(root, id),
+		endpointRecord(root, id, { pid: process.pid, socketPath, startedAt: beforeBoot() }),
+	);
 	assert.equal(primaryEndpointStatus(root, id).state, "live");
+	assert.equal((await readVerifiedPrimaryEndpointDescriptor(root, id)).state, "live");
+	assert.equal(removeDeadPrimaryEndpoint(root, id), false);
+	assert.equal(primaryEndpointStatus(root, id).state, "live", "the record is never deleted");
+});
+
+it("reads an earlier-boot record with a free PID as dead and removes it", (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	writeFileSync(
+		primaryEndpointPath(root, id),
+		endpointRecord(root, id, { pid: deadProcessId(), startedAt: beforeBoot() }),
+	);
+	assert.equal(primaryEndpointStatus(root, id).state, "dead");
+	assert.equal(removeDeadPrimaryEndpoint(root, id), true);
+	assert.equal(primaryEndpointStatus(root, id).state, "absent");
+});
+
+it("reads an earlier-boot record whose PID a later process holds and whose socket is gone as dead after the probe", async (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	// A reboot clears the socket file; this test process stands for the later holder of the recorded PID.
+	writeFileSync(
+		primaryEndpointPath(root, id),
+		endpointRecord(root, id, {
+			pid: process.pid,
+			socketPath: join(root, "cleared.sock"),
+			startedAt: beforeThisProcess(),
+		}),
+	);
+	assert.equal(primaryEndpointStatus(root, id).state, "live", "no probe has run yet");
+	assert.equal(removeDeadPrimaryEndpoint(root, id), false, "no proof before the probe");
+	assert.equal((await readVerifiedPrimaryEndpointDescriptor(root, id)).state, "dead");
+	assert.equal(removeDeadPrimaryEndpoint(root, id), true, "a completed reuse proof removes the record");
+	assert.equal(primaryEndpointStatus(root, id).state, "absent");
+});
+
+it("keeps a live owner whose socket file is gone", async (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	// The writer of the record still runs, so a missing socket file alone proves nothing.
+	writeFileSync(
+		primaryEndpointPath(root, id),
+		endpointRecord(root, id, { pid: process.pid, socketPath: join(root, "cleaned.sock") }),
+	);
+	assert.equal((await readVerifiedPrimaryEndpointDescriptor(root, id)).state, "live");
+	assert.equal(removeDeadPrimaryEndpoint(root, id), false);
 });
 
 it("replaces an endpoint whose recorded local process is dead", async (t) => {
