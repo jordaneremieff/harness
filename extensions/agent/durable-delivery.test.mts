@@ -38,6 +38,7 @@ import {
 	undeliveredReports,
 } from "./durable-controls.ts";
 import {
+	directReportWaitText,
 	observeDeliveryEligibility,
 	receiptStateLine,
 	readReceiptStates,
@@ -5462,4 +5463,20 @@ it("tells the requester of a failed input that results its producer delegated re
 	const delegated = receiptStateLine({ receipt, delegated: 2 } as never);
 	assert.match(delegated, /still waits for 2 request\(s\) that it delegated/u);
 	assert.match(delegated, /Send it a follow-up to finish the work and report\./u);
+});
+
+it("names what waits for an ended primary: a thread notice, a question or a message", () => {
+	const owner = "01a20c9b-0000-75a2-9fc7-00000000000c";
+	assert.equal(
+		directReportWaitText({ requestId: "thread:t:1:x", threadId: "t" }, owner),
+		`Thread recipient ${owner} has no live endpoint; its notification stays pending without broadcast`,
+	);
+	assert.equal(
+		directReportWaitText({ requestId: "question:agent:7" }, owner),
+		`Question question:agent:7 waits for session ${owner}, which has no live endpoint. It reaches no other session: the asker's next question or context head closes it as unanswered while that session stays ended, and the session receives it if it resumes first.`,
+	);
+	assert.equal(
+		directReportWaitText({ requestId: "agent-deliver:s:4" }, owner),
+		`Message agent-deliver:s:4 waits for session ${owner}, which has no live endpoint. It reaches no other session: that session receives it if it resumes. Send it to a live session if it cannot wait.`,
+	);
 });

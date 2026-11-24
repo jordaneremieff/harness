@@ -58,6 +58,7 @@ import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from
 import { isThreadStorage } from "./identity.ts";
 import { foldContinuity } from "./continuity-facts.ts";
 import { ContinuityDoc } from "./continuity-native.ts";
+import { validQuestionId } from "./peer-questions.ts";
 import {
 	acknowledgeReports,
 	type DeliveryOrigin,
@@ -447,7 +448,19 @@ function receiptOrigin(receipt: DeliveryReceipt): DeliveryOrigin {
 	return origin;
 }
 
-function directReport(row: DeliveryRow): boolean {
+/**
+ * Why a direct report waits for its owner, a primary without a live endpoint, in the words that the sending
+ * host's status shows: a thread notice, a question, or a message. None reaches another session.
+ */
+export function directReportWaitText(report: Pick<DeliveryReport, "requestId" | "threadId">, owner: string): string {
+	if (report.threadId !== undefined)
+		return `Thread recipient ${owner} has no live endpoint; its notification stays pending without broadcast`;
+	if (validQuestionId(report.requestId))
+		return `Question ${report.requestId} waits for session ${owner}, which has no live endpoint. It reaches no other session: the asker's next question or context head closes it as unanswered while that session stays ended, and the session receives it if it resumes first.`;
+	return `Message ${report.requestId} waits for session ${owner}, which has no live endpoint. It reaches no other session: that session receives it if it resumes. Send it to a live session if it cannot wait.`;
+}
+
+function directReport(row: DeliveryRow): row is Extract<DeliveryRow, { kind: "report" }> {
 	return row.kind === "report" && row.report.direct === true;
 }
 function deliverySender(row: DeliveryRow, host: DurableHost): string {
@@ -1878,10 +1891,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			throw primaryEndpointIncompatibleError(owner, status.version ?? "unadvertised");
 		else if (status.state === "unknown")
 			throw new Error(`primary owner ${owner} has an unknown endpoint; refusing fallback`);
-		else if (directReport(row))
-			throw new Error(
-				`Thread recipient ${owner} has no live endpoint; its notification stays pending without broadcast`,
-			);
+		else if (directReport(row)) throw new Error(directReportWaitText(row.report, owner));
 		else {
 			await deliverFallbackOwner(row, identity, owner);
 			return false;
