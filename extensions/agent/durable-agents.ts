@@ -31,6 +31,7 @@ import {
 	endedQuestionText,
 	type OpenQuestion,
 	primarySessionEnded,
+	questionReceipt,
 	questionText,
 } from "./peer-questions.ts";
 import { verifyPrimaryOwners } from "./primary-channel.ts";
@@ -1957,6 +1958,17 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		peer: string,
 	): Durable.ToolExecutionResult<ControlDetails> | undefined => {
 		if (state === "full") return errorResult(NATIVE_QUESTIONS_FULL);
+		if (state === "admitted") {
+			// A replay of an ask whose report row was retained: the receipt of the first attempt.
+			const receipt = {
+				sessionId: peer,
+				admitted: true,
+				sourceId: `report:${id}`,
+				...questionReceipt({ question: id }, "agent"),
+				boundary: "Retained for delivery; does not prove action or task acceptance",
+			};
+			return textResult(controlText(receipt), receipt);
+		}
 		if (state !== "closed") return undefined;
 		return textResult(
 			`Question ${id} to ${peer} was delivered and has closed: its reply or non-reply notice arrived as a report.`,
@@ -1965,8 +1977,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	};
 	/**
 	 * Reserve the question in this conversation's storage, then deliver it; a failed delivery drops the
-	 * reservation. The question document tracks it, so the ask writes no admission fact or delegation edge.
-	 * A replay after its reply or notice arrived returns the closed question without a second delivery.
+	 * reservation unless its report row was retained. The question document tracks it, so the ask writes no
+	 * admission fact or delegation edge. A replay after the row was retained returns the first receipt, and a
+	 * replay after its reply or notice arrived returns the closed question, both without a second delivery.
 	 */
 	const askPrimary = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,

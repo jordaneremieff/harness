@@ -1053,11 +1053,20 @@ export class DurableHost {
 					}
 				}, context);
 		};
+		// A reply or notice closes its question in the commit that admits it, so no crash separates the two.
+		const closing = closingInput({
+			requestId,
+			inputClass: requestString(params, "inputClass"),
+			inputSender: requestString(params, "inputSender"),
+		});
 		const submitted = await submitConversation(
 			conversation,
 			{
 				message: annotated,
 				requestId,
+				...(closing === undefined
+					? {}
+					: { withAdmission: (tx: Tx) => closeNativeQuestion(tx, conversation.id, closing.id, closing.sender) }),
 				communication: { storageId: this.storageId, value: communication },
 				...(provenance === undefined ? {} : { provenance }),
 				...(providerRetry === undefined ? {} : { providerRetry: providerRetry as ProviderRetryNotice }),
@@ -1078,13 +1087,6 @@ export class DurableHost {
 			throw error;
 		});
 		await complete(submitted.deduped ? [] : recoveryRequests);
-		const closing = closingInput({
-			requestId,
-			inputClass: requestString(params, "inputClass"),
-			inputSender: requestString(params, "inputSender"),
-		});
-		if (closing !== undefined)
-			await this.harness.commit((tx) => closeNativeQuestion(tx, conversation.id, closing.id, closing.sender), context);
 		return { ...submitted, identity: this.identity(conversation.id) };
 	}
 

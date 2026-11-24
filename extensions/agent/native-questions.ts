@@ -41,18 +41,25 @@ export function nativeQuestionRefusal(args: {
 
 export const NATIVE_QUESTIONS_FULL = `This conversation has ${MAX_OPEN_QUESTIONS} open questions; each closes when its reply or non-reply notice arrives. Send this message without expectReply, or continue other work until an answer event arrives`;
 
+/** The asking storage retains the question's report row: its delivery was admitted and must not be undone. */
+async function questionAdmitted(tx: Tx, peer: string, id: string): Promise<boolean> {
+	return (await retainedReportRequest(tx, peer, id)) !== undefined;
+}
+
 /**
  * Reserve a question before its delivery, so a reply can never arrive before the record. A replayed ask
- * finds its own record: `open` while no reply or notice has closed it, `closed` after one did.
+ * finds its own record: `admitted` once its report row is retained, so the replay delivers nothing again,
+ * `open` while no row exists and no reply or notice has closed it, `closed` after one did.
  */
 export async function reserveNativeQuestion(
 	tx: Tx,
 	conversationId: ConversationId,
 	question: { id: string; peer: string; message: string; at: number },
-): Promise<"reserved" | "open" | "closed" | "full"> {
+): Promise<"reserved" | "open" | "admitted" | "closed" | "full"> {
 	const state = await tx.doc(NativeQuestionsDoc, conversationId);
 	if (state.closed.includes(question.id)) return "closed";
-	if (state.open.some((item) => item.id === question.id)) return "open";
+	if (state.open.some((item) => item.id === question.id))
+		return (await questionAdmitted(tx, question.peer, question.id)) ? "admitted" : "open";
 	if (state.open.length >= MAX_OPEN_QUESTIONS) return "full";
 	state.open.push({
 		id: question.id,
@@ -63,11 +70,16 @@ export async function reserveNativeQuestion(
 	return "reserved";
 }
 
-/** Drop a reservation whose delivery failed; a closed question stays closed. */
+/**
+ * Drop a reservation whose delivery failed; a closed question stays closed. A question whose report row is
+ * retained was admitted, whatever the failing attempt reported, so it stays open for its reply or its close
+ * as ended.
+ */
 export async function releaseNativeQuestion(tx: Tx, conversationId: ConversationId, id: string): Promise<void> {
 	const state = await tx.doc(NativeQuestionsDoc, conversationId);
 	const index = state.open.findIndex((item) => item.id === id);
-	if (index >= 0) state.open.splice(index, 1);
+	if (index < 0 || (await questionAdmitted(tx, state.open[index].peer, id))) return;
+	state.open.splice(index, 1);
 }
 
 /** Close the question that a reply or notice names when it comes from the session that was asked. */

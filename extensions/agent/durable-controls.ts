@@ -379,6 +379,8 @@ export interface DurableSubmitParams {
 	 * of a request whose declared work continues. Such an input is kept as context and starts no run.
 	 */
 	readonly stateNotesOnly?: boolean;
+	/** Writes that belong to the input's admission and commit with it, also when a replay finds the input admitted. */
+	readonly withAdmission?: (tx: Tx) => Promise<unknown>;
 	readonly providerRetry?: ProviderRetryNotice;
 	/** Trusted owner value, captured inside the existing post-admission bookkeeping commit. */
 	readonly communication?: {
@@ -947,6 +949,7 @@ async function admitConversation(
 	let quiet = false;
 	// One commit admits the input with its delivery intent, request route, check-in and unplaced row; a refusal stores none of them.
 	const submissionId = await conversation.commit(async (tx) => {
+		await params.withAdmission?.(tx);
 		const existing = await tx.submissionByRequest(conversation.id, requestId);
 		deduped = existing !== undefined;
 		const replay = await quietReplayId(tx, existing, label.class, quietness.expectsAnswer);

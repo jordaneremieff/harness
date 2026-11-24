@@ -2590,8 +2590,10 @@ A Durable agent asks an ordinary primary with its own `agent_send` and
 it. A local conversation or another Durable storage refuses the question with
 the same request-result reason. The agent's storage reserves the question in
 one document per asking conversation (`agent.peer-questions`) before delivery,
-and a failed delivery drops the reservation; the question writes no admission
-fact and no delegation edge. The question reaches the primary as a report whose
+and a failed delivery drops the reservation unless the question's report row
+was retained, as when a replayed ask fails after the first attempt admitted it;
+a replay finds the retained row and returns the first receipt without a second
+delivery. The question writes no admission fact and no delegation edge. The question reaches the primary as a report whose
 request ID is the question ID; the primary treats it as a received question
 like any other. Every message from a Durable agent to an ordinary primary is a
 direct report: if that session ends before the delivery, the report waits for
@@ -2605,7 +2607,8 @@ The primary's reply with `inReplyTo` and its non-reply notice reach the agent
 as report inputs with request IDs `reply:<question ID>` and
 `notice:<question ID>`. They wake an idle agent and reach a busy one at its next
 tool boundary. When the agent's host admits such an input from the asked
-session, it removes the question from the document; the last 32 closed IDs stay
+session, it removes the question from the document in the commit that admits
+the input, so no crash leaves an answered question open; the last 32 closed IDs stay
 there, so a replayed ask cannot reopen one, and a replay after the close
 returns the closed question without a second delivery. The receipt of the
 question tells an agent whose routed task needs the answer to declare

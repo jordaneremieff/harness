@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
+import { onStoredCommit } from "./commit-observation.ts";
 import { nativeContinuityText } from "./continuity-facts.ts";
 import { DurableHost } from "./durable-host.ts";
 import { runtimeFixture, trackHost } from "./durable-runtime-fixture.mts";
@@ -386,4 +387,90 @@ it("ends the parked report row of a question whose asked session ended, and leav
 		(tx) => endQuestionDeliveries(tx, [{ ...question, id: `question:${storageId}:2` }]),
 		context,
 	);
+});
+
+it("closes a question in the commit that admits its reply, so no crash leaves an answered question open", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "native-questions-atomic-"));
+	const storageId = randomUUID();
+	const host = await DurableHost.open(
+		{ ...hostOptions(join(root, "host.sqlite"), await fixtureRuntime("answer"), fixtureRegistry()), storageId },
+		context,
+	);
+	t.after(async () => {
+		await host.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const primary = randomUUID();
+	const id = `question:${storageId}:1`;
+	await host.harness.commit(
+		(tx) => reserveNativeQuestion(tx, ROOT, { id, peer: primary, message: "Ready?", at: 1 }),
+		context,
+	);
+	const commits: Array<{ admits: boolean; closes: boolean }> = [];
+	const stop = onStoredCommit(host.harness, (publication) => {
+		commits.push({
+			admits: publication.changes.some(
+				(change) =>
+					change.type === "submission" &&
+					(change as { value?: { requestId?: string } }).value?.requestId === `reply:${id}`,
+			),
+			closes: publication.changes.some(
+				(change) => change.type === "document" && change.record.kind === "agent.peer-questions",
+			),
+		});
+	});
+	t.after(stop);
+	await host.request(
+		"submit",
+		{
+			sessionId: storageId,
+			message: `Report from ${primary}:\nYes.`,
+			requestId: `reply:${id}`,
+			inputClass: "report",
+			inputSender: primary,
+			origin: "model",
+		},
+		context,
+	);
+	const admission = commits.find((commit) => commit.admits);
+	assert.ok(admission, "the reply was admitted");
+	assert.equal(admission.closes, true, "the admitting commit closes the question");
+	assert.deepEqual(await host.harness.commit((tx) => openNativeQuestions(tx, ROOT), context), []);
+});
+
+it("keeps a question whose report row was retained when a replayed ask fails, and returns its first receipt", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "native-questions-replay-"));
+	const storageId = randomUUID();
+	const host = await DurableHost.open(
+		{ ...hostOptions(join(root, "host.sqlite"), await fixtureRuntime("answer"), fixtureRegistry()), storageId },
+		context,
+	);
+	t.after(async () => {
+		await host.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const primary = randomUUID();
+	const id = `question:${storageId}:7`;
+	const question = { id, peer: primary, message: "Which region?", at: 1 };
+	const reserve = () => host.harness.commit((tx) => reserveNativeQuestion(tx, ROOT, question), context);
+	assert.equal(await reserve(), "reserved");
+	// The first attempt retained the direct report row; the host stopped before the tool result.
+	await recordReport(
+		host.harness,
+		{ ownerId: primary, senderIdentity: storageId, message: "Which region?", requestId: id, direct: true },
+		context,
+	);
+	assert.equal(await reserve(), "admitted", "the replay finds the admitted question and delivers nothing again");
+	// A replay that dispatched again and failed, as when the asked session is unreachable, releases nothing.
+	await host.harness.commit((tx) => releaseNativeQuestion(tx, ROOT, id), context);
+	assert.deepEqual(
+		(await host.harness.commit((tx) => openNativeQuestions(tx, ROOT), context)).map((item) => item.id),
+		[id],
+		"the record stays, so the reply closes it or an end of the session closes it and its row",
+	);
+	// A reservation without a retained row is still released on a failed delivery.
+	const other = { ...question, id: `question:${storageId}:8` };
+	await host.harness.commit((tx) => reserveNativeQuestion(tx, ROOT, other), context);
+	await host.harness.commit((tx) => releaseNativeQuestion(tx, ROOT, other.id), context);
+	assert.equal((await host.harness.commit((tx) => openNativeQuestions(tx, ROOT), context)).length, 1);
 });
