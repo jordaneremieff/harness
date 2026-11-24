@@ -2870,8 +2870,10 @@ an active input with its bounded body.
 At one request the host reads at most the 128 newest entries and 256 KiB of the
 conversation, and associates at most 128 notices. A notice outside these
 bounds, a notice without typed thread data, and a notice whose message is not
-unique in the request each stay as their own message. A range frozen from an
-incomplete read states partial coverage. After a host restart, the host reads a
+unique in the request each stay as their own message. A range states partial
+coverage when its read was incomplete or when a notice of its own recipient and
+assistant interval stays outside it. Coverage depends only on that interval, so
+a range computed again from the same notices keeps its text. After a host restart, the host reads a
 history above the read bound again from its newest entries only. A range can
 then return once with other coverage text, and older notices can return as
 their own messages.

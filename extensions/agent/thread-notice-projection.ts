@@ -54,6 +54,11 @@ export interface ThreadNoticeAssociation {
 	/** The preceding retained assistant boundary, or the initial context boundary. */
 	epoch: string;
 	passive: PassiveThreadNotice;
+	/**
+	 * Partial when the caller's sources are incomplete or another source of the same recipient and epoch did not
+	 * associate. It depends only on this interval, so a range computed again from the same notices keeps its text.
+	 */
+	coverage: "complete" | "partial";
 }
 export interface ThreadNoticeSource<T> {
 	sourceId: string;
@@ -76,27 +81,32 @@ function threadFact(passive: CommunicationPassive | undefined): passive is Passi
 		passive.value.metadata.eventKind !== ""
 	);
 }
-function sourceAssociation<T>(
-	source: ThreadNoticeSource<T>,
-	tuples: Map<string, number[]>,
-): ThreadNoticeAssociation | undefined {
+type Candidate = Omit<ThreadNoticeAssociation, "coverage">;
+/** The interval of one source: its recipient and the assistant boundary before it. */
+function intervalKey(source: { recipient: string; epoch: string }): string {
+	return JSON.stringify([source.recipient, source.epoch]);
+}
+function sourceAssociation<T>(source: ThreadNoticeSource<T>, tuples: Map<string, number[]>): Candidate | undefined {
 	const passive = parseCommunicationPassive(source.passive);
 	if (!threadFact(passive) || !source.sourceId || !source.recipient || !source.epoch) return undefined;
 	const matches = tuples.get(JSON.stringify(source.message));
 	if (matches?.length !== 1) return undefined;
 	return { index: matches[0], sourceId: source.sourceId, recipient: source.recipient, epoch: source.epoch, passive };
 }
-function uniqueAssociations(candidates: ThreadNoticeAssociation[]): ThreadNoticeAssociations {
+/** Candidates that share a message or a source identity drop out, and their intervals become incomplete. */
+function uniqueAssociations(candidates: Candidate[], incomplete: Set<string>): Candidate[] {
 	const indices = new Map<number, number>();
 	const ids = new Map<string, number>();
 	for (const item of candidates) {
 		indices.set(item.index, (indices.get(item.index) ?? 0) + 1);
 		ids.set(item.sourceId, (ids.get(item.sourceId) ?? 0) + 1);
 	}
-	const items = candidates
-		.filter((item) => indices.get(item.index) === 1 && ids.get(item.sourceId) === 1)
-		.sort((a, b) => a.index - b.index);
-	return { items, coverage: items.length === candidates.length ? "complete" : "partial" };
+	const items: Candidate[] = [];
+	for (const item of candidates) {
+		if (indices.get(item.index) === 1 && ids.get(item.sourceId) === 1) items.push(item);
+		else incomplete.add(intervalKey(item));
+	}
+	return items.sort((a, b) => a.index - b.index);
 }
 /** Only a unique complete tuple and validated source metadata establish association. */
 export function associateThreadNotices<T>(
@@ -104,7 +114,6 @@ export function associateThreadNotices<T>(
 	sources: readonly ThreadNoticeSource<T>[],
 	sourceComplete = true,
 ): ThreadNoticeAssociations {
-	let complete = sourceComplete;
 	const tuples = new Map<string, number[]>();
 	for (let index = 0; index < messages.length; index++) {
 		const tuple = JSON.stringify(messages[index]);
@@ -112,25 +121,27 @@ export function associateThreadNotices<T>(
 		matches.push(index);
 		tuples.set(tuple, matches);
 	}
-	const candidates: ThreadNoticeAssociation[] = [];
+	const candidates: Candidate[] = [];
+	const incomplete = new Set<string>();
 	let bytes = 0;
-	for (let offset = 0; offset < sources.length; offset++) {
-		if (offset >= 128) {
-			complete = false;
-			break;
-		}
-		const source = sources[offset];
+	let visited = 0;
+	for (; visited < sources.length && visited < 128; visited++) {
+		const source = sources[visited];
 		bytes += Buffer.byteLength(JSON.stringify(source));
-		if (bytes > 256 * 1024) {
-			complete = false;
-			break;
-		}
+		if (bytes > 256 * 1024) break;
 		const association = sourceAssociation(source, tuples);
 		if (association) candidates.push(association);
-		else complete = false;
+		else incomplete.add(intervalKey(source));
 	}
-	const result = uniqueAssociations(candidates);
-	return { items: result.items, coverage: complete ? result.coverage : "partial" };
+	// A source past the bounds is not read, but its interval is known, so only ranges of that interval lose coverage.
+	for (let offset = visited; offset < sources.length; offset++) incomplete.add(intervalKey(sources[offset]));
+	const items = uniqueAssociations(candidates, incomplete).map(
+		(item): ThreadNoticeAssociation => ({
+			...item,
+			coverage: sourceComplete && !incomplete.has(intervalKey(item)) ? "complete" : "partial",
+		}),
+	);
+	return { items, coverage: sourceComplete && incomplete.size === 0 ? "complete" : "partial" };
 }
 export interface ThreadRangeSnapshot {
 	scope: string;
@@ -173,7 +184,7 @@ export function projectThreadNotices<T>(input: {
 		group.push(item);
 		groups.set(key, group);
 	}
-	for (const group of groups.values()) snapshots.push(freezeRange(input.scope, group, input.associations.coverage));
+	for (const group of groups.values()) snapshots.push(freezeRange(input.scope, group));
 	const replacement = new Map<number, string>();
 	const removed = new Set<number>();
 	for (const snapshot of snapshots) {
@@ -194,11 +205,8 @@ export function projectThreadNotices<T>(input: {
 	});
 	return { messages, snapshots, coverage: input.associations.coverage };
 }
-function freezeRange(
-	scope: string,
-	group: ThreadNoticeAssociation[],
-	coverage: "complete" | "partial",
-): ThreadRangeSnapshot {
+function freezeRange(scope: string, group: ThreadNoticeAssociation[]): ThreadRangeSnapshot {
+	const coverage = group.every((item) => item.coverage === "complete") ? "complete" : "partial";
 	const ordered = [...group].sort((a, b) => a.passive.value.metadata.event - b.passive.value.metadata.event);
 	const first = ordered[0];
 	const last = ordered[ordered.length - 1];

@@ -193,3 +193,32 @@ it("bounds source association visits and bytes and exposes partial coverage", ()
 	assert.equal(associateThreadNotices([oversized.message], [oversized]).items.length, 0);
 	assert.equal(associateThreadNotices([source(1).message], [source(1)], false).coverage, "partial");
 });
+it("recomputes the same range texts under a new scope after more than 128 notices froze one request at a time", () => {
+	const messages: Message[] = [];
+	const sources: ThreadNoticeSource<Message>[] = [];
+	let snapshots: ThreadRangeSnapshot[] = [];
+	let live: Message[] = [];
+	for (let sequence = 1; sequence <= 140; sequence++) {
+		const notice = source(sequence, { epoch: `assistant:${sequence}` });
+		messages.push(notice.message);
+		sources.push(notice);
+		messages.push({ role: "assistant", content: `answer ${sequence}`, timestamp: sequence });
+		const projection = projectThreadNotices({
+			scope: "session:1",
+			messages,
+			associations: associateThreadNotices(messages, sources),
+			snapshots,
+			marker: (original, text) => ({ ...original, content: text }),
+		});
+		snapshots = projection.snapshots;
+		live = projection.messages;
+	}
+	const rescoped = projectThreadNotices({
+		scope: "session:2",
+		messages,
+		associations: associateThreadNotices(messages, sources),
+		snapshots: [],
+		marker: (original, text) => ({ ...original, content: text }),
+	});
+	assert.deepEqual(rescoped.messages, live);
+});
