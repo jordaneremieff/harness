@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { setTimeout as pause } from "node:timers/promises";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { formatDurableFooter, sessionFigures } from "./footer.ts";
 import { AgentManager } from "./manager.ts";
@@ -491,4 +492,82 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 	const clearedAttention = nextStatus("reused-primary");
 	publish(child);
 	assert.deepEqual(await clearedAttention, ["agents: 0/1 active"], "a later publication clears the block");
+});
+
+test("projects the footer once for a burst of catalogue notices and shows the last state", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-footer-burst-")));
+	const manager = new AgentManager({
+		root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
+		createPrimary: async (options) => ({
+			id: options.id,
+			socketPath: "unused",
+			info: () => ({
+				id: options.id,
+				cwd: root,
+				hostname: "test-host",
+				pid: process.pid,
+				socketPath: "unused",
+				startedAt: new Date().toISOString(),
+			}),
+			update: () => {},
+			publishIntent: () => {},
+			touch: () => {},
+			setObservedPurpose: () => {},
+			setWorkRefs: () => {},
+			close: async () => {},
+		}),
+	});
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const record = manager.catalog.create({
+		cwd: "/work",
+		agentDir: "/agent",
+		packageDir: "/package",
+		model: { provider: "test", modelId: "model" },
+		thinkingLevel: "off",
+		ownerId: "burst-primary",
+	});
+	const publish = (cost: number) =>
+		manager.catalog.updateView(record.storageId, {
+			updatedAt: new Date().toISOString(),
+			coverage: { complete: true, omitted: 0 },
+			rows: [row(record.storageId, { storageId: record.storageId, cost })],
+		});
+	publish(1);
+	const texts: (string | undefined)[] = [];
+	const changes = new EventEmitter();
+	await manager.registerPrimary("burst-primary", {
+		signal: new AbortController().signal,
+		send: () => {},
+		status: (text) => {
+			texts.push(text);
+			changes.emit("status", text);
+		},
+	});
+	assert.deepEqual(texts, ["agents: 0/1 active · ~$1.00"]);
+	const internals = manager as unknown as { priorityPage(...input: unknown[]): Promise<unknown> };
+	const project = internals.priorityPage.bind(manager);
+	let projections = 0;
+	internals.priorityPage = (...input) => {
+		projections++;
+		return project(...input);
+	};
+
+	const last = new Promise<void>((resolve) => {
+		changes.on("status", (text) => {
+			if (text === "agents: 0/1 active · ~$40.00") resolve();
+		});
+	});
+	// Each publication sends one catalogue notice. The pause lets a projection end before the next notice.
+	for (let cost = 2; cost <= 40; cost++) {
+		publish(cost);
+		await pause(3);
+	}
+	await last;
+	assert.ok(projections <= 3, `39 notices ran ${projections} footer projections`);
+	assert.equal(texts.at(-1), "agents: 0/1 active · ~$40.00");
 });

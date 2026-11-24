@@ -1721,9 +1721,11 @@ publications resolve selected claims for presentation only; raw catalogue
 coverage, including `unknownClaims`, remains unchanged. The loaded count is not
 a global total. Catalog publication notices refresh these figures even when the
 dashboard is closed and the primary has no connection to the publishing host.
+Notices that arrive within 250 ms share one catalogue projection, so the figures
+follow a change within that interval.
 The primary and dashboard share one catalog observer; it closes after the last
 primary and dashboard listener leave. This observation starts no host and adds no
-polling timer. The dashboard reuses its scanned roster page for these figures
+polling timer; the projection timer starts only on a notice. The dashboard reuses its scanned roster page for these figures
 without another catalog scan or native profile read. Cost includes only creation
 lineage. Sent-work-only targets and their delegates contribute no cost because
 Durable lifetime usage is not attributable to this session's request. Repeated

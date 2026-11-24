@@ -244,6 +244,8 @@ const MAX_ERROR_TEXT = 512;
 const MAX_INVENTORY_PAGES = 16;
 const MAX_LIST_STEPS = 32;
 const PRIMARY_ACTIVITY_INTERVAL_MS = 60_000;
+/** Catalogue notices that arrive within this interval share one footer projection. */
+const FOOTER_NOTICE_INTERVAL_MS = 250;
 const CRASH_WINDOW_MS = 60_000;
 const MAX_AUTOMATIC_RESTARTS = 3;
 const MANAGED_LINK = { retryAttempts: 0 } as const;
@@ -460,12 +462,31 @@ export class AgentManager {
 	}
 	private catalogChanged(change: CatalogChange): void {
 		this.inventory.invalidate(change);
-		void this.refreshFooter().catch((error) => this.failures.set("footer", errorText(error)));
+		this.rosterChanged();
+		this.scheduleFooterProjection();
 		// A changed recipient can wake a parked delivery in any source storage.
 		this.recoverCatalogueChanges();
 	}
+	private footerTimer?: NodeJS.Timeout;
+	/**
+	 * Working hosts publish several notices each second, and a footer projection reads the whole catalogue. The
+	 * first notice of an interval starts one timer; one projection then serves every notice of that interval.
+	 */
+	private scheduleFooterProjection(): void {
+		if (this.footerTimer !== undefined || this.shuttingDown || !this.primaries.size) return;
+		this.footerTimer = setTimeout(() => {
+			this.footerTimer = undefined;
+			void this.projectFooter();
+		}, FOOTER_NOTICE_INTERVAL_MS);
+		this.footerTimer.unref?.();
+	}
+	private cancelFooterProjection(): void {
+		clearTimeout(this.footerTimer);
+		this.footerTimer = undefined;
+	}
 	private releaseObservation(): Promise<void> {
 		if (this.hasObservationOwners()) return this.coldRelease;
+		this.cancelFooterProjection();
 		this.stopCatalogObservation?.();
 		this.stopCatalogObservation = undefined;
 		this.failures.delete("catalog-observation");
@@ -2845,6 +2866,11 @@ export class AgentManager {
 
 	private async refreshFooter(): Promise<void> {
 		this.rosterChanged();
+		await this.projectFooter();
+	}
+
+	/** Project the roster once for each primary and write the footer texts that changed. */
+	private async projectFooter(): Promise<void> {
 		if (this.shuttingDown || !this.primaries.size) return;
 		if (this.refreshing) {
 			this.refreshAgain = true;
@@ -2887,6 +2913,7 @@ export class AgentManager {
 	close(): Promise<void> {
 		if (this.closing) return this.closing;
 		this.shuttingDown = true;
+		this.cancelFooterProjection();
 		this.launchReplay.close();
 		this.recoveryHolds.clear();
 		this.lifecycle.abort();
