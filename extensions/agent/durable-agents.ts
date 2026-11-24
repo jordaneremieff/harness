@@ -106,7 +106,9 @@ import { AgentCatalog } from "./catalog.ts";
 import { createPrimaryLocationResolver } from "./effort-location.ts";
 import type { EffortReadResources } from "./effort-presence.ts";
 import { readFleetStatus, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
-import { readEffortAwareness, formatEffortAwareness, nativeIntentSelf } from "./effort-awareness.ts";
+import { readEffortAwareness, nativeIntentSelf, effortPrompt } from "./effort-awareness.ts";
+import type { EffortPrompt } from "./effort-awareness.ts";
+import { NativeEffortNotes } from "./effort-notes-native.ts";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -739,9 +741,6 @@ type PlaceInput = Static<typeof PlaceParams>;
 type ResetInput = Static<typeof ResetParams>;
 
 // ─── Extension ──────────────────────────────────────────────────────────────
-
-/** Conversations whose run-scoped effort awareness one host keeps; the oldest is read again. */
-const RUN_AWARENESS_CONVERSATIONS = 64;
 
 const SECTION_PREAMBLE = [
 	"Every conversation has an external identity: the bare storage id for the root, storageId:conversationId otherwise. Use the identity from agent_status or agent_list as sessionId for agent_send, agent_steer, agent_abort, agent_configure, agent_compact, agent_rewind, and agent_command.",
@@ -2978,16 +2977,16 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		renderAgentPreferences(readAgentPreferences(host.agentDir, host.services.modelRuntime)),
 	);
 
-	// Durable renders sections before every request. Awareness is read at the first request of a run
-	// and kept for that run's later tool rounds, so peers that start or stop never patch a running
-	// prompt (a full prompt-cache miss on models without mid-conversation system messages) and tool
-	// rounds do not rescan presence. An evicted or restarted host reads once more.
-	const runAwareness = new Map<Durable.ConversationId, string>();
+	// Durable renders sections before every request and sends a changed section as a system patch:
+	// a full prompt-cache miss on models without mid-conversation system messages. The section keeps
+	// its bytes between baseline points; the first request of a run reads awareness once, and the
+	// change reaches the model as a frozen note after the message that started the run.
+	const effortNotes = new NativeEffortNotes();
 	const currentAwareness = async (
 		resources: EffortReadResources,
 		input: Durable.PromptInput,
 		context: Context,
-	): Promise<string> => {
+	): Promise<EffortPrompt | undefined> => {
 		try {
 			const meta = await input.read.snapshot(AgentMetaDoc, input.conversationId, context);
 			const self = nativeIntentSelf(
@@ -2995,26 +2994,30 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				input.agent.cwd ?? host.cwd,
 				meta === undefined ? null : meta.intent,
 			);
-			return formatEffortAwareness(await readEffortAwareness(resources, self, "reported", "prompt"), "prompt");
-		} catch {
-			return "Current effort and active thread awareness is unavailable. Use agent_intent read for a new bounded observation. Earlier notices describe changes, not current state.";
+			return effortPrompt(await readEffortAwareness(resources, self, "reported", "prompt"));
+		} catch (error) {
+			if (context.abortSignal?.aborted) throw error;
+			return undefined;
 		}
 	};
 	const efforts = durable.section("agent-efforts", async (input, context) => {
-		if (effortResources === undefined) return undefined;
-		const kept = runAwareness.get(input.conversationId);
-		if (kept !== undefined) {
-			const live = await input.read.snapshot(durable.LiveDoc, input.conversationId, context);
-			if ((live?.run?.turns ?? 0) > 0) return kept;
-		}
-		const text = await currentAwareness(effortResources, input, context);
-		runAwareness.delete(input.conversationId);
-		runAwareness.set(input.conversationId, text);
-		if (runAwareness.size > RUN_AWARENESS_CONVERSATIONS) {
-			const oldest = runAwareness.keys().next().value;
-			if (oldest !== undefined) runAwareness.delete(oldest);
-		}
-		return text;
+		const resources = effortResources;
+		if (resources === undefined) return undefined;
+		// Each tool round runs in a new generation task; the run's first entry names the run.
+		const live = await input.read.snapshot(durable.LiveDoc, input.conversationId, context);
+		const run = live?.run?.first ?? live?.run?.inputs[0];
+		return effortNotes.section(
+			{ conversationId: input.conversationId, shown: input.shown, run: run === undefined ? undefined : String(run) },
+			() => currentAwareness(resources, input, context),
+			"Current effort and active thread awareness is unavailable. Use agent_intent read for a new bounded observation. Earlier notices describe changes, not current state.",
+		);
+	});
+	const effortUpdates = durable.hook(durable.GenerationTask, {
+		beforeRequest(request, api) {
+			if (effortResources === undefined) return undefined;
+			const messages = effortNotes.request(api.conversationId, request.messages);
+			return messages === undefined ? undefined : { messages };
+		},
 	});
 
 	// Model choices happen in conversations that can spawn, place or configure agents; others carry no section.
@@ -3031,6 +3034,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		name: "agent",
 		tasks: [Anchor, Reporter, TimerTask],
 		sections: [guidance, efforts, preferences, providerBlocks],
+		hooks: [effortUpdates],
 		tools: [
 			structuredControl(spawnTool, DispatchOutputSchema),
 			structuredControl(briefTool, BriefOutputSchema),

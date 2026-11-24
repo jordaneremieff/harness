@@ -3141,8 +3141,8 @@ a peer host nor sends model input. The ordinary untargeted `agent_status`
 also includes awareness when it fits; compact native status omits it. Both receive a separate
 current-effort section in their model context at natural run boundaries. Durable
 renders sections before every model request, so a native conversation reads
-awareness at the first request of a run and keeps those bytes for that run's
-later tool rounds; peers that start or stop mid-run appear at the next run.
+awareness at the first request of a run and keeps it for that run's later tool
+rounds; peers that start or stop mid-run appear at the next run.
 
 Pi stores prompt sections as system entries in the transcript and sends a
 changed section again as a system patch. A model that accepts system messages
@@ -3166,6 +3166,23 @@ the baseline makes a new baseline: the section is replaced once. The session's
 own claim row changes only at a baseline; the session already holds its own
 publication. Old code ignores both entry kinds and keeps writing the whole
 section each run.
+
+A native conversation follows the same contract with Durable's own surfaces.
+The section function reads awareness once per run, at the run's first request
+(a run is named by its first entry, since each tool round runs in a new
+generation task), and otherwise returns the kept text without a read. The
+change since the model's view becomes one frozen note: the agent contribution's
+`beforeRequest` hook inserts it after the request's last message, and on every
+later request it inserts the same note after the same message, found by role,
+timestamp and content digest, so each request extends the prefix of the one
+before. A note whose message left the context (compaction, rewind, reset) is no
+longer seen, and the next run reports its change again. Notes are host memory
+for at most 256 conversations; the section itself is in the transcript. A new
+host, a restart or an evicted conversation keeps the section Durable shows,
+reads its rows from that text, and computes the next change against it, so the
+section and its cached prefix survive; the notes of earlier runs are gone. The
+same budget rules replace the section at the next run. A failed read keeps the
+current section.
 The `agent-efforts` section names live efforts and active thread hints
 in the same Git repository (including linked worktrees), or the same working
 directory outside Git. It also names live sessions elsewhere on this machine

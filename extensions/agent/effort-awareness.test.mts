@@ -11,6 +11,7 @@ import { getCurrentSystemPrompt, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { AgentCatalog } from "./catalog.ts";
 import { createAgentContribution } from "./durable-agents.ts";
@@ -713,20 +714,22 @@ it("keeps zero-live-effort context to one line without losing unknown coverage",
 		assert.ok(line.includes(label), label);
 });
 
-it("refreshes native root and child sections at run starts while stable state emits no new section patch", async (t) => {
-	const ambientMarker = ambientPreferences(t);
-	const { root: sessionsRoot, catalog } = fixture(t);
-	const peer = randomUUID();
-	publish(sessionsRoot, peer, claim("BEFORE-PURPOSE"));
-	const threadId = publishThread(catalog, sessionsRoot);
+/** One faux-model Durable host over the given storage, with this extension's contribution installed. */
+async function nativeHost(
+	t: { after(fn: () => Promise<void> | void): void },
+	sessionsRoot: string,
+	storage: Durable.Storage,
+	respond: (request: { messages: Message[] }, index: number) => ReturnType<typeof fauxAssistantMessage>,
+	storageId = randomUUID(),
+) {
 	const requests: Message[][] = [];
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
 	faux.setResponses(
-		Array.from({ length: 20 }, () => (request) => {
+		Array.from({ length: 40 }, (_, index) => (request) => {
 			requests.push([...request.messages]);
-			return fauxAssistantMessage("DONE");
+			return respond(request as { messages: Message[] }, index);
 		}),
 	);
 	const registry = Durable.createRegistry();
@@ -736,7 +739,7 @@ it("refreshes native root and child sections at run starts while stable state em
 	}).create({
 		onClose() {},
 		durable: Durable,
-		storageId: randomUUID(),
+		storageId,
 		catalogRoot: join(sessionsRoot, "durable"),
 		cwd: sessionsRoot,
 		agentDir: sessionsRoot,
@@ -744,51 +747,82 @@ it("refreshes native root and child sections at run starts while stable state em
 	});
 	registry.install(extension);
 	const context = BACKGROUND_CONTEXT;
-	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
-	t.after(async () => {
+	const harness = await Durable.Harness.open(storage, { models, registry }, context);
+	let closed = false;
+	const close = async () => {
+		if (closed) return;
+		closed = true;
 		await harness.close(context);
-	});
+	};
+	t.after(close);
 	harness.resume();
 	const model = { provider: "faux", modelId: "faux-1" };
 	const root = await harness.root(context, { agent: { model } });
-	const say = async (conversation: Durable.Conversation) => {
+	const say = async (conversation: Durable.Conversation = root) => {
 		const submission = await conversation.submit({ type: "input", content: "Read current view" }, context);
 		await submission.wait(context);
 	};
-	await say(root);
+	return { requests, harness, extension, model, root, say, close, storageId };
+}
+const effortPatches = (messages: Message[] | undefined) =>
+	(messages ?? []).filter((message) => message.role === "system" && message.sections?.["agent-efforts"] !== undefined)
+		.length;
+const effortNotes = (messages: Message[] | undefined) =>
+	(messages ?? []).flatMap((message) =>
+		message.role === "user" && Array.isArray(message.content)
+			? message.content.flatMap((part) =>
+					part.type === "text" && part.text.startsWith("<agent-efforts-update>") ? [part.text] : [],
+				)
+			: [],
+	);
+
+it("keeps native sections between runs and sends changed rows as frozen notes", async (t) => {
+	const ambientMarker = ambientPreferences(t);
+	const { root: sessionsRoot, catalog } = fixture(t);
+	const peer = randomUUID();
+	publish(sessionsRoot, peer, claim("BEFORE-PURPOSE"));
+	const threadId = publishThread(catalog, sessionsRoot);
+	const host = await nativeHost(t, sessionsRoot, new Durable.MemoryStorage(), () => fauxAssistantMessage("DONE"));
+	const { requests, say, root } = host;
+	await say();
+	const first = getCurrentSystemPrompt(requests.at(-1) ?? []);
 	assert.equal(
-		getCurrentSystemPrompt(requests.at(-1) ?? []).includes(ambientMarker),
+		first.includes(ambientMarker),
 		false,
 		"native effort fixtures must not read ambient machine preferences",
 	);
-	assert.ok(
-		getCurrentSystemPrompt(requests.at(-1) ?? []).includes("BEFORE-PURPOSE"),
-		getCurrentSystemPrompt(requests.at(-1) ?? []),
-	);
-	await say(root);
-	const sectionEntries = requests
-		.at(-1)
-		?.filter((message) => message.role === "system" && message.sections?.["agent-efforts"] !== undefined);
-	assert.equal(sectionEntries?.length, 1);
+	assert.ok(first.includes("BEFORE-PURPOSE"), first);
+	await say();
+	assert.equal(effortPatches(requests.at(-1)), 1);
+	assert.deepEqual(effortNotes(requests.at(-1)), []);
 	const count = requests.length;
 	publish(sessionsRoot, peer, claim("AFTER-PURPOSE"));
 	assert.equal(requests.length, count, "a published endpoint does not wake a model");
-	await say(root);
-	const currentPrompt = getCurrentSystemPrompt(requests.at(-1) ?? []);
-	assert.ok(currentPrompt.includes("AFTER-PURPOSE"));
-	assert.equal(currentPrompt.includes("BEFORE-PURPOSE"), false);
-	const child = await harness.createConversation(
-		{ ownership: { kind: "ownerless" }, agent: { model, extensions: [extension] } },
-		context,
+	await say();
+	const changed = requests.at(-1);
+	assert.equal(getCurrentSystemPrompt(changed ?? []), first, "the section keeps its bytes");
+	assert.equal(effortPatches(changed), 1);
+	const [note] = effortNotes(changed);
+	assert.match(note ?? "", /AFTER-PURPOSE/u);
+	const position = (changed ?? []).findIndex((message) => JSON.stringify(message).includes("<agent-efforts-update>"));
+	assert.equal(position, (changed?.length ?? 0) - 1, "the note follows the message that started the run");
+	await say();
+	const later = requests.at(-1) ?? [];
+	assert.equal(
+		JSON.stringify(later.slice(0, changed?.length)),
+		JSON.stringify(changed),
+		"later requests extend the request that carried the note",
+	);
+	assert.equal(effortNotes(later).length, 1, "the note is not repeated");
+
+	const child = await host.harness.createConversation(
+		{ ownership: { kind: "ownerless" }, agent: { model: host.model, extensions: [host.extension] } },
+		BACKGROUND_CONTEXT,
 	);
 	await say(child);
-	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("AFTER-PURPOSE"));
-	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("Active shared work"));
+	const childPrompt = getCurrentSystemPrompt(requests.at(-1) ?? []);
+	assert.ok(childPrompt.includes("AFTER-PURPOSE") && childPrompt.includes("Active shared work"));
 	rmSync(primaryEndpointPath(sessionsRoot, peer));
-	await say(child);
-	const threadOnly = getCurrentSystemPrompt(requests.at(-1) ?? []);
-	assert.equal(threadOnly.includes("AFTER-PURPOSE"), false);
-	assert.ok(threadOnly.includes("Active shared work"));
 	const record = catalog.read(threadId.split("/")[0]);
 	assert.ok(record.view && record.threads);
 	catalog.updateView(record.storageId, record.view, {
@@ -796,67 +830,24 @@ it("refreshes native root and child sections at run starts while stable state em
 		items: record.threads.items.map((thread) => ({ ...thread, closed: true })),
 	});
 	await say(child);
-	const emptyPrompt = getCurrentSystemPrompt(requests.at(-1) ?? []);
-	const body = emptyPrompt.match(/<agent-efforts>\n([\s\S]*?)\n<\/agent-efforts>/u)?.[1];
-	assert.ok(body);
-	assert.equal(body.split("\n").length, 1);
-	assert.ok(body.includes("Use agent_intent read for current coverage, out-of-scope counts"));
-	rmSync(join(sessionsRoot, "durable"), { recursive: true, force: true });
-	await say(root);
-	assert.ok(
-		getCurrentSystemPrompt(requests.at(-1) ?? []).includes(
-			"No other live effort is shown and no active thread hint is shown",
-		),
-	);
+	assert.equal(getCurrentSystemPrompt(requests.at(-1) ?? []), childPrompt);
+	const [removed] = effortNotes(requests.at(-1));
+	assert.match(removed ?? "", new RegExp(`Related effort removed: \\{"id":"${peer}"\\}`, "u"));
+	assert.match(removed ?? "", new RegExp(`Active thread removed: \\{"id":"${threadId}"\\}`, "u"));
+	assert.ok(root);
 });
 
-it("keeps native awareness for the rest of a run and refreshes it at the next run", async (t) => {
+it("keeps native awareness for the rest of a run and sends the change at the next run", async (t) => {
 	ambientPreferences(t);
 	const { root: sessionsRoot } = fixture(t);
 	const peer = randomUUID();
 	publish(sessionsRoot, peer, claim("BEFORE-PURPOSE"));
-	const requests: Message[][] = [];
-	const faux = fauxProvider();
-	const models = createModels();
-	models.setProvider(faux.provider);
-	faux.setResponses(
-		Array.from({ length: 20 }, (_, index) => (request) => {
-			requests.push([...request.messages]);
-			if (index !== 0) return fauxAssistantMessage("DONE");
-			// A peer changes its claim while this run still has a tool round to go.
-			publish(sessionsRoot, peer, claim("MID-RUN-PURPOSE"));
-			return fauxAssistantMessage([fauxToolCall("agent_intent", { action: "read" })], { stopReason: "toolUse" });
-		}),
-	);
-	const registry = Durable.createRegistry();
-	registry.install(
-		createAgentContribution({
-			configureSettings: () => {},
-			source: "/extensions/agent/index.ts",
-		}).create({
-			onClose() {},
-			durable: Durable,
-			storageId: randomUUID(),
-			catalogRoot: join(sessionsRoot, "durable"),
-			cwd: sessionsRoot,
-			agentDir: sessionsRoot,
-			services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } },
-		}),
-	);
-	const context = BACKGROUND_CONTEXT;
-	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
-	t.after(async () => {
-		await harness.close(context);
+	const { requests, say } = await nativeHost(t, sessionsRoot, new Durable.MemoryStorage(), (_request, index) => {
+		if (index !== 0) return fauxAssistantMessage("DONE");
+		// A peer changes its claim while this run still has a tool round to go.
+		publish(sessionsRoot, peer, claim("MID-RUN-PURPOSE"));
+		return fauxAssistantMessage([fauxToolCall("agent_intent", { action: "read" })], { stopReason: "toolUse" });
 	});
-	harness.resume();
-	const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
-	const say = async () => {
-		const submission = await root.submit({ type: "input", content: "Read current view" }, context);
-		await submission.wait(context);
-	};
-	const effortPatches = (messages: Message[] | undefined) =>
-		(messages ?? []).filter((message) => message.role === "system" && message.sections?.["agent-efforts"] !== undefined)
-			.length;
 	await say();
 	assert.equal(requests.length, 2, "one run with one tool round makes two requests");
 	const result = requests[1].findLast((message) => message.role === "toolResult");
@@ -864,12 +855,39 @@ it("keeps native awareness for the rest of a run and refreshes it at the next ru
 	assert.match(JSON.stringify(result.content), /MID-RUN-PURPOSE/u, "explicit reads use fresh peer evidence");
 	const laterRound = getCurrentSystemPrompt(requests[1]);
 	assert.ok(laterRound.includes("BEFORE-PURPOSE"), laterRound);
-	assert.equal(laterRound.includes("MID-RUN-PURPOSE"), false, "a running prompt keeps its run's awareness");
+	assert.deepEqual(effortNotes(requests[1]), [], "a running prompt keeps its run's awareness");
 	assert.equal(effortPatches(requests[1]), effortPatches(requests[0]), "no awareness patch lands mid-run");
 	await say();
-	const nextRun = getCurrentSystemPrompt(requests.at(-1) ?? []);
-	assert.ok(nextRun.includes("MID-RUN-PURPOSE"), nextRun);
-	assert.equal(nextRun.includes("BEFORE-PURPOSE"), false);
+	const nextRun = requests.at(-1) ?? [];
+	assert.equal(getCurrentSystemPrompt(nextRun), laterRound, "the next run keeps the section");
+	assert.match(effortNotes(nextRun)[0] ?? "", /MID-RUN-PURPOSE/u);
+});
+
+it("restores the native section from the transcript after a host restart", async (t) => {
+	ambientPreferences(t);
+	const { root: sessionsRoot } = fixture(t);
+	const peer = randomUUID();
+	publish(sessionsRoot, peer, claim("BEFORE-PURPOSE"));
+	const path = join(sessionsRoot, "restart.sqlite");
+	const first = await nativeHost(t, sessionsRoot, await openNodeSqliteStorage(path), () =>
+		fauxAssistantMessage("DONE"),
+	);
+	await first.say();
+	const before = getCurrentSystemPrompt(first.requests.at(-1) ?? []);
+	await first.close();
+	publish(sessionsRoot, peer, claim("AFTER-RESTART"));
+	const second = await nativeHost(
+		t,
+		sessionsRoot,
+		await openNodeSqliteStorage(path),
+		() => fauxAssistantMessage("DONE"),
+		first.storageId,
+	);
+	await second.say();
+	const resumed = second.requests.at(-1) ?? [];
+	assert.equal(getCurrentSystemPrompt(resumed), before, "a new host keeps the stored section");
+	assert.equal(effortPatches(resumed), 1);
+	assert.match(effortNotes(resumed)[0] ?? "", /AFTER-RESTART/u);
 });
 
 it("omits awareness from compact native status and preserves selected detail", async (t) => {
