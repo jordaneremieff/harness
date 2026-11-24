@@ -1,6 +1,7 @@
 import { str, num, int, bool, nul, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 /** Machine-local observations from bounded catalog publications, without host or transcript reads. */
 import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
+import { isThreadStorage } from "./identity.ts";
 import type { CatalogView, CatalogViewRow } from "./catalog-view.ts";
 import {
 	compareFailures,
@@ -658,7 +659,10 @@ class FleetCollector {
 	}
 }
 
-/** Each call starts a bounded scan; cached costs never inherit a conversation's current selection. */
+/**
+ * Each call starts a bounded scan; cached costs never inherit a conversation's current selection.
+ * A thread storage runs no agent work, so it is no fleet record, no effort member and no model selection.
+ */
 export async function readFleetStatus(
 	catalog: AgentCatalog,
 	options: FleetSelection & { readonly effort?: FleetEffortScope; readonly now?: number } = {},
@@ -672,7 +676,7 @@ export async function readFleetStatus(
 		coverage.skipped += page.coverage.skipped;
 		coverage.hasMore = page.nextCursor !== null;
 		coverage.complete = page.coverage.complete && !coverage.hasMore;
-		for (const record of page.records) collector.observe(record);
+		for (const record of page.records) if (!isThreadStorage(record, catalog.root)) collector.observe(record);
 	}
 	coverage.scanLimitReached = coverage.hasMore && coverage.pages === MAX_PAGES;
 	return collector.finish();

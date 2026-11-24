@@ -7,6 +7,7 @@ import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { AgentCatalog, type CatalogPage, type CatalogRecord } from "./catalog.ts";
 import type { CatalogView, CatalogViewRow } from "./catalog-view.ts";
 import { FleetStatusSchema, readFleetStatus, validateFleetSelection, type FleetStatus } from "./fleet-status.ts";
+import { threadStorageId } from "./identity.ts";
 import {
 	ModelEvidenceSchema,
 	USAGE_WEEK_MS,
@@ -99,6 +100,43 @@ it("exposes selected candidate facts from the same publication snapshot when bro
 	}
 	assert.equal(JSON.stringify(records), snapshot);
 	assert.deepEqual(catalog.calls, [{ limit: 20 }, { limit: 20 }, { limit: 20 }]);
+});
+
+it("counts no thread storage as a fleet record, an effort member or a model selection", async () => {
+	const now = Date.parse(observedAt);
+	const primary = "0b9d6d57-52f2-4d55-9d0e-5f6b7a7c8d9e";
+	const agent = {
+		...record(
+			"agent",
+			[row("agent", { model: { provider: "zulu", modelId: "model-a", thinkingLevel: "high" }, cost: 2 })],
+			sampled([{ model: "zulu/model-a", at: now, tokens: 10, reportedCost: 2 }]),
+		),
+		ownerId: primary,
+	};
+	const reference = new FixtureCatalog([page([agent], null, { visited: 3 })]);
+	const threads = threadStorageId(primary, reference.root);
+	const published = {
+		...record(threads, [row(threads, { model: { provider: "zulu", modelId: "model-a", thinkingLevel: "off" } })]),
+		ownerId: primary,
+	};
+	const peerThreads = threadStorageId("another-session", reference.root);
+	const unpublished: CatalogRecord = { ...record(peerThreads), ownerId: "another-session" };
+	delete unpublished.view;
+	const effort = { callerId: primary, callerUsage: { reportedCost: 1, partial: false } };
+	const expected = await readFleetStatus(reference, { now, effort });
+	const result = await readFleetStatus(new FixtureCatalog([page([agent, published, unpublished])]), { now, effort });
+	check(result);
+	assert.deepEqual(result, expected);
+	assert.equal(result.coverage.catalog.records, 1);
+	assert.equal(result.coverage.unknownEvidenceStorages, 0);
+	assert.deepEqual(
+		{ members: result.effort.members, missing: result.effort.missingMembers, status: result.effort.status },
+		{ members: 2, missing: 0, status: "observed" },
+	);
+	assert.deepEqual(
+		result.models.flatMap((model) => model.currentSelections.map((selection) => selection.thinkingLevel)),
+		["high"],
+	);
 });
 
 it("prioritises selected usable model facts over crowded matching failure details", async () => {
