@@ -9,7 +9,7 @@ import {
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
@@ -357,6 +357,34 @@ it("clears recovery due after completion before the idle retirement interval", {
 	assert.deepEqual([...changes], [true, false]);
 	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
 	assert.equal(f.native.sessionEnded, false, "the marker clears while the native storage remains open");
+});
+
+it("retires and closes after its catalog record is removed, without recreating it or admitting work", {
+	timeout: 15000,
+}, async (t) => {
+	const f = await fixture(t);
+	const recordPath = f.catalog.path(f.metadata.storageId);
+	rmSync(recordPath);
+	await assert.rejects(
+		f.runtime.request(
+			"submit",
+			{ message: "no record", requestId: "no-record", ownerId: f.ownerId, origin: "operator" },
+			"no-record",
+		),
+		/catalog record was removed; this host admits no new work/,
+	);
+	assert.ok(f.runtime.tryRetire);
+	let sealed = false;
+	assert.equal(
+		await f.runtime.tryRetire(() => {
+			sealed = true;
+			return true;
+		}),
+		true,
+	);
+	assert.equal(sealed, true);
+	await f.runtime.close();
+	assert.equal(existsSync(recordPath), false, "the host never recreates a removed record");
 });
 
 it("sets recovery due before the native input exists and preserves the admission gap", {

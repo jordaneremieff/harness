@@ -32,6 +32,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { collaborationStorage } from "./collaboration-contract.ts";
 import { projectCollaboration } from "./collaboration.ts";
 import { awaitWithContext, BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import { lstatSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -358,14 +359,58 @@ export async function createDurableRuntime(
 		return true;
 	}
 
-	/** Write the recovery marker; a failed write blocks the admitting request. */
+	/**
+	 * True once this storage's catalog record is gone. No caller can discover the storage again, so the host records
+	 * no marker or view, never recreates the record, admits no new work and retires when idle.
+	 */
+	let recordRemoved = false;
+	function catalogRecordRemoved(error: unknown): boolean {
+		if (recordRemoved) return true;
+		if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") return false;
+		if (lstatSync(catalog.path(metadata.storageId), { throwIfNoEntry: false }) !== undefined) return false;
+		recordRemoved = true;
+		process.stderr.write("Durable host: the storage's catalog record was removed; the host retires when idle.\n");
+		return true;
+	}
+
+	/** Write the recovery marker; a failed write blocks the admitting request. A removed record takes no marker. */
 	function markRecoveryDue(due: boolean): void {
-		catalog.markRecoveryDue(metadata.storageId, due);
+		if (recordRemoved) return;
+		try {
+			catalog.markRecoveryDue(metadata.storageId, due);
+		} catch (error) {
+			if (!catalogRecordRemoved(error)) throw error;
+		}
+	}
+
+	/** Mark recovery before an admission; a storage that no caller can discover again admits nothing. */
+	function markAdmissionDue(): void {
+		markRecoveryDue(true);
+		if (recordRemoved) throw new Error("The storage's catalog record was removed; this host admits no new work.");
 	}
 
 	/** Pending delivery rows: unsettled intents, unacknowledged receipts, and unacknowledged reports. */
 	async function deliveriesPending(): Promise<boolean> {
 		return (await deliveryPendingCount(host.harness, BACKGROUND_CONTEXT)) > 0;
+	}
+
+	/** Publish the parked recipients a later process wakes for; a storage without its record publishes none. */
+	function writeParkedWake(summary: NonNullable<ReturnType<DurableDelivery["summary"]>>): void {
+		if (recordRemoved) return;
+		const wake = writeDeliveryWake(
+			dirname(dirname(metadata.storagePath)),
+			metadata.storageId,
+			summary.parkedRecipients,
+			(recipient) => unavailableDeliveryTargets.get(storageIdOf(recipient))?.availability ?? null,
+			summary.parkedOmitted,
+			summary.parkedRows,
+		);
+		if (wake.changed && wake.omitted > 0)
+			host.reportDeliveryError(
+				new Error(
+					`parked: delivery wake metadata omits ${wake.omitted} recipient rows at its bound; retained rows require explicit acquisition`,
+				),
+			);
 	}
 
 	/** Native work plus pending delivery state used by the marker and transient monitors. */
@@ -380,22 +425,7 @@ export async function createDurableRuntime(
 		const deliveriesActive = summary === undefined || !summary.fresh || summary.active;
 		const pending = summary?.fresh ? summary.pendingCount > 0 : await deliveriesPending();
 		if (generation === activityGeneration) {
-			if (summary?.fresh) {
-				const wake = writeDeliveryWake(
-					dirname(dirname(metadata.storagePath)),
-					metadata.storageId,
-					summary.parkedRecipients,
-					(recipient) => unavailableDeliveryTargets.get(storageIdOf(recipient))?.availability ?? null,
-					summary.parkedOmitted,
-					summary.parkedRows,
-				);
-				if (wake.changed && wake.omitted > 0)
-					host.reportDeliveryError(
-						new Error(
-							`parked: delivery wake metadata omits ${wake.omitted} recipient rows at its bound; retained rows require explicit acquisition`,
-						),
-					);
-			}
+			if (summary?.fresh) writeParkedWake(summary);
 			markRecoveryDue(activeAdmissions > 0 || !idle || deliveriesActive);
 		} else recoveryDirty = true;
 		return { workPending: !idle, deliveriesPending: pending, deliveriesActive };
@@ -509,6 +539,18 @@ export async function createDurableRuntime(
 		return { retiring: true, blockers: [] };
 	}
 
+	/** Write one view into the catalog record; false when the record is gone. */
+	function writeCatalogView(view: CatalogView, threads: Parameters<AgentCatalog["updateView"]>[2]): boolean {
+		if (recordRemoved) return false;
+		try {
+			catalog.updateView(metadata.storageId, view, threads);
+			return true;
+		} catch (error) {
+			if (catalogRecordRemoved(error)) return false;
+			throw error;
+		}
+	}
+
 	/** Build and publish one bounded catalog view; `force` publishes during shutdown. */
 	async function publishCatalogView(force = false): Promise<void> {
 		if (closed && !force) return;
@@ -555,7 +597,7 @@ export async function createDurableRuntime(
 				);
 				const intended = withIntentClaims(attentive, intents);
 				const view = withModelEvidence(intended, projection.modelEvidence);
-				catalog.updateView(metadata.storageId, view, await projectCollaboration(host.harness, BACKGROUND_CONTEXT));
+				if (!writeCatalogView(view, await projectCollaboration(host.harness, BACKGROUND_CONTEXT))) return;
 				publishedView = view;
 				for (const listener of changeListeners) listener();
 			} catch (error) {
@@ -624,7 +666,7 @@ export async function createDurableRuntime(
 			sessionsRoot: dirname(dirname(metadata.storagePath)),
 		});
 		try {
-			markRecoveryDue(true);
+			markAdmissionDue();
 			// A message names its recipient: if that session ends first, the message waits for it and never
 			// reaches another session as an informational copy.
 			const report = (await host.request("report", { ...params, ownerId: sessionId, direct: true })) as {
@@ -1252,7 +1294,7 @@ export async function createDurableRuntime(
 		if (method === "recovery-state") {
 			return recoveryState(true);
 		}
-		if (ADMITTING_METHODS.has(method)) markRecoveryDue(true);
+		if (ADMITTING_METHODS.has(method)) markAdmissionDue();
 		switch (method) {
 			case "spawn":
 			case "resolve-agent":
