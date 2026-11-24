@@ -506,12 +506,16 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		getManager().setPrimaryWorkRefs(event.sessionId, list);
 	});
 	const peerQuestions = new Map<string, PeerQuestions>();
-	const questionsOf = (ctx: ExtensionContext): PeerQuestions => {
+	/** Session start supplies the entries it already read, so the session is scanned once. */
+	const questionsOf = (
+		ctx: ExtensionContext,
+		entries?: ReturnType<ExtensionContext["sessionManager"]["getEntries"]>,
+	): PeerQuestions => {
 		const id = ctx.sessionManager.getSessionId();
 		let questions = peerQuestions.get(id);
 		if (!questions) {
 			questions = new PeerQuestions((fact) => pi.appendEntry(PEER_QUESTION_ENTRY, fact));
-			questions.restore(ctx.sessionManager.getEntries());
+			questions.restore(entries ?? ctx.sessionManager.getEntries());
 			peerQuestions.set(id, questions);
 		}
 		return questions;
@@ -1464,8 +1468,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		};
 		primaryDeliveries.set(sessionId, { retention, inbox, flush });
 		peerQuestions.delete(sessionId);
-		questionsOf(ctx);
 		const retained = ctx.sessionManager.getEntries();
+		questionsOf(ctx, retained);
 		continuity.start(sessionId, retained);
 		await getManager().registerPrimary(sessionId, {
 			sentWork: retainedSentWork(retained),
