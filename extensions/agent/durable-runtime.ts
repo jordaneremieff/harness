@@ -92,7 +92,7 @@ import { requestContextHooks, requestContextSection } from "./request-context.ts
 import { RequestRouteState } from "./request-route-state.ts";
 import { withProfileHints, withIntentClaims } from "./catalog-view.ts";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { Harness, ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
+import { Harness, ROOT_CONVERSATION_ID, type CommitChange, type ConversationId } from "@earendil-works/pi-durable";
 
 const ADMITTING_METHODS: ReadonlySet<string> = new Set([
 	"task-submit",
@@ -119,6 +119,19 @@ const FOREIGN_OBSERVATION_METHODS: ReadonlySet<string> = new Set([
 ]);
 /** Coalesce a burst of native commits into one catalog view publication. */
 const PUBLISH_COALESCE_MS = 250;
+/**
+ * A publication reads only the conversations with a stored change. Ages in a retained row are those of its last
+ * read, so every conversation is read again at this interval while publications continue, and at each flush.
+ */
+const COMPLETE_PROJECTION_INTERVAL_MS = 5_000;
+
+/** The conversation that one stored change belongs to; undefined for a change that any row may depend on. */
+function changedConversation(change: CommitChange): ConversationId | undefined {
+	if (change.type === "conversation") return undefined;
+	if (change.type === "entry" || change.type === "task" || change.type === "submission")
+		return change.value.conversationId;
+	return change.conversationId;
+}
 /** A release decision waits this long for the delivery driver's scheduled pass before it refuses on a stale summary. */
 const RELEASE_OBSERVATION_WAIT_MS = 10_000;
 
@@ -331,6 +344,11 @@ export async function createDurableRuntime(
 	let publishingView = false;
 	let flushingView = false;
 	let publishAgain = false;
+	/** Conversations with a stored change since the last view; a publication reads only these again. */
+	const changedConversations = new Set<ConversationId>();
+	/** A storage-wide change, a failed publication or the first one reads every conversation. */
+	let readEveryConversation = true;
+	let everyConversationReadAt = 0;
 
 	function runtimeUnavailable(): boolean {
 		return closed || reloadFailed || retirementSealed;
@@ -551,13 +569,34 @@ export async function createDurableRuntime(
 		}
 	}
 
+	/** The conversations that the next publication reads again; undefined reads every conversation. */
+	function takeChangedConversations(force: boolean): Set<ConversationId> | undefined {
+		const every =
+			force || readEveryConversation || Date.now() - everyConversationReadAt >= COMPLETE_PROJECTION_INTERVAL_MS;
+		const changed = every ? undefined : new Set(changedConversations);
+		changedConversations.clear();
+		readEveryConversation = false;
+		// A failed publication asks for every conversation again, whatever this time says.
+		if (every) everyConversationReadAt = Date.now();
+		return changed;
+	}
+
+	function noteChangedConversations(changes: readonly CommitChange[]): void {
+		for (const change of changes) {
+			const conversationId = changedConversation(change);
+			if (conversationId === undefined) readEveryConversation = true;
+			else changedConversations.add(conversationId);
+		}
+	}
+
 	/** Build and publish one bounded catalog view; `force` publishes during shutdown. */
 	async function publishCatalogView(force = false): Promise<void> {
 		if (closed && !force) return;
 		publishingView = true;
 		publishPromise = (async () => {
+			const changed = takeChangedConversations(force);
 			try {
-				const projection = await host.catalogProjection();
+				const projection = await host.catalogProjection(BACKGROUND_CONTEXT, changed);
 				const base = boundCatalogView({
 					updatedAt: projection.updatedAt,
 					rows: projection.rows,
@@ -601,6 +640,7 @@ export async function createDurableRuntime(
 				publishedView = view;
 				for (const listener of changeListeners) listener();
 			} catch (error) {
+				readEveryConversation = true;
 				if (force) throw error;
 				process.stderr.write(`Catalog view: ${String(error)}\n`);
 			}
@@ -987,6 +1027,7 @@ export async function createDurableRuntime(
 				requestRoutes.observe(publication);
 				activityGeneration++;
 				if (publication.changes.length) {
+					noteChangedConversations(publication.changes);
 					scheduleRecoveryMarker();
 					notifyActivity();
 					scheduleCatalogView();

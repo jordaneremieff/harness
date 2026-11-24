@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { existsSync, rmSync, statSync } from "node:fs";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import { AssistantEntry, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
 import { resolveAgentControlDispatch } from "./durable-agents.ts";
 import { DurableHost } from "./durable-host.ts";
 import { DurableObservation } from "./durable-observation.ts";
-import { fixtureRegistry, fixtureRuntime, hostOptions } from "./durable-host-fixture.mts";
+import { answerMessage, fixtureRegistry, fixtureRuntime, hostOptions } from "./durable-host-fixture.mts";
 import { createDurableRuntime } from "./durable-runtime.ts";
 import { runtimeFixture } from "./durable-runtime-fixture.mts";
 import { hostPaths } from "./host-protocol.ts";
@@ -179,4 +180,50 @@ it("native foreign observation reads a settled storage without its cwd or a writ
 	await assert.rejects(dispatch("attach", params), /writer acquisition requested/u);
 	await assert.rejects(dispatch("submit", { ...params, message: "not admitted" }), /writer acquisition requested/u);
 	assert.equal(acquire.mock.callCount(), 2, "attach and mutation retain writer acquisition");
+});
+
+it("a view publication reads again only the conversations with a stored change", { timeout: 60000 }, async (t) => {
+	let runtime: Awaited<ReturnType<typeof createDurableRuntime>> | undefined;
+	t.after(() => runtime?.close());
+	const fixture = runtimeFixture(t);
+	const model = { provider: testModel.provider, modelId: testModel.id };
+	let native: DurableHost | undefined;
+	const open = DurableHost.open;
+	t.mock.method(DurableHost, "open", async (...args: Parameters<typeof open>) => {
+		native = await open(...args);
+		return native;
+	});
+	const projection = DurableHost.prototype.catalogProjection;
+	const reads: (readonly number[] | "every")[] = [];
+	t.mock.method(
+		DurableHost.prototype,
+		"catalogProjection",
+		function (this: DurableHost, ...args: Parameters<typeof projection>) {
+			reads.push(args[1] === undefined ? "every" : [...args[1]]);
+			return projection.apply(this, args);
+		},
+	);
+	const opened = await createDurableRuntime(
+		{ ...fixture.metadata, model },
+		{ modelRuntime: await createTestRuntime() },
+	);
+	runtime = opened;
+	const published = () =>
+		new Promise<void>((resolve) => {
+			const off = opened.onChange?.(() => {
+				off?.();
+				resolve();
+			});
+		});
+	await published();
+	assert.deepEqual(reads, ["every"], "the first publication reads every conversation");
+	assert.ok(native);
+	const next = published();
+	await native.harness.commit(
+		(tx) => tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [answerMessage()] }),
+		BACKGROUND_CONTEXT,
+	);
+	await next;
+	assert.deepEqual(reads.slice(1), [[ROOT_CONVERSATION_ID]], "the next one reads the conversation of the new entry");
+	assert.equal(opened.publishedView?.rows[0]?.latestReply, "durable answer");
 });

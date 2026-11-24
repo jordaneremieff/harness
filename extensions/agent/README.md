@@ -3214,7 +3214,11 @@ integration completion, so the host does not infer that transition.
 Current-source readers discover native claims from catalogue views in their own
 sessions root. The owning host publishes the
 view through its coalesced native commit path; a commit is not immediate peer
-visibility. Native diagnostic records never prove a live lease holder. A valid
+visibility. A publication reads again only the conversations that a stored
+change names and keeps the rows of the others. A change that names no
+conversation, a failed publication, the first publication and each flush read
+every conversation, and so does one publication in every five seconds. A kept
+row carries the ages of its last read, dated by `ageObservedAt`. Native diagnostic records never prove a live lease holder. A valid
 same-host clean-end marker or same-host ESRCH ends only the recorded generation;
 those efforts and their declarations no longer appear. Present or reused PIDs,
 EPERM, foreign hosts, malformed markers and read failures remain unknown. A new

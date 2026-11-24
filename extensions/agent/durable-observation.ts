@@ -19,7 +19,7 @@ import { AGENT_INPUT_KIND, isInputKind } from "./input-entry.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord/context";
 import type { Message, Models, Usage } from "@earendil-works/pi-ai";
-import type { ModelEvidenceCollector } from "./model-evidence.ts";
+import { evidenceEntries, type EvidenceEntries, type ModelEvidenceCollector } from "./model-evidence.ts";
 import {
 	createSession,
 	AssistantEntry,
@@ -1171,6 +1171,25 @@ export interface DurableDashboardOptions {
 	readonly retryMaxAttempts?: number;
 	/** Clock override for tests. */
 	readonly now?: number;
+	/** Rows of an earlier projection; a conversation outside `changed` is not read again. */
+	readonly reuse?: DashboardReuse;
+}
+
+/** What one projection keeps of a conversation for the next one. */
+export interface ProjectedConversation {
+	readonly row: AgentConversationSummary;
+	readonly usage: UsageState | undefined;
+	readonly evidence: EvidenceEntries;
+}
+
+/**
+ * Rows that a live host keeps between publications. `changed` names the conversations with a stored change since
+ * the rows were read; every other retained row is still what a new read returns, except for ages, which each row
+ * dates with `ageObservedAt`. Without `changed` every conversation is read.
+ */
+export interface DashboardReuse {
+	readonly rows: Map<ConversationId, ProjectedConversation>;
+	readonly changed?: ReadonlySet<ConversationId>;
 }
 
 function errorMessage(error: unknown): string {
@@ -1527,7 +1546,11 @@ async function dashboardSummary(
 		...backlog,
 		toolCalls: countToolCalls(entries),
 	};
-	options.modelEvidence?.observe(record.id, row, usage, entries);
+	if (options.modelEvidence || options.reuse) {
+		const evidence = evidenceEntries(record.id, entries);
+		options.modelEvidence?.observeRetained(row, usage, evidence);
+		options.reuse?.rows.set(record.id, { row, usage, evidence });
+	}
 	return row;
 }
 
@@ -1556,10 +1579,26 @@ export async function readDashboard(
 	}
 	const page = await harness.commit((tx) => tx.scanConversations({}, 200, undefined), context);
 	if (options.modelEvidence) options.modelEvidence.value.coverage.conversationsComplete = page.next == null;
+	const reuse = options.reuse;
+	const retained = (record: ConversationRecord): ProjectedConversation | undefined =>
+		reuse?.changed === undefined || reuse.changed.has(record.id) ? undefined : reuse.rows.get(record.id);
 	const summaries: AgentConversationSummary[] = [];
-	const delivery = await forConversations(page.items.map((record) => record.id));
-	for (const record of page.items)
-		summaries.push(await dashboardSummary(harness, storageId, record, delivery, options, context));
+	const delivery = await forConversations(
+		page.items.filter((record) => retained(record) === undefined).map((record) => record.id),
+	);
+	for (const record of page.items) {
+		const kept = retained(record);
+		if (kept === undefined) {
+			summaries.push(await dashboardSummary(harness, storageId, record, delivery, options, context));
+			continue;
+		}
+		summaries.push(kept.row);
+		options.modelEvidence?.observeRetained(kept.row, kept.usage, kept.evidence);
+	}
+	if (reuse) {
+		const listed = new Set(page.items.map((record) => record.id));
+		for (const id of reuse.rows.keys()) if (!listed.has(id)) reuse.rows.delete(id);
+	}
 	return summaries;
 }
 

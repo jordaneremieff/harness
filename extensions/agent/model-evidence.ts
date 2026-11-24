@@ -71,6 +71,69 @@ export function compareFailures(left: ModelFailure, right: ModelFailure): number
 	);
 }
 
+/** The fields of one assistant message that evidence reads; message content is not retained. */
+interface EvidenceMessage {
+	readonly provider?: string;
+	readonly model?: string;
+	readonly timestamp: number;
+	readonly stopReason?: string;
+	readonly errorMessage?: string;
+	readonly usage?: { readonly totalTokens: number; readonly cost?: { readonly total: number } };
+}
+
+/**
+ * What evidence reads from the active entries of one conversation: their count, and the assistant entries among the
+ * newest `USAGE_ENTRY_LIMIT` with their position. A publication keeps this for a conversation that did not change, so
+ * the next publication counts the same evidence without another read of its entries.
+ */
+export interface EvidenceEntries {
+	readonly length: number;
+	readonly assistants: readonly {
+		readonly index: number;
+		readonly id: number;
+		/** All model messages of the entry; only the first 64 are sampled. */
+		readonly messages: number;
+		readonly sampled: readonly (EvidenceMessage | undefined)[];
+	}[];
+}
+
+type ModelMessage = NonNullable<EntryRecord["model"]>[number];
+
+function evidenceMessage(message: ModelMessage): EvidenceMessage | undefined {
+	if (message.role !== "assistant") return undefined;
+	const usage = message.usage
+		? {
+				totalTokens: message.usage.totalTokens,
+				...(message.usage.cost ? { cost: { total: message.usage.cost.total } } : {}),
+			}
+		: undefined;
+	return {
+		provider: message.provider,
+		model: message.model,
+		timestamp: message.timestamp,
+		stopReason: message.stopReason,
+		...(message.errorMessage ? { errorMessage: evidenceText(message.errorMessage) } : {}),
+		...(usage ? { usage } : {}),
+	};
+}
+
+/** Reduce active entries to the fields that evidence reads. */
+export function evidenceEntries(conversationId: number, entries: readonly EntryRecord[]): EvidenceEntries {
+	const assistants: EvidenceEntries["assistants"][number][] = [];
+	for (let index = Math.max(0, entries.length - USAGE_ENTRY_LIMIT); index < entries.length; index++) {
+		const entry = entries[index];
+		if (entry.conversationId !== conversationId || entry.kind !== "pi.assistant") continue;
+		const messages = entry.model ?? [];
+		assistants.push({
+			index,
+			id: entry.id,
+			messages: messages.length,
+			sampled: messages.slice(0, 64).map(evidenceMessage),
+		});
+	}
+	return { length: entries.length, assistants };
+}
+
 /** Collect from the documents and active entries already read for operational rows. */
 export class ModelEvidenceCollector {
 	readonly value: ModelEvidence = {
@@ -110,6 +173,10 @@ export class ModelEvidenceCollector {
 		usage: UsageState | undefined,
 		entries: readonly EntryRecord[],
 	): void {
+		this.observeRetained(row, usage, evidenceEntries(conversationId, entries));
+	}
+	/** Count one conversation from the reduced form of its entries. */
+	observeRetained(row: CatalogViewRow, usage: UsageState | undefined, entries: EvidenceEntries): void {
 		this.value.coverage.conversationsVisited++;
 		// Mounted active entries do not establish coverage of compacted or inactive history.
 		this.value.coverage.incompleteHistory++;
@@ -122,10 +189,10 @@ export class ModelEvidenceCollector {
 		const remaining = USAGE_ENTRY_LIMIT - sampling.entriesVisited;
 		const start = Math.max(0, entries.length - remaining);
 		sampling.entriesOmitted += start;
-		for (let index = entries.length - 1; index >= start; index--) {
-			sampling.entriesVisited++;
-			const entry = entries[index];
-			if (entry.conversationId !== conversationId || entry.kind !== "pi.assistant") continue;
+		sampling.entriesVisited += entries.length - start;
+		for (let position = entries.assistants.length - 1; position >= 0; position--) {
+			const entry = entries.assistants[position];
+			if (entry.index < start) break;
 			this.messages(row.id, entry);
 		}
 		this.warnings(row);
@@ -139,19 +206,12 @@ export class ModelEvidenceCollector {
 		}
 		return row;
 	}
-	private messages(conversationId: string, entry: EntryRecord): void {
-		const messages = entry.model ?? [];
-		this.sampling.messagesOmitted += Math.max(0, messages.length - 64);
-		for (const message of messages.slice(0, 64)) {
-			if (message.role === "assistant") this.sample(message);
-			if (
-				message.role !== "assistant" ||
-				!message.provider ||
-				!message.model ||
-				!Number.isFinite(message.timestamp) ||
-				message.timestamp < 0
-			)
-				continue;
+	private messages(conversationId: string, entry: EvidenceEntries["assistants"][number]): void {
+		this.sampling.messagesOmitted += Math.max(0, entry.messages - 64);
+		for (const message of entry.sampled) {
+			if (!message) continue;
+			this.sample(message);
+			if (!message.provider || !message.model || !Number.isFinite(message.timestamp) || message.timestamp < 0) continue;
 			const model = this.models.get(`${message.provider}/${message.model}`);
 			if (model) model.lastResponseAt = Math.max(model.lastResponseAt ?? 0, message.timestamp);
 			if (message.stopReason !== "error" || !message.errorMessage) continue;
@@ -161,11 +221,11 @@ export class ModelEvidenceCollector {
 				at: message.timestamp,
 				conversationId,
 				entryId: entry.id,
-				message: evidenceText(message.errorMessage),
+				message: message.errorMessage,
 			});
 		}
 	}
-	private sample(message: import("@earendil-works/pi-ai").AssistantMessage): void {
+	private sample(message: EvidenceMessage): void {
 		const sampling = this.sampling;
 		const now = Date.parse(this.observedAt);
 		const usage = message.usage;
@@ -178,7 +238,8 @@ export class ModelEvidenceCollector {
 			!usage ||
 			!Number.isFinite(usage.totalTokens) ||
 			usage.totalTokens < 0 ||
-			!Number.isFinite(usage.cost?.total) ||
+			usage.cost === undefined ||
+			!Number.isFinite(usage.cost.total) ||
 			usage.cost.total < 0
 		) {
 			sampling.invalidSamples++;

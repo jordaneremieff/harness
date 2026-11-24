@@ -124,6 +124,7 @@ import {
 	readConversationSnapshotPage,
 	readConversationStatus,
 	readDashboard,
+	type ProjectedConversation,
 	readInspection,
 	readReceipts,
 	readUsage,
@@ -921,14 +922,24 @@ export class DurableHost {
 			throw new Error(threadStorageRefusal(this.storageId, this.threadStorageOwner));
 	}
 
-	/** Read publication rows and evidence together without changing the host wire contract. */
-	async catalogProjection(context: Context = BACKGROUND_CONTEXT) {
+	private readonly projectedConversations = new Map<ConversationId, ProjectedConversation>();
+
+	/**
+	 * Read publication rows and evidence together without changing the host wire contract. `changed` names the
+	 * conversations with a stored change since the last projection: only those are read again, and the rows of the
+	 * others are the retained ones. Without `changed` every conversation is read.
+	 */
+	async catalogProjection(context: Context = BACKGROUND_CONTEXT, changed?: ReadonlySet<ConversationId>) {
 		const evidence = new ModelEvidenceCollector(new Date().toISOString());
 		const rows = await readDashboard(
 			this.harness,
 			this.storageId,
 			{},
-			{ ...this.dashboardOptions(undefined), modelEvidence: evidence },
+			{
+				...this.dashboardOptions(undefined),
+				modelEvidence: evidence,
+				reuse: { rows: this.projectedConversations, ...(changed === undefined ? {} : { changed }) },
+			},
 			context,
 		);
 		return { rows, modelEvidence: evidence.value, updatedAt: evidence.observedAt };

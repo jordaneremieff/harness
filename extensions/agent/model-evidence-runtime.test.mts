@@ -18,7 +18,14 @@ import { acquireHost, waitForHostRelease } from "./host-client.ts";
 import { runtimeFixture, trackHost, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { DurableHost } from "./durable-host.ts";
 import { createAgentContribution } from "./durable-agents.ts";
-import { answerMessage, completed, fixtureRegistry, hostOptions, toolCallMessage } from "./durable-host-fixture.mts";
+import {
+	answerMessage,
+	completed,
+	fixtureRegistry,
+	fixtureRuntime,
+	hostOptions,
+	toolCallMessage,
+} from "./durable-host-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { AgentManager } from "./manager.ts";
 import { buildStatusOverview, type StatusOverview } from "./status-overview.ts";
@@ -280,4 +287,42 @@ it("keeps default manager status byte-equivalent to its established overview and
 	assert.equal(JSON.stringify(await manager.status()), JSON.stringify(buildStatusOverview(page, [], [])));
 	assert.equal(await manager.status(f.metadata.storageId), selected);
 	await assert.rejects(manager.status(f.metadata.storageId, "fleet"), /omit sessionId/u);
+});
+
+it("a projection reads again only the conversations named as changed and returns the complete rows and evidence", async (t) => {
+	const f = runtimeFixture(t);
+	const host = await DurableHost.open(
+		hostOptions(join(f.root, "projection.sqlite"), await fixtureRuntime("answer"), fixtureRegistry(), f.cwd),
+		context,
+	);
+	t.after(() => host.close());
+	const first = await host.submit({ message: "First request", requestId: "first" });
+	await host.wait(first.submissionId, context);
+	const assistant = (await host.root().entries({}, 20, undefined, context)).items.find(
+		(item) => item.kind === "pi.assistant",
+	);
+	assert.ok(assistant);
+	await host.request("fork", { entryId: assistant.id });
+	const before = await host.catalogProjection();
+	assert.equal(before.rows.length, 2);
+
+	const second = await host.submit({ message: "Second request", requestId: "second" });
+	await host.wait(second.submissionId, context);
+	const read: number[] = [];
+	const conversation = host.harness.conversation.bind(host.harness);
+	t.mock.method(host.harness, "conversation", (...args: Parameters<typeof conversation>) => {
+		read.push(args[0]);
+		return conversation(...args);
+	});
+	const partial = await host.catalogProjection(context, new Set([Durable.ROOT_CONVERSATION_ID]));
+	assert.deepEqual([...new Set(read)], [Durable.ROOT_CONVERSATION_ID], "the unchanged fork is not read again");
+	assert.equal(partial.rows[1], before.rows[1], "the unchanged fork keeps its row");
+	assert.notDeepEqual(partial.rows[0], before.rows[0], "the changed root has a new row");
+
+	const complete = await host.catalogProjection();
+	const dated = (value: unknown): unknown =>
+		JSON.parse(JSON.stringify(value).replaceAll(complete.updatedAt, partial.updatedAt));
+	assert.deepEqual(partial.rows, complete.rows);
+	assert.deepEqual(partial.modelEvidence, dated(complete.modelEvidence));
+	assert.equal(partial.modelEvidence.sampling?.samples.length, 2);
 });
