@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
@@ -110,7 +110,7 @@ it("excludes proven dead records and retains distinct foreign unknown and incomp
 		]),
 	);
 	assert.deepEqual(page.coverage, {
-		visited: 6,
+		visited: 5,
 		unreadable: 0,
 		dead: 1,
 		unrelated: 1,
@@ -118,7 +118,8 @@ it("excludes proven dead records and retains distinct foreign unknown and incomp
 		complete: true,
 		reasons: [],
 	});
-	for (const id of [deadId, unknown, incompatible, unrelated]) assert.ok(existsSync(primaryEndpointPath(root, id)));
+	for (const id of [unknown, incompatible, unrelated]) assert.ok(existsSync(primaryEndpointPath(root, id)));
+	assert.equal(existsSync(primaryEndpointPath(root, deadId)), false, "a proven dead record is removed");
 });
 
 it("classifies permission-denied process probes as unknown rather than dead", async (t) => {
@@ -198,6 +199,28 @@ it("spends no visits on sockets and storage files beside the records", async (t)
 	);
 	assert.equal(page.coverage.visited, 1);
 	assert.equal(page.coverage.complete, true);
+});
+
+it("removes records of sessions that are proven dead and spends no visit on them", async (t) => {
+	const root = rootFor(t);
+	const dead = Array.from({ length: 300 }, () => record(root, { startedAt: "2000-01-01T00:00:00.000Z" }));
+	const live = record(root);
+	const page = await readPage(root, self());
+	assert.deepEqual(
+		page.efforts.map((effort) => effort.id),
+		[live],
+	);
+	assert.equal(page.coverage.dead, 300);
+	assert.equal(page.coverage.visited, 1, "a dead record costs no visit");
+	assert.equal(page.coverage.complete, true);
+	assert.deepEqual(
+		readdirSync(join(root, ".primaries")).filter((name) => name.endsWith(".json")),
+		[`${live}.json`],
+		"dead records are removed",
+	);
+	assert.ok(dead.length > 0);
+	const again = await readPage(root, self());
+	assert.equal(again.coverage.dead, 0);
 });
 
 it("bounds serialized pages with large intent claims", async (t) => {
@@ -376,6 +399,68 @@ it("does not count an omitted native claim again as an unsupported producer", as
 	assert.equal(page.coverage.omitted, 1);
 	assert.equal(page.coverage.complete, false);
 	assert.deepEqual(page.coverage.reasons, ["native-intent-incomplete"]);
+});
+
+it("spends visits only on declared native claims, so a claim behind hundreds of undeclared conversations is seen", async (t) => {
+	const root = rootFor(t);
+	const catalog = new AgentCatalog(root);
+	const natives = Array.from({ length: 301 }, () => unsupportedNative(root)).sort((a, b) =>
+		a.storageId.localeCompare(b.storageId),
+	);
+	const claimed = natives.at(-1);
+	assert.ok(claimed);
+	const publish = (record: (typeof natives)[number], metadata: NativeIntentMetadata | null) => {
+		const rows = [
+			{
+				id: record.storageId,
+				storageId: record.storageId,
+				cwd: record.cwd,
+				modifiedAt: 1,
+				owner: "here",
+				state: "idle",
+				cost: 0,
+				partial: false,
+			},
+		];
+		const view = withIntentClaims(
+			boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", storageId: record.storageId, rows }),
+			{ rows: { [record.storageId]: metadata }, coverage: { complete: true, omitted: 0 } },
+		);
+		writeFileSync(catalog.path(record.storageId), JSON.stringify({ ...record, view }));
+	};
+	// Every conversation of a claim-capable host publishes a row; one without a claim publishes null.
+	for (const record of natives.slice(0, -1)) publish(record, null);
+	publish(claimed, {
+		claim: intent(),
+		cwd: claimed.cwd,
+		repository: null,
+		repositoryState: "outside-git",
+		hostname: hostname(),
+		startedAt: "2026-01-01T00:00:00.000Z",
+		taskId: 1,
+	});
+	const paths = hostPaths(claimed);
+	mkdirSync(dirname(paths.claim), { recursive: true });
+	writeFileSync(
+		paths.claim,
+		JSON.stringify({
+			token: "writer",
+			sessionId: claimed.storageId,
+			cwd: claimed.cwd,
+			host: hostname(),
+			createdAt: new Date().toISOString(),
+			pid: process.pid,
+		}),
+	);
+	t.mock.method(process, "kill", () => true);
+	const page = await readPage(root, { id: randomUUID(), cwd: claimed.cwd, intentClaim: intent() });
+	assert.deepEqual(
+		page.efforts.map((effort) => effort.id),
+		[claimed.storageId],
+		"the claim behind 300 undeclared conversations is seen",
+	);
+	assert.equal(page.coverage.visited, 1, "undeclared conversations cost no visit");
+	assert.ok(!page.coverage.reasons.includes("visit-limit"));
 });
 
 it("retains unknown native efforts and omits ended generations with their declarations", async (t) => {

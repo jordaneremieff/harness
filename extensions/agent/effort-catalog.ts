@@ -20,6 +20,13 @@ export interface EffortRecord {
 	readonly threads?: CollaborationProjection;
 }
 
+/** Conversations without a declared claim publish null rows; the index keeps the declared claims only. */
+function declaredClaims(claims: CatalogIntentClaims): CatalogIntentClaims {
+	const rows: Record<string, NonNullable<CatalogIntentClaims["rows"][string]>> = {};
+	for (const [id, metadata] of Object.entries(claims.rows)) if (metadata !== null) rows[id] = structuredClone(metadata);
+	return { ...claims, rows, coverage: { ...claims.coverage } };
+}
+
 function project(record: CatalogRecord): EffortRecord {
 	const names: Record<string, string> = {};
 	for (const row of record.view?.rows ?? []) if (row.name !== undefined) names[row.id] = row.name;
@@ -28,7 +35,7 @@ function project(record: CatalogRecord): EffortRecord {
 		...(record.ownerId === undefined ? {} : { ownerId: record.ownerId }),
 		agentDir: record.agentDir,
 		cwd: record.cwd,
-		...(record.view?.intentClaims === undefined ? {} : { intentClaims: structuredClone(record.view.intentClaims) }),
+		...(record.view?.intentClaims === undefined ? {} : { intentClaims: declaredClaims(record.view.intentClaims) }),
 		names,
 		...(record.threads === undefined ? {} : { threads: structuredClone(record.threads) }),
 	};

@@ -3234,9 +3234,15 @@ no presence polling, file watcher, automatic model wake, or new store. Every vie
 reports its presentation omissions; tool observations also report finite traversal
 coverage. Ordinary descriptors and native claim rows share the visit, result and
 byte caps in the tool result; native catalogue records come from the same record
-index as thread hints and cost no visit, so every record's claims are covered.
+index as thread hints and cost no visit, nor does a conversation that declared
+no claim (its row is null), so only declared claims spend visits and every
+record's claims are covered.
 Ordinary descriptors consume visits first, and sockets beside them cost no
-visit. One awareness read lists the record index once for presence and thread
+visit. A descriptor whose session is proven dead (its process has ended, or it
+was written before the current boot) costs no visit, and the reader removes it,
+so records left by crashed, killed or rebooted sessions do not accumulate. One
+read examines at most four times the visit limit in descriptors; the rest wait
+for a later read. One awareness read lists the record index once for presence and thread
 hints. A cut-off scan reports partial coverage.
 Native producers without intent support count separately from omitted claims;
 their absence is not a lost supported claim.

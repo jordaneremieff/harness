@@ -1,7 +1,7 @@
 import { opendir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
-import { readVerifiedPrimaryEndpointDescriptor } from "./primary-channel.ts";
+import { readVerifiedPrimaryEndpointDescriptor, removeDeadPrimaryEndpoint } from "./primary-channel.ts";
 import type {
 	PrimaryInfo,
 	PrimaryObservedPurpose,
@@ -318,73 +318,130 @@ async function collectEffort(
 	appendEffort(page, effortRow(info, self, liveness, relationship, topics, prompt), prompt);
 }
 
+type EndpointRead = Promise<Awaited<ReturnType<typeof readVerifiedPrimaryEndpointDescriptor>>>;
+
 /**
- * Start the verified read of one endpoint record. The reads of a walk run concurrently, so the socket probes
- * of live PIDs overlap; their results are applied in walk order.
+ * Start the verified read of one endpoint record, or count a record that names no other session.
+ * The reads of a walk run concurrently, so the socket probes of live PIDs overlap; their results are
+ * applied in walk order.
  */
 function startEntry(
 	sessionsRoot: string,
 	self: PresenceSelf,
 	page: EffortPresencePage,
 	entry: Dirent,
-	pending: Promise<Awaited<ReturnType<typeof readVerifiedPrimaryEndpointDescriptor>>>[],
-): void {
+	pending: EndpointRead[],
+): boolean {
 	const id = entry.name.endsWith(".json") ? entry.name.slice(0, -5) : undefined;
 	if (!entry.isFile() || id === undefined || id === self.id) {
 		page.coverage.unrelated += 1;
-		return;
+		return false;
 	}
 	pending.push(readVerifiedPrimaryEndpointDescriptor(sessionsRoot, id));
+	return true;
 }
 
+/**
+ * Apply one endpoint read; true when it spends a visit. A record whose owner is proven dead (its
+ * PID ended, or it was written before the current boot) is removed and costs no visit, so records
+ * of crashed, killed or rebooted sessions neither accumulate nor take the budget of live ones. A
+ * record that another reader removed meanwhile is gone, not unreadable.
+ */
 async function visitEntry(
+	sessionsRoot: string,
 	self: PresenceSelf,
 	page: EffortPresencePage,
-	descriptor: Awaited<ReturnType<typeof readVerifiedPrimaryEndpointDescriptor>>,
+	descriptor: Awaited<EndpointRead>,
 	scope?: EffortProjectScope,
-): Promise<void> {
-	if (descriptor.unreadable || !descriptor.info || descriptor.state === "absent") {
+): Promise<boolean> {
+	if (descriptor.state === "absent") return false;
+	if (descriptor.unreadable || !descriptor.info) {
 		page.coverage.unreadable += 1;
 		markPartial(page, "unreadable");
-		return;
+		return true;
 	}
 	if (descriptor.state === "dead") {
 		page.coverage.dead += 1;
-		return;
+		removeDeadPrimaryEndpoint(sessionsRoot, descriptor.info.id);
+		return false;
 	}
 	if (descriptor.info.repositoryState === "unknown") markPartial(page, "repository-unknown");
 	await collectEffort(page, self, descriptor.info, descriptor.state, scope);
+	return true;
 }
 
-/** A directory entry that names no record (a socket, a storage file) costs no visit. */
-async function visitDirectory(
-	path: string,
+/** Endpoint reads one walk keeps in flight before it applies them in walk order. */
+const PRESENCE_READ_BATCH = 16;
+/** Records one walk examines at most, whether they spend visits or not; the rest wait for a later read. */
+const PRESENCE_SCAN_LIMIT = EFFORT_PRESENCE_LIMITS.visits * 4;
+
+/**
+ * One walk over the endpoint records. Sockets beside them and records that `visitEntry` reports
+ * free cost no visit; reads are applied before the walk decides that its visit budget is spent, so
+ * the limit counts only records that spent visits.
+ */
+class EndpointWalk {
+	private readonly sessionsRoot: string;
+	private readonly self: PresenceSelf;
+	private readonly page: EffortPresencePage;
+	private readonly scope: EffortProjectScope | undefined;
+	private readonly pending: EndpointRead[] = [];
+	private scanned = 0;
+	constructor(sessionsRoot: string, self: PresenceSelf, page: EffortPresencePage, scope?: EffortProjectScope) {
+		this.sessionsRoot = sessionsRoot;
+		this.self = self;
+		this.page = page;
+		this.scope = scope;
+	}
+	private spent(inFlight: number): boolean {
+		return this.page.coverage.visited + inFlight >= this.page.limits.visits || this.scanned >= PRESENCE_SCAN_LIMIT;
+	}
+	/** False once the visit budget or the scan limit is spent; the entry is then left for a later read. */
+	async step(entry: Dirent): Promise<boolean> {
+		if (this.spent(this.pending.length)) {
+			await this.apply();
+			if (this.spent(0)) {
+				markPartial(this.page, "visit-limit");
+				return false;
+			}
+		}
+		this.scanned++;
+		if (!startEntry(this.sessionsRoot, this.self, this.page, entry, this.pending)) this.page.coverage.visited++;
+		if (this.pending.length >= PRESENCE_READ_BATCH) await this.apply();
+		return true;
+	}
+	async apply(): Promise<void> {
+		for (const read of this.pending.splice(0))
+			if (await visitEntry(this.sessionsRoot, this.self, this.page, await read, this.scope))
+				this.page.coverage.visited++;
+	}
+	async abandon(): Promise<void> {
+		await Promise.allSettled(this.pending.splice(0));
+	}
+}
+
+async function visitPrimaries(
+	sessionsRoot: string,
+	self: PresenceSelf,
 	page: EffortPresencePage,
-	record: (name: string) => boolean,
-	visit: (entry: Dirent) => void | Promise<void>,
+	scope?: EffortProjectScope,
 ): Promise<void> {
 	let directory: Awaited<ReturnType<typeof opendir>>;
 	try {
-		directory = await opendir(path, { bufferSize: 16 });
+		directory = await opendir(join(sessionsRoot, ".primaries"), { bufferSize: 16 });
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") markPartial(page, "directory-unreadable");
 		return;
 	}
+	const walk = new EndpointWalk(sessionsRoot, self, page, scope);
 	try {
 		for await (const entry of directory) {
-			if (!record(entry.name)) continue;
-			if (page.coverage.visited >= page.limits.visits) {
-				markPartial(page, "visit-limit");
-				break;
-			}
-			page.coverage.visited++;
-			await visit(entry);
-			if (page.coverage.visited >= page.limits.visits) {
-				markPartial(page, "visit-limit");
-				break;
-			}
+			if (!entry.name.endsWith(".json")) continue;
+			if (!(await walk.step(entry))) break;
 		}
+		await walk.apply();
 	} catch {
+		await walk.abandon();
 		markPartial(page, "directory-unreadable");
 	}
 }
@@ -441,14 +498,15 @@ async function visitNativeRecord(
 	}
 	page.coverage.omitted += claimRows.coverage.omitted;
 	if (!claimRows.coverage.complete) markPartial(page, "native-intent-incomplete");
+	// A conversation without a declared claim publishes a null row; only claims spend visits.
 	for (const [id, metadata] of Object.entries(claimRows.rows)) {
+		if (metadata === null) continue;
 		if (page.coverage.visited >= page.limits.visits) {
 			markPartial(page, "visit-limit");
 			break;
 		}
 		page.coverage.visited++;
-		if (metadata === null) page.coverage.unrelated++;
-		else await nativeRow(record, id, metadata, self, page, claims, scope);
+		await nativeRow(record, id, metadata, self, page, claims, scope);
 	}
 }
 /**
@@ -509,21 +567,7 @@ export async function readRelatedEfforts(
 		limits: EFFORT_PRESENCE_LIMITS,
 	};
 	if (self.repositoryState === "unknown") markPartial(page, "repository-unknown");
-	const pending: Parameters<typeof startEntry>[4] = [];
-	const visitPending = async () => {
-		for (const descriptor of pending.splice(0)) await visitEntry(self, page, await descriptor, scope);
-	};
-	await visitDirectory(
-		join(sessionsRoot, ".primaries"),
-		page,
-		(name) => name.endsWith(".json"),
-		async (entry) => {
-			startEntry(sessionsRoot, self, page, entry, pending);
-			// The last permitted visit applies the started reads before the walk reports its limit.
-			if (page.coverage.visited >= page.limits.visits) await visitPending();
-		},
-	);
-	await visitPending();
+	await visitPrimaries(sessionsRoot, self, page, scope);
 	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(resources.catalog, self, page, records, scope);
 	if (scope?.prompt)
 		page.efforts.splice(0, page.efforts.length, ...selectPromptEfforts(page.efforts, page.limits.results));
