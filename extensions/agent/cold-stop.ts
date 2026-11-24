@@ -1,9 +1,9 @@
 /** A single stop under the same writer lease as the serving process. No endpoint or recovery driver is started. */
 import { fork } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { startGatePath, writerLeasePaths, type HostMetadata } from "./host-protocol.ts";
+import { HostError, startGatePath, writerLeasePaths, type HostMetadata } from "./host-protocol.ts";
 import { tryNativeWriterLeases, waitNativeWriterLease } from "./native-lease.ts";
 import type { stopBeforeResume } from "./durable-host.ts";
 
@@ -36,6 +36,14 @@ export async function withColdWriter(metadata: HostMetadata, stop: () => Promise
 
 /** The isolated writer outlives its caller's wait. Its exit confirms that its lease is no longer held. */
 export function stopColdStorage(metadata: HostMetadata, sessionId: string, background: boolean): Promise<Reply> {
+	// Node reports a missing cwd as `spawn <executable> ENOENT`, which names the wrong path.
+	if (!statSync(metadata.cwd, { throwIfNoEntry: false })?.isDirectory())
+		return Promise.reject(
+			new HostError(
+				`The agent's working directory no longer exists: ${metadata.cwd}. No host runs for this agent and a stop needs one there, so nothing was stopped. Its retained work cannot run until the directory exists again; restore it and repeat the abort to stop that work.`,
+				"invalid",
+			),
+		);
 	const runner = fileURLToPath(new URL("./durable-runner.ts", import.meta.url));
 	const child = fork(runner, [JSON.stringify(metadata), "stop", sessionId, String(background)], {
 		cwd: metadata.cwd,

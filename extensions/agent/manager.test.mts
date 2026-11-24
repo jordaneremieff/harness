@@ -25,6 +25,7 @@ after(() => {
 	if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride;
 });
 import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
+import { stopColdStorage } from "./cold-stop.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
 import { publishCatalogChange, subscribeCatalogChanges } from "./catalog-events.ts";
 import { dashboardText } from "./dashboard-roster.ts";
@@ -434,6 +435,21 @@ it("sends a control once more through a fresh host after a retiring host refused
 	});
 	assert.deepEqual(seen, ["host 1", "host 2"]);
 	assert.equal(acquisitions, 2);
+});
+
+it("refuses a cold stop whose working directory was removed with the directory, not the executable", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root, "owner");
+	const metadata = { ...hostMetadata(record), cwd: join(root, "removed-work") };
+	await assert.rejects(
+		stopColdStorage(metadata, record.storageId, false),
+		(error: unknown) =>
+			error instanceof Error &&
+			error.message.includes(`working directory no longer exists: ${metadata.cwd}`) &&
+			!error.message.includes("spawn"),
+	);
 });
 
 it("stops a live target once and never acquires a serving host for a cold stop", async (t) => {
