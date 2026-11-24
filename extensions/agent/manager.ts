@@ -107,6 +107,7 @@ import {
 	type RuntimeContract,
 } from "./version-contract.ts";
 import { collaborationStorage, validateCollaborationAction } from "./collaboration-contract.ts";
+import { blankPrompt } from "./creation-prompt.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 
 import {
@@ -920,6 +921,10 @@ export class AgentManager {
 		caller: AgentCaller,
 		onCreated?: (row: AgentConversationSummary) => void,
 	): Promise<unknown> {
+		if (blankPrompt(input.prompt)) {
+			const { prompt: _prompt, ...idle } = input;
+			input = idle;
+		}
 		if (input.handle !== undefined) return this.spawnHandled({ ...input, handle: input.handle }, caller, onCreated);
 		return this.spawnIndependent(input, caller, onCreated);
 	}
@@ -1456,7 +1461,7 @@ export class AgentManager {
 	}
 
 	async place(input: AgentSpawnInput & { area?: string; topic?: string }, caller: AgentCaller): Promise<unknown> {
-		if (input.prompt === "") input = { ...input, prompt: undefined };
+		if (blankPrompt(input.prompt)) input = { ...input, prompt: undefined };
 		const area = realpathSync(resolve(caller.cwd, input.area ?? "."));
 		if (!statSync(area).isDirectory()) throw new Error("Place area must be a directory");
 		const result = await this.places.withArea(area, async (existing, reserve) => {

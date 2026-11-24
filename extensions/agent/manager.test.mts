@@ -4694,3 +4694,34 @@ it("names a remedy for unknown handles, malformed identities and threads whose s
 		noPath(/No retained storage .*Find current agents and threads with agent_list/u),
 	);
 });
+
+it("creates an idle agent for a blank creation prompt on spawn, handle spawn and place", async (t) => {
+	const root = fixtureRoot(t);
+	const submits: unknown[] = [];
+	const manager = new AgentManager(
+		managerOptions(root, {
+			validateModel: () => {},
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method, params) => {
+					if (method === "task-submit") {
+						submits.push(params);
+						return nativeAdmission(params);
+					}
+					if (method === "profile-read")
+						return { handle: "@idle-one", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel };
+					return {};
+				}),
+		}),
+	);
+	t.after(() => manager.close());
+	const caller = { id: "caller", cwd: root };
+	const spawned = (await manager.spawn({ prompt: "", requestId: "spawn:blank:1" }, caller)) as Record<string, unknown>;
+	assert.equal(spawned.admission, undefined);
+	await manager.spawn({ prompt: " \n\t", requestId: "spawn:blank:2" }, caller);
+	const handled = (await manager.spawn({ handle: "idle-one", prompt: "  " }, caller)) as Record<string, unknown>;
+	assert.equal(handled.admission, undefined);
+	const area = join(root, "area");
+	mkdirSync(area);
+	await manager.place({ area, prompt: "   " }, caller);
+	assert.deepEqual(submits, [], "a blank prompt admits no task");
+});

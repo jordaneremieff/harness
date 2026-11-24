@@ -104,6 +104,7 @@ import {
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { CollaborationParams } from "./collaboration-contract.ts";
 import { controlText, readableControlText, projectReportReceipt, unconfirmedStopText } from "./control-result.ts";
+import { blankPrompt } from "./creation-prompt.ts";
 import { projectSelectedStatus, projectStorageStatus, validateStatusDetail } from "./status-overview.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { AgentCatalog } from "./catalog.ts";
@@ -1808,6 +1809,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			parameters: presetParams(SpawnParams),
 			replay: "safe",
 			execute: async (args: SpawnInput, api, context) => {
+				if (blankPrompt(args.prompt)) {
+					const { prompt: _prompt, ...idle } = args;
+					args = idle;
+				}
 				const receipt = await api.snapshot(ForeignSpawnReceipt, api.conversationId, String(api.taskId), context);
 				if (receipt?.outcome !== undefined) {
 					if (receipt.digest !== foreignSpawnDigest(api, args))
@@ -2445,6 +2450,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		parameters: ForkParams,
 		replay: "safe",
 		execute: async (args: ForkInput, api, context) => {
+			if (blankPrompt(args.prompt)) {
+				const { prompt: _prompt, ...idle } = args;
+				args = idle;
+			}
 			if (target(args.sessionId).kind === "foreign") {
 				return dispatchControl(
 					"fork",
@@ -2825,7 +2834,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					...defined(args, ["model", "thinkingLevel", "preset"]),
 					preferenceSnapshot: await preferenceSnapshot(api, context),
 					...(args.topic === undefined ? {} : { topic: args.topic }),
-					...(args.prompt === undefined || args.prompt === "" ? {} : defined(args, ["prompt", "checkInMinutes"])),
+					...(args.prompt === undefined || blankPrompt(args.prompt) ? {} : defined(args, ["prompt", "checkInMinutes"])),
 					origin: "model",
 					senderIdentity: identity(api.conversationId),
 					requestId: `place:${host.storageId}:${api.taskId}`,

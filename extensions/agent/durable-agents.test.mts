@@ -3539,3 +3539,24 @@ it("asks an ordinary session without an admission fact and returns refusals and 
 		"a question is tracked by its question document, so neither a delivered nor a failed one leaves an admission fact",
 	);
 });
+
+it("creates idle native children for blank spawn and fork prompts", { timeout: 20000 }, async (t) => {
+	const route = createRoute();
+	const { registry } = buildRegistry();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_spawn", args: { name: "blank", prompt: " " } });
+	await say(root, "SPAWN BLANK");
+	await settle(harness, root.id);
+	route.script.push({ tool: "agent_fork", args: { sessionId: storageId, name: "blank-fork", prompt: "" } });
+	await say(root, "FORK BLANK");
+	await settle(harness, root.id);
+	const state = await harness.snapshot(TestChildren, root.id, context);
+	const spawned = state?.children.find((child) => child.name === "blank");
+	const forked = state?.children.find((child) => child.name === "blank-fork");
+	assert.ok(spawned?.conversationId !== undefined && forked?.conversationId !== undefined);
+	assert.deepEqual(await userTexts(harness, spawned.conversationId), [], "the spawned child starts idle");
+	const forkTexts = await userTexts(harness, forked.conversationId);
+	assert.ok(!forkTexts.some((text) => text.trim() === ""), "the fork receives no blank input");
+	assert.deepEqual(Object.keys(state?.reporters ?? {}).length, 0, "no reporter delivers a blank prompt");
+});
