@@ -3037,19 +3037,10 @@ it("renders the delegation guidance into the model-facing section", async () => 
 			.filter((tool) => tool.deferred === true)
 			.map((tool) => tool.name)
 			.sort(),
-		[
-			"agent_attach",
-			"agent_command",
-			"agent_configure",
-			"agent_fork",
-			"agent_inspect",
-			"agent_list",
-			"agent_place",
-			"agent_profile",
-			"agent_reset",
-			"agent_rewind",
-		],
+		["agent_attach", "agent_command", "agent_configure", "agent_fork", "agent_place", "agent_reset", "agent_rewind"],
 	);
+	for (const name of ["agent_inspect", "agent_list", "agent_profile"])
+		assert.match(text, new RegExp(`^- ${name}:`, "mu"), `${name} is offered with its guidance`);
 	assert.deepEqual(
 		exposed
 			.filter((tool) => tool.callers?.includes("model") && !tool.callers.includes("tools"))
@@ -3058,24 +3049,21 @@ it("renders the delegation guidance into the model-facing section", async () => 
 		["agent_compact"],
 	);
 	for (const name of [
-		"agent_inspect",
-		"agent_list",
 		"agent_attach",
 		"agent_place",
 		"agent_fork",
 		"agent_rewind",
 		"agent_reset",
 		"agent_configure",
-		"agent_profile",
 		"agent_command",
 	])
 		assert.doesNotMatch(text ?? "", new RegExp(`^- ${name}:`, "mu"), `${name} contributes no guidance until offered`);
 	const deferredOnly = await section.render(
-		{ ...input, agent: { ...input.agent, tools: exposed.filter((tool) => tool.name === "agent_list") } },
+		{ ...input, agent: { ...input.agent, tools: exposed.filter((tool) => tool.name === "agent_command") } },
 		context,
 	);
 	assert.ok(deferredOnly, "an offered deferred control renders its guidance");
-	assert.match(deferredOnly, /^- agent_list: Find retained agent sessions$/mu);
+	assert.match(deferredOnly, /^- agent_command: Run a command through an agent's owner$/mu);
 	assert.doesNotMatch(deferredOnly, /- agent_spawn:/u);
 	const withoutSpawn = await section.render(
 		{

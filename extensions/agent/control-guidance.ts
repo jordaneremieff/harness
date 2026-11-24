@@ -39,7 +39,10 @@ export type AgentControlToolName = (typeof AGENT_CONTROL_TOOL_NAMES)[number];
  */
 export type AgentControlExposure = "direct" | "deferred" | "model-only";
 
-/** The Agent slice owns the exposure of every control it registers. */
+/**
+ * The Agent slice owns the exposure of every control it registers. A control that results, refusals or guidance
+ * of declared controls name as the next call stays declared, so that call never meets an undeclared tool.
+ */
 export const AGENT_CONTROL_EXPOSURE: Readonly<Record<AgentControlToolName, AgentControlExposure>> = {
 	agent_abort: "direct",
 	agent_brief: "direct",
@@ -49,11 +52,11 @@ export const AGENT_CONTROL_EXPOSURE: Readonly<Record<AgentControlToolName, Agent
 	agent_compact: "model-only",
 	agent_configure: "deferred",
 	agent_fork: "deferred",
-	agent_inspect: "deferred",
+	agent_inspect: "direct",
 	agent_intent: "direct",
-	agent_list: "deferred",
+	agent_list: "direct",
 	agent_place: "deferred",
-	agent_profile: "deferred",
+	agent_profile: "direct",
 	agent_reset: "deferred",
 	agent_rewind: "deferred",
 	agent_send: "direct",
@@ -123,6 +126,9 @@ export const CONTINUITY_SEED =
 export const NATIVE_COMPACTION_SEED = `${CONTINUITY_SEED} Preserve each owed final report with its request, reply recipient, dependencies, and next action. After the summary, the Agent continuity note lists the requests that this session sent and that have no delivered result here.`;
 const RESET_HANDOFF_GUIDANCE =
 	"A handoff states the current purpose; consequential operator corrections and what they changed; qualified evidence; unresolved questions; and the newest handover or checkpoint identifier.";
+
+/** Names every deferred control, so a result or refusal that names one leads to discovery, not a failed call. */
+const DEFERRED_CONTROL_GUIDANCE = `These agent controls are registered but undeclared until tool discovery loads them: ${AGENT_CONTROL_TOOL_NAMES.filter((name) => AGENT_CONTROL_EXPOSURE[name] === "deferred").join(", ")}. When a result or refusal names one, load it with tool_search before you call it.`;
 
 /** Per-tool snippets and guidelines for the current controls. */
 export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, AgentToolGuidance>> = {
@@ -212,6 +218,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 			"A full suite needs no claim and no prior status read. When a related effort declares scope.fullGate true, hold your own full suite until that claim clears. Declare your own need for a quiet machine in your integration intent with scope.fullGate true; clear the claim on release. Notify only efforts that requested release. Declarations are not locks.",
 			"Inside a Durable agent, no-target status is a compact overview of this storage's conversations with explicit coverage. It names what it omits: host inventory, effort awareness and created-agent detail. Select one conversation with sessionId for its status.",
 			"Use view: fleet for sampled machine-local model costs, current selections, and attributed failures. Missing evidence is unknown, not zero; conversation warnings do not prove provider faults.",
+			DEFERRED_CONTROL_GUIDANCE,
 		],
 	},
 	agent_list: { snippet: "Find retained agent sessions" },

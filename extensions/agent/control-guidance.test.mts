@@ -298,7 +298,10 @@ it("keeps frequent controls direct and defers infrequent ones", () => {
 			"agent_abort",
 			"agent_brief",
 			"agent_collaborate",
+			"agent_inspect",
 			"agent_intent",
+			"agent_list",
+			"agent_profile",
 			"agent_send",
 			"agent_spawn",
 			"agent_status",
@@ -310,18 +313,7 @@ it("keeps frequent controls direct and defers infrequent ones", () => {
 			.filter(([, exposure]) => exposure === "deferred")
 			.map(([name]) => name)
 			.sort(),
-		[
-			"agent_attach",
-			"agent_command",
-			"agent_configure",
-			"agent_fork",
-			"agent_inspect",
-			"agent_list",
-			"agent_place",
-			"agent_profile",
-			"agent_reset",
-			"agent_rewind",
-		],
+		["agent_attach", "agent_command", "agent_configure", "agent_fork", "agent_place", "agent_reset", "agent_rewind"],
 	);
 	assert.deepEqual(
 		Object.entries(AGENT_CONTROL_EXPOSURE)
@@ -338,4 +330,16 @@ it("renders the compact, command, and inspect snippets", () => {
 	assert.match(text, /- agent_compact: /u);
 	assert.match(text, /- agent_command: /u);
 	assert.match(text, /- agent_inspect: /u);
+});
+
+it("declares the controls that results and instructions name as the next call and names the deferred rest", () => {
+	// Status results, result deliveries and the native profile instruction name these as the next call.
+	for (const name of ["agent_inspect", "agent_list", "agent_profile"] as const)
+		assert.notEqual(AGENT_CONTROL_EXPOSURE[name], "deferred", `${name} is declared`);
+	for (const surface of ["ordinary", "native"] as const) {
+		const status = agentControlGuidance("agent_status", surface).guidelines?.join("\n") ?? "";
+		const deferred = AGENT_CONTROL_TOOL_NAMES.filter((name) => AGENT_CONTROL_EXPOSURE[name] === "deferred");
+		for (const name of deferred) assert.ok(status.includes(name), `${surface} status guidance names ${name}`);
+		assert.match(status, /load it with tool_search before you call it/u);
+	}
 });

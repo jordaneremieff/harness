@@ -168,15 +168,20 @@ by default. The Agent slice owns this table in `control-guidance.ts`; Pi's
 exposure fields carry it.
 
 - Direct controls are declared and callable: `agent_spawn`, `agent_brief`, `agent_send`,
-  `agent_steer`, `agent_abort`, `agent_status`, `agent_intent` and
-  `agent_collaborate`. `agent_work` is a direct control of a native agent, and
-  `agent_yield` is a direct control of an ordinary session.
+  `agent_steer`, `agent_abort`, `agent_status`, `agent_intent`,
+  `agent_collaborate`, `agent_inspect`, `agent_list` and `agent_profile`.
+  `agent_work` is a direct control of a native agent, and `agent_yield` is a
+  direct control of an ordinary session. Status results, result deliveries,
+  refusals and the native profile instruction name `agent_inspect`,
+  `agent_list` and `agent_profile` as the next call, so these stay declared.
 - Model-only controls are declared while active and never callable from a
   script: `agent_compact`.
 - Deferred controls stay registered and callable from other tools, and are not
-  declared until tool discovery loads them: `agent_inspect`, `agent_list`,
-  `agent_attach`, `agent_place`, `agent_fork`, `agent_rewind`, `agent_reset`,
-  `agent_configure`, `agent_profile` and `agent_command`.
+  declared until tool discovery loads them: `agent_attach`, `agent_place`,
+  `agent_fork`, `agent_rewind`, `agent_reset`, `agent_configure` and
+  `agent_command`. The `agent_status` guidance names each of them and asks the
+  model to load one with `tool_search` before its first call, because some
+  results and refusals name them.
 
 Discovery uses Pi's public `tool_search`. The recommended Pi setting adds it
 without replacing other selections:

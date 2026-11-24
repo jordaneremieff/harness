@@ -942,7 +942,7 @@ it("declares direct controls, defers infrequent ones, and discovers a deferred c
 						type: "toolCall",
 						id: "search-agents",
 						name: "tool_search",
-						arguments: { query: "list retained agent sessions" },
+						arguments: { query: "configure a session without starting work" },
 					},
 				],
 				usage: {
@@ -956,13 +956,20 @@ it("declares direct controls, defers infrequent ones, and discovers a deferred c
 				stopReason: "toolUse",
 				timestamp: Date.now(),
 			};
-		if (!results.some((result) => result.toolName === "agent_list"))
+		if (!results.some((result) => result.toolName === "agent_configure"))
 			return {
 				role: "assistant",
 				api: "openai-completions",
 				provider: fixtureProvider,
 				model: fixtureModelId,
-				content: [{ type: "toolCall", id: "list-agents", name: "agent_list", arguments: {} }],
+				content: [
+					{
+						type: "toolCall",
+						id: "configure-agent",
+						name: "agent_configure",
+						arguments: { sessionId: "01a2aaaa-0000-7000-8000-000000000009", name: "Renamed" },
+					},
+				],
 				usage: {
 					input: 1,
 					output: 1,
@@ -992,35 +999,38 @@ it("declares direct controls, defers infrequent ones, and discovers a deferred c
 		"agent_status",
 		"agent_intent",
 		"agent_collaborate",
+		"agent_inspect",
+		"agent_list",
+		"agent_profile",
 		"agent_work",
 		"agent_compact",
 		"tool_search",
 	])
 		assert.ok(first.includes(name), `${name} is declared directly`);
 	for (const name of [
-		"agent_inspect",
-		"agent_list",
 		"agent_attach",
 		"agent_place",
 		"agent_fork",
 		"agent_rewind",
 		"agent_reset",
 		"agent_configure",
-		"agent_profile",
 		"agent_command",
 	])
 		assert.ok(!first.includes(name), `${name} starts undeclared`);
 	assert.ok(!first.includes("agent_await"), "the removed wait has no declaration");
 	assert.match(systemSection(f.requests[0], "agent-controls") ?? "", /^- agent_spawn:/mu);
-	assert.doesNotMatch(systemSection(f.requests[0], "agent-controls") ?? "", /^- agent_list:/mu);
-	assert.match(toolResultText(result.toolResults.find((entry) => entry.toolName === "tool_search")), /agent_list/u);
+	assert.doesNotMatch(systemSection(f.requests[0], "agent-controls") ?? "", /^- agent_configure:/mu);
+	assert.match(
+		toolResultText(result.toolResults.find((entry) => entry.toolName === "tool_search")),
+		/agent_configure/u,
+	);
 	assert.ok(
-		declaredTools(f.requests[1]).includes("agent_list"),
+		declaredTools(f.requests[1]).includes("agent_configure"),
 		"tool_search declares the loaded control on the next request",
 	);
-	const listed = result.toolResults.find((entry) => entry.toolName === "agent_list");
-	assert.ok(listed, "the loaded control executes");
-	assert.ok(dispatched.includes("profile-list"), `the loaded control reached the host dispatch: ${dispatched.join()}`);
+	const configured = result.toolResults.find((entry) => entry.toolName === "agent_configure");
+	assert.ok(configured, "the loaded control executes");
+	assert.ok(dispatched.includes("configure"), `the loaded control reached the host dispatch: ${dispatched.join()}`);
 });
 
 it("keeps explicit builtin tool-search disablement authoritative without MCP", { timeout: 30000 }, async (t) => {
@@ -1043,7 +1053,7 @@ it("keeps model-only compaction out of script callables", { timeout: 60000 }, as
 	const names = toolResultBody(result.toolResults.at(-1));
 	assert.match(names, /agent_status/u);
 	assert.match(names, /agent_work/u, "background work declarations remain callable from scripts");
-	assert.match(names, /agent_list/u, "deferred controls remain callable from scripts");
+	assert.match(names, /agent_configure/u, "deferred controls remain callable from scripts");
 	assert.doesNotMatch(names, /agent_await/u);
 	assert.doesNotMatch(names, /agent_compact/u);
 });

@@ -120,9 +120,9 @@ async function ordinaryFixture(t: TestContext) {
 		requests.push(structuredClone(context));
 		const results = context.messages.filter((message) => message.role === "toolResult");
 		if (!results.some((result) => result.toolName === "tool_search"))
-			return streamed(toolCall("tool_search", { query: "list retained agent sessions" }, "search-agents"));
-		if (!results.some((result) => result.toolName === "agent_list"))
-			return streamed(toolCall("agent_list", {}, "list-agents"));
+			return streamed(toolCall("tool_search", { query: "configure a session without starting work" }, "search-agents"));
+		if (!results.some((result) => result.toolName === "agent_configure"))
+			return streamed(toolCall("agent_configure", { sessionId: "@absent-agent", name: "Renamed" }, "configure-agent"));
 		return streamed(answer("EXPOSURE_RESULT_COMPLETE"));
 	};
 	runtime.registerNativeProvider({
@@ -183,23 +183,27 @@ it("offers tool_search by configuration while deferred controls stay undeclared 
 	assert.ok(session.getActiveToolNames().includes("agent_brief"));
 	assert.ok(session.getCallableToolNames().includes("agent_brief"));
 	assert.equal(exposure.get("agent_compact"), "model-only");
+	for (const name of ["agent_inspect", "agent_list", "agent_profile"]) {
+		assert.equal(exposure.get(name), "direct", name);
+		assert.ok(session.getActiveToolNames().includes(name), `${name} is declared`);
+	}
 	for (const name of [
-		"agent_inspect",
-		"agent_list",
 		"agent_attach",
 		"agent_place",
 		"agent_fork",
 		"agent_rewind",
 		"agent_reset",
 		"agent_configure",
-		"agent_profile",
 		"agent_command",
 	])
 		assert.equal(exposure.get(name), "deferred", name);
 	assert.ok(session.getActiveToolNames().includes("tool_search"));
-	for (const name of ["agent_inspect", "agent_list", "agent_profile"])
+	for (const name of ["agent_configure", "agent_attach", "agent_command"])
 		assert.ok(!session.getActiveToolNames().includes(name), `${name} starts undeclared`);
-	assert.ok(session.getCallableToolNames().includes("agent_list"), "a deferred control remains callable from tools");
+	assert.ok(
+		session.getCallableToolNames().includes("agent_configure"),
+		"a deferred control remains callable from tools",
+	);
 	assert.ok(
 		!session.getCallableToolNames().includes("agent_compact"),
 		"a model-only control is never callable from tools",
@@ -209,23 +213,26 @@ it("offers tool_search by configuration while deferred controls stay undeclared 
 	await session.waitForIdle();
 	assert.equal(requests.length, 3, "tool discovery and the loaded control each cause one request");
 	assert.ok(
-		!getCurrentTools(requests[0].messages).some((tool) => tool.name === "agent_list"),
+		!getCurrentTools(requests[0].messages).some((tool) => tool.name === "agent_configure"),
 		"the deferred control is not declared first",
 	);
 	assert.ok(
-		!getCurrentSystemPrompt(requests[0].messages).includes("Find retained agent sessions"),
+		!getCurrentSystemPrompt(requests[0].messages).includes("Configure a session without starting work"),
 		"deferred guidance is absent while the control is undeclared",
 	);
 	assert.ok(
-		getCurrentTools(requests[1].messages).some((tool) => tool.name === "agent_list"),
+		getCurrentTools(requests[1].messages).some((tool) => tool.name === "agent_configure"),
 		"tool_search declares the loaded control",
 	);
 	assert.ok(
-		getCurrentSystemPrompt(requests[1].messages).includes("Find retained agent sessions"),
+		getCurrentSystemPrompt(requests[1].messages).includes("Configure a session without starting work"),
 		"the loaded control carries its guidance",
 	);
-	assert.ok(session.getActiveToolNames().includes("agent_list"));
-	const listed = session.messages.find((message) => message.role === "toolResult" && message.toolName === "agent_list");
-	if (listed?.role !== "toolResult") assert.fail("the loaded control executes");
-	assert.equal(listed.isError, false);
+	assert.ok(session.getActiveToolNames().includes("agent_configure"));
+	const configured = session.messages.find(
+		(message) => message.role === "toolResult" && message.toolName === "agent_configure",
+	);
+	if (configured?.role !== "toolResult") assert.fail("the loaded control executes");
+	const text = configured.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+	assert.doesNotMatch(text, /^Tool agent_configure not found/u, "the loaded control reaches its own execution");
 });
