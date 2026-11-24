@@ -247,14 +247,19 @@ const NOTICE_RETRY_MS = [5_000, 30_000, 120_000, 600_000] as const;
 
 /**
  * Non-reply notices that a recipient owes: one per received question whose run settled without a reply.
- * A question closes as noticed only after its notice was sent, so a failed send keeps it owed and a
- * later attempt, settlement or session start sends it again. The asker's request ID deduplicates repeats.
+ * A question closes as noticed only after its notice was sent, so a failed send keeps it owed. A notice that
+ * has not failed goes out at once; one that failed goes out only on the backoff timer, so settlements and
+ * session starts add no attempts for an asker that is gone. While `reachable` says no, as for an asker whose
+ * session has ended, an attempt costs no delivery; the notice goes out when the asker returns while this
+ * process runs, or at a later session start. The asker's request ID deduplicates repeats.
  */
 export class OwedNotices {
 	private readonly owed = new Map<string, OpenQuestion>();
+	private readonly failed = new Set<string>();
 	private readonly sending = new Set<string>();
 	private readonly send: (question: OpenQuestion) => Promise<void>;
 	private readonly sent: (question: OpenQuestion) => void;
+	private readonly reachable: (question: OpenQuestion) => boolean;
 	private readonly delays: readonly number[];
 	private timer: ReturnType<typeof setTimeout> | undefined;
 	private attempt = 0;
@@ -262,50 +267,60 @@ export class OwedNotices {
 	constructor(options: {
 		send: (question: OpenQuestion) => Promise<void>;
 		sent: (question: OpenQuestion) => void;
+		reachable?: (question: OpenQuestion) => boolean;
 		delays?: readonly number[];
 	}) {
 		this.send = options.send;
 		this.sent = options.sent;
+		this.reachable = options.reachable ?? (() => true);
 		this.delays = options.delays ?? NOTICE_RETRY_MS;
 	}
 	get size(): number {
 		return this.owed.size;
 	}
-	/** Mark questions due and send each notice that is not already on its way. */
+	/** Mark questions due and send each notice that has not failed and is not already on its way. */
 	owe(questions: readonly OpenQuestion[]): void {
 		if (this.closed) return;
 		for (const question of questions) this.owed.set(question.id, question);
-		this.flush();
+		this.flush(false);
 	}
 	/** A reply closes the question, so no notice is owed for it. */
 	cancel(id: string): void {
 		this.owed.delete(id);
+		this.failed.delete(id);
 	}
-	flush(): void {
+	private flush(retrying: boolean): void {
 		for (const question of this.owed.values()) {
-			if (this.sending.has(question.id)) continue;
+			if (this.sending.has(question.id) || (!retrying && this.failed.has(question.id))) continue;
+			if (!this.reachable(question)) {
+				this.fail(question.id);
+				continue;
+			}
 			this.sending.add(question.id);
 			void this.send(question).then(
 				() => {
 					this.sending.delete(question.id);
+					this.failed.delete(question.id);
 					if (this.closed || !this.owed.delete(question.id)) return;
 					this.attempt = 0;
 					this.sent(question);
 				},
 				() => {
 					this.sending.delete(question.id);
-					this.retry();
+					this.fail(question.id);
 				},
 			);
 		}
 	}
-	private retry(): void {
-		if (this.closed || this.timer !== undefined || this.owed.size === 0) return;
+	private fail(id: string): void {
+		if (!this.owed.has(id)) return;
+		this.failed.add(id);
+		if (this.closed || this.timer !== undefined) return;
 		const delay = this.delays[Math.min(this.attempt, this.delays.length - 1)];
 		this.attempt += 1;
 		this.timer = setTimeout(() => {
 			this.timer = undefined;
-			this.flush();
+			this.flush(true);
 		}, delay);
 		this.timer.unref?.();
 	}
@@ -314,6 +329,7 @@ export class OwedNotices {
 		if (this.timer !== undefined) clearTimeout(this.timer);
 		this.timer = undefined;
 		this.owed.clear();
+		this.failed.clear();
 	}
 }
 
@@ -395,6 +411,29 @@ export function peerQuestionFields(
 	}
 	if (method === "report" && validQuestionId(input.questionNotice)) return { questionNotice: input.questionNotice };
 	return {};
+}
+
+/** Why an agent_send input with expectReply or inReplyTo refuses before any delivery. */
+export function questionInputRefusal(input: Record<string, unknown>, self: string): string | undefined {
+	if (input.mode === "report" || input.deliverAt !== undefined || input.replyTo !== undefined)
+		return "expectReply and inReplyTo require an immediate message to a session: omit mode report, deliverAt and replyTo";
+	if (input.checkInMinutes !== undefined)
+		return "expectReply and inReplyTo take no checkInMinutes; the reply or notice arrives as an event";
+	if (input.expectReply !== undefined && input.expectReply !== true && input.expectReply !== false)
+		return "expectReply must be true or false";
+	if (input.expectReply === true && input.inReplyTo !== undefined)
+		return "A reply cannot also expect a reply; send the reply, then ask a separate question";
+	if (input.sessionId === self) return "A session cannot ask or answer itself; name another session";
+	return undefined;
+}
+
+/**
+ * A question whose delivered text passes the report body that the recipient reads refuses, so the question ID
+ * and the reply instructions at its end always arrive.
+ */
+export function questionLengthRefusal(text: string, limit: number): string | undefined {
+	if (text.length <= limit) return undefined;
+	return `This question is ${text.length} characters with its reply instructions, and the recipient reads at most ${limit}. Shorten the message by at least ${text.length - limit} characters, or put long material in a file and name its path`;
 }
 
 export const DURABLE_TARGET_QUESTION =

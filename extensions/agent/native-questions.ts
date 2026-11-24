@@ -4,6 +4,7 @@
  * notice arrival, and a continuity read touch it.
  */
 import { defineDoc, type ConversationId, type Tx } from "@earendil-works/pi-durable";
+import { retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
 import { closingQuestion, MAX_OPEN_QUESTIONS, type OpenQuestion, questionExcerpt } from "./peer-questions.ts";
 
 /** Closed IDs kept so that a replayed ask cannot reopen a question that its reply already closed. */
@@ -20,6 +21,23 @@ export const NativeQuestionsDoc = defineDoc<NativeQuestions>({
 	checkpointWhen: () => false,
 	initial: () => ({ open: [], closed: [] }),
 });
+
+/** Why a Durable agent's agent_send with expectReply refuses before its target is read. */
+export function nativeQuestionRefusal(args: {
+	readonly mode?: string;
+	readonly deliverAt?: string;
+	readonly replyTo?: string;
+	readonly passive?: boolean;
+	readonly checkInMinutes?: number;
+}): string | undefined {
+	return args.mode === "report" ||
+		args.deliverAt !== undefined ||
+		args.replyTo !== undefined ||
+		args.passive !== undefined ||
+		args.checkInMinutes !== undefined
+		? "expectReply asks an immediate question: omit mode report, deliverAt, replyTo, passive and checkInMinutes, and repeat the call"
+		: undefined;
+}
 
 export const NATIVE_QUESTIONS_FULL = `This conversation has ${MAX_OPEN_QUESTIONS} open questions; each closes when its reply or non-reply notice arrives. Send this message without expectReply, or continue other work until an answer event arrives`;
 
@@ -111,4 +129,20 @@ export function closingInput(params: {
 	if (params.inputClass !== "report" || typeof params.inputSender !== "string") return undefined;
 	const closing = closingQuestion(params.requestId);
 	return closing === undefined ? undefined : { id: closing.id, sender: params.inputSender };
+}
+
+/**
+ * A question that closed because its asked session ended reaches nobody: its report row, parked while that
+ * session has no live endpoint, becomes terminal. Without this, a later resume of the session would deliver a
+ * closed question, and its reply or notice would start a run here for nothing. A delivered row stays as it is.
+ */
+export async function endQuestionDeliveries(tx: Tx, ended: readonly OpenQuestion[]): Promise<void> {
+	for (const question of ended) {
+		const row = await retainedReportRequest(tx, question.peer, question.id);
+		if (row === undefined || row.acknowledged || row.delivery?.state === "terminal") continue;
+		await storeDeliveryRow(tx, "report", {
+			...row,
+			delivery: { state: "terminal", reason: "The asked session ended before the question reached it" },
+		});
+	}
 }

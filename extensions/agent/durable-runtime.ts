@@ -1,4 +1,4 @@
-import { DURABLE_TARGET_QUESTION, questionReceipt } from "./peer-questions.ts";
+import { DURABLE_TARGET_QUESTION, questionLengthRefusal, questionReceipt } from "./peer-questions.ts";
 import { readSettings } from "./settings.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -266,11 +266,9 @@ function assertPrimaryMessage(method: string, params: Record<string, unknown>): 
 			"Threads of an ordinary primary live in that primary's own thread storage; repeat agent_collaborate create without sessionId to create the thread in your own storage",
 		);
 	if (method !== "submit") throw new Error("A registered primary accepts messages, not Durable session controls");
-	const length = typeof params.message === "string" ? params.message.length : 0;
-	if (params.expectReply === true && length > PEER_TEXT_LIMIT)
-		throw new Error(
-			`This question is ${length} characters with its reply instructions, and the recipient reads at most ${PEER_TEXT_LIMIT}. Shorten the message by at least ${length - PEER_TEXT_LIMIT} characters, or put long material in a file and name its path`,
-		);
+	const refusal =
+		params.expectReply === true ? questionLengthRefusal(String(params.message ?? ""), PEER_TEXT_LIMIT) : undefined;
+	if (refusal !== undefined) throw new Error(refusal);
 }
 
 export async function createDurableRuntime(

@@ -12,7 +12,11 @@ import { runtimeFixture, trackHost } from "./durable-runtime-fixture.mts";
 import { fixtureRegistry, fixtureRuntime, hostOptions } from "./durable-host-fixture.mts";
 import { acquireHost } from "./host-client.ts";
 import { AgentManager } from "./manager.ts";
+import { recordReport } from "./durable-controls.ts";
+import { retainedReportRequest } from "./delivery-store.ts";
 import {
+	endQuestionDeliveries,
+	nativeQuestionRefusal,
 	openNativeQuestions,
 	reconcileNativeQuestions,
 	releaseNativeQuestion,
@@ -338,4 +342,48 @@ it("closes a Durable asker's questions to ended primaries as unanswered, once ea
 	await host.harness.commit((tx) => releaseNativeQuestion(tx, ROOT, `question:${storageId}:live`), context);
 	await host.harness.commit((tx) => reconcileNativeQuestions(tx, ROOT, check), context);
 	assert.deepEqual(reads, [], "no endpoint read without open questions");
+});
+
+it("refuses a Durable question with fields that do not apply to an immediate question", () => {
+	assert.equal(nativeQuestionRefusal({}), undefined);
+	assert.equal(nativeQuestionRefusal({ mode: "steer" }), undefined);
+	for (const field of [
+		{ mode: "report" },
+		{ deliverAt: "2026-12-01T00:00:00Z" },
+		{ replyTo: "other" },
+		{ passive: true },
+		{ checkInMinutes: 0 },
+	])
+		assert.match(
+			nativeQuestionRefusal(field) ?? "",
+			/omit mode report, deliverAt, replyTo, passive and checkInMinutes/u,
+		);
+});
+
+it("ends the parked report row of a question whose asked session ended, and leaves a delivered one", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "native-questions-rows-"));
+	const storageId = randomUUID();
+	const host = await DurableHost.open(
+		{ ...hostOptions(join(root, "host.sqlite"), await fixtureRuntime("answer"), fixtureRegistry()), storageId },
+		context,
+	);
+	t.after(async () => {
+		await host.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const gone = randomUUID();
+	const question = { id: `question:${storageId}:1`, peer: gone, at: 1, excerpt: "Still there?" };
+	await recordReport(
+		host.harness,
+		{ ownerId: gone, senderIdentity: storageId, message: "Still there?", requestId: question.id, direct: true },
+		context,
+	);
+	await host.harness.commit((tx) => endQuestionDeliveries(tx, [question]), context);
+	const row = await host.harness.commit((tx) => retainedReportRequest(tx, gone, question.id), context);
+	assert.equal(row?.delivery?.state, "terminal");
+	assert.equal(row?.acknowledged, false);
+	await host.harness.commit(
+		(tx) => endQuestionDeliveries(tx, [{ ...question, id: `question:${storageId}:2` }]),
+		context,
+	);
 });

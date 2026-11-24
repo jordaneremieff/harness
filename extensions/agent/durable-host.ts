@@ -16,6 +16,7 @@
 import { dirname } from "node:path";
 import { closeNativeQuestion, closingInput } from "./native-questions.ts";
 import { primarySessionEnded } from "./peer-questions.ts";
+import { verifyPrimaryOwners } from "./primary-channel.ts";
 import { randomUUID } from "node:crypto";
 import { reconcileInputCommunications } from "./communication-retention.ts";
 import { parseCommunication, parseCommunicationPassive } from "./communication.ts";
@@ -587,7 +588,12 @@ export class DurableHost {
 			});
 			// Request hooks read this mirror from memory only, so it must hold every retained fact and head before any act that enables scheduling.
 			const sessionsRoot = dirname(dirname(options.storagePath));
-			continuity = new ContinuityMirror(harness, options.storageId, (peer) => primarySessionEnded(sessionsRoot, peer));
+			continuity = new ContinuityMirror(
+				harness,
+				options.storageId,
+				(peer) => primarySessionEnded(sessionsRoot, peer),
+				(peers) => verifyPrimaryOwners(sessionsRoot, peers),
+			);
 			await continuity.initialize(context);
 			await reconcileProfiles(harness, options.storageId, context, report);
 			await reconcileProviderControls(harness, context);

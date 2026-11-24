@@ -2507,8 +2507,10 @@ Both sessions retain the question as `agent.peer-question` session entries
 entry names the session that recorded it; a fork, which copies its parent's
 entries, skips them, and skips older entries without that field that predate
 the fork. Placement, not admission, decides: the recipient counts a question
-as received when its model is given it (Pi's `message_end` for the message, or
-its placement at a turn boundary), and the asker closes a question when its
+as received when its model is given it (Pi's `message_end` for a message that
+starts a run or a steer taken at a boundary, its placement at a turn boundary,
+or the append of a message that starts no run, which Pi makes at once or at the
+end of the current turn without a `message_end`), and the asker closes a question when its
 model is given a reply or notice that comes from the asked session. A delivery
 that is refused, or dropped by an abort before placement, changes no question.
 The asker records the question after its admission; its model is inside that
@@ -2522,10 +2524,15 @@ reply, with the question's excerpt, when the recipient's run settles without a
 reply. After an aborted run (Esc), queued messages are placed without a run,
 so a question among them owes its notice at once. A question still open when a
 session starts lost its run with the earlier process and owes its notice then.
-The recipient records `noticed` only after the report was admitted: a refused
-notice stays owed and goes out again at the next settlement, session start, or
-retry after 5 s, 30 s, 2 min and then every 10 min while the process runs. A
-reply sent first cancels the owed notice. Repeated notices carry the same
+The recipient records `noticed` only after the report was admitted. A refused
+notice stays owed and goes out again only on a retry after 5 s, 30 s, 2 min and
+then every 10 min while the process runs, or at a later session start; a
+settlement adds no attempt for it. While the asker has no session that a notice
+can reach (an ordinary session whose endpoint is gone or names an ended
+process, or an identity without a catalog record), a retry costs one endpoint
+read and sends nothing, so the notice goes out when the asker returns. A notice
+is never dropped while its question is open. A reply sent first cancels the
+owed notice. Repeated notices carry the same
 request ID, so the asker admits one.
 
 Nothing replies automatically and nothing waits. The asker continues other
@@ -2568,10 +2575,9 @@ questions are open, with one endpoint read per distinct asked session:
 
 Each closed question is reported once, as `Question <ID> to session <ID> closed
 unanswered: that session has ended, so no reply will come`. A reply that the
-session sends after a later resume still arrives as a message. Within one boot,
-a crashed session whose PID another process now holds still reads as live; its
-next registration probes the recorded socket and replaces the record when no
-server listens there.
+session sends after a later resume still arrives as a message. A crashed session
+whose PID another process now holds reads as ended once a probe proves the PID
+reused; the decision points above wait for a record's first probe.
 
 ### Durable askers
 
@@ -2606,7 +2612,10 @@ agent's continuity note lists its open questions and the questions that read
 closed because the asked session ended. Both are read once per context head, in
 the commit that freezes its declared open work, and retained with it, so every
 request of that head, also after a host restart, states the same questions; a
-head that is no longer the newest closes nothing. An agent's `agent_status` for
+head that is no longer the newest closes nothing. When a question closes because
+its asked session ended, its report row, parked while that session has no live
+endpoint, becomes terminal in a separate commit, so a later resume of that
+session never receives a closed question whose reply would start a run here. An agent's `agent_status` for
 a conversation of its own storage lists them as `questions`: in the compact
 conversation with question ID, asked session and time, and at the top of full
 status with the excerpt as well. That read is a snapshot: it closes no question

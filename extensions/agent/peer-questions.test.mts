@@ -12,6 +12,7 @@ import {
 	SessionManager,
 	SettingsManager,
 	type AgentSession,
+	type ExtensionAPI,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -29,6 +30,8 @@ import {
 	PeerQuestions,
 	peerQuestionDetail,
 	peerQuestionFields,
+	questionInputRefusal,
+	questionLengthRefusal,
 	questionText,
 	type PeerQuestionFact,
 } from "./peer-questions.ts";
@@ -203,6 +206,63 @@ it("keeps a notice owed until its send succeeds and drops it after a reply", asy
 	notices.close();
 });
 
+it("adds no attempt at a settlement for a notice that failed, and none while its asker is gone", async () => {
+	const attempts: string[] = [];
+	let gone = true;
+	const notices = new OwedNotices({
+		send: async (question) => {
+			attempts.push(question.id);
+			throw new Error("no live primary channel");
+		},
+		sent: () => {},
+		reachable: () => !gone,
+		delays: [60_000],
+	});
+	const question = { id: "question:b:1", peer: ASKER, at: 1, excerpt: "Why?" };
+	notices.owe([question]);
+	assert.deepEqual(attempts, [], "a gone asker costs no delivery attempt");
+	gone = false;
+	for (let settlement = 0; settlement < 5; settlement++) notices.owe([question]);
+	await new Promise((done) => setImmediate(done));
+	assert.deepEqual(attempts, [], "a failed notice waits for its backoff, not for the next settlement");
+	notices.owe([{ ...question, id: "question:b:2" }]);
+	await new Promise((done) => setImmediate(done));
+	assert.deepEqual(attempts, ["question:b:2"], "a notice that has not failed goes out at once");
+	assert.equal(notices.size, 2);
+	notices.close();
+});
+
+it("refuses question and reply inputs that cannot reach another session as an immediate message", () => {
+	const self = ASKER;
+	const ask = { sessionId: OTHER, message: "Why?", expectReply: true };
+	assert.equal(questionInputRefusal(ask, self), undefined);
+	assert.match(
+		questionInputRefusal({ ...ask, mode: "report" }, self) ?? "",
+		/omit mode report, deliverAt and replyTo/u,
+	);
+	assert.match(questionInputRefusal({ ...ask, deliverAt: "2026-12-01T00:00:00Z" }, self) ?? "", /omit mode report/u);
+	assert.match(
+		questionInputRefusal({ ...ask, replyTo: OTHER }, self) ?? "",
+		/omit mode report, deliverAt and replyTo/u,
+	);
+	assert.match(questionInputRefusal({ ...ask, checkInMinutes: 5 }, self) ?? "", /take no checkInMinutes/u);
+	assert.match(questionInputRefusal({ ...ask, expectReply: "yes" }, self) ?? "", /must be true or false/u);
+	assert.match(
+		questionInputRefusal({ ...ask, inReplyTo: "question:a:1" }, self) ?? "",
+		/A reply cannot also expect a reply/u,
+	);
+	assert.match(questionInputRefusal({ ...ask, sessionId: self }, self) ?? "", /cannot ask or answer itself/u);
+	assert.equal(questionInputRefusal({ sessionId: OTHER, message: "Yes.", inReplyTo: "question:a:1" }, self), undefined);
+});
+
+it("refuses a question too long for the recipient's report body and names the exact overrun", () => {
+	assert.equal(questionLengthRefusal("x".repeat(100), 100), undefined);
+	assert.equal(
+		questionLengthRefusal("x".repeat(16_250), 16_000),
+		"This question is 16250 characters with its reply instructions, and the recipient reads at most 16000. Shorten the message by at least 250 characters, or put long material in a file and name its path",
+	);
+});
+
 it("ignores the question fields of an informational fallback copy", () => {
 	assert.deepEqual(peerQuestionDetail({ kind: "report", requestId: "question:agent:7", fallback: true }), {});
 	assert.deepEqual(peerQuestionDetail({ inReplyTo: "question:a:1", fallback: true }), {});
@@ -336,7 +396,11 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 		rmSync(root, { recursive: true, force: true });
 	});
 	const { default: agent } = await import("./index.ts");
-	const open = async (name: string, file?: string): Promise<Scripted> => {
+	const open = async (
+		name: string,
+		file?: string,
+		extra: Array<(pi: ExtensionAPI) => void> = [],
+	): Promise<Scripted> => {
 		const cwd = join(root, name);
 		if (file === undefined) {
 			mkdirSync(cwd);
@@ -395,7 +459,7 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 			noPromptTemplates: true,
 			noThemes: true,
 			noContextFiles: true,
-			extensionFactories: [async (pi) => agent(pi)],
+			extensionFactories: [async (pi) => agent(pi), ...extra.map((factory) => async (pi: ExtensionAPI) => factory(pi))],
 		});
 		await loader.reload();
 		const manager =
@@ -438,6 +502,7 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 		assert.ok(check(), label);
 	};
 
+	let slowRecipient: Promise<Scripted> | undefined;
 	const a = await open("a");
 	const b = await open("b");
 	await run(b, "Review payment retries", [{ text: "Reviewing." }]);
@@ -600,4 +665,42 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 	await until("the retried question reaches B's model", () => facts(b).length > before);
 	assert.equal(facts(b)[before], "received");
 	assert.ok(peerTexts(b).includes("Agent report: Which region?"));
+
+	// After Esc, another extension's agent_end handler keeps the session busy; a question admitted then is
+	// appended without a run when the run settles, so it counts as received and owes its notice.
+	let release: (() => void) | undefined;
+	let holding = false;
+	const ending = new Promise<void>((started) => {
+		const slowEnd = (pi: ExtensionAPI) => {
+			pi.on("agent_end", async () => {
+				if (!holding) return;
+				started();
+				await new Promise<void>((resolve) => {
+					release = resolve;
+				});
+			});
+		};
+		slowRecipient = open("slow", undefined, [slowEnd]);
+	});
+	const slow = await (slowRecipient as Promise<Scripted>);
+	await run(slow, "Warm up", [{ text: "Warm." }]);
+	const slowId = slow.manager.getSessionId();
+	const stuck = new Promise<void>((started) => slow.steps.push({ hang: started }));
+	const stopped = slow.session.prompt("Work on something long");
+	await stuck;
+	holding = true;
+	const aborting = slow.session.abort();
+	await ending;
+	await run(reopened, "Ask the stopping session", [
+		{ tool: "agent_send", args: { sessionId: slowId, message: "Are you stopping?", expectReply: true } },
+		{ text: "Asked." },
+	]);
+	holding = false;
+	release?.();
+	await aborting;
+	await stopped.catch(() => undefined);
+	await until("the stopping session counts the question it appended", () => facts(slow).includes("received"));
+	await until("the asker receives the notice", () =>
+		peerTexts(reopened).some((text) => text.includes("without replying") && text.includes('"Are you stopping?"')),
+	);
 });

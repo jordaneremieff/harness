@@ -10,7 +10,7 @@ import {
 } from "./continuity-facts.ts";
 import { ContinuityDoc, freezeContinuityWork } from "./continuity-native.ts";
 import { canonicalIdentity } from "./native-identity.ts";
-import { reconcileNativeQuestions } from "./native-questions.ts";
+import { endQuestionDeliveries, NativeQuestionsDoc, reconcileNativeQuestions } from "./native-questions.ts";
 
 export const CONTINUITY_LOAD_TIMEOUT_MS = 10_000;
 interface MirroredConversation {
@@ -36,10 +36,18 @@ export class ContinuityMirror {
 	private readonly storageId: string;
 	/** True when the ordinary primary that a question asked has ended. */
 	private readonly ended: (peer: string) => boolean;
-	constructor(harness: Harness, storageId: string, ended: (peer: string) => boolean = () => false) {
+	/** Settles what `ended` reads for the asked sessions before the read commit, such as their liveness probes. */
+	private readonly verify: ((peers: readonly string[]) => Promise<void>) | undefined;
+	constructor(
+		harness: Harness,
+		storageId: string,
+		ended: (peer: string) => boolean = () => false,
+		verify?: (peers: readonly string[]) => Promise<void>,
+	) {
 		this.harness = harness;
 		this.storageId = storageId;
 		this.ended = ended;
+		this.verify = verify;
 		this.detach = onStoredCommit(harness, (publication) => this.advance(publication));
 	}
 	private row(id: ConversationId): MirroredConversation {
@@ -121,6 +129,7 @@ export class ContinuityMirror {
 		context: Context,
 	): Promise<void> {
 		try {
+			await this.verifyAsked(conversationId, context);
 			const work = await this.harness.commit(
 				(tx) =>
 					freezeContinuityWork(tx, conversationId, headId, () =>
@@ -129,10 +138,20 @@ export class ContinuityMirror {
 				context,
 			);
 			if (work !== undefined && row.head?.id === headId) row.work = work;
+			const ended = work?.questions?.ended ?? [];
+			// A separate commit after the read: a delivery store that refuses it leaves the read and its note intact.
+			if (ended.length > 0)
+				await this.harness.commit((tx) => endQuestionDeliveries(tx, ended), context).catch(() => undefined);
 		} catch (error) {
 			if (context.abortSignal?.aborted) throw error;
 			if (row.head?.id === headId) row.unread = headId;
 		}
+	}
+	/** One snapshot read of the open questions, only when a verifier is set; nothing open costs no probe. */
+	private async verifyAsked(conversationId: ConversationId, context: Context): Promise<void> {
+		if (this.verify === undefined) return;
+		const open = (await this.harness.snapshot(NativeQuestionsDoc, conversationId, context))?.open ?? [];
+		if (open.length > 0) await this.verify(open.map((question) => question.peer));
 	}
 	/**
 	 * No storage access, clock, liveness read, or asynchronous work. The text of a head is kept once

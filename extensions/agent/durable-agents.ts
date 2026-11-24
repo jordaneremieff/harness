@@ -18,6 +18,8 @@
  */
 
 import {
+	endQuestionDeliveries,
+	nativeQuestionRefusal,
 	NativeQuestionsDoc,
 	NATIVE_QUESTIONS_FULL,
 	reconcileNativeQuestions,
@@ -31,6 +33,7 @@ import {
 	primarySessionEnded,
 	questionText,
 } from "./peer-questions.ts";
+import { verifyPrimaryOwners } from "./primary-channel.ts";
 import { realpathSync } from "node:fs";
 import { hostname } from "node:os";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
@@ -1920,25 +1923,28 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		);
 	};
 
+	/** Probe the asked sessions of open questions first, so one whose PID another process holds reads as ended. */
+	const verifyAskedPrimaries = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
+		if (host.catalogRoot === undefined) return;
+		const open = (await api.snapshot(NativeQuestionsDoc, api.conversationId, context))?.open ?? [];
+		if (open.length > 0)
+			await verifyPrimaryOwners(
+				dirname(host.catalogRoot),
+				open.map((question) => question.peer),
+			);
+	};
 	/** One endpoint read: the ordinary primary that a question asked has ended. */
 	const endedPrimary = (peer: string): boolean =>
 		host.catalogRoot !== undefined && primarySessionEnded(dirname(host.catalogRoot), peer);
-	const questionRefusal = (args: SendInput): string | undefined => {
-		if (
-			args.mode === "report" ||
-			args.deliverAt !== undefined ||
-			args.replyTo !== undefined ||
-			args.passive !== undefined ||
-			args.checkInMinutes !== undefined
-		)
-			return "expectReply asks an immediate question: omit mode report, deliverAt, replyTo, passive and checkInMinutes, and repeat the call";
-		return target(args.sessionId).kind === "foreign" ? undefined : DURABLE_TARGET_QUESTION;
-	};
-	/** The canonical identity of the asked session, or why the question refuses. */
+	/**
+	 * The canonical identity of the asked session, or why the question refuses. An invalid handle refuses as a
+	 * result like any other refusal.
+	 */
 	const questionPeer = (args: SendInput): { identity: string } | { error: string } => {
-		const refusal = questionRefusal(args);
+		const refusal = nativeQuestionRefusal(args);
 		if (refusal !== undefined) return { error: refusal };
 		try {
+			if (target(args.sessionId).kind !== "foreign") return { error: DURABLE_TARGET_QUESTION };
 			return { identity: targetIdentity(args.sessionId, host.catalogRoot) };
 		} catch (error) {
 			return { error: error instanceof Error ? error.message : String(error) };
@@ -1978,6 +1984,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			at: Date.now(),
 		});
 		if ("error" in reserved) return errorResult(reserved.error);
+		if (reserved.ended.length > 0)
+			await api
+				.commit((tx) => endQuestionDeliveries(tx, reserved.ended), context)
+				.catch((error: unknown) => {
+					if (context.abortSignal?.aborted) throw error;
+				});
 		const settled = reservedResult(reserved.state, id, peer.identity);
 		if (settled !== undefined) return withEndedQuestions(settled, reserved.ended);
 		const result = await dispatchControl(
@@ -2009,6 +2021,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		{ ended: OpenQuestion[]; state: Awaited<ReturnType<typeof reserveNativeQuestion>> } | { error: string }
 	> => {
 		try {
+			await verifyAskedPrimaries(api, context);
 			return await api.commit(async (tx) => {
 				const closed = (await reconcileNativeQuestions(tx, api.conversationId, endedPrimary)).ended;
 				return { ended: closed, state: await reserveNativeQuestion(tx, api.conversationId, question) };

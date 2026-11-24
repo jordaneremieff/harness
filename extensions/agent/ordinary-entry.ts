@@ -106,7 +106,9 @@ import {
 	PeerQuestions,
 	peerQuestionDetail,
 	primarySessionEnded,
+	questionInputRefusal,
 } from "./peer-questions.ts";
+import { primaryEndpointOwnerState, verifyPrimaryOwners } from "./primary-channel.ts";
 import { PrimaryRetention } from "./primary-retention.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { HandleSchema, ProfileOutputSchema, ProfileParams } from "./profile-schema.ts";
@@ -194,19 +196,6 @@ const abort = obj(
 	{},
 );
 const message = obj({ sessionId: id, message: str({ minLength: 1 }), replyTo: opt(id) }, {});
-/** Why an agent_send input with expectReply or inReplyTo refuses before any delivery. */
-function questionInputRefusal(input: Record<string, unknown>, self: string): string | undefined {
-	if (input.mode === "report" || input.deliverAt !== undefined || input.replyTo !== undefined)
-		return "expectReply and inReplyTo require an immediate message to a session: omit mode report, deliverAt and replyTo";
-	if (input.checkInMinutes !== undefined)
-		return "expectReply and inReplyTo take no checkInMinutes; the reply or notice arrives as an event";
-	if (input.expectReply !== undefined && input.expectReply !== true && input.expectReply !== false)
-		return "expectReply must be true or false";
-	if (input.expectReply === true && input.inReplyTo !== undefined)
-		return "A reply cannot also expect a reply; send the reply, then ask a separate question";
-	if (input.sessionId === self) return "A session cannot ask or answer itself; name another session";
-	return undefined;
-}
 const checkIn = opt(
 	num({
 		minimum: 0,
@@ -537,6 +526,35 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	const peerQuestions = new Map<string, { questions: PeerQuestions; notices: OwedNotices }>();
 	/** One endpoint read: the asked primary's process has ended. */
 	const sessionEnded = (peer: string) => primarySessionEnded(dirname(getManager().catalog.root), peer);
+	/**
+	 * Probe the asked sessions of open questions before a reconciliation, so one whose crashed process left
+	 * its PID to another process reads as ended. Current probes make this free; nothing open costs nothing.
+	 */
+	const verifyAskedSessions = async (questions: PeerQuestions | undefined): Promise<void> => {
+		const asked = questions?.open().asked;
+		if (asked === undefined || asked.length === 0) return;
+		await verifyPrimaryOwners(
+			dirname(getManager().catalog.root),
+			asked.map((question) => question.peer),
+		);
+	};
+	/**
+	 * The asker has no session that a notice can reach: an ordinary session whose endpoint is gone or names an
+	 * ended process, or an identity without a catalog record. One endpoint read, and a catalog read only when
+	 * no endpoint exists.
+	 */
+	const askerGone = (peer: string): boolean => {
+		const manager = getManager();
+		const state = primaryEndpointOwnerState(dirname(manager.catalog.root), peer);
+		if (state === "dead") return true;
+		if (state !== "absent") return false;
+		try {
+			manager.nativeTarget(peer);
+			return false;
+		} catch {
+			return true;
+		}
+	};
 	/** A refused notice stays owed; an ordinary asker without a live endpoint receives it when it returns. */
 	const sendNotice = async (ctx: ExtensionContext, question: OpenQuestion): Promise<void> => {
 		const self = ctx.sessionManager.getSessionId();
@@ -568,6 +586,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			);
 			const notices = new OwedNotices({
 				send: (question) => sendNotice(ctx, question),
+				reachable: (question) => !askerGone(question.peer),
 				sent: (question) => {
 					if (peerQuestions.get(id)?.questions === questions) questions.noticed(question.id, question.peer);
 				},
@@ -602,6 +621,14 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		if (state === undefined) return;
 		const unanswered = state.questions.unanswered();
 		if (unanswered.length > 0) state.notices.owe(unanswered);
+	};
+	/** Peer messages that start no run and that Pi holds to the end of the current turn, per session. */
+	const heldPlacements = new Map<string, Array<{ details: unknown; text: string }>>();
+	/** Pi appended every held message before the next turn starts and before the run settles. */
+	const placeHeld = (ctx: ExtensionContext) => {
+		const held = heldPlacements.get(ctx.sessionManager.getSessionId());
+		if (held === undefined || held.length === 0) return;
+		for (const { details, text } of held.splice(0)) placed(ctx, details, text);
 	};
 	const endQuestions = (id: string) => {
 		peerQuestions.get(id)?.notices.close();
@@ -735,6 +762,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			return receipt;
 		}
 		// Questions to ended sessions close first, so they no longer count against the limit.
+		await verifyAskedSessions(questions);
 		const ended = questions.reconcile(sessionEnded);
 		const endedQuestions = ended.length === 0 ? undefined : endedQuestionText(ended);
 		const withEnded = (error: unknown) =>
@@ -839,6 +867,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	registerOrdinaryWork(pi, yieldCard, {
 		waiting: (sessionId) => continuity.open(sessionId),
+		prepareQuestions: (sessionId) => verifyAskedSessions(peerQuestions.get(sessionId)?.questions),
 		questions: (sessionId) => {
 			const questions = peerQuestions.get(sessionId)?.questions;
 			if (questions === undefined) return { open: [] };
@@ -1525,10 +1554,16 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		workReferences.set(sessionId, workRefs);
 		const sendPeer = (text: string, details: unknown, wake: boolean) => {
 			refreshPreferences(ctx);
+			const leaf = ctx.sessionManager.getLeafId();
 			pi.sendMessage(
 				{ customType: "agent.peer", content: text, details, display: true },
 				wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false },
 			);
+			if (wake) return;
+			// Pi appends a message that starts no run at once, or at the end of the current turn, and emits no
+			// extension message_end for either; the session leaf shows the immediate append.
+			if (ctx.sessionManager.getLeafId() !== leaf) placed(ctx, details, text);
+			else heldPlacements.get(sessionId)?.push({ details, text });
 		};
 		const retention = new PrimaryRetention(
 			ctx.sessionManager,
@@ -1553,9 +1588,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			}
 		};
 		primaryDeliveries.set(sessionId, { retention, inbox, flush });
+		heldPlacements.set(sessionId, []);
 		endQuestions(sessionId);
 		const retained = ctx.sessionManager.getEntries();
-		const ended = questionsOf(ctx, retained).reconcile(sessionEnded);
+		const restored = questionsOf(ctx, retained);
+		await verifyAskedSessions(restored);
+		const ended = restored.reconcile(sessionEnded);
 		if (ended.length > 0)
 			pi.sendMessage(
 				{ customType: PEER_QUESTION_ENDED, content: endedQuestionText(ended), display: true },
@@ -1677,8 +1715,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		selfCompaction.clear();
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
-	// Pi emits message_end for a custom message once it enters the transcript: an idle append, the message
-	// that starts a run, or a steer taken at a boundary. A steer dropped by an abort never gets one.
+	// Pi emits an extension message_end for a peer message that starts a run or a steer taken at a boundary;
+	// a steer dropped by an abort never gets one. A message that starts no run gets none: sendPeer counts its
+	// immediate append, and one held to the end of a turn counts at the next turn start or settlement.
+	pi.on("turn_start", (_event, ctx) => placeHeld(ctx));
 	pi.on("message_end", (event, ctx) => {
 		const message = event.message as { role?: unknown; customType?: unknown; details?: unknown; content?: unknown };
 		if (message.role !== "custom" || message.customType !== "agent.peer") return;
@@ -1690,6 +1730,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		// After an abort, queued messages are placed without starting a run, so no run will answer a question
 		// among them; its notice is due with those of the run that settled.
 		delivery?.flush(!event.aborted);
+		placeHeld(ctx);
 		noticeUnanswered(ctx);
 	});
 	pi.on("session_shutdown", async (event, ctx) => {
@@ -1700,6 +1741,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		primaryDeliveries.get(id)?.retention.clear();
 		primaryDeliveries.delete(id);
 		workReferences.delete(id);
+		heldPlacements.delete(id);
 		endQuestions(id);
 		continuity.end(id);
 		const abort = primaries.get(id);

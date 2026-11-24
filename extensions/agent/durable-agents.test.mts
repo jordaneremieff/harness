@@ -3488,3 +3488,54 @@ it("starts a self-compaction's summarizer instructions with the continuity seed"
 			.find(({ tool }) => tool.name === "agent_compact")?.tool.description ?? "";
 	assert.ok(description.includes(NATIVE_COMPACTION_SEED));
 });
+
+it("asks an ordinary session without an admission fact and returns refusals and invalid handles as results", async (t) => {
+	const route = createRoute();
+	const calls: DispatchCalls = [];
+	let fail = false;
+	const { registry } = buildRegistry(async (method, params) => {
+		calls.push({ method, params });
+		if (fail) throw new Error("primary channel is unreachable");
+		return { sessionId: "remote-storage", admitted: true, sourceId: String(params.requestId) };
+	});
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({
+		tool: "agent_send",
+		args: { sessionId: "remote-storage", message: "Are retries idempotent?", expectReply: true },
+	});
+	await say(root, "ASK");
+	fail = true;
+	route.script.push({
+		tool: "agent_send",
+		args: { sessionId: "remote-storage", message: "Which region?", expectReply: true },
+	});
+	await say(root, "ASK AGAIN");
+	route.script.push({
+		tool: "agent_send",
+		args: { sessionId: "@Not A Handle!", message: "Hello?", expectReply: true },
+	});
+	await say(root, "ASK A HANDLE");
+	route.script.push({
+		tool: "agent_send",
+		args: { sessionId: "remote-storage", message: "Later?", expectReply: true, passive: true },
+	});
+	await say(root, "ASK PASSIVE");
+	const sends = (await toolOutcomes(harness, root.id)).filter((outcome) => outcome.name === "agent_send").reverse();
+	assert.equal(sends.length, 4);
+	assert.equal(sends[0].isError, false, sends[0].text);
+	assert.equal(calls[0].params.expectReply, true);
+	assert.match(String(calls[0].params.requestId), /^question:test-storage:\d+$/u);
+	assert.equal(sends[1].isError, true);
+	assert.match(sends[1].text, /primary channel is unreachable/u);
+	assert.equal(sends[2].isError, true, "an invalid handle is a refusal result, not a thrown call");
+	assert.match(sends[2].text, /Handle resolution requires the host catalog namespace/u);
+	assert.equal(sends[3].isError, true);
+	assert.match(sends[3].text, /omit mode report, deliverAt, replyTo, passive and checkInMinutes/u);
+	assert.equal(calls.length, 2, "refusals dispatch nothing");
+	assert.deepEqual(
+		await continuityFacts(harness, root.id),
+		[],
+		"a question is tracked by its question document, so neither a delivered nor a failed one leaves an admission fact",
+	);
+});
