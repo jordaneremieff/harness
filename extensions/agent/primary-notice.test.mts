@@ -561,10 +561,13 @@ it("defers a wake-false notice to the turn boundary while the primary streams", 
 	assert.equal(entries[0]?.content, "streamed operator notice");
 });
 
-it("keeps ordinary effort context to one line after the last live peer closes", { timeout: 30000 }, async (t) => {
+it("reports the last live peer's close as a removed row and keeps the effort section", {
+	timeout: 30000,
+}, async (t) => {
 	const fixture = await noticeFixture(t);
+	const peer = randomUUID();
 	const channel = await createPrimaryChannel({
-		id: randomUUID(),
+		id: peer,
 		sessionsRoot: fixture.sessionsRoot,
 		cwd: fixture.sessionManager.getCwd(),
 		observedPurpose: { source: "session-name", text: "PEER-PURPOSE" },
@@ -577,14 +580,17 @@ it("keeps ordinary effort context to one line after the last live peer closes", 
 	} finally {
 		await channel.close();
 	}
+	const before = getCurrentSystemPrompt(fixture.requests.at(-1)?.messages ?? []);
 	await fixture.session.prompt("Read current efforts again");
-	const prompt = getCurrentSystemPrompt(fixture.requests.at(-1)?.messages ?? []);
-	assert.equal(prompt.includes("PEER-PURPOSE"), false);
-	const body = prompt.match(/<agent-efforts>\n([\s\S]*?)\n<\/agent-efforts>/u)?.[1];
-	assert.equal(
-		body,
-		"No other live effort is shown and no active thread hint is shown for this project. Use agent_intent read for current coverage, out-of-scope counts, and omitted sources.",
-	);
+	const messages = fixture.requests.at(-1)?.messages ?? [];
+	assert.equal(getCurrentSystemPrompt(messages), before, "the section keeps its bytes");
+	const last = messages.at(-1);
+	const update =
+		last?.role === "user" && Array.isArray(last.content) && last.content[0]?.type === "text"
+			? last.content[0].text
+			: "";
+	assert.match(update, /^<agent-efforts-update>/u);
+	assert.ok(update.includes(`Related effort removed: {"id":"${peer}"}`), update);
 });
 
 it("refreshes the registered primary identity on model, thinking, and name changes", async (t) => {
