@@ -2365,6 +2365,17 @@ selected native submission:
 - `content_refusal: <provider text> <recovery>` for a recognised content
   refusal.
 
+The result notice adds one sentence to `model_error: <provider text>` when the
+host does not retry provider errors (Pi's `retry.enabled` is false, or
+`retry.maxRetries` is 0) and Pi's retry rule would try that error again:
+`The host did not try this request again: automatic retry is off in Pi
+settings ...`. A host applies Pi's retry settings as it loaded them, so with
+retry off each transient provider error ends its run at the first attempt. The
+sentence makes that state visible to the requester, who otherwise cannot tell
+it from a provider that failed every attempt. Pi keeps the setting in its
+global settings file, and the `set_auto_retry` command of Pi's RPC mode writes
+it there. The `agent_inspect` result view and status do not add the sentence.
+
 The host removes recognised credentials before it shortens the text. The
 complete reason fits 1,024 UTF-8 bytes, including the recovery sentence and the
 omission markers ` [credential redacted]` and ` [truncated]`, which precede the

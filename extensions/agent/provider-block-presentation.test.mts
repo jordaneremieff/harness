@@ -22,6 +22,7 @@ import {
 import {
 	modelFailureText,
 	PROVIDER_BLOCK_ERROR,
+	RETRY_OFF_NOTE,
 	ProviderBlockFactSchema,
 	providerBlockText,
 	type ProviderBlockFact,
@@ -52,6 +53,34 @@ function fact(overrides: Partial<ProviderBlockFact> = {}): ProviderBlockFact {
 		...overrides,
 	};
 }
+
+it("says that retry is off only for an error that Pi would retry, within the reason bound", () => {
+	for (const detail of [
+		"WebSocket closed 1012",
+		"Codex error: Our servers are currently overloaded. Please try again later.",
+		'429: {"code":"1302","message":"Rate limit reached for requests"}',
+	]) {
+		assert.equal(modelFailureText("model_error", detail, undefined, true), `model_error: ${detail}${RETRY_OFF_NOTE}`);
+		assert.equal(modelFailureText("model_error", detail), `model_error: ${detail}`, "a host that retries says nothing");
+		assert.equal(modelFailureText("model_error", detail, undefined, false), `model_error: ${detail}`);
+	}
+	for (const detail of [
+		"fatal invalid request",
+		'429 {"type":"error","error":{"type":"GoUsageLimitError","message":"Monthly usage limit reached"}}',
+		'429: {"code":"1308","message":"Usage limit reached for 5 hour"}',
+	])
+		assert.equal(
+			modelFailureText("model_error", detail, undefined, true),
+			`model_error: ${detail}`,
+			"an error that Pi does not retry carries no note",
+		);
+	const refusal = "This content was flagged for possible cybersecurity risk";
+	assert.doesNotMatch(modelFailureText("model_error", refusal, undefined, true), /automatic retry is off/u);
+	assert.equal(modelFailureText("model_error", "WebSocket closed 1012", fact(), true), "model_error");
+	const long = modelFailureText("model_error", `WebSocket closed 1012 ${"界".repeat(2000)}`, undefined, true);
+	assert.ok(Buffer.byteLength(long) <= 1024);
+	assert.ok(long.endsWith(` [truncated]${RETRY_OFF_NOTE}`));
+});
 
 it("presents content refusal with explicit recovery and leaves unknown wording as model_error", () => {
 	const refusal = "This content was flagged for possible cybersecurity risk";

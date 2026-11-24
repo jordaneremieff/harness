@@ -1,3 +1,5 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { str, int, bool, lit, union, arr, obj, type Static } from "@earendil-works/pi-schema";
 import { ResultReferenceSchema } from "./result-schema.ts";
 import { safeProviderError } from "./primary-observation.ts";
@@ -26,15 +28,33 @@ export function isProviderContentRefusal(error: string): boolean {
 	return CONTENT_REFUSAL_WORDINGS.some((wording) => error.includes(wording));
 }
 
-/** Present retained model failure detail without changing the native settlement. */
-export function modelFailureText(reason: string, detail: unknown, block?: ProviderBlockFact): string {
+/**
+ * Said with a transient provider error that ended a run at its first attempt because Pi's automatic retry is
+ * off. Pi keeps that setting in its global settings file, and the `set_auto_retry` command of Pi's RPC mode
+ * writes it there, so it can be off without a decision for this host.
+ */
+export const RETRY_OFF_NOTE =
+	" The host did not try this request again: automatic retry is off in Pi settings (retry.enabled is false, or retry.maxRetries is 0), and Pi retries an error of this kind when it is on. Send the task again. To restore retry, correct the setting and start a new host.";
+
+/** True when Pi's retry rule would try a failed request with this error again. */
+function retryableProviderError(detail: string): boolean {
+	return isRetryableAssistantError({ stopReason: "error", errorMessage: detail } as AssistantMessage);
+}
+
+/**
+ * Present retained model failure detail without changing the native settlement. `retryOff` states that the host
+ * that reports the failure does not retry provider errors.
+ */
+export function modelFailureText(reason: string, detail: unknown, block?: ProviderBlockFact, retryOff = false): string {
 	if (block !== undefined || reason !== "model_error" || typeof detail !== "string" || detail.trim() === "")
 		return reason;
 	const refusal = isProviderContentRefusal(safeProviderError(detail).text);
 	const prefix = `${refusal ? "content_refusal" : "model_error"}: `;
 	const recovery = refusal
 		? " The provider refused this content. Repeating the same task on this provider fails. Choose another explicit provider/model under your existing authority, or change the form of the task. No automatic substitution or host retry."
-		: "";
+		: retryOff && retryableProviderError(detail)
+			? RETRY_OFF_NOTE
+			: "";
 	// Result communication accepts at most 1,024 UTF-8 bytes for its reason.
 	const evidence = safeProviderError(
 		detail,

@@ -197,6 +197,12 @@ export interface DurableDeliveryOptions {
 	readonly listPrimaryChannels?: (sessionsRoot: string) => Promise<PrimaryDiscovery>;
 	/** Failed native acquisitions stay parked until a new watcher or explicit refresh. */
 	readonly unavailableTargets?: Map<string, NativeTargetFailure>;
+	/**
+	 * Whether this host retries transient provider errors, from Pi's retry settings. When it does not, the notice
+	 * of an input that such an error ended says so; a requester otherwise cannot tell a disabled retry from a
+	 * provider that failed every attempt.
+	 */
+	readonly retriesProviderErrors?: () => boolean;
 }
 
 export interface DeliverySummary {
@@ -2242,7 +2248,12 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		)
 			row.displayReason =
 				eligibilityOptions.threadStorageOwner === undefined
-					? modelFailureText(native.reason, native.detail, row.receipt.providerBlock)
+					? modelFailureText(
+							native.reason,
+							native.detail,
+							row.receipt.providerBlock,
+							options.retriesProviderErrors?.() === false,
+						)
 					: `${native.reason}: ${threadStorageUnanswered(metadata.storageId, eligibilityOptions.threadStorageOwner)}`;
 	};
 	const prepareReceiptGroups = async (rows: readonly DeliveryRow[]): Promise<void> => {

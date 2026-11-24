@@ -1042,6 +1042,10 @@ export async function createDurableRuntime(
 			sessionsRoot,
 			signal: controller.signal,
 			unavailableTargets: unavailableDeliveryTargets,
+			retriesProviderErrors: () => {
+				const retry = services.services.settingsManager.getRetrySettings();
+				return retry.enabled && retry.maxRetries > 0;
+			},
 			onIdle: () => {
 				scheduleRecoveryMarker();
 				for (const listener of quiescentListeners) listener();

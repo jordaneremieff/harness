@@ -412,6 +412,40 @@ it("keeps recovery due after a crash with an active transient delivery", { timeo
 	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true);
 });
 
+it("tells the requester that retry is off when a transient provider error ends its input at the first attempt", {
+	timeout: 60000,
+}, async (t) => {
+	const f = runtimeFixture(t);
+	const owner = randomUUID();
+	const received = eventLog<{ text: string }>();
+	const channel = await createPrimaryChannel({
+		id: owner,
+		cwd: f.cwd,
+		sessionsRoot: f.root,
+		deliver: (message) => {
+			received.push(message);
+		},
+		promptTrust: async () => undefined,
+	});
+	t.after(() => channel.close());
+	const host = await acquireHost(f.metadata, { env: f.env("retry") });
+	trackHost(t, host.pid);
+	await host.request("submit", {
+		message: "work that meets a transient provider error",
+		ownerId: owner,
+		origin: "model",
+		requestId: "transient-failure",
+	});
+	await received.waitForCount(1);
+	assert.match(received[0].text, /native input failed without an answer; no result arrived\./u);
+	assert.match(received[0].text, /No answer: model_error: 429 \{"code":"temporary_overload"/u);
+	assert.match(
+		received[0].text,
+		/The host did not try this request again: automatic retry is off in Pi settings \(retry\.enabled is false/u,
+	);
+	await host.close();
+});
+
 it("retires parked delivery with a clear marker and wakes only for its returning owner", {
 	timeout: 60000,
 }, async (t) => {
