@@ -27,7 +27,7 @@ The pane's first lines name the app, its window-server window number, the browse
 
 Pi builds App Pane from this checkout into `<agentDir>/apps/AppPane.app` when an interactive session starts and the installed build is missing or older. `/apps update` rebuilds it. A build log sits beside the app.
 
-App Pane uses the Accessibility and Screen Recording access of the terminal application that runs the pane, so the terminal needs both. Opening a browser window uses Apple Events, so macOS asks once whether the terminal may control that browser. The pane opens a window in the browser that the operator already uses, with its profile and sign-ins. While a pane shows an app behind the terminal, macOS shows its screen recording indicator.
+App Pane uses the Accessibility and Screen Recording access of the terminal application that runs the pane, so the terminal needs both. Opening a browser window uses Apple Events, so macOS asks once whether the terminal may control that browser. The pane opens a window in the browser that the operator already uses, with its profile and sign-ins. While a pane shows an app behind the terminal, macOS shows its screen recording indicator. Without Screen Recording access the pane cannot show the app's image while the terminal is in front: it shows its own text instead, asks macOS for the access once, and names the setting to turn on. After you turn it on, quit and reopen Rex.
 
 ## Limits
 
