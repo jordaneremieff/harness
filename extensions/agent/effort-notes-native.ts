@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import type { ConversationId, GenerationHooks } from "@earendil-works/pi-durable";
 import type { EffortPrompt } from "./effort-awareness.ts";
 import {
 	applyChanges,
@@ -46,6 +46,13 @@ interface Conversation {
 	pending?: readonly EffortPromptRow[];
 	/** The change did not fit: the next run replaces the section. */
 	rebaseline?: boolean;
+	/** The request hook has run for this conversation. */
+	hooked?: boolean;
+	/**
+	 * Rows were left unplaced without the hook ever running: the conversation selects the agent
+	 * contribution without the host's note hook, so each change replaces the section instead.
+	 */
+	unhooked?: boolean;
 }
 
 export const NATIVE_EFFORT_CONVERSATIONS = 256;
@@ -153,8 +160,15 @@ export class NativeEffortNotes {
 			this.keep(id, state);
 			return state.baseline;
 		}
+		const unhooked = state?.unhooked === true || (state?.pending !== undefined && state.hooked !== true);
 		const replace = (): string => {
-			this.keep(id, { baseline: prompt.text, baseSeen: seenOf(prompt.rows), notes: [], decided: input.run });
+			this.keep(id, {
+				baseline: prompt.text,
+				baseSeen: seenOf(prompt.rows),
+				notes: [],
+				decided: input.run,
+				...(unhooked ? { unhooked } : {}),
+			});
 			return prompt.text;
 		};
 		if (state === undefined || state.rebaseline) return replace();
@@ -164,7 +178,7 @@ export class NativeEffortNotes {
 		if (delta !== undefined) {
 			const update = formatEffortUpdate(delta);
 			const bytes = state.notes.reduce((total, note) => total + note.bytes, 0);
-			if (update === undefined || bytes + update.bytes > EFFORT_UPDATE_BUDGET) return replace();
+			if (unhooked || update === undefined || bytes + update.bytes > EFFORT_UPDATE_BUDGET) return replace();
 			state.pending = prompt.rows;
 		}
 		this.keep(id, state);
@@ -179,6 +193,7 @@ export class NativeEffortNotes {
 	request(conversationId: ConversationId, messages: readonly Message[]): readonly Message[] | undefined {
 		const state = this.conversations.get(conversationId);
 		if (state === undefined) return undefined;
+		state.hooked = true;
 		let indexes = anchorIndexes(messages, state.notes);
 		if (indexes.includes(-1)) {
 			state.notes = state.notes.filter((_, index) => indexes[index] >= 0);
@@ -215,4 +230,43 @@ export class NativeEffortNotes {
 		});
 		return result;
 	}
+}
+
+/**
+ * Process-global key shared by the agent contribution, which keeps each conversation's notes, and the
+ * host's request hook, which inserts them. The two can load as separate module instances.
+ */
+export const EFFORT_NOTES_KEY = Symbol.for("pi.agent.effort-notes");
+type PublishedNotes = Pick<NativeEffortNotes, "request">;
+
+function publishedNotes(): Map<string, PublishedNotes> | undefined {
+	const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+	if (globals[EFFORT_NOTES_KEY] === undefined) globals[EFFORT_NOTES_KEY] = { version: 1, hosts: new Map() };
+	const store = globals[EFFORT_NOTES_KEY] as { version?: unknown; hosts?: unknown } | null;
+	return typeof store === "object" && store !== null && store.version === 1 && store.hosts instanceof Map
+		? (store.hosts as Map<string, PublishedNotes>)
+		: undefined;
+}
+
+/** Make one storage's notes available to its host's request hook; the result withdraws them. */
+export function publishEffortNotes(storageId: string, notes: PublishedNotes): () => void {
+	const hosts = publishedNotes();
+	hosts?.set(storageId, notes);
+	return () => {
+		if (hosts?.get(storageId) === notes) hosts.delete(storageId);
+	};
+}
+
+/**
+ * The request hook that inserts one storage's effort notes. The host installs it after every
+ * contribution, beside the route and continuity notes, so no contribution's hook receives an
+ * effort note as task input.
+ */
+export function effortNoteRequestHooks(storageId: string): Partial<GenerationHooks> {
+	return {
+		beforeRequest(request, api) {
+			const messages = publishedNotes()?.get(storageId)?.request(api.conversationId, request.messages);
+			return messages === undefined ? undefined : { messages };
+		},
+	};
 }

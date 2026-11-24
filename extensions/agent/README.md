@@ -3200,11 +3200,19 @@ A native conversation follows the same contract with Durable's own surfaces.
 The section function reads awareness once per run, at the run's first request
 (a run is named by its first entry, since each tool round runs in a new
 generation task), and otherwise returns the kept text without a read. The
-change since the model's view becomes one frozen note: the agent contribution's
-`beforeRequest` hook inserts it after the request's last message, and on every
-later request it inserts the same note after the same message, found by role,
-timestamp and content digest, so each request extends the prefix of the one
-before. A note whose message left the context (compaction, rewind, reset) is no
+change since the model's view becomes one frozen note. The note is
+request-scoped agent context, not task input, so the host inserts it in its own
+`agent.effort-notes` extension, installed after every contribution and before
+the route and continuity notes: no contribution's `beforeRequest` hook (memory
+recall, for example) receives it. The contribution keeps the notes and shares
+them with that hook through the process-global
+`Symbol.for("pi.agent.effort-notes")`, holding `{ version: 1, hosts }` keyed by
+storage, because the two can load as separate module instances. The hook
+inserts the note after the request's last message as the other hooks left it,
+and on every later request it inserts the same note after the same message,
+found by role, timestamp and content digest, so each request extends the prefix
+of the one before. A conversation that selects the agent contribution without
+that extension gets each change as a replaced section instead. A note whose message left the context (compaction, rewind, reset) is no
 longer seen, and the next run reports its change again. Notes are host memory
 for at most 256 conversations; the section itself is in the transcript. A new
 host, a restart or an evicted conversation keeps the section Durable shows,

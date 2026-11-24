@@ -111,7 +111,7 @@ import type { EffortReadResources } from "./effort-presence.ts";
 import { readFleetStatus, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
 import { readEffortAwareness, nativeIntentSelf, effortPrompt } from "./effort-awareness.ts";
 import type { EffortPrompt } from "./effort-awareness.ts";
-import { NativeEffortNotes } from "./effort-notes-native.ts";
+import { NativeEffortNotes, publishEffortNotes } from "./effort-notes-native.ts";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -3025,13 +3025,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			"Current effort and active thread awareness is unavailable. Use agent_intent read for a new bounded observation. Earlier notices describe changes, not current state.",
 		);
 	});
-	const effortUpdates = durable.hook(durable.GenerationTask, {
-		beforeRequest(request, api) {
-			if (effortResources === undefined) return undefined;
-			const messages = effortNotes.request(api.conversationId, request.messages);
-			return messages === undefined ? undefined : { messages };
-		},
-	});
+	// The host's own request hook inserts the notes after every contribution's hooks have run.
+	if (effortResources !== undefined) host.onClose(publishEffortNotes(host.storageId, effortNotes));
 
 	// Model choices happen in conversations that can spawn, place or configure agents; others carry no section.
 	const providerBlocks = durable.section("agent-provider-blocks", (input) => {
@@ -3047,7 +3042,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		name: "agent",
 		tasks: [Anchor, Reporter, TimerTask],
 		sections: [guidance, efforts, preferences, providerBlocks],
-		hooks: [effortUpdates],
 		tools: [
 			structuredControl(spawnTool, DispatchOutputSchema),
 			structuredControl(briefTool, BriefOutputSchema),

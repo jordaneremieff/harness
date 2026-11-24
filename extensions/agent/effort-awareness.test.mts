@@ -15,6 +15,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { AgentCatalog } from "./catalog.ts";
 import { createAgentContribution } from "./durable-agents.ts";
+import { effortNoteRequestHooks } from "./effort-notes-native.ts";
 import {
 	EFFORT_AWARENESS_PROMPT_BYTES,
 	EFFORT_AWARENESS_SELF_BYTES,
@@ -731,6 +732,7 @@ async function nativeHost(
 	storage: Durable.Storage,
 	respond: (request: { messages: Message[] }, index: number) => ReturnType<typeof fauxAssistantMessage>,
 	storageId = randomUUID(),
+	extensions: readonly Durable.Extension[] = [],
 ) {
 	const requests: Message[][] = [];
 	const faux = fauxProvider();
@@ -756,6 +758,13 @@ async function nativeHost(
 		services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } },
 	});
 	registry.install(extension);
+	for (const other of extensions) registry.install(other);
+	// The host installs the effort-note hook after every contribution, as its runtime does.
+	const notesExtension = Durable.defineExtension({
+		name: "agent.effort-notes",
+		hooks: [Durable.hook(Durable.GenerationTask, effortNoteRequestHooks(storageId))],
+	});
+	registry.install(notesExtension);
 	const context = BACKGROUND_CONTEXT;
 	const harness = await Durable.Harness.open(storage, { models, registry }, context);
 	let closed = false;
@@ -772,7 +781,7 @@ async function nativeHost(
 		const submission = await conversation.submit({ type: "input", content: "Read current view" }, context);
 		await submission.wait(context);
 	};
-	return { requests, harness, extension, model, root, say, close, storageId };
+	return { requests, harness, extension, notesExtension, model, root, say, close, storageId };
 }
 const effortPatches = (messages: Message[] | undefined) =>
 	(messages ?? []).filter((message) => message.role === "system" && message.sections?.["agent-efforts"] !== undefined)
@@ -826,7 +835,10 @@ it("keeps native sections between runs and sends changed rows as frozen notes", 
 	assert.equal(effortNotes(later).length, 1, "the note is not repeated");
 
 	const child = await host.harness.createConversation(
-		{ ownership: { kind: "ownerless" }, agent: { model: host.model, extensions: [host.extension] } },
+		{
+			ownership: { kind: "ownerless" },
+			agent: { model: host.model, extensions: [host.extension, host.notesExtension] },
+		},
 		BACKGROUND_CONTEXT,
 	);
 	await say(child);
@@ -871,6 +883,128 @@ it("keeps native awareness for the rest of a run and sends the change at the nex
 	const nextRun = requests.at(-1) ?? [];
 	assert.equal(getCurrentSystemPrompt(nextRun), laterRound, "the next run keeps the section");
 	assert.match(effortNotes(nextRun)[0] ?? "", /MID-RUN-PURPOSE/u);
+});
+
+const userTexts = (messages: readonly Message[]) =>
+	messages.flatMap((message) =>
+		message.role === "user"
+			? [
+					typeof message.content === "string"
+						? message.content
+						: message.content.map((part) => ("text" in part ? part.text : "")).join(""),
+				]
+			: [],
+	);
+
+it("keeps effort notes away from the request hooks of other contributions", async (t) => {
+	ambientPreferences(t);
+	const { root: sessionsRoot } = fixture(t);
+	const seen: string[][] = [];
+	const recorder = Durable.defineExtension({
+		name: "later-contribution",
+		hooks: [
+			Durable.hook(Durable.GenerationTask, {
+				beforeRequest(request: { messages: readonly Message[] }) {
+					seen.push(userTexts(request.messages));
+					return undefined;
+				},
+			}),
+		],
+	});
+	const host = await nativeHost(
+		t,
+		sessionsRoot,
+		new Durable.MemoryStorage(),
+		() => fauxAssistantMessage("DONE"),
+		randomUUID(),
+		[recorder],
+	);
+	await host.say();
+	publish(sessionsRoot, randomUUID(), claim("PEER-PURPOSE"));
+	await host.say();
+	assert.match(effortNotes(host.requests.at(-1))[0] ?? "", /PEER-PURPOSE/u, "the model receives the note");
+	assert.ok(seen.length >= 2);
+	assert.ok(
+		seen.every((texts) => texts.every((text) => !text.startsWith("<agent-efforts-update>"))),
+		"a contribution's hook never receives an effort note",
+	);
+});
+
+it("extends each request's prefix when another hook inserts frozen notices after user messages", async (t) => {
+	ambientPreferences(t);
+	const { root: sessionsRoot } = fixture(t);
+	// Stands in for memory's recall: a frozen notice after every user message it receives.
+	const notices = Durable.defineExtension({
+		name: "memory-like",
+		hooks: [
+			Durable.hook(Durable.GenerationTask, {
+				beforeRequest(request: { messages: readonly Message[] }) {
+					const messages: Message[] = [];
+					for (const message of request.messages) {
+						messages.push(message);
+						if (message.role === "user")
+							messages.push({
+								role: "user",
+								content: [{ type: "text", text: `notice for ${userTexts([message])[0]?.length}` }],
+								timestamp: message.timestamp,
+							});
+					}
+					return { messages };
+				},
+			}),
+		],
+	});
+	// One request for the first run, three for the run after the change (two tool rounds), one after.
+	const host = await nativeHost(
+		t,
+		sessionsRoot,
+		new Durable.MemoryStorage(),
+		(_request, index) =>
+			index === 1 || index === 2
+				? fauxAssistantMessage([fauxToolCall("agent_intent", { action: "read" })], { stopReason: "toolUse" })
+				: fauxAssistantMessage("DONE"),
+		randomUUID(),
+		[notices],
+	);
+	await host.say();
+	const baseline = host.requests.length;
+	publish(sessionsRoot, randomUUID(), claim("PEER-PURPOSE"));
+	await host.say();
+	await host.say();
+	const run = host.requests.slice(baseline);
+	assert.equal(run.length, 4, "three requests of one run and the next run's first");
+	assert.equal(effortNotes(run[0]).length, 1);
+	assert.ok(
+		userTexts(run[0]).indexOf(effortNotes(run[0])[0] as string) >
+			userTexts(run[0]).findLastIndex((text) => text.startsWith("notice for")),
+		"the note follows the other hook's notice",
+	);
+	for (let index = 1; index < 4; index++)
+		assert.equal(
+			JSON.stringify(run[index].slice(0, run[index - 1].length)),
+			JSON.stringify(run[index - 1]),
+			`request ${index} extends the request before it`,
+		);
+});
+
+it("replaces the section when a conversation's requests never reach the note hook", async (t) => {
+	ambientPreferences(t);
+	const { root: sessionsRoot } = fixture(t);
+	const peer = randomUUID();
+	publish(sessionsRoot, peer, claim("FIRST-PURPOSE"));
+	const host = await nativeHost(t, sessionsRoot, new Durable.MemoryStorage(), () => fauxAssistantMessage("DONE"));
+	const lone = await host.harness.createConversation(
+		{ ownership: { kind: "ownerless" }, agent: { model: host.model, extensions: [host.extension] } },
+		BACKGROUND_CONTEXT,
+	);
+	await host.say(lone);
+	publish(sessionsRoot, peer, claim("SECOND-PURPOSE"));
+	await host.say(lone);
+	publish(sessionsRoot, peer, claim("THIRD-PURPOSE"));
+	await host.say(lone);
+	const prompt = getCurrentSystemPrompt(host.requests.at(-1) ?? []);
+	assert.match(prompt, /THIRD-PURPOSE/u, "without notes the section carries the change");
+	assert.deepEqual(effortNotes(host.requests.at(-1)), []);
 });
 
 it("restores the native section from the transcript after a host restart", async (t) => {

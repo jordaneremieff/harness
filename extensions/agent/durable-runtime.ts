@@ -11,6 +11,7 @@ import {
 	type ExecutionFields,
 } from "./agent-preferences.ts";
 import { defineDocFamily, GenerationTask, hook } from "@earendil-works/pi-durable";
+import { effortNoteRequestHooks } from "./effort-notes-native.ts";
 
 const ExecutionSelectionDoc = defineDocFamily<{ input?: string; selection?: ExecutionSelection }, null>({
 	kind: "agent.execution-selection",
@@ -901,6 +902,12 @@ export async function createDurableRuntime(
 				} finally {
 					await manager.close();
 				}
+			});
+			// Effort notes are request-scoped agent context, not task input: they enter after every
+			// contribution's hooks, beside the route and continuity notes.
+			services.registry.install({
+				name: "agent.effort-notes",
+				hooks: [hook(GenerationTask, effortNoteRequestHooks(metadata.storageId))],
 			});
 			const requestRoutes = new RequestRouteState();
 			services.registry.install({
