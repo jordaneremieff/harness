@@ -2,7 +2,7 @@ import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -22,7 +22,7 @@ import {
 	formatEffortAwareness,
 	readEffortAwareness,
 } from "./effort-awareness.ts";
-import { createPrimaryLocationResolver } from "./effort-location.ts";
+import { createPrimaryLocationResolver, LOCATION_BATCH_SPAWNS } from "./effort-location.ts";
 import type { EffortReadResources } from "./effort-presence.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
 import type { PrimaryIntentClaim } from "./effort-presence.ts";
@@ -1178,6 +1178,7 @@ it("resolves the reader location through the supplied resolver and only when the
 			resolved.push(cwd);
 			return { cwd, repositoryState: "git" as const, repository: "/shared/common" };
 		},
+		resolveMany: async () => ({ locations: new Map(), unresolved: 0 }),
 		invalidate() {},
 		clear() {},
 	};
@@ -1198,4 +1199,80 @@ it("reads current peer intent on every call even when the catalogue and location
 	const current = formatEffortAwareness(await readEffortAwareness(shared, self));
 	assert.ok(current.includes("SECOND"));
 	assert.equal(current.includes("FIRST"), false);
+});
+
+/** A Git on PATH that counts its starts; `asksGit` sets a ceiling that bounds no path but makes the resolver ask Git. */
+function countingGit(t: { after(fn: () => void): void }, root: string, asksGit: boolean) {
+	const real = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+	const bin = join(root, "bin");
+	const log = join(root, "git-calls.log");
+	mkdirSync(bin);
+	writeFileSync(log, "");
+	writeFileSync(join(bin, "git"), `#!/bin/sh\necho call >> '${log}'\nexec '${real}' "$@"\n`);
+	chmodSync(join(bin, "git"), 0o755);
+	const saved = { path: process.env.PATH, ceiling: process.env.GIT_CEILING_DIRECTORIES };
+	process.env.PATH = `${bin}:${saved.path ?? ""}`;
+	if (asksGit) process.env.GIT_CEILING_DIRECTORIES = join(root, "no-ceiling");
+	else delete process.env.GIT_CEILING_DIRECTORIES;
+	t.after(() => {
+		for (const [key, value] of [
+			["PATH", saved.path],
+			["GIT_CEILING_DIRECTORIES", saved.ceiling],
+		] as const) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	});
+	return () => readFileSync(log, "utf8").split("\n").filter(Boolean).length;
+}
+
+function distinctThreadRecords(catalog: AgentCatalog, root: string, count: number): void {
+	for (let index = 0; index < count; index++) {
+		const cwd = join(root, "dirs", `d${index}`);
+		mkdirSync(cwd, { recursive: true });
+		publishThread(catalog, cwd, `Thread ${index}`);
+	}
+}
+
+it("reads threads in more distinct directories than any bounded cache without starting Git again", {
+	timeout: 60000,
+}, async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const calls = countingGit(t, root, false);
+	distinctThreadRecords(catalog, root, 320);
+	const shared = resources(root, catalog);
+	const current = { ...self, cwd: join(root, "self") };
+	mkdirSync(current.cwd);
+	const first = await readEffortAwareness(shared, current, "canonical", "prompt");
+	assert.equal(first.threads.coverage.records, 320);
+	const spawned = calls();
+	const second = await readEffortAwareness(shared, current, "canonical", "prompt");
+	assert.equal(calls(), spawned, "a second read over 320 directories starts no Git process");
+	assert.equal(spawned, 0, "outside Git, the entries Git reads settle every directory");
+	assert.deepEqual(second.threads.items, [], "threads of other directories stay out of the prompt");
+	assert.ok(!second.threads.coverage.reasons.includes("location-unresolved"));
+});
+
+it("bounds the Git processes of one read and converges on the directories it left unresolved", {
+	timeout: 60000,
+}, async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const calls = countingGit(t, root, true);
+	const count = LOCATION_BATCH_SPAWNS * 3 + 5;
+	distinctThreadRecords(catalog, root, count);
+	const shared = resources(root, catalog);
+	const current = { ...self, cwd: join(root, "self") };
+	mkdirSync(current.cwd);
+	await readEffortAwareness(shared, current, "canonical", "prompt");
+	let spawned = calls();
+	const first = await readEffortAwareness(shared, current, "canonical", "prompt");
+	assert.ok(calls() - spawned <= LOCATION_BATCH_SPAWNS, "one read starts at most the batch bound");
+	assert.ok(first.threads.coverage.reasons.includes("location-unresolved"));
+	assert.equal(first.threads.coverage.complete, false);
+	for (let read = 0; read < 4; read++) await readEffortAwareness(shared, current, "canonical", "prompt");
+	spawned = calls();
+	const settled = await readEffortAwareness(shared, current, "canonical", "prompt");
+	assert.equal(calls(), spawned, "settled directories start no Git process");
+	assert.ok(!settled.threads.coverage.reasons.includes("location-unresolved"), "coverage converges");
+	assert.equal(settled.threads.coverage.outOfScope, count);
 });

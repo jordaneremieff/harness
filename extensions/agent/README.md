@@ -3181,8 +3181,24 @@ the prompt, threads from priority sources rank ahead of the other records'
 threads, each group in identity order, so the twelve-thread bound never drops a
 contact's thread for another one. Records without published hints leave global
 recency unknown. A record outside the priority sources is matched by its working
-directory: repository discovery runs Git once per directory, and the 256 most
-recently used results are reused while their file stamps are unchanged.
+directory, and one read locates all of them in one batch. For the common layouts
+the resolver reads the entries that Git reads during discovery, in Git's order,
+and starts no Git process: at each directory from the cwd up, a `.git` directory
+or `gitdir:` file whose Git directory has a valid HEAD and searchable `objects`
+and `refs` (through an optional `commondir`), owned by the current user, found
+before a filesystem boundary; or no `.git` and no Git directory up to that
+boundary. That covers plain repositories, linked worktrees, submodules and
+directories outside Git, with the common directory that
+`git rev-parse --git-common-dir` names. Anything else (a bare repository, a HEAD
+file along the way, another owner, a privileged process, `GIT_CEILING_DIRECTORIES`
+or `GIT_DISCOVERY_ACROSS_FILESYSTEM`, an entry that cannot be read) asks Git. A
+batch reads each filesystem entry once, so directories that share ancestors or a
+repository share the reads, and it yields to the event loop every 128
+directories. It starts at most 16 Git processes, 4 at a time; the directories
+past that bound stay unresolved for this read, their threads stay out of the
+prompt, and coverage names `location-unresolved`. Git answers are kept for 16,384
+directories while their marker stamps are unchanged, so later reads resolve the
+rest and coverage converges. A missing directory reads as unknown without Git.
 
 Use `agent_intent({ action: "read" })` in either runtime for current bounded
 awareness without publishing or clearing a claim. Its `awareness` result contains

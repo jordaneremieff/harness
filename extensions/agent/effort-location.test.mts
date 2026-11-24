@@ -14,13 +14,30 @@ import {
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { it } from "node:test";
-import { createPrimaryLocationResolver, LOCATION_CACHE_ENTRIES } from "./effort-location.ts";
+import {
+	createPrimaryLocationResolver,
+	discoverPrimaryLocation,
+	LOCATION_BATCH_SPAWNS,
+	LOCATION_CACHE_ENTRIES,
+} from "./effort-location.ts";
 
 const REAL_GIT = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
 
-function workspace(t: { after(fn: () => void): void }) {
+/**
+ * A private root with a counting Git on PATH. By default it also sets a ceiling directory that
+ * bounds no path here: Git's answer is unchanged, but the environment then changes discovery, so
+ * the resolver asks Git and the test exercises the cache of Git answers.
+ */
+function workspace(t: { after(fn: () => void): void }, options: { asksGit?: boolean } = {}) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "effort-location-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const ceiling = process.env.GIT_CEILING_DIRECTORIES;
+	if (options.asksGit === false) delete process.env.GIT_CEILING_DIRECTORIES;
+	else process.env.GIT_CEILING_DIRECTORIES = join(root, "no-ceiling");
+	t.after(() => {
+		if (ceiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+		else process.env.GIT_CEILING_DIRECTORIES = ceiling;
+	});
 	const bin = join(root, "bin");
 	const log = join(root, "git-calls.log");
 	mkdirSync(bin);
@@ -421,7 +438,7 @@ it("does not retain a result whose discovery inputs changed while Git ran", asyn
 
 it("invalidates one cwd or every cwd on request and bounds completed entries", async (t) => {
 	const { root, work, calls } = workspace(t);
-	const resolver = createPrimaryLocationResolver();
+	const resolver = createPrimaryLocationResolver({ cacheEntries: 32 });
 	await resolver.resolve(work);
 	let spawned = calls();
 	resolver.invalidate(work);
@@ -431,15 +448,15 @@ it("invalidates one cwd or every cwd on request and bounds completed entries", a
 	resolver.clear();
 	await resolver.resolve(work);
 	assert.equal(calls(), spawned + 1);
-	const directories = Array.from({ length: LOCATION_CACHE_ENTRIES + 2 }, (_, index) => {
+	const directories = Array.from({ length: 34 }, (_, index) => {
 		const directory = join(root, `dir-${index}`);
 		mkdirSync(directory);
 		return directory;
 	});
-	for (const directory of directories.slice(0, 100)) await resolver.resolve(directory);
+	for (const directory of directories.slice(0, 30)) await resolver.resolve(directory);
 	spawned = calls();
-	for (const directory of directories.slice(0, 100)) await resolver.resolve(directory);
-	assert.equal(calls(), spawned, "a second pass over 100 directories runs no Git");
+	for (const directory of directories.slice(0, 30)) await resolver.resolve(directory);
+	assert.equal(calls(), spawned, "a second pass within the bound runs no Git");
 	for (const directory of directories) await resolver.resolve(directory);
 	spawned = calls();
 	await resolver.resolve(directories[0] as string);
@@ -454,4 +471,102 @@ it("returns independent location objects", async (t) => {
 	const first = await resolver.resolve(work);
 	Reflect.set(first, "cwd", "/changed");
 	assert.equal((await resolver.resolve(work)).cwd, work);
+});
+
+it("keeps Git answers for at least the directories of ten thousand records", () => {
+	assert.ok(LOCATION_CACHE_ENTRIES >= 10_000);
+});
+
+it("answers the common layouts from the entries Git reads, as Git does, without starting Git", async (t) => {
+	const { root, work, calls } = workspace(t, { asksGit: false });
+	const commit = (cwd: string) =>
+		git(cwd, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "c");
+	git(work, "init", "-q");
+	commit(work);
+	const nested = join(work, "a", "b");
+	mkdirSync(nested, { recursive: true });
+	const linked = join(root, "linked");
+	git(work, "worktree", "add", "-q", "-b", "side", linked);
+	const library = join(root, "library");
+	mkdirSync(library);
+	git(library, "init", "-q");
+	commit(library);
+	git(work, "-c", "protocol.file.allow=always", "submodule", "add", "-q", library, "sub");
+	const detached = join(root, "detached");
+	mkdirSync(detached);
+	git(detached, "init", "-q");
+	commit(detached);
+	git(detached, "checkout", "-q", "--detach");
+	const outside = join(root, "outside", "deep");
+	mkdirSync(outside, { recursive: true });
+	const linkedPath = join(root, "through-link");
+	symlinkSync(nested, linkedPath);
+	const cases = [work, nested, linked, join(work, "sub"), detached, outside, linkedPath, join(root, "absent")];
+	const expected = [];
+	for (const cwd of cases) expected.push(await discoverPrimaryLocation(cwd));
+	const spawned = calls();
+	const resolver = createPrimaryLocationResolver();
+	for (const [index, cwd] of cases.entries()) assert.deepEqual(await resolver.resolve(cwd), expected[index], cwd);
+	const batch = await resolver.resolveMany(cases);
+	for (const [index, cwd] of cases.entries()) assert.deepEqual(batch.locations.get(cwd), expected[index], cwd);
+	assert.equal(batch.unresolved, 0);
+	assert.equal(calls(), spawned, "no layout here needs Git");
+	assert.deepEqual(
+		expected.map((location) => location.repositoryState),
+		["git", "git", "git", "git", "git", "outside-git", "git", "unknown"],
+	);
+	assert.equal(
+		expected[2]?.repository,
+		realpathSync(join(work, ".git")),
+		"a linked worktree names its common directory",
+	);
+	assert.equal(expected[3]?.repository, realpathSync(join(work, ".git", "modules", "sub")));
+});
+
+it("asks Git for a layout or an environment that the entry reads do not settle", async (t) => {
+	const { root, work, calls } = workspace(t, { asksGit: false });
+	git(work, "init", "-q", "--bare");
+	const inside = join(work, "refs");
+	const invalid = join(root, "invalid");
+	mkdirSync(invalid);
+	writeFileSync(join(invalid, ".git"), "gitdir: missing\n");
+	const headFile = join(root, "has-head");
+	mkdirSync(headFile);
+	writeFileSync(join(headFile, "HEAD"), "not a ref\n");
+	const resolver = createPrimaryLocationResolver();
+	for (const cwd of [work, inside, invalid, headFile]) {
+		const spawned = calls();
+		assert.deepEqual(await resolver.resolve(cwd), await discoverPrimaryLocation(cwd), cwd);
+		assert.ok(calls() >= spawned + 2, `${cwd} asks Git`);
+	}
+	const plain = join(root, "plain");
+	mkdirSync(plain);
+	process.env.GIT_CEILING_DIRECTORIES = root;
+	const spawned = calls();
+	assert.equal((await resolver.resolve(plain)).repositoryState, "outside-git");
+	assert.equal(calls(), spawned + 1, "a ceiling directory makes Git answer");
+});
+
+it("starts a bounded number of Git processes per batch and resolves the rest in later batches", async (t) => {
+	const { root, calls } = workspace(t);
+	const directories = Array.from({ length: LOCATION_BATCH_SPAWNS * 2 + 3 }, (_, index) => {
+		const directory = join(root, `dir-${index}`);
+		mkdirSync(directory);
+		return directory;
+	});
+	const resolver = createPrimaryLocationResolver();
+	let spawned = calls();
+	const first = await resolver.resolveMany(directories);
+	assert.equal(calls() - spawned, LOCATION_BATCH_SPAWNS);
+	assert.equal(first.locations.size, LOCATION_BATCH_SPAWNS);
+	assert.equal(first.unresolved, directories.length - LOCATION_BATCH_SPAWNS);
+	const second = await resolver.resolveMany(directories);
+	assert.equal(second.locations.size, LOCATION_BATCH_SPAWNS * 2);
+	const third = await resolver.resolveMany(directories);
+	assert.equal(third.unresolved, 0, "coverage converges");
+	spawned = calls();
+	const settled = await resolver.resolveMany(directories);
+	assert.equal(settled.unresolved, 0);
+	assert.equal(calls(), spawned, "settled directories run no Git");
+	for (const directory of directories) assert.equal(settled.locations.get(directory)?.repositoryState, "outside-git");
 });

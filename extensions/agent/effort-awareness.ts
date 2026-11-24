@@ -90,7 +90,13 @@ export async function readEffortAwareness(
 			location = { cwd: self.cwd, repositoryState: "unknown" };
 		}
 	}
-	const scope: EffortProjectScope = {
+	const sameProject = (resolved: Pick<EffortPresenceSelf, "cwd" | "repository">) =>
+		location.repository === undefined
+			? resolved.repository === undefined && resolved.cwd === location.cwd
+			: resolved.repository === location.repository;
+	const scope: EffortProjectScope & {
+		locate(cwds: Iterable<string>): Promise<(other: { cwd: string }) => boolean | undefined>;
+	} = {
 		prompt: mode === "prompt",
 		async matches(other) {
 			// Relative scope paths belong to their declaring repository or working directory.
@@ -99,13 +105,25 @@ export async function readEffortAwareness(
 			if (other.cwd === location.cwd || other.cwd === self.cwd) return true;
 			if (other.repositoryState === "outside-git" && location.repository !== undefined) return false;
 			try {
-				const resolved = await resources.locations.resolve(other.cwd);
-				return location.repository === undefined
-					? resolved.repository === undefined && resolved.cwd === location.cwd
-					: resolved.repository === location.repository;
+				return sameProject(await resources.locations.resolve(other.cwd));
 			} catch {
 				return false;
 			}
+		},
+		// One batch locates every thread record's working directory, within its bound on Git processes.
+		async locate(cwds) {
+			const own = (cwd: string) => cwd === location.cwd || cwd === self.cwd;
+			let batch: Awaited<ReturnType<typeof resources.locations.resolveMany>> | undefined;
+			try {
+				batch = await resources.locations.resolveMany([...cwds].filter((cwd) => !own(cwd)));
+			} catch {
+				batch = undefined;
+			}
+			return (other) => {
+				if (own(other.cwd)) return true;
+				const resolved = batch?.locations.get(other.cwd);
+				return resolved === undefined ? undefined : sameProject(resolved);
+			};
 		},
 	};
 	const projection = selfProjection(self, location, cwdMode);

@@ -24,7 +24,16 @@ export interface RecentCollaborationPage {
 	limits: { visits: number; results: number; bytes: number; hintsPerRecord: number };
 }
 export const RECENT_COLLABORATION_LIMITS = { visits: 256, results: 12, bytes: 8192, hintsPerRecord: 8 } as const;
-type ThreadProjectScope = { prompt: boolean; matches(record: { cwd: string }): Promise<boolean> };
+type ThreadProjectScope = {
+	prompt: boolean;
+	matches(record: { cwd: string }): Promise<boolean>;
+	/**
+	 * Locate the working directories of one read at once, within the read's bound. The returned
+	 * check answers undefined for a directory whose location the read left unresolved.
+	 */
+	locate?(cwds: Iterable<string>): Promise<(record: { cwd: string }) => boolean | undefined>;
+};
+type ScopeCheck = (record: { cwd: string }) => Promise<boolean | undefined> | boolean | undefined;
 
 function recentPartial(page: RecentCollaborationPage, reason: string): void {
 	page.coverage.complete = false;
@@ -33,6 +42,24 @@ function recentPartial(page: RecentCollaborationPage, reason: string): void {
 
 /** Which threads of one record a read admits: all its active threads, or only named contact threads. */
 type Admission = { rank: number; only?: ReadonlySet<string> };
+
+/**
+ * Whether a record's active threads stay on the page under the project scope. A location this read
+ * left unresolved is neither shown in a prompt nor counted out of scope.
+ */
+async function shownInScope(
+	page: RecentCollaborationPage,
+	record: EffortRecord,
+	active: number,
+	scope: ThreadProjectScope | undefined,
+	check: ScopeCheck | undefined,
+): Promise<boolean> {
+	if (scope === undefined) return true;
+	const matches = await (check ?? ((other) => scope.matches(other)))(record);
+	if (matches === undefined) recentPartial(page, "location-unresolved");
+	else if (!matches) page.coverage.outOfScope = (page.coverage.outOfScope ?? 0) + active;
+	return matches === true || !scope.prompt;
+}
 
 /**
  * A prompt keeps threads from priority sources (the reader's own storages, related live efforts and
@@ -45,6 +72,7 @@ async function collectRecentHints(
 	ranks: Map<string, number>,
 	admission: Admission,
 	scope?: ThreadProjectScope,
+	check?: ScopeCheck,
 ): Promise<void> {
 	if (record.threads === undefined) {
 		page.coverage.missingHints += 1;
@@ -57,10 +85,8 @@ async function collectRecentHints(
 		.slice(0, page.limits.hintsPerRecord)
 		.filter((thread) => !thread.closed && (admission.only === undefined || admission.only.has(thread.id)));
 	// A priority source is related by contact or presence, so project scope does not filter it.
-	if (active.length > 0 && admission.rank > 0 && scope !== undefined && !(await scope.matches(record))) {
-		page.coverage.outOfScope = (page.coverage.outOfScope ?? 0) + active.length;
-		if (scope.prompt) return;
-	}
+	if (active.length > 0 && admission.rank > 0 && !(await shownInScope(page, record, active.length, scope, check)))
+		return;
 	for (const thread of active) {
 		if (ranks.has(thread.id)) continue;
 		ranks.set(thread.id, admission.rank);
@@ -136,6 +162,14 @@ export async function readRecentCollaboration(
 		...entries.filter((entry) => admissions.has(entry.storageId)),
 		...entries.filter((entry) => !admissions.has(entry.storageId)),
 	];
+	// Only records outside the priority sources with active threads need their location.
+	const check = await scope?.locate?.(
+		ordered.flatMap(({ storageId, value }) =>
+			value !== undefined && !admissions.has(storageId) && value.threads?.items.some((thread) => !thread.closed)
+				? [value.cwd]
+				: [],
+		),
+	);
 	for (const entry of ordered) {
 		page.coverage.visited += 1;
 		page.coverage.records += 1;
@@ -144,7 +178,7 @@ export async function readRecentCollaboration(
 			recentPartial(page, "unreadable-records");
 			continue;
 		}
-		await collectRecentHints(page, entry.value, ranks, admissions.get(entry.storageId) ?? { rank: 1 }, scope);
+		await collectRecentHints(page, entry.value, ranks, admissions.get(entry.storageId) ?? { rank: 1 }, scope, check);
 	}
 	while (!scope?.prompt && Buffer.byteLength(JSON.stringify(page)) > page.limits.bytes && page.items.length > 0) {
 		page.items.pop();
