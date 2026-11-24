@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test, type TestContext } from "node:test";
 import { AgentManager } from "./manager.ts";
 import { DurableHost } from "./durable-host.ts";
@@ -55,6 +56,10 @@ async function fixture(t: TestContext) {
 	} finally {
 		await source.close();
 	}
+	// Write-ahead log bytes keep this storage on the copy path, whose private directories these tests count.
+	const pending = new DatabaseSync(record.storagePath);
+	pending.exec("PRAGMA wal_autocheckpoint=0; PRAGMA user_version=1");
+	t.after(() => pending.close());
 	return {
 		manager,
 		other,

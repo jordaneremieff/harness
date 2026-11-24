@@ -2,12 +2,20 @@
  * cold-observation: cached read-only inspection of one Durable storage file.
  *
  * A cold read does not boot the cwd-bound services, the model runtime, or the
- * extension set. It copies the source database through the public
- * `DurableObservation` snapshot path with an empty public registry and
+ * extension set. It reads the source database through the public
+ * `DurableObservation` with an empty public registry and
  * `pi-ai`'s `createModels()`, because no read path calls a model or resolves a
  * configured extension. Native `AgentMetaDoc` and delivery documents load from
  * the shared slice modules, so the existing `snapshot`, `status`, `list`,
  * `dashboard`, `receipts`, and `inspect` views keep their exact schemas.
+ *
+ * A settled source is read in place, with no copy: its write-ahead log and
+ * rollback journal hold no bytes, so the main file is the complete committed
+ * state. A writer's first commit adds bytes to the write-ahead log, and a
+ * checkpoint changes the main file, so the source identity is compared again
+ * after every read in place; a changed identity discards the read and opens
+ * the source again. The writer claim is no part of this proof: a claim file can
+ * outlive its writer. Every other source is copied first.
  *
  * One snapshot per storage path is kept while the source identity is unchanged.
  * The identity pins the database and its `-wal` file by device, inode, size,
@@ -19,9 +27,9 @@
  * bound. The manager owns the cache and awaits disposal when its last consumer
  * leaves. Eviction and invalidation dispose their own snapshots.
  *
- * The snapshot never opens source files through SQLite or resumes a Harness.
- * Filesystem-only capture leaves source bytes and sidecars unchanged. Only a
- * stable source identity is eligible for reuse.
+ * A copy never opens source files through SQLite, and neither path resumes a
+ * Harness or changes source bytes or sidecars. Only a stable source identity
+ * is eligible for reuse.
  *
  * All cache work across every path is serialized: an open, a read, eviction, and
  * disposal never overlap, so a snapshot is never closed while borrowed and a
@@ -57,6 +65,8 @@ function loadColdObservationRuntime(): Promise<ColdObservationRuntime> {
 }
 
 const MAX_STORAGES = 8;
+/** A read in place repeats when a writer changed the source during it; the last attempt reports the change. */
+const IN_PLACE_READ_ATTEMPTS = 3;
 const MAX_RESULTS_PER_STORAGE = 64;
 const MAX_RESULT_BYTES = 4 * 1024 * 1024;
 
@@ -76,6 +86,8 @@ interface ColdResult {
 
 /** One read-only snapshot the cache can request and close. */
 export interface ColdObservationHandle {
+	/** The handle reads the source file itself, so the cache compares the source identity after each read. */
+	readonly inPlace?: boolean;
 	request(method: string, params: Record<string, unknown>): Promise<unknown>;
 	close(): Promise<void>;
 }
@@ -91,6 +103,8 @@ export interface ColdOpenInput {
 	readonly storagePath: string;
 	readonly storageId: string;
 	readonly classifyOwner?: () => ColdOwnerClassification;
+	/** Neither the write-ahead log nor the rollback journal holds bytes: the main file is complete. */
+	readonly settled?: boolean;
 }
 
 /** Test hooks. The default opener is the public snapshot path. */
@@ -139,6 +153,15 @@ function sourceState(storagePath: string): ColdSourceState {
 	const db = fileState(storagePath);
 	const wal = fileState(`${storagePath}-wal`);
 	return { key: `db:${db.key}|wal:${wal.key}`, db: db.key, wal };
+}
+
+function holdsNoBytes(file: ColdFileState): boolean {
+	return file.state === "absent" || (file.state === "file" && file.size === 0);
+}
+
+/** A source whose main file is the complete committed state. */
+function settledSource(storagePath: string, source: ColdSourceState): boolean {
+	return source.db !== "absent" && holdsNoBytes(source.wal) && holdsNoBytes(fileState(`${storagePath}-journal`));
 }
 
 /** Reader capture never creates source sidecars; the full source identity must stay stable. */
@@ -193,16 +216,39 @@ export async function openColdObservationSnapshot(input: ColdOpenInput): Promise
 	// Copies that a killed process left go in the background; no read waits for their removal.
 	void sweepAbandonedSnapshots().catch(() => undefined);
 	const { createModels, createRegistry, DurableObservation } = await loadColdObservationRuntime();
+	const options = {
+		storageId: input.storageId,
+		models: createModels(),
+		registry: createRegistry(),
+		...(input.classifyOwner === undefined ? {} : { classifyOwner: input.classifyOwner }),
+	};
+	if (input.settled) {
+		try {
+			const observation = await DurableObservation.openSettled(
+				{ ...options, settledFrom: input.storagePath },
+				BACKGROUND_CONTEXT,
+			);
+			return {
+				inPlace: true,
+				request: (method, params) => observation.request(method, params),
+				close: () => observation.close(),
+			};
+		} catch {
+			// A storage that needs preparation, or that no read-only connection can open, is read through a copy.
+		}
+	}
 	const observation = await DurableObservation.open(
-		{
-			backupFrom: input.storagePath,
-			storageId: input.storageId,
-			models: createModels(),
-			registry: createRegistry(),
-			...(input.classifyOwner === undefined ? {} : { classifyOwner: input.classifyOwner }),
-		},
+		{ ...options, backupFrom: input.storagePath },
 		BACKGROUND_CONTEXT,
-	);
+	).catch((error: unknown) => {
+		if ((error as { code?: unknown }).code !== "limit_exceeded") throw error;
+		throw Object.assign(
+			new Error(
+				"This storage is larger than the 512 MiB bound of a cold copy, and its write-ahead log holds bytes, so it cannot be read while its host is not running. A message to the agent starts its host; a running host answers without a copy.",
+			),
+			{ code: "limit_exceeded" },
+		);
+	});
 	return {
 		request: (method, params) => observation.request(method, params),
 		close: () => observation.close(),
@@ -251,7 +297,12 @@ export function createColdObservationCache() {
 			entries.delete(storagePath);
 			await existing.handle.close().catch(() => undefined);
 		}
-		const handle = await (hooks?.open ?? openColdObservationSnapshot)({ storagePath, storageId, classifyOwner });
+		const handle = await (hooks?.open ?? openColdObservationSnapshot)({
+			storagePath,
+			storageId,
+			classifyOwner,
+			settled: settledSource(storagePath, pre),
+		});
 		const post = sourceState(storagePath);
 		if (pre.db === "absent") {
 			return { key: pre.key, handle, results: new Map(), retainedBytes: 0, transient: true };
@@ -314,6 +365,34 @@ export function createColdObservationCache() {
 		return { ...(value as Record<string, unknown>), live: false, storageId: metadata.storageId };
 	}
 
+	const CHANGED = Symbol("source changed during the read");
+
+	/** One acquire and read; a read in place whose source changed is discarded and answers `CHANGED`. */
+	async function observeOnce(
+		storagePath: string,
+		metadata: HostMetadata,
+		method: string,
+		params: Record<string, unknown>,
+		hooks: ColdObservationHooks | undefined,
+	): Promise<unknown> {
+		const source = claimState(metadata);
+		const classifyOwner = (): ColdOwnerClassification => source.classification;
+		const entry = await acquireEntry(storagePath, metadata.storageId, source.pin, hooks, classifyOwner);
+		const read = await readEntry(entry, method, { ...params, cwd: metadata.cwd }).then(
+			(value) => ({ value }),
+			(error: unknown) => ({ error }),
+		);
+		if (entry.transient) await entry.handle.close().catch(() => undefined);
+		if (entry.handle.inPlace && entry.key !== `${sourceState(storagePath).key}|claim:${claimState(metadata).pin}`) {
+			// A writer committed during the read: neither a value nor a failure describes one state.
+			if (entries.get(storagePath) === entry) entries.delete(storagePath);
+			await entry.handle.close().catch(() => undefined);
+			return CHANGED;
+		}
+		if ("error" in read) throw read.error;
+		return method === "status" ? statusShape(read.value, metadata) : read.value;
+	}
+
 	/**
 	 * Read one cold method against the cached snapshot of `metadata.storagePath`.
 	 * The source identity is checked on every call; an unchanged source reuses the
@@ -329,15 +408,11 @@ export function createColdObservationCache() {
 		if (closed) throw new Error("Cold observation cache is closed");
 		const storagePath = resolve(metadata.storagePath);
 		return await runExclusive(async () => {
-			const source = claimState(metadata);
-			const classifyOwner = (): ColdOwnerClassification => source.classification;
-			const entry = await acquireEntry(storagePath, metadata.storageId, source.pin, options.hooks, classifyOwner);
-			try {
-				const value = await readEntry(entry, method, { ...params, cwd: metadata.cwd });
-				return method === "status" ? statusShape(value, metadata) : value;
-			} finally {
-				if (entry.transient) await entry.handle.close().catch(() => undefined);
+			for (let attempt = 0; attempt < IN_PLACE_READ_ATTEMPTS; attempt++) {
+				const value = await observeOnce(storagePath, metadata, method, params, options.hooks);
+				if (value !== CHANGED) return value;
 			}
+			throw new Error(`cold source ${storagePath} changed during the read; retry the read`);
 		});
 	}
 

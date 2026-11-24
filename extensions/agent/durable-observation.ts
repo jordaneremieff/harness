@@ -44,6 +44,7 @@ import {
 	type TaskInspection,
 	type UsageState,
 } from "@earendil-works/pi-durable";
+import { openSettledStorage } from "./settled-storage.ts";
 import { captureSnapshot } from "./snapshot-capture.ts";
 import type {
 	AgentConversationEntry,
@@ -64,6 +65,7 @@ import {
 import {
 	snapshotDeliveryState,
 	deliveryState,
+	DeliveryStoreDoc,
 	latestReceipt,
 	migrateDeliveryStore,
 	retainedReceipt,
@@ -3255,6 +3257,9 @@ export const SNAPSHOT_BACKUP_TIMEOUT_MS = 30_000;
 /** A filesystem-captured SQLite database/WAL pair. */
 export type DurableSnapshotSource = { readonly backupFrom: string };
 
+/** A database whose write-ahead log and journal hold no bytes; the caller proves that state around each read. */
+export type DurableSettledSource = { readonly settledFrom: string };
+
 const frozenObservations = new WeakSet<Harness>();
 
 export class DurableObservation {
@@ -3336,6 +3341,59 @@ export class DurableObservation {
 			},
 			options.classifyOwner ?? (() => ({ owner: "unavailable" })),
 			copy.absent === true,
+		);
+	}
+
+	/**
+	 * Read a settled database in place, with no copy. The open refuses a storage whose schema or delivery documents
+	 * still need preparation, because preparation writes; such a storage is read through a private copy.
+	 */
+	static async openSettled(
+		options: DurableObservationOptions & DurableSettledSource,
+		context: Context = BACKGROUND_CONTEXT,
+	): Promise<DurableObservation> {
+		const storage = await openSettledStorage(options.settledFrom);
+		let harness: Harness;
+		try {
+			harness = await Harness.open(
+				storage,
+				{
+					readOnly: true,
+					models: options.models,
+					registry: options.registry,
+					...(options.settings === undefined ? {} : { settings: options.settings }),
+					...(options.env === undefined ? {} : { env: options.env }),
+					...(options.onReport === undefined ? {} : { onReport: options.onReport }),
+				},
+				context,
+			);
+		} catch (error) {
+			await storage.close(BACKGROUND_CONTEXT).catch(() => {});
+			throw error;
+		}
+		const release = async (): Promise<void> => {
+			try {
+				await harness.close(BACKGROUND_CONTEXT);
+			} catch (error) {
+				await storage.close(BACKGROUND_CONTEXT).catch(() => {});
+				throw error;
+			}
+		};
+		try {
+			if (!(await harness.snapshot(DeliveryStoreDoc, context))?.ready)
+				throw new Error("The delivery documents of this storage need preparation");
+		} catch (error) {
+			await release().catch(() => {});
+			throw error;
+		}
+		frozenObservations.add(harness);
+		return new DurableObservation(
+			harness,
+			storage,
+			options.storageId,
+			release,
+			options.classifyOwner ?? (() => ({ owner: "unavailable" })),
+			false,
 		);
 	}
 

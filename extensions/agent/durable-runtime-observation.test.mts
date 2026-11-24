@@ -112,8 +112,9 @@ it("native foreign observation reads a settled storage without its cwd or a writ
 	const disposed = gate();
 	const controlAborted = gate();
 	const coldAbort = new AbortController();
-	const open = DurableObservation.open;
-	t.mock.method(DurableObservation, "open", async (...args: Parameters<typeof open>) => {
+	// The writer closed and left no write-ahead log bytes, so the cold read opens the storage in place.
+	const open = DurableObservation.openSettled;
+	t.mock.method(DurableObservation, "openSettled", async (...args: Parameters<typeof open>) => {
 		const snapshot = await open(...args);
 		const close = snapshot.close.bind(snapshot);
 		snapshot.close = async () => {

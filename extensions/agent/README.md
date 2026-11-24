@@ -216,8 +216,9 @@ primary to replace its loaded code. No older observation shape is accepted.
 
 Each `agent_list` call reads the shared catalog inventory once, then processes
 at most 32 scan steps. Each native page observation or unreadable catalog
-record uses one step. A storage observation is the costly step: a cold storage
-is copied before it is read. With a query, the call classifies every readable
+record uses one step. A storage observation is the costly step. A cold storage
+whose write-ahead log holds no bytes is read in place; a cold storage with
+write-ahead log bytes is copied before it is read. With a query, the call classifies every readable
 storage in scope from its catalog record and writer claim:
 
 - A **candidate** has a record that carries the query text, or a record that
@@ -1527,6 +1528,18 @@ all disposal, including releases started by roster unsubscription.
 The cache tracks database and WAL identity plus writer claim state. Changed or
 unstable source identity refuses reuse. All cache paths share a serial queue to
 protect borrowed snapshots from eviction and teardown.
+A storage whose write-ahead log and rollback journal hold no bytes is read in
+place: its main file is the complete committed state, so no copy is made and
+its size has no bound. The read uses a read-only SQLite connection with
+`immutable=1`, which takes no lock and creates no `-wal` or `-shm` file. A
+writer's first commit adds write-ahead log bytes and a checkpoint changes the
+main file, so the cache compares the source identity before and after every
+read in place. A changed identity discards the read and opens the source again;
+the third changed read in a row reports the change. A storage whose schema or
+delivery documents need preparation is copied, because preparation writes.
+Every other cold storage is copied. A copy has a 512 MiB source bound; the
+refusal says that a message to the agent starts its host, which answers without
+a copy.
 Filesystem-only capture never opens the source through SQLite and never creates
 source sidecars; an absent WAL must remain absent for reuse. SQLite validation and
 delivery preparation use only the private copy. A public Session performs that

@@ -2,7 +2,18 @@ import { str, int, bool, nul, union, arr, opt, obj } from "@earendil-works/pi-sc
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	truncateSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { hostname, tmpdir } from "node:os";
 import {
@@ -51,6 +62,7 @@ async function observeColdStorage(
 				const handle = await (options.hooks?.open ?? openColdObservationSnapshot)(input);
 				counts.opens++;
 				return {
+					inPlace: handle.inPlace,
 					request: async (method, params) => {
 						counts.reads++;
 						return handle.request(method, params);
@@ -386,6 +398,113 @@ it("rejects a snapshot whose database identity changed during the open", async (
 	);
 	assert.equal(counts.closes, 1, "an unstable snapshot is closed");
 	await closeColdObservations();
+});
+
+/** Name, size and modification time of every file beside the storage. */
+function directoryState(storagePath: string): string[] {
+	const directory = dirname(storagePath);
+	return readdirSync(directory)
+		.sort()
+		.map((name) => {
+			const info = statSync(join(directory, name), { bigint: true });
+			return `${name}:${info.size}:${info.mtimeNs}`;
+		});
+}
+
+it("reads a storage without write-ahead log bytes in place and a storage with them through a copy", async (t) => {
+	const { f, exited } = await coldSource(t);
+	const inPlace: (boolean | undefined)[] = [];
+	const hooks: ColdObservationHooks = {
+		open: async (input) => {
+			const handle = await openColdObservationSnapshot(input);
+			inPlace.push(handle.inPlace);
+			return handle;
+		},
+	};
+	const reads: [string, Record<string, unknown>][] = [
+		["status", { sessionId: f.metadata.storageId }],
+		["snapshot", { sessionId: f.metadata.storageId }],
+		["inspect", { view: "history", sessionId: f.metadata.storageId, limit: 10 }],
+		["dashboard", {}],
+	];
+	assert.ok(statSync(`${f.storagePath}-wal`).size > 0, "the running host holds write-ahead log bytes");
+	await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId }, { hooks });
+	assert.deepEqual(inPlace, [undefined], "a source with write-ahead log bytes is copied");
+	await closeColdObservations();
+
+	await exited;
+	const before = directoryState(f.storagePath);
+	const direct: unknown[] = [];
+	for (const [method, params] of reads) direct.push(await observeColdStorage(f.metadata, method, params, { hooks }));
+	assert.deepEqual(inPlace, [undefined, true], "the settled source is opened once, in place");
+	assert.deepEqual(directoryState(f.storagePath), before, "a read in place changes and adds no file");
+	await closeColdObservations();
+
+	const copied: unknown[] = [];
+	const copyHooks: ColdObservationHooks = {
+		open: (input) => openColdObservationSnapshot({ ...input, settled: false }),
+	};
+	for (const [method, params] of reads)
+		copied.push(await observeColdStorage(f.metadata, method, params, { hooks: copyHooks }));
+	assert.deepEqual(direct, copied, "both paths return the same views");
+	await closeColdObservations();
+});
+
+it("discards a read in place when the source changes during it and reads again", async (t) => {
+	const { f, exited } = await coldSource(t);
+	await exited;
+	let changes = 1;
+	const hooks: ColdObservationHooks = {
+		open: async (input) => {
+			const handle = await openColdObservationSnapshot(input);
+			assert.equal(handle.inPlace, true);
+			return {
+				inPlace: true,
+				request: async (method, params) => {
+					const value = await handle.request(method, params);
+					if (changes-- > 0) {
+						// A writer that commits during the read changes the source identity.
+						const info = statSync(input.storagePath);
+						utimesSync(input.storagePath, new Date(), new Date(info.mtimeMs + 5000));
+					}
+					return value;
+				},
+				close: () => handle.close(),
+			};
+		},
+	};
+	const status = await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId }, { hooks });
+	assert.ok(status);
+	assert.equal(counts.opens, 2, "the changed source is opened again");
+	assert.equal(counts.closes, 1, "the handle of the discarded read is closed");
+
+	changes = Number.POSITIVE_INFINITY;
+	await assert.rejects(
+		observeColdStorage(f.metadata, "snapshot", { sessionId: f.metadata.storageId }, { hooks }),
+		/changed during the read; retry the read/u,
+	);
+	await closeColdObservations();
+});
+
+it("names the remedy when a source that needs a copy exceeds the copy bound", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "cold-bound-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const storagePath = join(root, "large.sqlite");
+	const writer = new DatabaseSync(storagePath);
+	t.after(() => writer.close());
+	writer.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE retained(value TEXT);");
+	assert.ok(statSync(`${storagePath}-wal`).size > 0);
+	// A sparse extension gives the size without the bytes.
+	truncateSync(storagePath, 513 * 1024 * 1024);
+	const metadata = { ...fixtureMetadata(root), storagePath };
+	await assert.rejects(
+		cache.observe(metadata, "status", {}),
+		(error: unknown) =>
+			error instanceof Error &&
+			(error as { code?: unknown }).code === "limit_exceeded" &&
+			/larger than the 512 MiB bound of a cold copy/u.test(error.message) &&
+			/starts its host/u.test(error.message),
+	);
 });
 
 it("reuses a real fresh closed database across two cold reads", async (t) => {

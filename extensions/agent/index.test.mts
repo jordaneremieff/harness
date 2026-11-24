@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import {
 	SessionManager,
@@ -100,6 +101,10 @@ test("ordinary shutdown preserves primary and roster owners and awaits final col
 	});
 	await source.wait(input.submissionId);
 	await source.close();
+	// Write-ahead log bytes keep this storage on the copy path, whose private directories this test counts.
+	const pending = new DatabaseSync(record.storagePath);
+	pending.exec("PRAGMA wal_autocheckpoint=0; PRAGMA user_version=1");
+	t.after(() => pending.close());
 	const start = async () => {
 		const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
 		await register({
