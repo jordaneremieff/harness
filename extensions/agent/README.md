@@ -4589,7 +4589,14 @@ one bounded discovery of registered endpoints, and each delivery is labeled
 `no live owning session` while the original owner identity stays in the message
 details. These copies are informational and never acknowledge the owner row.
 Each accepted fallback recipient is recorded in the retained row, so subsequent
-passes and host reopens do not repeat that copy. Other owners of the same answer
+passes and host reopens do not repeat that copy. When every registered primary
+of one complete discovery has its copy, the row records the completed
+broadcast (`fallbackBroadcast`): a later pass does not look for recipients
+again, and a primary that registers later receives no copy of that row. A row
+that no primary accepted, or whose discovery was incomplete, records nothing
+and tries again on the next pass. One pass reads the endpoint directory once
+for all its parked rows, and a candidate that refuses a connection is not
+tried again for the other rows of that pass. Other owners of the same answer
 receive their normal delivery rather than a fallback substitute. A partial scan still attempts the discovered recipients and reports its incomplete coverage.
 Fallback discovery never makes an unavailable owner active.
 

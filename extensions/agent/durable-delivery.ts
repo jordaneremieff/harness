@@ -370,6 +370,37 @@ function fallbackRecipients(row: DeliveryRow): readonly string[] {
 		: (row.report.fallbackRecipients ?? []);
 }
 
+/** A row whose informational copies reached every registered primary of one complete discovery. */
+function fallbackBroadcastRetained(row: DeliveryRow): boolean {
+	return row.kind === "receipt"
+		? row.receipts.every((receipt) => receipt.fallbackBroadcast === true)
+		: row.report.fallbackBroadcast === true;
+}
+
+/** The accepted broadcast of one check-in also covers the current check-in of the same watched task and owner. */
+async function retainCheckInBroadcast(tx: Tx, report: DeliveryReport, owner: string): Promise<void> {
+	const current = await retainedReport(tx, report.ownerId, report.sourceId);
+	if (current?.checkIn === undefined) return;
+	await storeDeliveryRow(tx, "report", { ...current, checkIn: { ...current.checkIn, fallbackBroadcast: true } });
+	const pending = await currentCheckInReport(tx, owner, current.checkIn.conversationId, current.checkIn.requestId);
+	if (pending?.checkIn !== undefined && pending.sourceId !== current.sourceId && !pending.checkIn.fallbackBroadcast)
+		await storeDeliveryRow(tx, "report", { ...pending, checkIn: { ...pending.checkIn, fallbackBroadcast: true } });
+}
+
+async function retainFallbackBroadcast(tx: Tx, row: DeliveryRow): Promise<void> {
+	if (row.kind === "report") {
+		const current = await retainedReport(tx, row.report.ownerId, row.report.sourceId);
+		if (current && !current.fallbackBroadcast)
+			await storeDeliveryRow(tx, "report", { ...current, fallbackBroadcast: true });
+		return;
+	}
+	for (const receipt of row.receipts) {
+		const current = await retainedReceipt(tx, receipt.submissionId);
+		if (current !== undefined && !current.fallbackBroadcast)
+			await storeDeliveryRow(tx, "receipt", { ...current, fallbackBroadcast: true });
+	}
+}
+
 /** Answer entries are storage-wide identities; unanswered inputs remain separate. */
 function receiptKey(receipt: DeliveryReceipt): string {
 	return receipt.answerEntryId === null ? `submission:${receipt.submissionId}` : `answer:${receipt.answerEntryId}`;
@@ -1243,6 +1274,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const unavailableTargets = options.unavailableTargets ?? new Map<string, NativeTargetFailure>();
 	const fallbackFailures = new Map<string, string>();
 	const fallbackFailureTexts = new Map<string, Set<string>>();
+	/** Fallback facts of the current pass: one discovery, the candidates that refused, and the rows it completed. */
+	let passDiscovery: Promise<PrimaryDiscovery> | undefined;
+	const unreachableCandidates = new Set<string>();
+	const broadcastRows = new WeakSet<DeliveryRow>();
 	/**
 	 * One owner often has several parked rows, and each row meets the same failure. The parked reason of every row
 	 * states each distinct failure once, so its length does not grow with the number of rows.
@@ -1738,6 +1773,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	): Promise<CandidateOutcome> => {
 		const recipients = fallbackRecipients(row);
 		if (recipients.includes(id) || row.deliveredTo.has(`fallback:${id}`)) return { kind: "delivered" };
+		// One failed attempt stands for every later row of this pass; the next pass tries the candidate again.
+		if (unreachableCandidates.has(id)) return { kind: "failed" };
 		const status = primaryEndpointStatus(sessionsRoot, id);
 		if (status.state === "absent" || status.state === "dead") return { kind: "skipped" };
 		if (status.state === "incompatible") return { kind: "incompatible", version: status.version ?? "unadvertised" };
@@ -1746,9 +1783,12 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			connection = await connectPrimaryChannel({ id, sessionsRoot });
 		} catch {
 			// A live or unknown candidate that cannot be reached is not proven absent.
+			unreachableCandidates.add(id);
 			return { kind: "failed" };
 		}
-		return acceptFallbackCopy(connection, row, identity, owner, id);
+		const outcome = await acceptFallbackCopy(connection, row, identity, owner, id);
+		if (outcome.kind === "failed") unreachableCandidates.add(id);
+		return outcome;
 	};
 
 	const acceptFallbackCopy = async (
@@ -1788,16 +1828,33 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}, BACKGROUND_CONTEXT);
 	};
 
-	/** Registered candidates are best-effort copies, independent of owner eligibility. */
-	const fallbackCandidates = async (owner: string, row: DeliveryRow): Promise<readonly string[]> => {
-		const discovery = await listPrimaryChannels(sessionsRoot);
+	/** Retain the completed broadcast with the row, so that later passes and later registrations add no copy. */
+	const recordAcceptedBroadcast = async (row: DeliveryRow, owner: string, complete: boolean): Promise<void> => {
+		if (complete) {
+			await host.harness.commit((tx) => retainFallbackBroadcast(tx, row), BACKGROUND_CONTEXT);
+			broadcastRows.add(row);
+		}
+		if (row.kind === "report" && row.report.checkIn !== undefined)
+			await host.harness.commit((tx) => retainCheckInBroadcast(tx, row.report, owner), BACKGROUND_CONTEXT);
+	};
+
+	/**
+	 * Registered candidates are best-effort copies, independent of owner eligibility. Every parked row of one pass
+	 * uses the same discovery, so the endpoint directory is read once for each pass and not once for each row.
+	 */
+	const fallbackCandidates = async (
+		owner: string,
+		row: DeliveryRow,
+	): Promise<{ candidates: readonly string[]; complete: boolean }> => {
+		passDiscovery ??= listPrimaryChannels(sessionsRoot);
+		const discovery = await passDiscovery;
 		if (!discovery.complete)
 			noteFallbackFailure(owner, `primary discovery is incomplete after ${discovery.visited} visits`);
 		const normalOwners = row.kind === "receipt" ? row.receipts.map((receipt) => receipt.ownerId) : [owner];
 		const candidates = discovery.ids.filter((id) => !normalOwners.includes(id));
 		if (candidates.length === 0)
 			throw new Error(`no live owning session for ${owner} and no registered primary accepted delivery`);
-		return candidates;
+		return { candidates, complete: discovery.complete };
 	};
 
 	/** Deliver one row to every candidate; an unavailable or incompatible candidate holds the row. */
@@ -1838,8 +1895,9 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 	};
 
-	/** A retained accepted broadcast suppresses later check-in fallback independently of owner acknowledgment. */
+	/** A retained accepted broadcast suppresses later fallback independently of owner acknowledgment. */
 	const fallbackAlreadyAccepted = async (row: DeliveryRow, owner: string): Promise<boolean> => {
+		if (fallbackBroadcastRetained(row) || broadcastRows.has(row)) return true;
 		if (row.kind !== "report" || row.report.checkIn === undefined) return false;
 		const checkIn = row.report.checkIn;
 		return host.harness.commit(
@@ -1851,7 +1909,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	/** Fallback copies never acknowledge the owner or activate a parked route. */
 	const deliverFallbackOwner = async (row: DeliveryRow, identity: string, owner: string): Promise<void> => {
 		if (await fallbackAlreadyAccepted(row, owner)) return;
-		const candidates = await fallbackCandidates(owner, row);
+		const { candidates, complete } = await fallbackCandidates(owner, row);
 		preflightFallback(candidates, owner);
 		const { delivered, unavailable, incompatible } = await broadcastFallback(candidates, row, identity, owner);
 		if (delivered === 0 && !(await reportCurrent(row))) return;
@@ -1862,32 +1920,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			);
 		if (delivered === 0)
 			throw new Error(`no live owning session for ${owner} and no registered primary accepted delivery`);
-		if (row.kind === "report" && row.report.checkIn !== undefined) {
-			await host.harness.commit(async (tx) => {
-				const current = await retainedReport(tx, row.report.ownerId, row.report.sourceId);
-				if (current?.checkIn !== undefined) {
-					await storeDeliveryRow(tx, "report", {
-						...current,
-						checkIn: { ...current.checkIn, fallbackBroadcast: true },
-					});
-					const pending = await currentCheckInReport(
-						tx,
-						owner,
-						current.checkIn.conversationId,
-						current.checkIn.requestId,
-					);
-					if (
-						pending?.checkIn !== undefined &&
-						pending.sourceId !== current.sourceId &&
-						!pending.checkIn.fallbackBroadcast
-					)
-						await storeDeliveryRow(tx, "report", {
-							...pending,
-							checkIn: { ...pending.checkIn, fallbackBroadcast: true },
-						});
-				}
-			}, BACKGROUND_CONTEXT);
-		}
+		await recordAcceptedBroadcast(row, owner, complete);
 	};
 
 	/** Only absent or proven-dead ordinary owners permit informational fallback. */
@@ -2184,6 +2217,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			active = false;
 			activeRecipients = new Set();
 		}
+		passDiscovery = undefined;
+		unreachableCandidates.clear();
 		automaticCursor = await settleDeliveries(host.harness, BACKGROUND_CONTEXT, automaticCursor);
 		const page =
 			pendingCursor === null

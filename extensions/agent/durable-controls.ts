@@ -261,6 +261,8 @@ export type DeliveryReceipt = {
 	readonly recoveryOf?: string;
 	/** Informational primary copies accepted before owner delivery; retained across host reopen. */
 	readonly fallbackRecipients?: string[];
+	/** Every registered primary of one complete discovery has its copy; a primary that registers later gets none. */
+	readonly fallbackBroadcast?: true;
 	readonly acknowledged: boolean;
 };
 
@@ -292,6 +294,8 @@ export type DeliveryReport = {
 	readonly operatorMessage?: string;
 	/** Informational primary copies accepted before owner delivery; retained across host reopen. */
 	readonly fallbackRecipients?: string[];
+	/** Every registered primary of one complete discovery has its copy; a primary that registers later gets none. */
+	readonly fallbackBroadcast?: true;
 	readonly acknowledged: boolean;
 	readonly createdAt: number;
 	readonly providerRetry?: ProviderRetryNotice;
