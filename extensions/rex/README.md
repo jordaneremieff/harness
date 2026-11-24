@@ -365,9 +365,11 @@ the Rex configuration that `/rex setup` writes.
 - When the file already holds the block but the server has not loaded one of its actions, such as
   the action of a palette command recorded since the last reload, setup offers to run
   `rex config reload`, which reads the whole file again, and runs it only after confirmation.
-- `/rex status` reports whether the file holds the block, the server's version and API revision,
-  the recorded palette commands, the actions that the server has not loaded, and the connected
-  Rex apps.
+- `/rex status` first lists the Pi commands that the palette offers now, or says that it offers
+  none. Below that it names each problem with the step that fixes it: no Pi block in the file, a
+  server too old for Pi commands, no recorded command, a command that the server has not loaded,
+  no connected Rex app, or a fact that Rex did not report. A check that passes adds no line, so a
+  working palette shows only its commands. Setup ends with the same summary.
 - `/rex remove` deletes the block the same way, with confirmation.
 
 Palette commands need API revision 17 or later on the server (Rex

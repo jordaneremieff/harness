@@ -4,7 +4,7 @@ import { chmod, copyFile, lstat, mkdir, readFile, realpath, rm, stat, writeFile 
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { showCommandReport, type ReportLine } from "./command-report.ts";
-import { BLOCK_VERSION, configBlock, findConfigBlock, withConfigBlock, withoutConfigBlock } from "./config-block.ts";
+import { configBlock, findConfigBlock, withConfigBlock, withoutConfigBlock } from "./config-block.ts";
 import { readPaletteRegistry } from "./palette.ts";
 import { CliTransport, type RexTransport } from "./transport.ts";
 
@@ -139,43 +139,72 @@ function missingActions(deps: SetupDeps, actions: Map<string, string>): string[]
 }
 
 type ServerLine = [string, "info" | "warning"];
-function actionLine(missing: string[] | undefined): ServerLine {
-	if (!missing) return ["Rex did not return its loaded actions.", "warning"];
-	if (missing.length === 0) return ["The server has loaded every Pi action.", "info"];
-	return [
-		`The server has not loaded these actions: ${missing.join(", ")}. /rex setup reloads the configuration after you confirm.`,
-		"warning",
-	];
+
+/** The commands behind missing actions, in words: every command when the block's runtime itself is missing. */
+function missingNames(deps: SetupDeps, missing: string[]): string {
+	if (missing.includes("pi_command")) return "Pi's palette commands";
+	const titles = commandActions(deps)
+		.filter((command) => missing.includes(command.action))
+		.map((command) => `"${command.title}"`);
+	return titles.length > 1 ? `${titles.slice(0, -1).join(", ")} and ${titles.at(-1)}` : (titles[0] ?? "");
 }
-function appLine(apps: string[] | undefined): ServerLine {
-	if (!apps) return ["Rex did not return its connected apps.", "warning"];
-	if (apps.length === 0) return ["No Rex app is connected.", "warning"];
-	return [
-		`Connected Rex apps: ${apps.join("; ")}. Each app must be as new as the server to show the questions of Pi commands.`,
-		"info",
-	];
-}
-function serverLines(deps: SetupDeps, facts: ServerFacts | undefined): ServerLine[] {
-	if (!facts) return [["The Rex server did not answer. Start Rex, then run /rex status again.", "warning"]];
+
+/** Each problem that keeps the palette from offering Pi's commands, with the act that fixes it. */
+function paletteProblems(
+	deps: SetupDeps,
+	facts: ServerFacts,
+	configured: boolean,
+	missing: string[] | undefined,
+): string[] {
 	const ready = facts.revision !== undefined && facts.revision >= PROMPT_API_REVISION;
+	const problems: string[] = [];
+	if (!configured) problems.push("Run /rex setup to add Pi's commands to the Rex palette.");
+	if (facts.revision === undefined)
+		problems.push("Rex did not report its version, so Pi cannot tell whether Rex runs Pi commands.");
+	else if (!ready)
+		problems.push(
+			`Rex${facts.version ? ` ${facts.version}` : ""} is too old for Pi commands. Update Rex, then restart it.`,
+		);
+	if (!commandActions(deps).length)
+		problems.push(
+			"No Pi extension has offered a palette command yet. Start an interactive Pi session, then run /rex status again.",
+		);
+	if (!missing) problems.push("Rex did not list its loaded actions, so Pi cannot confirm its commands.");
+	else if (configured && ready && missing.length)
+		problems.push(`Rex has not loaded ${missingNames(deps, missing)}. Run /rex setup to reload the Rex configuration.`);
+	if (!facts.apps) problems.push("Rex did not list its connected apps.");
+	else if (!facts.apps.length) problems.push("No Rex app is connected. Open Rex to use the palette.");
+	return problems;
+}
+
+/**
+ * What the Rex palette offers now, then each problem with the act that fixes it. A check that passes adds no line:
+ * versions, paths and connected apps appear only when they explain a problem.
+ */
+function paletteSummary(deps: SetupDeps, facts: ServerFacts | undefined, configured: boolean): ServerLine[] {
+	if (!facts) return [["Pi cannot reach the Rex server. Start Rex, then run /rex status again.", "warning"]];
 	const commands = commandActions(deps);
 	const missing = facts.actions && missingActions(deps, facts.actions);
-	const server = `Rex server${facts.version ? ` ${facts.version}` : ""}`;
-	const readiness =
-		facts.revision === undefined
-			? `${server} did not report an API revision; support for Pi commands is not established.`
-			: `${server}, API revision ${facts.revision}: ${ready ? "meets the minimum revision for Pi commands" : `Pi commands need API revision ${PROMPT_API_REVISION} or later; update Rex and restart its server`}.`;
-	return [
-		[readiness, ready ? "info" : "warning"],
-		[
-			commands.length
-				? `Pi commands for the palette: ${commands.map((command) => command.title).join(", ")}.`
-				: "No Pi command is recorded for the palette yet; Pi records them when an interactive session starts.",
-			commands.length ? "info" : "warning",
-		],
-		actionLine(missing),
-		appLine(facts.apps),
-	];
+	const ready = facts.revision !== undefined && facts.revision >= PROMPT_API_REVISION;
+	const problems = paletteProblems(deps, facts, configured, missing);
+	const offered =
+		configured && ready && missing && !missing.includes("pi_command")
+			? commands.filter((command) => !missing.includes(command.action))
+			: [];
+	const headline: ServerLine[] = offered.length
+		? [
+				[`The Rex palette offers ${offered.length === 1 ? "this Pi command" : "these Pi commands"}:`, "info"],
+				...offered.map((command): ServerLine => [`  ${command.title}`, "info"]),
+			]
+		: [
+				[
+					facts.revision === undefined || !missing
+						? "Pi cannot tell whether the Rex palette offers its commands."
+						: "The Rex palette offers no Pi commands.",
+					"warning",
+				],
+			];
+	return [...headline, ...problems.map((problem): ServerLine => [problem, "warning"])];
 }
 
 /** The same configuration as before the confirmation: an edit made meanwhile must not be overwritten. */
@@ -243,14 +272,10 @@ export async function rexCommand(args: string, deps: SetupDeps): Promise<void> {
 	}
 	const path = await configPath(deps);
 	const current = await readConfig(path);
-	if (verb === "status") {
-		const found = findConfigBlock(current.text, deps.registryPath);
-		deps.report(
-			found ? `${path} holds the version ${BLOCK_VERSION} Pi block.` : `${path} has no Pi block. /rex setup adds it.`,
-			found ? "info" : "warning",
-		);
-	} else if (!(await change(verb, deps, path, current))) return;
-	for (const [line, level] of serverLines(deps, await serverFacts(deps))) deps.report(line, level);
+	let configured = true;
+	if (verb === "status") configured = findConfigBlock(current.text, deps.registryPath) !== undefined;
+	else if (!(await change(verb, deps, path, current)) || verb === "remove") return;
+	for (const [line, level] of paletteSummary(deps, await serverFacts(deps), configured)) deps.report(line, level);
 }
 
 const CHANGES = {
@@ -258,15 +283,15 @@ const CHANGES = {
 		title: "Add Pi's actions to Rex?",
 		message: (path: string, registryPath: string) =>
 			`The Rex command palette then offers the commands of your Pi extensions under "Pi:". Pi writes this block to ${path}, keeps the previous file beside it, and reloads the Rex configuration:\n\n${configBlock(registryPath)}`,
-		done: (path: string) => `Added Pi's actions to ${path}.`,
-		unchanged: (path: string) => `${path} already holds the current Pi block.`,
+		done: (path: string) => `Added Pi's commands to ${path}.`,
+		unchanged: undefined,
 	},
 	remove: {
 		title: "Remove Pi's actions from Rex?",
 		message: (path: string) =>
 			`Pi removes its block from ${path}, keeps the previous file beside it, and reloads the Rex configuration. The palette then no longer offers Pi commands.`,
-		done: (path: string) => `Removed Pi's actions from ${path}.`,
-		unchanged: (path: string) => `${path} has no Pi block.`,
+		done: (path: string) => `Removed Pi's commands from ${path}. The Rex palette no longer offers them.`,
+		unchanged: (_path: string) => "The Rex palette has no Pi commands to remove.",
 	},
 };
 
@@ -281,7 +306,7 @@ async function reloadWhenMissing(deps: SetupDeps, path: string): Promise<void> {
 	if (!missing?.length) return;
 	const reload = await deps.confirm(
 		"Reload the Rex configuration?",
-		`${path} holds Pi's actions, but the Rex server has not loaded ${missing.join(", ")}. Pi runs "rex config reload", which makes the server read the whole file again, including any other change in it.`,
+		`${path} holds Pi's commands, but the Rex server has not loaded ${missingNames(deps, missing)}. Pi runs "rex config reload", which makes the server read the whole file again, including any other change in it.`,
 	);
 	if (!reload) return;
 	const reloaded = await rex(deps, ["config", "reload"]);
@@ -300,7 +325,7 @@ async function change(verb: "setup" | "remove", deps: SetupDeps, path: string, c
 			? withConfigBlock(current.text, deps.registryPath)
 			: withoutConfigBlock(current.text, deps.registryPath);
 	if (next === current.text) {
-		deps.report(words.unchanged(path));
+		if (words.unchanged) deps.report(words.unchanged(path));
 		if (verb === "setup") await reloadWhenMissing(deps, path);
 		return true;
 	}

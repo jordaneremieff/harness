@@ -81,6 +81,8 @@ function ok(stdout: string): CliResult {
 class SetupTransport implements RexTransport {
 	calls: string[][] = [];
 	loaded = false;
+	/** Actions of recorded palette commands that the server lists besides `pi_command`. */
+	commandActions: string[] = [];
 	refuseCandidate = false;
 	/** The registry that the loaded block reads, as its `pi_command` description names it. */
 	registry: string | undefined;
@@ -121,6 +123,7 @@ class SetupTransport implements RexTransport {
 									kind: "lua",
 									description: `Runs one Pi command by its ID, for a key binding. Pi records its commands in ${this.registry}.`,
 								},
+								...this.commandActions.map((name) => ({ name, kind: "lua", description: "" })),
 							]
 						: [],
 				}),
@@ -180,8 +183,12 @@ test("setup shows the block, checks the new text before it replaces the file, ke
 		);
 		const order = f.transport.calls.map((call) => call.slice(0, 2).join(" "));
 		assert.ok(order.indexOf("config check") < order.indexOf("config reload"));
-		assert.ok(f.lines.includes("info: The server has loaded every Pi action."), f.lines.join("\n"));
-		assert.ok(f.lines.some((line) => line.includes("Rex Beta 0.1.0 (2042) on mbp")));
+		assert.ok(f.lines.includes("warning: The Rex palette offers no Pi commands."), f.lines.join("\n"));
+		assert.ok(f.lines.some((line) => /^warning: No Pi extension has offered a palette command yet/.test(line)));
+		assert.ok(
+			f.lines.every((line) => !/has not loaded|Rex Beta|revision/.test(line)),
+			"a check that passes adds no line",
+		);
 		f.asked.length = 0;
 		const reloads = () => f.transport.calls.filter((call) => call[1] === "reload").length;
 		const before = reloads();
@@ -232,17 +239,12 @@ test("setup creates a missing configuration, and status names what an old server
 	const f = await fixture(undefined, { revision: 13 });
 	try {
 		await rexCommand("status", f.deps);
-		assert.ok(
-			f.lines.some((line) => /^warning: .*has no Pi block/.test(line)),
-			f.lines.join("\n"),
-		);
-		assert.ok(
-			f.lines.some((line) =>
-				/^warning: Rex server 0\.1\.0-test, API revision 13: Pi commands need API revision 17/.test(line),
-			),
-			f.lines.join("\n"),
-		);
-		assert.ok(f.lines.some((line) => /^warning: No Pi command is recorded for the palette yet/.test(line)));
+		assert.deepEqual(f.lines, [
+			"warning: The Rex palette offers no Pi commands.",
+			"warning: Run /rex setup to add Pi's commands to the Rex palette.",
+			"warning: Rex 0.1.0-test is too old for Pi commands. Update Rex, then restart it.",
+			"warning: No Pi extension has offered a palette command yet. Start an interactive Pi session, then run /rex status again.",
+		]);
 		await rexCommand("setup", f.deps);
 		assert.equal(await readFile(f.path, "utf8"), `${piBlock()}\n`);
 		assert.deepEqual(await readdir(f.dir), ["init.lua"], "no backup of a file that did not exist");
@@ -307,7 +309,7 @@ test("a file that holds the block while the server has not loaded it reloads onl
 	const f = await fixture(withBlock(operatorConfig), { confirm: false });
 	try {
 		await rexCommand("setup", f.deps);
-		assert.match(f.asked[0] ?? "", /has not loaded pi_command/);
+		assert.match(f.asked[0] ?? "", /has not loaded Pi's palette commands/);
 		assert.match(f.asked[0] ?? "", /^Reload the Rex configuration\?\n.*including any other change in it/s);
 		assert.equal(
 			f.transport.calls.some((call) => call[1] === "reload"),
@@ -315,9 +317,13 @@ test("a file that holds the block while the server has not loaded it reloads onl
 			"a declined reload runs nothing",
 		);
 		f.deps.confirm = async () => true;
+		f.lines.length = 0;
 		await rexCommand("setup", f.deps);
 		assert.equal(f.transport.calls.filter((call) => call[1] === "reload").length, 1);
-		assert.ok(f.lines.includes("info: The server has loaded every Pi action."));
+		assert.ok(
+			f.lines.every((line) => !/has not loaded/.test(line)),
+			f.lines.join("\n"),
+		);
 	} finally {
 		await f.done();
 	}
@@ -341,7 +347,7 @@ test("setup refuses files that a replacement would change in other ways", async 
 	}
 });
 
-test("status names the recorded palette commands and the actions that the server has not loaded", async () => {
+test("status leads with the commands that the palette offers and names a command that the server has not loaded", async () => {
 	const f = await fixture(withBlock(operatorConfig));
 	try {
 		const registry = join(f.dir, "palette.json");
@@ -364,12 +370,17 @@ test("status names the recorded palette commands and the actions that the server
 		f.transport.loaded = true;
 		f.transport.registry = registry;
 		await rexCommand("status", f.deps);
-		assert.ok(f.lines.includes("info: Pi commands for the palette: Browse Files…."), f.lines.join("\n"));
-		assert.ok(
-			f.lines.includes(
-				"warning: The server has not loaded these actions: pi_files_browse. /rex setup reloads the configuration after you confirm.",
-			),
-			f.lines.join("\n"),
+		assert.deepEqual(f.lines, [
+			"warning: The Rex palette offers no Pi commands.",
+			'warning: Rex has not loaded "Browse Files…". Run /rex setup to reload the Rex configuration.',
+		]);
+		f.lines.length = 0;
+		f.transport.commandActions = ["pi_files_browse"];
+		await rexCommand("status", f.deps);
+		assert.deepEqual(
+			f.lines,
+			["info: The Rex palette offers this Pi command:", "info:   Browse Files…"],
+			"a working palette reports only what it offers",
 		);
 	} finally {
 		await f.done();
@@ -388,7 +399,7 @@ test("an earlier Pi block is refused, and a loaded block of another agent direct
 		await rexCommand("status", f.deps);
 		assert.ok(
 			f.lines.includes(
-				"warning: The server has not loaded these actions: pi_command. /rex setup reloads the configuration after you confirm.",
+				"warning: Rex has not loaded Pi's palette commands. Run /rex setup to reload the Rex configuration.",
 			),
 			f.lines.join("\n"),
 		);
@@ -461,11 +472,11 @@ test("the registered Rex command shows a scrollable local report in the TUI and 
 		await handler("status", { cwd: f.dir, hasUI: true, mode: "tui", ui } as unknown as ExtensionCommandContext);
 		assert.equal(notices.length, 0);
 		assert.equal(opened[0][0], "Rex palette status");
-		assert.match(opened.flat().join(" "), /has no Pi block/);
-		assert.match(opened.flat().join(" "), /Connected Rex apps/);
+		assert.match(opened.flat().join(" "), /offers no Pi commands/);
+		assert.doesNotMatch(opened.flat().join(" "), /Rex Beta/);
 		await handler("status", { cwd: f.dir, hasUI: false, mode: "print", ui } as unknown as ExtensionCommandContext);
-		assert.equal(notices.length, 5);
-		assert.match(notices[4][0], /Connected Rex apps/);
+		assert.equal(notices.length, 3);
+		assert.match(notices[1][0], /Run \/rex setup to add Pi's commands/);
 		await handler("wrong-verb", { cwd: f.dir, hasUI: true, mode: "tui", ui } as unknown as ExtensionCommandContext);
 		assert.deepEqual(notices.at(-1), ["Usage: /rex setup | status | remove", "warning"]);
 	} finally {
@@ -484,10 +495,11 @@ test("an absent action or client read is not a negative observation", async () =
 		};
 		await rexCommand("status", f.deps);
 		const report = f.lines.join("\n");
-		assert.match(report, /did not report an API revision/);
-		assert.match(report, /did not return its loaded actions/);
-		assert.match(report, /did not return its connected apps/);
-		assert.doesNotMatch(report, /revision 0|has not loaded these actions|No Rex app is connected/);
+		assert.match(report, /^warning: Pi cannot tell whether the Rex palette offers its commands\./);
+		assert.match(report, /did not report its version/);
+		assert.match(report, /did not list its loaded actions/);
+		assert.match(report, /did not list its connected apps/);
+		assert.doesNotMatch(report, /too old|has not loaded|No Rex app is connected|offers no Pi commands/);
 	} finally {
 		await f.done();
 	}
