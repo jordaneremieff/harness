@@ -1548,6 +1548,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		agentFigures = "";
 		const sessionId = ctx.sessionManager.getSessionId();
 		primaries.get(sessionId)?.abort();
+		primaryDeliveries.get(sessionId)?.inbox.close();
 		const abort = new AbortController();
 		primaries.set(sessionId, abort);
 		const purpose = retainedPurpose(ctx.sessionManager, _event.reason);
@@ -1578,7 +1579,16 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				sendPeer(text, details, wake);
 			},
 		);
-		const inbox = new PrimaryInbox(ctx.sessionManager);
+		const inbox = new PrimaryInbox(ctx.sessionManager, {
+			idle: () => !abort.signal.aborted && ctx.isIdle(),
+			// A waking send that never started its run, as when Pi's run preparation threw, places its rows
+			// without a run; no run will answer a question among them, so its notice is due.
+			startFailed: () => {
+				flush(false);
+				placeHeld(ctx);
+				noticeUnanswered(ctx);
+			},
+		});
 		const flush = (wake = true) => {
 			if (abort.signal.aborted) return;
 			try {
@@ -1723,6 +1733,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	// a steer dropped by an abort never gets one. A message that starts no run gets none: sendPeer counts its
 	// immediate append, and one held to the end of a turn counts at the next turn start or settlement.
 	pi.on("turn_start", (_event, ctx) => placeHeld(ctx));
+	// Pi names the custom message that starts a run while it prepares that run.
+	pi.on("before_agent_start", (event, ctx) => {
+		if (event.messageType !== "custom" || event.message.customType !== "agent.peer") return;
+		const details = event.message.details as { sourceId?: unknown } | undefined;
+		primaryDeliveries.get(ctx.sessionManager.getSessionId())?.inbox.runStarting(details?.sourceId);
+	});
 	pi.on("message_end", (event, ctx) => {
 		const message = event.message as { role?: unknown; customType?: unknown; details?: unknown; content?: unknown };
 		if (message.role !== "custom" || message.customType !== "agent.peer") return;
@@ -1731,6 +1747,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	pi.on("agent_settled", (event, ctx) => {
 		const delivery = primaryDeliveries.get(ctx.sessionManager.getSessionId());
 		delivery?.retention.settled();
+		delivery?.inbox.settled();
 		// After an abort, queued messages are placed without starting a run, so no run will answer a question
 		// among them; its notice is due with those of the run that settled.
 		delivery?.flush(!event.aborted);
@@ -1743,6 +1760,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		selfCompaction.clear();
 		const id = ctx.sessionManager.getSessionId();
 		primaryDeliveries.get(id)?.retention.clear();
+		primaryDeliveries.get(id)?.inbox.close();
 		primaryDeliveries.delete(id);
 		workReferences.delete(id);
 		heldPlacements.delete(id);

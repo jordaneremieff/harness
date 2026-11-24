@@ -2524,7 +2524,11 @@ the question.
 A received question owes the asker one report that the run ended without a
 reply, with the question's excerpt, when the recipient's run settles without a
 reply. After an aborted run (Esc), queued messages are placed without a run,
-so a question among them owes its notice at once. A question still open when a
+so a question among them owes its notice at once. So are they when a waking
+message never starts its run, as when Pi's run preparation throws: the inbox
+sees that the session is idle without the message although Pi began the run, a
+later run settled, or no start showed for 60 s, and then places the queued
+messages without a run and owes the notices. A question still open when a
 session starts lost its run with the earlier process and owes its notice then.
 The recipient records `noticed` only after the report was admitted. A refused
 notice stays owed and goes out again only on a retry after 5 s, 30 s, 2 min and

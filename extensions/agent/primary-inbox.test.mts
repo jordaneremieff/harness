@@ -52,3 +52,63 @@ it("refuses another session's snapshot without overwriting it", (t) => {
 	assert.throws(() => f.inbox.admit("source", "notice", {}), /invalid header/u);
 	assert.equal(readFileSync(f.snapshot, "utf8"), foreign);
 });
+
+it("waits for a deferred waking send, and sends again without waking once a settlement shows it failed", (t) => {
+	const f = fixture(t);
+	let failed = 0;
+	const now = 0;
+	const inbox = new PrimaryInbox(f.session, {
+		idle: () => true,
+		startFailed: () => failed++,
+		now: () => now,
+		checkMs: 3_600_000,
+		deferredMs: 60_000,
+	});
+	t.after(() => inbox.close());
+	inbox.admit("question:a:1", "Ready?", {});
+	const sends: Array<[string, boolean]> = [];
+	const send = (row: { sourceId: string }, wake: boolean) => sends.push([row.sourceId, wake]);
+	// The session stayed idle after the send: Pi deferred it until the settlement hooks finish.
+	inbox.flush(send);
+	inbox.flush(send);
+	assert.deepEqual(sends, [["question:a:1", true]], "a deferred send is not repeated");
+	assert.equal(failed, 0);
+	inbox.settled();
+	inbox.flush(send);
+	assert.equal(failed, 1, "a later settlement without the message shows that the send never started");
+	inbox.flush(send, false);
+	assert.deepEqual(sends.at(-1), ["question:a:1", false]);
+});
+
+it("counts a waking send whose run began and left no message as failed", (t) => {
+	const f = fixture(t);
+	let failed = 0;
+	let idle = false;
+	const inbox = new PrimaryInbox(f.session, {
+		idle: () => idle,
+		startFailed: () => failed++,
+		checkMs: 3_600_000,
+	});
+	t.after(() => inbox.close());
+	inbox.admit("question:a:2", "Ready?", {});
+	inbox.flush(() => {});
+	idle = true;
+	inbox.flush(() => {});
+	assert.equal(failed, 1, "Pi began the run, so an idle session without the message failed to start it");
+});
+
+it("keeps a waking send whose message the session retained", (t) => {
+	const f = fixture(t);
+	let failed = 0;
+	let idle = false;
+	const inbox = new PrimaryInbox(f.session, { idle: () => idle, startFailed: () => failed++, checkMs: 3_600_000 });
+	t.after(() => inbox.close());
+	inbox.admit("question:a:3", "Ready?", {});
+	inbox.flush((row) => {
+		f.session.appendCustomMessageEntry("agent.peer", row.text, true, row.details);
+	});
+	idle = true;
+	inbox.flush(() => assert.fail("a retained row is not sent again"));
+	assert.equal(failed, 0);
+	assert.equal(inbox.hasRows(), false);
+});

@@ -703,4 +703,28 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 	await until("the asker receives the notice", () =>
 		peerTexts(reopened).some((text) => text.includes("without replying") && text.includes('"Are you stopping?"')),
 	);
+
+	// A waking send whose run preparation throws never enters the session; the inbox places the question
+	// without a run and owes its notice instead of waiting for a run that the operator starts.
+	const session = b.session as unknown as { _prepareRun: (...args: unknown[]) => Promise<unknown> };
+	const prepare = session._prepareRun;
+	let refused = 0;
+	session._prepareRun = async function (this: unknown, ...args: unknown[]) {
+		if (refused++ === 0) throw new Error("compaction failed before the run");
+		return prepare.apply(this, args);
+	};
+	t.after(() => {
+		session._prepareRun = prepare;
+	});
+	await run(reopened, "Ask B while its run start fails", [
+		{ tool: "agent_send", args: { sessionId: bId, message: "Can you start?", expectReply: true } },
+		{ text: "Asked." },
+	]);
+	await until("B places the question whose run never started", () =>
+		peerTexts(b).some((text) => text.startsWith("Can you start?")),
+	);
+	assert.equal(refused, 1, "the failed start is not repeated");
+	await until("the asker receives the notice for the question no run took", () =>
+		peerTexts(reopened).some((text) => text.includes("without replying") && text.includes('"Can you start?"')),
+	);
 });

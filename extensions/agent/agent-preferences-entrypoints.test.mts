@@ -82,11 +82,16 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	const tools = new Map<string, RegisteredTool>();
 	const entries: Array<{ type: "custom"; customType: string; data: unknown }> = [];
 	type StartEvent = { systemPromptOptions: { sections: Record<string, string> } };
-	let beforeStart: ((event: StartEvent, ctx: ExtensionContext) => Promise<void>) | undefined;
+	type StartHandler = (event: StartEvent, ctx: ExtensionContext) => Promise<void> | void;
+	// Pi runs every before_agent_start handler of the extension in registration order.
+	const startHandlers: StartHandler[] = [];
+	const beforeStart = async (event: StartEvent, ctx: ExtensionContext) => {
+		for (const handler of startHandlers) await handler(event, ctx);
+	};
 	await registerAgentExtension({
 		events: { on: () => () => {}, emit() {} },
-		on(name: string, handler: typeof beforeStart) {
-			if (name === "before_agent_start") beforeStart = handler;
+		on(name: string, handler: StartHandler) {
+			if (name === "before_agent_start") startHandlers.push(handler);
 		},
 		registerTool(tool: RegisteredTool) {
 			tools.set(tool.name, tool);
@@ -166,7 +171,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 			}),
 		),
 	);
-	assert.ok(beforeStart);
+	assert.ok(startHandlers.length > 0);
 	const first: StartEvent = { systemPromptOptions: { sections: {} } };
 	await beforeStart(first, ctx);
 	assert.match(first.systemPromptOptions.sections["agent-preferences"], /Current note/u);
