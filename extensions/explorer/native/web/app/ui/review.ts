@@ -5,9 +5,9 @@
 	const { lineLabel } = app.references;
 	const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 	const bytes = (text: string) => new TextEncoder().encode(text).length;
-	const anchorOf = (note: ExplorerNote): ExplorerRange | null =>
+	const anchorOf = (note: ExplorerLineNote): ExplorerRange | null =>
 		note.location === "outdated" ? null : { side: note.side, start: note.start, end: note.end };
-	const excerptOf = (note: ExplorerNote): ExplorerExcerpt => ({
+	const excerptOf = (note: ExplorerLineNote): ExplorerExcerpt => ({
 		path: note.path,
 		start: note.anchor.start,
 		end: note.anchor.end,
@@ -17,6 +17,26 @@
 		id: note.id,
 		url: note.url,
 	});
+	const targetLabel = (target: ExplorerNoteTarget): string => {
+		switch (target.kind) {
+			case "file":
+				return target.path;
+			case "commit":
+				return `Commit ${target.commit.slice(0, 7)}`;
+			case "review":
+				return "Review";
+		}
+	};
+	const contextOf = (note: ExplorerNote): ExplorerExcerpt =>
+		note.target
+			? {
+					path: targetLabel(note.target),
+					commit: note.target.kind === "commit" ? note.target.commit : null,
+					id: note.id,
+					url: note.url,
+					text: note.text,
+				}
+			: excerptOf(note);
 	const label = (item: ExplorerExcerpt) =>
 		item.start === undefined
 			? item.path
@@ -49,11 +69,10 @@
 		range: ExplorerRange | null;
 		root: string;
 		focus: HTMLElement | null;
-		kind: "card" | "tour";
+		noteId?: string;
 		moved: Offset | null;
 		rebuild?: () => void;
 	};
-	type Walk = { tour: ExplorerTour; index: number; serial: number; contents: boolean };
 
 	app.review = (ctx): ExplorerReviewUI => {
 		const container = get("floating");
@@ -68,12 +87,9 @@
 		const unsaved = new Map<string, ExplorerCardDraft>();
 		let card: Card | null = null;
 		let shownRun: Run | null = null;
-		let walkthrough: Walk | null = null;
-		// Where the operator moved the walkthrough card; later stops keep it there.
-		let tourOffset: Offset | null = null;
-		let removeUndo: { notes: ExplorerNote[]; root: string } | null = null;
-		let tourSerial = 0;
-		let lastOpened: { key: string; index: number } | null = null;
+		let noteOffset: Offset | null = null;
+		let removeUndo: { notes: ExplorerLineNote[]; root: string } | null = null;
+		let cardSerial = 0;
 		let trayStamp = "";
 		const report = (promise: Promise<unknown>) => {
 			void promise.catch((error) => ctx.notice(message(error)));
@@ -167,7 +183,7 @@
 			return { x, y };
 		}
 
-		// A walkthrough card starts against the right and bottom edges; a moved card keeps its offset.
+		// An unanchored note starts against the right and bottom edges.
 		function placeFree(current: Card, body: DOMRect, main: DOMRect) {
 			const node = current.node;
 			dock.hidden = true;
@@ -179,9 +195,8 @@
 			else placeAt(node, main.right - width, body.bottom - height, body, main);
 		}
 
-		// A walkthrough card is wider and may touch the pane edge; other cards keep a margin.
 		function cardWidth(current: Card, main: DOMRect, free: boolean) {
-			const limit = current.kind === "tour" ? 468 : 426;
+			const limit = current.noteId ? 468 : 426;
 			return Math.min(Math.max(main.width - (free ? 0 : 20), 0), limit);
 		}
 
@@ -189,7 +204,7 @@
 			if (!card) return;
 			const node = card.node;
 			const { body, main } = frame();
-			const free = card.kind === "tour" || !!card.moved;
+			const free = !!card.moved || (!!card.noteId && !card.range);
 			const width = cardWidth(card, main, free);
 			node.style.width = `${width}px`;
 			if (!container.contains(node)) container.append(node);
@@ -233,7 +248,7 @@
 					const { body, main } = frame();
 					const { x, y } = placeAt(node, next.clientX - grab.x, next.clientY - grab.y, body, main);
 					current.moved = { right: main.right - (x + node.offsetWidth), top: y - body.top };
-					if (current.kind === "tour") tourOffset = current.moved;
+					if (current.noteId) noteOffset = current.moved;
 				};
 				const end = () => {
 					node.classList.remove("dragging");
@@ -248,13 +263,14 @@
 			handle.addEventListener("dblclick", (event) => {
 				if (interactive(event.target)) return;
 				current.moved = null;
-				if (current.kind === "tour") tourOffset = null;
+				if (current.noteId) noteOffset = null;
 				reposition();
 			});
 		}
 
 		function closeCard(restore = true) {
 			const current = card;
+			cardSerial++;
 			card = null;
 			shownRun = null;
 			if (current) {
@@ -269,22 +285,14 @@
 				commands.hidden = true;
 				return true;
 			}
-			if (!card && !walkthrough) return false;
-			walkthrough = null;
-			tourSerial++;
+			if (!card) return false;
 			closeCard();
 			return true;
 		}
-		function makeCard(
-			title: string,
-			caption: string,
-			range: ExplorerRange | null,
-			agent = false,
-			kind: Card["kind"] = "card",
-		) {
+		function makeCard(title: string, caption: string, range: ExplorerRange | null, agent = false, noteId?: string) {
 			const focus = card?.focus ?? (document.activeElement as HTMLElement | null);
 			closeCard(false);
-			const node = el("section", `float-card${agent ? " agent-card" : ""}${kind === "tour" ? " tour-card" : ""}`);
+			const node = el("section", `float-card${agent ? " agent-card" : ""}${noteId ? " note-card" : ""}`);
 			node.setAttribute("role", "dialog");
 			node.setAttribute("aria-label", title);
 			const header = el("div", "ask-head");
@@ -292,13 +300,7 @@
 			identity.append(el("strong", "", title));
 			if (caption) identity.append(el("small", "", caption));
 			const tools = el("div", "card-tools");
-			tools.append(
-				iconButton("close", "Close (Esc)", () => {
-					walkthrough = null;
-					tourSerial++;
-					closeCard();
-				}),
-			);
+			tools.append(iconButton("close", "Close (Esc)", () => closeCard()));
 			header.append(identity, tools);
 			const content = el("div", "card-content"),
 				actions = el("div", "card-actions");
@@ -313,8 +315,8 @@
 				range,
 				root: here(),
 				focus,
-				kind,
-				moved: kind === "tour" ? tourOffset : null,
+				noteId,
+				moved: noteId ? noteOffset : null,
 			};
 			card = next;
 			container.append(node);
@@ -324,13 +326,13 @@
 		}
 		// A card that follows a link elsewhere stays where it is instead of following its old lines.
 		function pinCard() {
-			if (!card || card.moved || card.kind === "tour" || card.node.parentElement === dock) return;
+			if (!card || card.moved || (!card.range && card.noteId) || card.node.parentElement === dock) return;
 			const { body, main } = frame();
 			const rect = card.node.getBoundingClientRect();
 			card.moved = { right: main.right - rect.right, top: rect.top - body.top };
 		}
 		// Card text as Markdown with links to the locations and commits it names.
-		function rich(text: string, path?: string, side: ExplorerSide | null = null) {
+		function rich(text: string, path?: string, side: ExplorerSide | null | undefined = null) {
 			return app.rich.render(text, {
 				path,
 				open: (target) => {
@@ -385,7 +387,7 @@
 			if (bytes(item.text) > 32768 || bytes(item.quote ?? "") > 65536)
 				throw new Error("Select fewer lines or shorten your comment.");
 			const result = await request("notes.write", { op: "create", note: noteData(item, side, state) });
-			if (!result.note) throw new Error("Explorer did not receive the saved note.");
+			if (!result.note || result.note.target) throw new Error("Explorer did not receive the saved line note.");
 			return result.note;
 		}
 		function runFor(
@@ -621,7 +623,7 @@
 		}
 
 		// The card title for each edit mode.
-		function cardTitle(mode: CardMode, draft?: ExplorerNote) {
+		function cardTitle(mode: CardMode, draft?: ExplorerLineNote) {
 			if (draft || mode === "comment") return "Review comment";
 			return mode === "note" ? "New note" : "Ask about this";
 		}
@@ -660,7 +662,7 @@
 			remove: "Comment removed",
 			send: "",
 		};
-		function cardRange(range: ExplorerRange | null, draft?: ExplorerNote, retained?: ExplorerCardDraft) {
+		function cardRange(range: ExplorerRange | null, draft?: ExplorerLineNote, retained?: ExplorerCardDraft) {
 			const kept = retained?.range ?? range;
 			if (kept) return kept;
 			return draft ? (anchorOf(draft) ?? undefined) : undefined;
@@ -670,24 +672,33 @@
 			text: string,
 			item: ExplorerExcerpt,
 			range?: ExplorerRange,
-			draft?: ExplorerNote,
+			draft?: ExplorerLineNote,
 		): ExplorerCardDraft {
 			const quote = item.quote !== undefined && bytes(item.quote) <= 32000 ? item.quote : undefined;
 			return { mode, text, range, noteId: draft?.id, quote, commit: item.commit };
 		}
 		// The note record that a sent comment refers to: the edited review comment, or a new one for lines.
-		async function recordFor(text: string, item: ExplorerExcerpt, range?: ExplorerRange, draft?: ExplorerNote) {
+		async function recordFor(text: string, item: ExplorerExcerpt, range?: ExplorerRange, draft?: ExplorerLineNote) {
 			if (draft) {
-				const result = await request("notes.write", { op: "update", id: draft.id, text });
-				return result.note ?? { ...draft, text };
+				return updateDraft(draft, text);
 			}
 			return range ? create({ ...item, text }, range.side, "draft") : null;
+		}
+		async function updateDraft(draft: ExplorerLineNote | undefined, text: string) {
+			if (!draft) throw new Error("The comment is not available.");
+			const result = await request("notes.write", {
+				op: "update",
+				id: draft.id,
+				text,
+				expectedUpdatedAt: draft.updatedAt,
+			});
+			return result.note && !result.note.target ? result.note : { ...draft, text };
 		}
 		function checkMessageSize(item: ExplorerExcerpt, text: string) {
 			if (bytes(bake([{ ...item, text }])) > 128 * 1024 - 40)
 				throw new Error("This message exceeds 128 KB. Select fewer lines.");
 		}
-		function questionRun(item: ExplorerExcerpt, text: string, saved: ExplorerNote | null) {
+		function questionRun(item: ExplorerExcerpt, text: string, saved: ExplorerLineNote | null) {
 			const quoted = saved ? excerptOf(saved) : { ...item, text };
 			return runFor(bake([quoted]), text, saved ? [saved.id] : [], quoted);
 		}
@@ -695,12 +706,13 @@
 			item: ExplorerExcerpt,
 			range: ExplorerRange | null,
 			mode: CardMode,
-			draft?: ExplorerNote,
+			draft?: ExplorerLineNote,
 			retained?: ExplorerCardDraft,
 		) {
 			const storedRange = cardRange(range, draft, retained);
 			const key = draftKey(item.path, storedRange, draft?.id);
-			const current = makeCard(cardTitle(mode, draft), label(item), range);
+			const current = makeCard(cardTitle(mode, draft), label(item), range, false, draft?.id);
+			const paintSwitcher = draft && addSwitcher(current, draft.id);
 			const field = textarea(placeholders[mode], retained?.text ?? draft?.text);
 			field.maxLength = 16000;
 			const fail = errorField();
@@ -731,7 +743,7 @@
 			const writers: Record<Exclude<DraftAction, "send">, (text: string) => Promise<unknown>> = {
 				keep: (text) => create({ ...item, text }, storedRange?.side ?? "head", "open"),
 				add: (text) => create({ ...item, text }, storedRange?.side ?? "head", "draft"),
-				save: (text) => request("notes.write", { op: "update", id: draft?.id ?? "", text }),
+				save: (text) => updateDraft(draft, text),
 				remove: () => remove(draft ? [draft] : []),
 			};
 			async function applyAction(action: DraftAction, text: string) {
@@ -780,6 +792,7 @@
 			function update() {
 				const connected = ctx.live().connected;
 				for (const [action, node] of controls) paintControl(action, node, connected);
+				paintSwitcher?.();
 				hint.textContent = lead === "send" && !connected ? reason() : `cmd+return ${labels[lead]}`;
 				reposition();
 			}
@@ -799,8 +812,6 @@
 		function ask(range: ExplorerRange | null, mode: CardMode = "ask") {
 			const item = ctx.excerpt(range);
 			if (!item) return;
-			walkthrough = null;
-			tourSerial++;
 			const stored = unsaved.get(draftKey(item.path, range));
 			if (stored) {
 				restore(item.path, { ...stored, mode });
@@ -810,7 +821,9 @@
 		}
 		function restore(path: string, stored: ExplorerCardDraft) {
 			unsaved.set(draftKey(path, stored.range, stored.noteId), stored);
-			const note = ctx.notes().find((note) => note.id === stored.noteId && note.state === "draft");
+			const note = ctx
+				.notes()
+				.find((note): note is ExplorerLineNote => !note.target && note.id === stored.noteId && note.state === "draft");
 			const mark = stored.range ?? null;
 			const source = ctx.excerpt(mark);
 			const matches = !mark || (!!source && (stored.quote === undefined || source.quote === stored.quote));
@@ -841,9 +854,9 @@
 			showRun(run);
 			await send(run);
 		}
-		async function remove(notes: ExplorerNote[]) {
+		async function remove(notes: ExplorerLineNote[]) {
 			const root = here();
-			const removed: ExplorerNote[] = [];
+			const removed: ExplorerLineNote[] = [];
 			try {
 				for (const note of notes) {
 					if (here() !== root) return;
@@ -857,7 +870,7 @@
 				}
 			}
 		}
-		function restoreUndo(removed: { notes: ExplorerNote[]; root: string }) {
+		function restoreUndo(removed: { notes: ExplorerLineNote[]; root: string }) {
 			if (removed.notes.length) removeUndo = removed;
 			return ctx.refresh();
 		}
@@ -876,7 +889,7 @@
 			}
 		}
 
-		function renderDraftList(drafts: ExplorerNote[]) {
+		function renderDraftList(drafts: ExplorerLineNote[]) {
 			commands.replaceChildren();
 			const header = el("div", "ask-head");
 			header.append(
@@ -922,7 +935,7 @@
 			return removeUndo?.root === here() && !!removeUndo?.notes.length;
 		}
 		// The tray state that decides whether its controls need repainting.
-		function trayStampFor(drafts: ExplorerNote[], undoVisible: boolean, connected: boolean) {
+		function trayStampFor(drafts: ExplorerLineNote[], undoVisible: boolean, connected: boolean) {
 			return JSON.stringify([
 				here(),
 				drafts.map((note) => [note.id, note.text, note.start]),
@@ -939,7 +952,7 @@
 			commands.querySelector("button")?.focus({ preventScroll: true });
 		}
 		// The tray button that opens and closes the draft list.
-		function trayCount(drafts: ExplorerNote[]) {
+		function trayCount(drafts: ExplorerLineNote[]) {
 			const count = ctl(`${drafts.length} comment${drafts.length === 1 ? "" : "s"}`, toggleDraftList, "tray-count");
 			count.prepend(icon("list"));
 			return count;
@@ -948,13 +961,13 @@
 			return ctl("Copy review", () => flashCopy(bake(currentDrafts().map(excerptOf))));
 		}
 		// The send control for the review tray.
-		function traySend(drafts: ExplorerNote[], connected: boolean) {
+		function traySend(drafts: ExplorerLineNote[], connected: boolean) {
 			const send = ctl(connected ? senderLabel() : "Send", () => report(sendBatch()), "primary");
 			disable(send, !drafts.length || !connected, connected ? undefined : reason());
 			return send;
 		}
 		// Rebuilds the review tray controls from the current draft list.
-		function renderTray(drafts: ExplorerNote[], undoVisible: boolean, connected: boolean) {
+		function renderTray(drafts: ExplorerLineNote[], undoVisible: boolean, connected: boolean) {
 			const count = trayCount(drafts);
 			const send = traySend(drafts, connected);
 			tray.replaceChildren(count);
@@ -967,197 +980,264 @@
 			const drafts = currentDrafts();
 			const undoVisible = undoShown();
 			const connected = ctx.live().connected;
-			tray.hidden = !drafts.length && !undoVisible;
+			tray.hidden = !ctx.inReview() || (!drafts.length && !undoVisible);
+			if (!ctx.inReview()) commands.hidden = true;
 			const stamp = trayStampFor(drafts, undoVisible, connected);
 			if (trayStamp !== stamp) {
 				trayStamp = stamp;
 				renderTray(drafts, undoVisible, connected);
 			}
-			card?.rebuild?.();
+			if (card?.noteId && (card.root !== here() || !findNote(card.noteId))) closeCard();
+			else card?.rebuild?.();
 		}
 
 		function authorName(author: ExplorerAuthor, by?: string) {
 			if (author === "remote") return by ?? "Reviewer";
 			return author === "agent" ? "Agent" : "You";
 		}
-		// A card shown on lines that hold the note's quote, such as a review's head, is not outdated there.
-		function movedSuffix(note: ExplorerNote, shown: boolean) {
-			if (note.location === "outdated") return shown ? "" : " · Outdated";
-			if (note.location === "moved") return ` · Moved from L${note.movedFrom ?? note.anchor.start}`;
-			return "";
+		function findNote(id: string) {
+			return ctx.notes().find((note) => note.id === id && ctx.shows(note));
 		}
-		function appendReplies(block: HTMLElement, note: ExplorerNote) {
-			for (const reply of note.thread) {
-				const response = el("div", `thread-reply by-${reply.author}`);
-				response.append(el("strong", "", authorName(reply.author, reply.by)), rich(reply.text, note.path, note.side));
-				block.append(response);
-			}
-		}
-		// One note and its replies as a thread entry block.
-		function threadEntry(note: ExplorerNote, shown: boolean) {
-			const block = el("div", "thread-entry");
-			block.append(
-				el("p", "thread-meta", `${authorName(note.author, note.by)} · ${note.state}${movedSuffix(note, shown)}`),
-				rich(note.text, note.path, note.side),
-			);
-			if (note.location === "moved" || (note.location === "outdated" && !shown)) drawQuote(block, note.anchor.quote);
-			appendReplies(block, note);
-			return block;
-		}
-		const isDraft = (note: ExplorerNote) => note.state === "draft" && note.author === "operator";
-		// Each review comment opens alone in its editor; the other notes open together.
-		function noteGroups(notes: ExplorerNote[]) {
-			const others = notes.filter((note) => !isDraft(note));
-			const groups = notes.filter(isDraft).map((note) => [note]);
-			return others.length ? [...groups, others] : groups;
-		}
-		// Opening the same notes again while their card is open shows the next group.
-		function groupIndex(key: string, count: number) {
-			return card && lastOpened?.key === key ? (lastOpened.index + 1) % count : 0;
+		function visibleNotes(notes: ExplorerNote[]) {
+			return notes.flatMap(({ id }) => {
+				const note = findNote(id);
+				return note ? [note] : [];
+			});
 		}
 		function thread(notes: ExplorerNote[], position?: ExplorerRange | null) {
-			const fresh = currentNotes(notes);
-			const groups = noteGroups(fresh);
-			if (!groups.length) return;
-			const key = fresh
-				.map((note) => note.id)
-				.sort()
-				.join(",");
-			const index = groupIndex(key, groups.length);
-			const [first] = groups[index];
-			walkthrough = null;
-			tourSerial++;
-			if (isDraft(first)) editComment(first, position === undefined ? anchorOf(first) : position);
-			else threadCard(groups[index], position);
-			lastOpened = { key, index };
+			const visible = visibleNotes(notes);
+			if (!visible.length) return;
+			const active = visible.findIndex(({ id }) => id === card?.noteId);
+			if (visible.length === 1 && active === 0) return closeCard();
+			openNote(visible[(active + 1) % visible.length], position);
 		}
-		function editComment(note: ExplorerNote, range: ExplorerRange | null) {
-			const stored = unsaved.get(draftKey(note.path, anchorOf(note), note.id));
-			draftEditor(excerptOf(note), range, "comment", note, stored);
+		function openNote(note: ExplorerNote, position?: ExplorerRange | null) {
+			const range = position === undefined ? shownRange(note) : position;
+			if (!note.target && note.author === "operator" && note.state === "draft") {
+				const stored = unsaved.get(draftKey(note.path, anchorOf(note), note.id));
+				draftEditor(excerptOf(note), range, "comment", note, stored);
+				return;
+			}
+			noteCard(note, range);
 		}
-		function currentNotes(notes: ExplorerNote[]) {
-			const byId = new Map(ctx.notes().map((note) => [note.id, note]));
-			return notes.map((note) => byId.get(note.id) ?? note);
+		function shownRange(note: ExplorerNote): ExplorerRange | null {
+			if (note.target) return null;
+			for (const spot of [anchorOf(note), { side: note.side, start: note.anchor.start, end: note.anchor.end }]) {
+				if (!spot) continue;
+				const shown = ctx.excerpt(spot);
+				if (shown?.path === note.path && shown.quote === note.anchor.quote) return spot;
+			}
+			return null;
 		}
-		// The note's lines in the open view, including the original lines of a note the view still quotes.
-		function shownRange(note: ExplorerNote) {
-			const own = anchorOf(note);
-			if (own) return own;
-			const range = { side: note.side, start: note.anchor.start, end: note.anchor.end };
-			const shown = ctx.excerpt(range);
-			return shown?.path === note.path && shown.quote === note.anchor.quote ? range : null;
+		function sequenceAt(id: string) {
+			const notes = ctx.sequence();
+			return { notes, index: notes.findIndex((note) => note.id === id) };
 		}
-		function threadTitle(notes: ExplorerNote[]) {
-			if (notes.length > 1) return `${notes.length} notes`;
-			return notes[0].author === "remote" ? "Discussion" : "Note";
+		function step(direction: number) {
+			if (!card?.noteId) return false;
+			const { notes, index } = sequenceAt(card.noteId);
+			if (index < 0 || notes.length < 2) return false;
+			const next = notes[index + direction];
+			if (next) report(switchNote(next));
+			return true;
 		}
-		function threadCard(notes: ExplorerNote[], position?: ExplorerRange | null) {
-			const first = notes[0];
-			const range = position === undefined ? shownRange(first) : position;
-			const current = makeCard(
-				first.title ?? threadTitle(notes),
-				label(excerptOf(first)),
-				range,
-				first.author === "agent",
-			);
-			if (first.author === "remote") current.node.classList.add("remote-card");
-			const own = () => {
-				const latest = currentNotes([first])[0];
-				return latest.author === "operator" && (latest.state === "draft" || latest.state === "open");
+		async function switchNote(note: ExplorerNote) {
+			const serial = ++cardSerial;
+			const range = await ctx.go(note);
+			if (serial !== cardSerial) return;
+			const latest = findNote(note.id);
+			if (latest) openNote(latest, range);
+		}
+		function addSwitcher(current: Card, id: string) {
+			const box = el("div", "note-switcher");
+			const count = el("span", "note-position");
+			const prev = button("←", () => step(-1), "note-arrow");
+			const next = button("→", () => step(1), "note-arrow");
+			prev.title = "Previous note (←)";
+			next.title = "Next note (→)";
+			prev.setAttribute("aria-label", "Previous note");
+			next.setAttribute("aria-label", "Next note");
+			box.append(prev, count, next);
+			current.tools.prepend(box);
+			return () => {
+				const { notes, index } = sequenceAt(id);
+				box.hidden = index < 0 || notes.length < 2;
+				count.textContent = `${index + 1} of ${notes.length}`;
+				prev.disabled = index <= 0;
+				next.disabled = index >= notes.length - 1;
 			};
+		}
+		function follow(target: ExplorerRichTarget, side: ExplorerSide | null | undefined = null) {
+			if (target.kind !== "url") pinCard();
+			report(ctx.follow(target, side ?? null));
+		}
+		function fileChip(path: string, open: () => void) {
+			const chip = button("", open, "place-chip place-file");
+			const slash = path.lastIndexOf("/");
+			chip.append(icon("file"));
+			if (slash >= 0) chip.append(el("span", "place-dir", `\u200e${path.slice(0, slash + 1)}\u200e`));
+			chip.append(el("span", "place-name", path.slice(slash + 1)));
+			chip.title = `Go to ${path}`;
+			return chip;
+		}
+		function commitChip(commit: string) {
+			const chip = button(commit.slice(0, 7), () => follow({ kind: "commit", commit }), "place-chip place-commit");
+			chip.title = `Review commit ${commit}`;
+			return chip;
+		}
+		function lineChips(place: HTMLElement, note: ExplorerLineNote, range: ExplorerRange | null) {
+			const { path, side } = note;
+			const { start, end } = range ?? note.anchor;
+			const lines = () => follow({ kind: "lines", path, start, end }, side);
+			place.append(
+				fileChip(path, lines),
+				button(`${side === "base" ? "Old " : ""}${lineLabel(start, end)}`, lines, "place-chip place-lines"),
+			);
+			if (note.anchor.commit) place.append(commitChip(note.anchor.commit));
+			if (!range && note.location === "outdated") place.append(el("span", "place-chip place-warn", "Outdated"));
+		}
+		function targetChip(note: ExplorerTargetNote) {
+			const { target } = note;
+			switch (target.kind) {
+				case "commit":
+					return commitChip(target.commit);
+				case "file":
+					return fileChip(target.path, () => follow({ kind: "file", path: target.path }, target.side));
+				case "review": {
+					const review = target.review;
+					if (review.kind === "commit") return commitChip(review.commit);
+					if (review.kind !== "range") return el("span", "place-chip", "Working tree review");
+					const { base, head } = review;
+					const chip = button(
+						`${base.slice(0, 7)}..${head.slice(0, 7)}`,
+						() => follow({ kind: "range", base, head }),
+						"place-chip place-commit",
+					);
+					chip.title = `Review ${base}..${head}`;
+					return chip;
+				}
+			}
+		}
+		function notePlace(note: ExplorerNote, range: ExplorerRange | null) {
+			const place = el("div", "note-place");
+			if (note.target) place.append(targetChip(note));
+			else lineChips(place, note, range);
+			if (note.url) {
+				const url = note.url;
+				const link = button("Source", () => follow({ kind: "url", url }), "place-chip place-url");
+				link.prepend(icon("external"));
+				link.title = url;
+				place.append(link);
+			}
+			return place;
+		}
+		function notePath(note: ExplorerNote) {
+			return note.target ? (note.target.kind === "file" ? note.target.path : undefined) : note.path;
+		}
+		function noteSide(note: ExplorerNote) {
+			return note.target ? (note.target.kind === "file" ? note.target.side : undefined) : note.side;
+		}
+		function noteBody(note: ExplorerNote, range: ExplorerRange | null) {
+			const block = el("div", "thread-entry");
+			const path = notePath(note);
+			const side = noteSide(note);
+			block.append(notePlace(note, range), rich(note.text, path, side));
+			if (!note.target && (note.location === "moved" || (note.location === "outdated" && !range)))
+				drawQuote(block, note.anchor.quote);
+			for (const reply of note.thread) {
+				const response = el("div", `thread-reply by-${reply.author}`);
+				response.append(el("strong", "", authorName(reply.author, reply.by)), rich(reply.text, path, side));
+				block.append(response);
+			}
+			return block;
+		}
+		function noteTitle(note: ExplorerNote) {
+			return note.title ?? (note.author === "remote" ? "Discussion" : "Note");
+		}
+		function noteCard(note: ExplorerNote, range: ExplorerRange | null) {
+			const current = makeCard(noteTitle(note), "", range, note.author === "agent", note.id);
+			current.node.classList.toggle("remote-card", note.author === "remote");
+			const switcher = addSwitcher(current, note.id);
 			const entries = el("div", "thread-entries");
-			const field = textarea("Write a reply…");
-			field.hidden = true;
+			const replyField = textarea("Write a reply…");
+			replyField.hidden = true;
 			const confirm = el("div", "card-confirm");
 			confirm.hidden = true;
 			const fail = errorField();
-			let locked = false;
+			let latest = note;
 			let editing = false;
-			let threadStamp = "";
-			// A reply reaches the conversation when one is connected; otherwise it stays in the note.
-			async function deliverReply(text: string) {
-				await request("notes.write", { op: "reply", id: first.id, text, author: "operator" });
-				if (field.value.trim() === text) field.value = "";
-				await ctx.refresh();
-				if (!ctx.live().connected || current.root !== here()) return ctx.notice("Reply saved in the note");
-				const item = { ...excerptOf(currentNotes([first])[0]), text };
-				const run = runFor(bake([item]), text, [], item);
-				run.ids = [first.id];
-				if (card === current) showRun(run, range);
-				await send(run);
-			}
-			async function reply() {
-				const text = field.value.trim();
-				if (locked || !text || current.root !== here()) return;
-				locked = true;
+			let stamp = "";
+			const relevant = () => current.root === here() && card === current;
+			const write = (fn: () => Promise<void>) => {
+				if (!relevant()) return;
 				announce(fail, "");
-				try {
-					await deliverReply(text);
-				} catch (error) {
-					announce(fail, message(error));
-				} finally {
-					locked = false;
-				}
-			}
+				report(
+					fn().catch((error) => {
+						announce(fail, message(error));
+						reposition();
+					}),
+				);
+			};
 			const replyLabel = () => (ctx.live().connected ? "Send reply" : "Save reply");
-			const answer = ctl(
+			const reply = ctl(
 				"Reply",
 				() => {
-					if (field.hidden) {
-						field.hidden = false;
-						answer.textContent = replyLabel();
-						reposition();
-						field.focus({ preventScroll: true });
-					} else report(reply());
+					if (!replyField.hidden) return write(saveReply);
+					replyField.hidden = false;
+					reply.textContent = replyLabel();
+					reposition();
+					replyField.focus({ preventScroll: true });
 				},
 				"primary",
 			);
+			async function saveReply() {
+				const text = replyField.value.trim();
+				if (!text || replyField.readOnly) return;
+				replyField.readOnly = true;
+				try {
+					await request("notes.write", { op: "reply", id: note.id, text, author: "operator" });
+					replyField.value = "";
+					replyField.hidden = true;
+					await ctx.refresh();
+					if (!ctx.live().connected || !relevant()) return ctx.notice("Reply saved in the note");
+					const item = { ...contextOf(latest), text };
+					const run = runFor(bake([item]), text, [], item);
+					run.ids = [note.id];
+					showRun(run, range);
+					await send(run);
+				} finally {
+					replyField.readOnly = false;
+				}
+			}
 			const state = ctl(
 				"Resolve",
-				() => {
-					const latest = currentNotes([first])[0];
-					report(
-						request("notes.write", {
+				() =>
+					write(async () => {
+						await request("notes.write", {
 							op: "state",
-							ids: [first.id],
+							ids: [note.id],
 							state: latest.state === "resolved" ? "open" : "resolved",
-						}).then(ctx.refresh),
-					);
-				},
+						});
+						await ctx.refresh();
+					}),
 				"quiet",
 			);
-			// Rewrites the note text in place; only open notes of the operator accept it.
+			const adopt = ctl(
+				"Comment",
+				() => {
+					if (!latest.target) adoptNote(current, latest, range);
+				},
+				"secondary",
+			);
+			function endEdit() {
+				editing = false;
+				stamp = "";
+				current.rebuild?.();
+			}
 			function startEdit() {
-				if (editing || !own()) return;
+				if (editing) return;
 				editing = true;
-				const latest = currentNotes([first])[0];
-				const editor = textarea("Write a note…", latest.text);
-				const save = ctl(
-					"Save",
-					() =>
-						report(
-							(async () => {
-								const text = editor.value.trim();
-								if (!text || current.root !== here()) return;
-								await request("notes.write", { op: "update", id: first.id, text });
-								editing = false;
-								threadStamp = "";
-								await ctx.refresh();
-								card?.rebuild?.();
-							})().catch((error) => announce(fail, message(error))),
-						),
-					"primary",
-				);
-				const cancel = ctl("Cancel", () => {
-					editing = false;
-					threadStamp = "";
-					current.rebuild?.();
-				});
-				shortcuts(editor, () => save.click());
-				entries.replaceChildren(editor);
-				current.actions.replaceChildren(cancel, save);
-				reposition();
-				editor.focus({ preventScroll: true });
+				editNoteForm(current, entries, latest, write, endEdit);
 			}
 			function askDelete() {
 				confirm.replaceChildren(
@@ -1169,313 +1249,131 @@
 					ctl(
 						"Delete",
 						() =>
-							report(
-								(async () => {
-									await request("notes.write", { op: "delete", id: first.id });
-									if (card === current) closeCard();
-									await ctx.refresh();
-									ctx.notice("Note deleted");
-								})().catch((error) => announce(fail, message(error))),
-							),
+							write(async () => {
+								await request("notes.write", { op: "delete", id: note.id });
+								if (relevant()) closeCard();
+								await ctx.refresh();
+								ctx.notice("Note deleted");
+							}),
 						"quiet danger",
 					),
 				);
 				confirm.hidden = false;
 				reposition();
 			}
-			const editButton = iconButton("edit", "Edit note", startEdit);
-			const deleteButton = iconButton("trash", "Delete note", askDelete);
-			current.tools.prepend(editButton, deleteButton);
-			const remoteUrl = first.url;
-			if (remoteUrl)
-				current.tools.prepend(
-					iconButton("external", "Open the discussion in the browser", () =>
-						report(request("link.open", { url: remoteUrl })),
-					),
-				);
-			current.content.append(entries, field, confirm, fail);
-			shortcuts(field, () => report(reply()));
-			function refreshThreadState(latest: ExplorerNote) {
+			const edit = iconButton("edit", "Edit note", startEdit);
+			edit.hidden = note.author === "remote";
+			current.tools.prepend(edit, iconButton("trash", "Delete note", askDelete));
+			current.content.append(entries, replyField, confirm, fail);
+			shortcuts(replyField, () => write(saveReply));
+			function paintBody() {
+				const title = noteTitle(latest);
+				current.node.setAttribute("aria-label", title);
+				const caption = `${authorName(latest.author, latest.by)} · ${latest.state}`;
+				current.identity.replaceChildren(el("strong", "", title), el("small", "", caption));
+				entries.replaceChildren(noteBody(latest, range));
 				state.textContent = latest.state === "resolved" ? "Reopen" : "Resolve";
-				state.hidden = latest.state === "draft";
-				const single = notes.length === 1 && latest.author !== "agent";
-				editButton.hidden = !single || !own();
-				deleteButton.hidden = !single;
-				if (!field.hidden) answer.textContent = replyLabel();
+				current.actions.replaceChildren(state, adopt, reply);
 			}
 			current.rebuild = () => {
+				latest = findNote(note.id) ?? latest;
+				switcher();
 				if (editing) return;
-				const visible = currentNotes(notes);
-				const next = JSON.stringify([visible, ctx.live().connected]);
-				if (next === threadStamp) return;
-				threadStamp = next;
-				entries.replaceChildren();
-				for (const note of visible) entries.append(threadEntry(note, range !== null));
-				current.actions.replaceChildren(state, answer);
-				refreshThreadState(visible[0]);
+				const value = JSON.stringify(latest);
+				if (value !== stamp) {
+					stamp = value;
+					paintBody();
+				}
+				adopt.hidden = !ctx.inReview() || !!latest.target || latest.author === "operator";
+				reply.textContent = replyField.hidden ? "Reply" : replyLabel();
 				reposition();
 			};
 			current.rebuild();
 		}
-		function firstStop(tour: ExplorerTour) {
-			return tour.summary ? -1 : 0;
-		}
-		function stopNote(tour: ExplorerTour, index: number) {
-			return ctx.notes().find((note) => note.id === tour.stops[index]);
-		}
-		// The walkthrough header: its name, the position, the stop list toggle and a progress bar.
-		function tourHead(current: Card, active: Walk) {
-			const { tour, index } = active;
-			const kicker = el("span", "tour-kicker");
-			kicker.append(icon("tour"), el("span", "", "Walkthrough"));
-			const name = el("span", "tour-name", tour.title);
-			name.title = tour.title;
-			current.identity.className = "tour-identity";
-			current.identity.replaceChildren(kicker, name);
-			const total = tour.stops.length;
-			const position = index < 0 ? `${total} stop${total === 1 ? "" : "s"}` : `${index + 1} / ${total}`;
-			const tools: HTMLElement[] = [el("span", "tour-count", position)];
-			if (index >= 0) tools.push(contentsToggle(active));
-			current.tools.prepend(...tools);
-			const progress = el("div", "tour-progress");
-			const fill = el("span");
-			fill.style.width = `${index < 0 ? 0 : ((index + 1) / Math.max(total, 1)) * 100}%`;
-			progress.append(fill);
-			current.head.after(progress);
-		}
-		function contentsToggle(active: Walk) {
-			const contents = iconButton("list", active.contents ? "Hide the stops" : "Show all stops", () => {
-				active.contents = !active.contents;
-				report(moveTour(active.index));
-			});
-			contents.setAttribute("aria-pressed", String(active.contents));
-			return contents;
-		}
-		function stopList(active: Walk) {
-			const list = el("ol", "tour-stops");
-			for (const [order, id] of active.tour.stops.entries()) {
-				const note = ctx.notes().find((item) => item.id === id);
-				const open = button("", () => report(moveTour(order)), "tour-stop");
-				if (order === active.index) open.setAttribute("aria-current", "step");
-				const text = el("span", "tour-stop-text");
-				text.append(
-					el("strong", "", note?.title ?? note?.text.split("\n")[0] ?? "Unavailable stop"),
-					el("small", "", note ? `${note.path} · ${lineLabel(note.start, note.end)}` : "The note is missing."),
-				);
-				open.append(el("span", "tour-stop-number", String(order + 1)), text);
-				open.disabled = !note;
-				const item = el("li");
-				item.append(open);
-				list.append(item);
-			}
-			return list;
-		}
-		function followLines(note: ExplorerNote, lines: ExplorerRange) {
-			return ctx.follow({ kind: "lines", path: note.path, start: lines.start, end: lines.end }, lines.side);
-		}
-		// The stop's file, lines and commit as links.
-		function stopPlace(note: ExplorerNote, range: ExplorerRange | null) {
-			const place = el("div", "stop-place");
-			const lines = range ?? { side: note.side, start: note.anchor.start, end: note.anchor.end };
-			const file = button("", () => report(followLines(note, lines)), "place-chip place-file");
-			const slash = note.path.lastIndexOf("/");
-			file.append(icon("file"));
-			// Marks keep the folder's trailing slash in place while the folder truncates from the left.
-			if (slash >= 0) file.append(el("span", "place-dir", `\u200e${note.path.slice(0, slash + 1)}\u200e`));
-			file.append(el("span", "place-name", note.path.slice(slash + 1)));
-			file.title = `Go to ${note.path}`;
-			const span = button(
-				`${lines.side === "base" ? "Old " : ""}${lineLabel(lines.start, lines.end)}`,
-				() => report(followLines(note, lines)),
-				"place-chip place-lines",
+		function editNoteForm(
+			current: Card,
+			entries: HTMLElement,
+			note: ExplorerNote,
+			write: (fn: () => Promise<void>) => void,
+			end: () => void,
+		) {
+			const title = el("input", "note-title-input");
+			title.value = note.title ?? "";
+			title.placeholder = "Note title (optional)";
+			title.setAttribute("aria-label", "Note title");
+			title.maxLength = 200;
+			const field = textarea("Write a note…", note.text);
+			field.maxLength = 16000;
+			const save = ctl(
+				"Save",
+				() =>
+					write(async () => {
+						const text = field.value.trim();
+						if (!text || save.disabled) return;
+						save.disabled = true;
+						try {
+							await request("notes.write", {
+								op: "update",
+								id: note.id,
+								text,
+								title: title.value.trim() || null,
+								expectedUpdatedAt: note.updatedAt,
+							});
+							await ctx.refresh();
+							end();
+						} finally {
+							save.disabled = false;
+						}
+					}),
+				"primary",
 			);
-			span.title = `Go to ${lineLabel(lines.start, lines.end)}`;
-			place.append(file, span);
-			const commit = note.anchor.commit;
-			if (commit) {
-				const chip = button(
-					commit.slice(0, 7),
-					() => report(ctx.follow({ kind: "commit", commit }, null)),
-					"place-chip place-commit",
-				);
-				chip.title = `Review commit ${commit}`;
-				place.append(chip);
-			}
-			if (!range) place.append(el("span", "place-chip place-warn", "Outdated"));
-			return place;
+			shortcuts(field, () => save.click());
+			entries.replaceChildren(title, field);
+			current.actions.replaceChildren(ctl("Cancel", end), save);
+			reposition();
+			field.focus({ preventScroll: true });
 		}
-		function reviewed(note: ExplorerNote, range: ExplorerRange | null) {
-			const lines = range ?? anchorOf(note);
-			if (!lines) return undefined;
-			return ctx
-				.drafts()
-				.find(
-					(draft) =>
-						draft.path === note.path &&
-						draft.side === lines.side &&
-						draft.start === lines.start &&
-						draft.end === lines.end,
-				);
-		}
-		function tourNavigation(current: Card, active: Walk) {
-			const previous = ctl("Previous", () => report(moveTour(active.index - 1)), "quiet");
-			previous.disabled = active.index <= firstStop(active.tour);
-			previous.title = "Previous stop (←)";
-			const next = ctl("Next", () => report(moveTour(active.index + 1)), "secondary");
-			next.disabled = active.index >= active.tour.stops.length - 1;
-			next.title = "Next stop (→)";
-			current.actions.append(previous, next, el("span", "grow"));
-		}
-		// Turns the stop into a review comment on the same lines, starting from the stop's text.
-		function adoptStop(current: Card, active: Walk, note: ExplorerNote, range: ExplorerRange | null) {
+		function adoptNote(current: Card, note: ExplorerLineNote, range: ExplorerRange | null) {
 			const item = (range && ctx.excerpt(range)) || excerptOf(note);
-			const box = el("div", "stop-comment");
 			const field = textarea("Write a review comment…", note.text);
 			field.maxLength = 16000;
+			const box = el("div", "note-comment");
 			const fail = errorField();
-			box.append(el("p", "stop-comment-label", "Review comment"), field, fail);
+			box.append(el("p", "note-comment-label", "Review comment"), field, fail);
 			current.content.append(box);
-			let busy = false;
+			const rebuild = current.rebuild;
+			current.rebuild = undefined;
+			const cancel = () => {
+				if (card !== current) return;
+				box.remove();
+				current.rebuild = rebuild;
+				current.rebuild?.();
+			};
 			const add = ctl("Add to review", () => report(save()), "primary");
-			const cancel = ctl("Cancel", () => report(moveTour(active.index)), "quiet");
-			current.actions.replaceChildren(cancel, el("span", "grow"), add);
+			current.actions.replaceChildren(ctl("Cancel", cancel), add);
 			async function save() {
 				const text = field.value.trim();
-				if (busy || !text || current.root !== here()) return;
-				busy = true;
+				if (add.disabled || !text || current.root !== here()) return;
 				add.disabled = true;
 				try {
 					await create({ ...item, text }, range?.side ?? note.side, "draft");
 					await ctx.refresh();
 					ctx.notice("Comment added to review");
-					if (walkthrough === active) await moveTour(active.index);
+					if (card === current) openNote(findNote(note.id) ?? note, range);
 				} catch (error) {
 					announce(fail, message(error));
-					busy = false;
 					add.disabled = false;
+					reposition();
 				}
 			}
-			field.oninput = () => disable(add, busy || !field.value.trim());
 			shortcuts(field, () => report(save()));
 			reposition();
 			field.focus({ preventScroll: true });
-			field.setSelectionRange(field.value.length, field.value.length);
-		}
-		// Sends a reply about the stop to the conversation, or keeps it in the note without one.
-		function replyToStop(current: Card, note: ExplorerNote, control: HTMLButtonElement) {
-			if (!ctx.live().connected) {
-				thread([note]);
-				return;
-			}
-			const item = excerptOf(note);
-			const field = textarea("Write a reply…");
-			const sendReply = () => {
-				const question = field.value.trim();
-				if (!question) return;
-				report(
-					(async () => {
-						if (current.root !== here()) return;
-						await request("notes.write", { op: "reply", id: note.id, text: question, author: "operator" });
-						const run = runFor(bake([{ ...item, text: question }]), question, [], item);
-						run.ids = [note.id];
-						showRun(run, current.range);
-						await send(run);
-					})(),
-				);
-			};
-			current.content.append(field);
-			shortcuts(field, sendReply);
-			control.replaceWith(ctl("Send reply", sendReply, "agent-button"));
-			field.focus({ preventScroll: true });
-			reposition();
-		}
-		function showStop(active: Walk, note: ExplorerNote, range: ExplorerRange | null) {
-			const current = makeCard(note.title ?? `Stop ${active.index + 1}`, "", range, true, "tour");
-			tourHead(current, active);
-			current.content.append(el("h3", "stop-title", note.title ?? `Stop ${active.index + 1}`), stopPlace(note, range));
-			current.content.append(rich(note.text, note.path, range?.side ?? note.side));
-			if (note.thread.length) {
-				const replies = el("div", "stop-replies");
-				appendReplies(replies, note);
-				current.content.append(replies);
-			}
-			const adopted = reviewed(note, range);
-			if (adopted) current.content.append(el("p", "stop-adopted", "In your review"));
-			if (active.contents) current.content.append(stopList(active));
-			tourNavigation(current, active);
-			const reply = ctl("Reply", () => replyToStop(current, note, reply), "quiet");
-			const comment = ctl(
-				adopted ? "Comment again" : "Comment",
-				() => adoptStop(current, active, note, range),
-				"agent-button",
-			);
-			comment.title = "Add this stop to your review as a comment";
-			current.actions.append(reply, comment);
-			reposition();
-		}
-		function showOverview(active: Walk) {
-			const { tour } = active;
-			const current = makeCard(tour.title, "", null, true, "tour");
-			tourHead(current, active);
-			current.content.append(el("h3", "stop-title", tour.title));
-			const url = tour.url;
-			if (url) {
-				const place = el("div", "stop-place");
-				const link = button("", () => report(request("link.open", { url })), "place-chip place-url");
-				link.append(icon("external"), el("span", "", url.replace(/^https?:\/\//u, "")));
-				link.title = `Open ${url}`;
-				place.append(link);
-				current.content.append(place);
-			}
-			if (tour.summary) current.content.append(rich(tour.summary));
-			current.content.append(el("p", "tour-section", "Stops"), stopList(active));
-			const start = ctl("Start", () => report(moveTour(0)), "primary");
-			start.title = "First stop (→)";
-			current.actions.append(el("span", "grow"), start);
-			reposition();
-		}
-		function showMissingStop(active: Walk) {
-			const current = makeCard(`Stop ${active.index + 1}`, "", null, true, "tour");
-			tourHead(current, active);
-			current.content.append(
-				el("h3", "stop-title", `Stop ${active.index + 1} is unavailable`),
-				el("p", "card-error", "Its note was deleted or could not be read."),
-			);
-			tourNavigation(current, active);
-			reposition();
-		}
-		// The summary page opens over the first stop's file, so the change is in view.
-		async function overview(active: Walk, serial: number) {
-			const first = stopNote(active.tour, 0);
-			if (first) await ctx.go(first, active.tour);
-			if (walkthrough === active && serial === tourSerial) showOverview(active);
-		}
-		async function moveTour(index: number) {
-			const active = walkthrough;
-			if (!active || index < firstStop(active.tour) || index >= active.tour.stops.length) return;
-			active.index = index;
-			const serial = ++tourSerial;
-			if (index < 0) return overview(active, serial);
-			const note = stopNote(active.tour, index);
-			if (!note) return showMissingStop(active);
-			const range = await ctx.go(note, active.tour);
-			if (walkthrough !== active || serial !== tourSerial) return;
-			showStop(active, note, range);
-		}
-		async function tour(tour: ExplorerTour) {
-			walkthrough = { tour, index: firstStop(tour), serial: ++tourSerial, contents: false };
-			await moveTour(walkthrough.index);
-		}
-		function step(direction: number) {
-			if (!walkthrough) return false;
-			report(moveTour(walkthrough.index + direction));
-			return true;
 		}
 		return {
 			ask,
 			restore,
 			thread,
-			tour,
 			step,
 			refresh,
 			prompt,

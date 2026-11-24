@@ -5,7 +5,7 @@ func affectsNotes(_ storePath: String) -> Bool {
     let parts = storePath.split(separator: "/")
     guard parts.first == "repos" else { return false }
     if parts.count == 3 { return parts[2] == "repo.json" }
-    return parts.count == 4 && (parts[2] == "notes" || parts[2] == "tours") && parts[3].hasSuffix(".json")
+    return parts.count == 4 && parts[2] == "notes" && parts[3].hasSuffix(".json")
 }
 
 final class ExplorerWatch: @unchecked Sendable {

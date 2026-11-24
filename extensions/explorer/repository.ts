@@ -243,6 +243,12 @@ export async function resolveScope(repo: Repo, scope: ReviewScope, marker?: stri
 	const parent = await parentFor(repo, head, scope.kind === "since-review" ? marker : null);
 	return review(scope, parent, head, scope.kind === "commit" ? `Commit ${short(head)}` : "Since your last review");
 }
+export function pinNoteReview(review: ResolvedScope): ReviewScope {
+	if (review.head === "worktree") return { kind: "uncommitted" };
+	if (review.scope.kind === "commit" || !review.base) return { kind: "commit", commit: review.head };
+	return { kind: "range", base: review.base, head: review.head };
+}
+
 export async function defaultScope(repo: Repo): Promise<ReviewScope> {
 	if (repo.kind !== "git") throw new Error("Reviews require a Git work tree.");
 	const changes = await git(
@@ -371,6 +377,20 @@ function anchorLines(lines: string[], start: number, end: number, commit: string
 		throw new Error("Note lines must be ordered positive integers.");
 	if (end > lines.length) throw new Error("The requested note lines are outside the file.");
 	return { start, end, commit, quote: lines.slice(start - 1, end).join("\n") };
+}
+
+export async function verifyNoteFile(repo: Repo, path: string, review?: ResolvedScope, side: ReviewSide = "head") {
+	if (!isRelativePath(path)) throw new Error("Invalid relative file path.");
+	const ref = side === "base" ? review?.base : review?.head;
+	if (side === "base" && !ref) throw new Error("The note has no base file.");
+	if (ref && ref !== "worktree") {
+		if (!(await committedBlob(repo, path, ref)))
+			throw new Error("The reviewed commit does not contain this regular file.");
+		return;
+	}
+	const file = await realpath(resolve(repo.root, path));
+	if (!contained(repo.root, file) || !isRelativePath(relative(repo.root, file)) || !(await stat(file)).isFile())
+		throw new Error("A file note requires a regular file inside the repository.");
 }
 
 export async function readReviewAnchor(

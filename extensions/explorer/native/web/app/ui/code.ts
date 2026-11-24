@@ -1,15 +1,15 @@
 (() => {
 	const app = window.explorer;
-	const { el, button } = app.dom;
+	const { el, button, noteMarker } = app.dom;
 	const model = app.model;
 
 	// A note anchors where its quote still matches the shown text.
 	function quoteAt(data: string[], start: number, end: number, quote: string) {
-		return data.slice(start - 1, end).join("\n") === quote && start <= data.length;
+		return start >= 1 && end <= data.length && data.slice(start - 1, end).join("\n") === quote;
 	}
 
-	function noteSpot(note: ExplorerNote, opts: ExplorerCodeOptions): ExplorerRange | null {
-		if (note.path !== opts.path) return null;
+	function noteSpot(note: ExplorerLineNote, opts: ExplorerCodeOptions): ExplorerRange | null {
+		if (note.path !== fileFor(note.side, opts)) return null;
 		const data = note.side === "base" ? opts.base : opts.head;
 		if (quoteAt(data, note.start, note.end, note.anchor.quote) && note.location !== "outdated")
 			return { side: note.side, start: note.start, end: note.end };
@@ -113,7 +113,7 @@
 			baseIndex = new Map<number, number>();
 		const headFolds: { start: number; end: number; row: number }[] = [],
 			baseFolds: typeof headFolds = [];
-		const gutterNotes = new Map<string, ExplorerNote[]>();
+		const gutterNotes = new Map<string, ExplorerLineNote[]>();
 		const marked = new Map<string, ExplorerMatch[]>();
 		let current: ExplorerMatch | undefined;
 		let range: ExplorerRange | null = null;
@@ -123,8 +123,7 @@
 		let frame = 0;
 		let width = 0;
 		let longest = 0;
-		let notePaint: ExplorerNote[] = [];
-		let indexed: ExplorerNote[] = [];
+		let notePaint: ExplorerLineNote[] = [];
 		const syntaxBySource = new WeakMap<string[], { language: string; at: (line: number) => ExplorerSpan[] }>();
 		function syntaxAt(source: string[], language: string, line: number) {
 			let index = syntaxBySource.get(source);
@@ -141,11 +140,12 @@
 		canvas.append(top, list, bottom);
 
 		function indexNotes(notes: ExplorerNote[]) {
-			indexed = notes;
 			notePaint = [];
 			gutterNotes.clear();
+			if (!opts) return;
 			for (const note of notes) {
-				const spot = opts ? noteSpot(note, opts) : null;
+				if (note.target !== undefined) continue;
+				const spot = noteSpot(note, opts);
 				if (!spot) continue;
 				notePaint.push({ ...note, ...spot });
 				const key = `${spot.side}:${spot.start}`;
@@ -262,18 +262,11 @@
 			opts?.onRange(selected);
 		}
 
-		// Review comments, then agent notes, then remote discussions choose the marker colour.
-		function dotKind(notes: ExplorerNote[]) {
-			if (notes.some((note) => note.state === "draft")) return "draft";
-			if (notes.some((note) => note.author === "agent")) return "agent";
-			return notes.some((note) => note.author === "remote") ? "remote" : "";
-		}
-		// Adds the note marker for a gutter line that carries notes.
 		function appendNoteDot(cell: HTMLElement, line: number, side: ExplorerSide) {
 			const notes = gutterNotes.get(`${side}:${line}`);
 			if (!notes?.length) return;
-			const mark = button("", () => opts?.onNote(notes), `note-dot ${dotKind(notes)}`);
-			mark.setAttribute("aria-label", `Open ${notes.length === 1 ? "note" : `${notes.length} notes`} on line ${line}`);
+			const mark = noteMarker(notes, `on ${side === "base" ? "old " : ""}line ${line}`, () => opts?.onNote(notes));
+			mark.classList.add("note-dot");
 			cell.append(mark);
 		}
 
@@ -538,25 +531,6 @@
 			if (covering.every((note) => note.author === "agent")) return ["has-note", "has-agent"];
 			return covering.every((note) => note.author === "remote") ? ["has-note", "has-remote"] : ["has-note"];
 		}
-		function plainClick(event: MouseEvent) {
-			return (
-				event.button === 0 && event.detail <= 1 && !(event.shiftKey || event.metaKey || event.ctrlKey || event.altKey)
-			);
-		}
-		function markedCell(event: MouseEvent) {
-			if (!plainClick(event) || !window.getSelection()?.isCollapsed) return null;
-			return event.target instanceof Element ? event.target.closest<HTMLElement>(".code-cell.has-note") : null;
-		}
-		// A plain click on a marked line opens its notes; a drag or a double-click keeps selecting text.
-		function openMarked(event: MouseEvent) {
-			const part = markedCell(event);
-			if (!part?.dataset.line || !opts) return;
-			const found = notesAt(part.dataset.side === "base" ? "base" : "head", Number(part.dataset.line));
-			const ids = new Set(found.map((note) => note.id));
-			const notes = indexed.filter((note) => ids.has(note.id));
-			if (notes.length) opts.onNote(notes);
-		}
-		canvas.addEventListener("click", openMarked);
 		body.addEventListener(
 			"scroll",
 			() => {

@@ -21,7 +21,6 @@ type ExplorerLaunch = {
 	end?: number;
 	view?: ExplorerView;
 	review?: ExplorerScope;
-	tour?: string;
 	note?: string;
 	draft?: ExplorerCardDraft;
 };
@@ -101,15 +100,13 @@ type ExplorerDiff = {
 };
 type ExplorerAuthor = "operator" | "agent" | "remote";
 type ExplorerNoteState = "draft" | "open" | "sent" | "answered" | "resolved";
-type ExplorerNote = {
+type ExplorerNoteTarget =
+	| { kind: "file"; path: string; side?: ExplorerSide }
+	| { kind: "commit"; commit: string }
+	| { kind: "review"; review: ExplorerScope };
+type ExplorerNoteFields = {
 	id: string;
-	path: string;
-	side: ExplorerSide;
-	start: number;
-	end: number;
-	location: "same" | "moved" | "outdated";
-	movedFrom?: number;
-	anchor: { start: number; end: number; commit: string | null; quote: string };
+	reviewKey?: string;
 	author: ExplorerAuthor;
 	/** Display name of a remote author. */
 	by?: string;
@@ -120,23 +117,23 @@ type ExplorerNote = {
 	state: ExplorerNoteState;
 	title?: string;
 	text: string;
-	tour?: { id: string; order: number };
 	thread: { id: string; author: ExplorerAuthor; by?: string; text: string; at: string }[];
 	requestId?: string;
 	createdAt: string;
 	updatedAt: string;
 };
-type ExplorerTour = {
-	id: string;
-	title: string;
-	scope?: ExplorerScope;
-	stops: string[];
-	createdAt: string;
-	/** Link to the reviewed merge or pull request, or another reference. */
-	url?: string;
-	/** Markdown overview shown before the first stop. */
-	summary?: string;
+type ExplorerLineNote = ExplorerNoteFields & {
+	target?: never;
+	path: string;
+	side: ExplorerSide;
+	start: number;
+	end: number;
+	location: "same" | "moved" | "outdated";
+	movedFrom?: number;
+	anchor: { start: number; end: number; commit: string | null; quote: string };
 };
+type ExplorerTargetNote = ExplorerNoteFields & { target: ExplorerNoteTarget };
+type ExplorerNote = ExplorerLineNote | ExplorerTargetNote;
 type ExplorerSearchResult = { path: string; line: number; column: number; preview: string };
 type ExplorerPacket = { requestId: string; threadId: string; text: string; noteIds?: string[] };
 type ExplorerPromptState = {
@@ -157,17 +154,17 @@ type ExplorerEvent = { v: 1 } & (
 	| ({ type: "open" } & ({ root: ExplorerRoot; base: ExplorerBase } | { root?: never; base?: never }) & ExplorerLaunch)
 	| ExplorerPromptState
 );
-type ExplorerCreateNote = Pick<ExplorerNote, "path" | "side" | "start" | "end" | "author" | "text" | "title"> & {
+type ExplorerCreateNote = Pick<ExplorerLineNote, "path" | "side" | "start" | "end" | "author" | "text" | "title"> & {
 	commit: string | null;
 	quote: string;
 	state: "draft" | "open" | "sent";
 };
 type ExplorerNoteWrite =
 	| { op: "create"; note: ExplorerCreateNote }
-	| { op: "update"; id: string; text: string }
+	| { op: "update"; id: string; expectedUpdatedAt: string; text?: string; title?: string | null }
 	| { op: "reply"; id: string; text: string; author: ExplorerNote["author"]; requestId?: string }
 	| { op: "state"; ids: string[]; state: ExplorerNoteState; requestId?: string }
-	| { op: "delete" | "tour-delete"; id: string };
+	| { op: "delete"; id: string };
 type ExplorerRequests = {
 	hello: [
 		undefined,
@@ -207,7 +204,7 @@ type ExplorerRequests = {
 		{ query: string; regex?: boolean; caseSensitive?: boolean; limit?: number },
 		{ results: ExplorerSearchResult[]; truncated: boolean; source: string },
 	];
-	"notes.list": [{ path?: string } | undefined, { notes: ExplorerNote[]; tours: ExplorerTour[] }];
+	"notes.list": [{ path?: string } | undefined, { notes: ExplorerNote[] }];
 	"notes.write": [ExplorerNoteWrite, { note?: ExplorerNote; notes?: ExplorerNote[] }];
 	"review.state": [
 		{ op: "get" | "set"; key: string; viewed?: string[]; finished?: boolean },
@@ -374,6 +371,7 @@ interface ExplorerApp {
 		icon(name: string): HTMLElement;
 		button(text: string, action: () => void, cls?: string): HTMLButtonElement;
 		iconButton(name: string, label: string, action: () => void): HTMLButtonElement;
+		noteMarker(notes: ExplorerNote[], label: string, action: () => void): HTMLButtonElement;
 		glyph(button: HTMLElement, name: string): void;
 	};
 	code(body: HTMLElement): ExplorerCodeView;
@@ -399,13 +397,16 @@ type ExplorerReviewContext = {
 	root(): ExplorerRoot;
 	scope(): string;
 	live(): ExplorerLive;
-	drafts(): ExplorerNote[];
+	drafts(): ExplorerLineNote[];
 	notes(): ExplorerNote[];
+	sequence(): ExplorerNote[];
+	shows(note: ExplorerNote): boolean;
+	inReview(): boolean;
 	excerpt(range: ExplorerRange | null): ExplorerExcerpt | null;
 	bounds(range: ExplorerRange | null): DOMRect | null;
 	highlight(range: ExplorerRange | null): void;
-	/** Shows the note's lines, in the walkthrough's review when one is named, and returns where they are. */
-	go(note: ExplorerNote, tour?: ExplorerTour): Promise<ExplorerRange | null>;
+	/** Shows the note's target and returns its visible line range, if any. */
+	go(note: ExplorerNote): Promise<ExplorerRange | null>;
 	/** Opens a location, commit, range or link named in card text while the card stays open. */
 	follow(target: ExplorerRichTarget, side: ExplorerSide | null): Promise<void>;
 	refresh(): Promise<void>;
@@ -418,7 +419,6 @@ type ExplorerReviewUI = {
 	ask(range: ExplorerRange | null, mode?: "ask" | "comment" | "note"): void;
 	restore(path: string, draft: ExplorerCardDraft): void;
 	thread(notes: ExplorerNote[], position?: ExplorerRange | null): void;
-	tour(tour: ExplorerTour): Promise<void>;
 	step(direction: number): boolean;
 	refresh(): void;
 	prompt(event: ExplorerPromptState): void;

@@ -7,11 +7,21 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
-import { type CreateNote, type Note, NotesStore, recentRoots, type Tour } from "./notes-store.ts";
+import { type CreateLineNote, type Note, NotesStore, recentRoots } from "./notes-store.ts";
 import { resolveRepository } from "./repository.ts";
 
+type LineNote = Extract<Note, { anchor: unknown }>;
+const lineNote = (value: Note): LineNote => {
+	assert.ok("anchor" in value);
+	return value;
+};
+const targetNote = (value: Note): Extract<Note, { target: unknown }> => {
+	assert.ok("target" in value);
+	return value;
+};
+
 const helper = fileURLToPath(new URL("./notes-helper.ts", import.meta.url));
-const example: CreateNote = {
+const example: CreateLineNote = {
 	path: "code.ts",
 	side: "head",
 	start: 2,
@@ -52,7 +62,16 @@ async function remoteFixture(t: TestContext) {
 	git("switch", "-q", "main");
 	const review = { kind: "range", base, head } as const;
 	const repo = await resolveRepository(root);
-	return { root, dir, repo, notes: new NotesStore(dir, repo), git, review, oldPath, newPath };
+	return {
+		root,
+		dir,
+		repo,
+		notes: new NotesStore(dir, repo),
+		git,
+		review,
+		oldPath,
+		newPath,
+	};
 }
 const sha256 = (input: string) => createHash("sha256").update(input).digest("hex");
 
@@ -67,13 +86,17 @@ async function fixture(t: TestContext) {
 	const notes = new NotesStore(dir, repo);
 	const repoDir = join(dir, "repos", sha256(repo.identity).slice(0, 32));
 	const record = (id: string) => join(repoDir, "notes", `${id}.json`);
-	const add = async (patch: Partial<CreateNote> = {}) =>
+	const add = async (patch: Partial<CreateLineNote> = {}) =>
 		(await notes.request("create", { note: { ...example, ...patch } })).note as Note;
 	return { temp, dir, root, repoDir, repo, notes, record, add };
 }
 
 function envelope(input: Buffer | string) {
-	const child = spawnSync(process.execPath, [helper], { input, encoding: "utf8", timeout: 10_000 });
+	const child = spawnSync(process.execPath, [helper], {
+		input,
+		encoding: "utf8",
+		timeout: 10_000,
+	});
 	assert.ifError(child.error);
 	assert.equal(child.status, 0, child.stderr);
 	return JSON.parse(child.stdout);
@@ -81,7 +104,10 @@ function envelope(input: Buffer | string) {
 
 function call(request: Record<string, unknown>): Promise<{ ok: boolean; note: Note }> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [helper], { timeout: 10_000, stdio: ["pipe", "pipe", "inherit"] });
+		const child = spawn(process.execPath, [helper], {
+			timeout: 10_000,
+			stdio: ["pipe", "pipe", "inherit"],
+		});
 		let output = "";
 		child.stdout.setEncoding("utf8").on("data", (text) => {
 			output += text;
@@ -102,56 +128,240 @@ function call(request: Record<string, unknown>): Promise<{ ok: boolean; note: No
 
 test("notes keep private source records and resolve locations on every read", async (t) => {
 	const { dir, root, repoDir, notes, record, add } = await fixture(t);
-	assert.deepEqual(await notes.request("list"), { notes: [], tours: [], unreadable: 0, truncated: false });
+	assert.deepEqual(await notes.request("list"), {
+		notes: [],
+		unreadable: 0,
+		truncated: false,
+	});
 	await assert.rejects(stat(dir), { code: "ENOENT" });
-	const note = await add();
+	const note = lineNote(await add());
 	assert.match(note.id, /^n-[0-9a-f]{20}$/);
 	assert.equal(note.location, "same");
-	assert.deepEqual(note.anchor, { start: 2, end: 2, commit: null, quote: "target" });
+	assert.deepEqual(note.anchor, {
+		start: 2,
+		end: 2,
+		commit: null,
+		quote: "target",
+	});
 	const source = JSON.parse(await readFile(record(note.id), "utf8"));
-	for (const key of ["start", "end", "location", "movedFrom"]) assert.equal(Object.hasOwn(source, key), false);
+	for (const key of ["start", "end", "location", "movedFrom", "target"])
+		assert.equal(Object.hasOwn(source, key), false);
 	for (const file of [dir, join(dir, "repos"), repoDir, join(repoDir, "notes")])
 		assert.equal((await stat(file)).mode & 0o777, 0o700);
 	for (const file of [join(dir, "store.json"), join(repoDir, "repo.json"), record(note.id)])
 		assert.equal((await stat(file)).mode & 0o777, 0o600);
 	await writeFile(join(root, example.path), "intro\nnew\ntarget\nend\n");
-	const moved = (await notes.request("list", { path: example.path })).notes as Note[];
+	const moved = (await notes.request("list", { path: example.path })).notes as LineNote[];
 	assert.deepEqual(
-		moved.map(({ id, start, end, location, movedFrom }) => ({ id, start, end, location, movedFrom })),
+		moved.map(({ id, start, end, location, movedFrom }) => ({
+			id,
+			start,
+			end,
+			location,
+			movedFrom,
+		})),
 		[{ id: note.id, start: 3, end: 3, location: "moved", movedFrom: 2 }],
 	);
 	await writeFile(join(root, example.path), "intro\nnew\ntarget\ntarget\n");
-	const outdated = (await notes.request("read", { id: note.id })).note as Note;
+	const outdated = lineNote((await notes.request("read", { id: note.id })).note as Note);
 	assert.equal(outdated.location, "outdated");
 	assert.deepEqual(outdated.anchor, note.anchor);
 	assert.deepEqual((await notes.request("list", { path: "elsewhere" })).notes, []);
 	assert.deepEqual(await readdir(join(repoDir, "notes")), [`${note.id}.json`]);
 });
 
-test("note writes enforce edit rules and validate all state members before publication", async (t) => {
+test("freeform targets store no line fields and pin review scopes", async (t) => {
+	const { dir, repo, notes, review, newPath } = await remoteFixture(t);
+	const file = (
+		await notes.request("create", {
+			note: {
+				target: { kind: "file", path: newPath, side: "base" },
+				text: "File note.",
+				author: "agent",
+				state: "open",
+				reviewKey: `${review.base}..${review.head}`,
+			},
+		})
+	).note as Note;
+	assert.deepEqual(targetNote(file).target, { kind: "file", path: newPath, side: "base" });
+	assert.equal("path" in file, false);
+	assert.equal("anchor" in file, false);
+	assert.equal(file.reviewKey, `${review.base}..${review.head}`);
+	const commit = (
+		await notes.request("create", {
+			note: {
+				target: { kind: "commit", commit: review.head },
+				text: "Commit note.",
+				author: "agent",
+				state: "open",
+			},
+		})
+	).note as Note;
+	assert.deepEqual(targetNote(commit).target, { kind: "commit", commit: review.head });
+	const reviewed = (
+		await notes.request("create", {
+			note: {
+				target: {
+					kind: "review",
+					review: { kind: "range", base: "main", head: "review" },
+				},
+				text: "Review note.",
+				author: "agent",
+				state: "open",
+			},
+		})
+	).note as Note;
+	assert.deepEqual(targetNote(reviewed).target, {
+		kind: "review",
+		review: { kind: "range", base: review.base, head: review.head },
+	});
+	assert.equal(reviewed.reviewKey, `${review.base}..${review.head}`);
+	const stored = JSON.parse(
+		await readFile(join(dir, "repos", sha256(repo.identity).slice(0, 32), "notes", `${file.id}.json`), "utf8"),
+	);
+	assert.deepEqual(
+		Object.keys(stored).filter((key) => ["path", "side", "anchor", "start", "end"].includes(key)),
+		[],
+	);
+	assert.deepEqual(stored.target, {
+		kind: "file",
+		path: newPath,
+		side: "base",
+	});
+	const listed = (await notes.request("list", { path: newPath })).notes as Note[];
+	assert.ok(listed.some((note) => note.id === file.id));
+	await assert.rejects(
+		notes.request("create", {
+			note: {
+				target: { kind: "commit", commit: "abc" },
+				text: "Bad.",
+				author: "agent",
+				state: "open",
+			},
+		}),
+		{ code: "invalid" },
+	);
+	await assert.rejects(
+		notes.request("create", {
+			note: {
+				target: { kind: "file", path: newPath },
+				path: newPath,
+				text: "Mixed.",
+				author: "agent",
+				state: "open",
+			},
+		}),
+		{ code: "invalid" },
+	);
+});
+
+test("batch writes validate every note before publishing and ignore retired stop markers", async (t) => {
+	const { notes, repoDir, record } = await fixture(t);
+	await assert.rejects(stat(join(repoDir, "notes")), { code: "ENOENT" });
+	await assert.rejects(
+		notes.request("create", {
+			notes: [
+				{ ...example, author: "agent", state: "open", text: "First" },
+				{ ...example, author: "agent", state: "open", text: " " },
+			],
+		}),
+		{ code: "invalid" },
+	);
+	await assert.rejects(stat(join(repoDir, "notes")), { code: "ENOENT" });
+	const created = (
+		await notes.request("create", {
+			notes: [
+				{ ...example, author: "agent", state: "open", text: "First" },
+				{ ...example, author: "agent", state: "open", text: "Second" },
+			],
+		})
+	).notes as Note[];
+	assert.deepEqual(
+		created.map((note) => note.text),
+		["First", "Second"],
+	);
+	const saved = JSON.parse(await readFile(record(created[0].id), "utf8"));
+	await writeFile(record(created[0].id), JSON.stringify({ ...saved, tour: { id: "t-retired", order: 1 } }));
+	const read = (await notes.request("read", { id: created[0].id })).note as Note;
+	assert.equal(Object.hasOwn(read, "tour"), false);
+	await notes.request("reply", {
+		id: created[0].id,
+		author: "agent",
+		text: "Keep",
+	});
+	const rewritten = JSON.parse(await readFile(record(created[0].id), "utf8"));
+	assert.equal(Object.hasOwn(rewritten, "tour"), false);
+});
+
+test("update and delete enforce author, expected time and all-or-nothing validation", async (t) => {
 	const { notes, add } = await fixture(t);
-	const { id } = await add();
-	const agent = await add({ author: "agent", state: "open" });
-	assert.equal(((await notes.request("update", { id, text: "Updated" })).note as Note).text, "Updated");
-	await assert.rejects(notes.request("delete", { id: agent.id }), { code: "conflict" });
-	await assert.rejects(notes.request("state", { ids: [id, missingId], state: "sent" }), { code: "not-found" });
-	assert.equal(((await notes.request("read", { id })).note as Note).state, "draft");
-	const changed = (await notes.request("state", { ids: [id], state: "sent", requestId: "request-1" })).notes as Note[];
-	assert.deepEqual(
-		changed.map((note) => [note.state, note.requestId]),
-		[["sent", "request-1"]],
+	const operator = await add({ title: "Operator title" });
+	const agent = await add({
+		author: "agent",
+		state: "open",
+		title: "Agent title",
+	});
+	await assert.rejects(
+		notes.request("update", {
+			id: operator.id,
+			text: "Tool edit",
+			expectedUpdatedAt: operator.updatedAt,
+			agentOnly: true,
+		}),
+		{ code: "conflict" },
 	);
-	await assert.rejects(notes.request("update", { id, text: "Refuse" }), { code: "conflict" });
-	const replied = (await notes.request("reply", { id, author: "agent", text: "Answer" })).note as Note;
-	assert.deepEqual(
-		replied.thread.map((row) => [row.author, row.text]),
-		[["agent", "Answer"]],
+	const edited = (
+		await notes.request("update", {
+			id: agent.id,
+			text: "Agent edit",
+			expectedUpdatedAt: agent.updatedAt,
+			agentOnly: true,
+		})
+	).note as Note;
+	assert.equal(edited.text, "Agent edit");
+	assert.notEqual(edited.updatedAt, agent.updatedAt);
+	await assert.rejects(
+		notes.request("update", {
+			id: agent.id,
+			text: "Stale edit",
+			expectedUpdatedAt: agent.updatedAt,
+			agentOnly: true,
+		}),
+		{ code: "conflict" },
 	);
-	assert.equal(replied.requestId, "request-1");
-	await notes.request("state", { ids: [id, agent.id], state: "resolved" });
-	await notes.request("state", { ids: [id, agent.id], state: "answered" });
-	await notes.request("delete", { id });
-	await assert.rejects(notes.request("read", { id }), { code: "not-found" });
+	const cleared = (
+		await notes.request("update", {
+			id: agent.id,
+			title: null,
+			expectedUpdatedAt: edited.updatedAt,
+			agentOnly: true,
+		})
+	).note as Note;
+	assert.equal(cleared.title, undefined);
+	assert.equal(cleared.text, "Agent edit");
+	const native = (
+		await notes.request("update", {
+			id: operator.id,
+			text: "Operator edit",
+			expectedUpdatedAt: operator.updatedAt,
+		})
+	).note as Note;
+	assert.equal(native.text, "Operator edit");
+	await assert.rejects(notes.request("update", { id: operator.id, text: "Missing time" }), { code: "invalid" });
+	await assert.rejects(notes.request("delete", { ids: [agent.id, operator.id], agentOnly: true }), {
+		code: "conflict",
+	});
+	assert.equal(((await notes.request("read", { id: agent.id })).note as Note).id, agent.id);
+	await notes.request("delete", { ids: [agent.id], agentOnly: true });
+	await assert.rejects(notes.request("read", { id: agent.id }), {
+		code: "not-found",
+	});
+	await assert.rejects(notes.request("delete", { ids: [missingId], agentOnly: true }), { code: "not-found" });
+	await notes.request("delete", { id: operator.id });
+	await assert.rejects(notes.request("read", { id: operator.id }), {
+		code: "not-found",
+	});
+	await assert.rejects(notes.request("state", { ids: [missingId], state: "sent" }), { code: "not-found" });
 	for (const patch of [
 		{ path: "../outside" },
 		{ start: 3 },
@@ -162,38 +372,8 @@ test("note writes enforce edit rules and validate all state members before publi
 		await assert.rejects(notes.request("create", { note: { ...example, ...patch } }), { code: "invalid" });
 });
 
-test("walkthroughs preserve stop order and deletion preserves the notes", async (t) => {
-	const { notes } = await fixture(t);
-	const first = { ...example, author: "agent", state: "open" };
-	const second = { ...first, text: "Another stop" };
-	const scope = { kind: "branch", base: "main" };
-	const { tour } = (await notes.request("tour-create", {
-		title: "Read the change",
-		url: "https://review.example.test/42",
-		summary: "Read the **change**.",
-		scope,
-		notes: [first, second],
-	})) as { tour: Tour };
-	assert.match(tour.id, /^t-[0-9a-f]{20}$/);
-	assert.deepEqual(tour.scope, scope);
-	assert.equal(tour.url, "https://review.example.test/42");
-	assert.equal(tour.summary, "Read the **change**.");
-	const listed = await notes.request("list");
-	assert.deepEqual(listed.tours, [tour]);
-	const stops = (listed.notes as Note[]).sort((a, b) => (a.tour?.order ?? 0) - (b.tour?.order ?? 0));
-	assert.deepEqual(
-		stops.map((note) => [note.id, note.tour]),
-		tour.stops.map((id, index) => [id, { id: tour.id, order: index + 1 }]),
-	);
-	await notes.request("tour-delete", { id: tour.id });
-	const after = await notes.request("list");
-	assert.deepEqual(after.tours, []);
-	assert.deepEqual((after.notes as Note[]).map((note) => note.id).sort(), [...tour.stops].sort());
-	assert.ok((after.notes as Note[]).every((note) => note.tour === undefined));
-});
-
-test("imports anchor against either commit, update in place, and retain local replies", async (t) => {
-	const { dir, root, notes, review, oldPath, newPath } = await remoteFixture(t);
+test("imports anchor lines, add freeform targets, update in place, and retain local replies", async (t) => {
+	const { notes, review, oldPath, newPath } = await remoteFixture(t);
 	const first = {
 		id: "discussion:1",
 		path: newPath,
@@ -213,29 +393,75 @@ test("imports anchor against either commit, update in place, and retain local re
 		by: "Reviewer",
 		text: "Deleted line",
 	};
+	const file = {
+		id: "discussion:3",
+		path: newPath,
+		by: "Reviewer",
+		text: "File note",
+	};
+	const commit = {
+		id: "discussion:4",
+		commit: review.head,
+		by: "Reviewer",
+		text: "Commit note",
+	};
+	const reviewed = { id: "discussion:5", by: "Reviewer", text: "Review note" };
 	const existing = await notes.request("import", {
 		review,
-		comments: [first, second, { ...first, id: "missing", start: 999, end: 999 }],
+		comments: [first, second, file, commit, reviewed, { ...first, id: "missing", start: 999, end: 999 }],
 	});
-	assert.equal(existing.created, 2);
+	assert.equal(existing.created, 5);
 	assert.equal(existing.updated, 0);
 	assert.match((existing.skipped as { reason: string }[])[0].reason, /outside/u);
-	const [head, base] = existing.notes as { id: string; external: string }[];
-	assert.equal(head.external, first.id);
-	const imported = (await notes.request("read", { id: head.id })).note as Note;
-	assert.deepEqual(imported.anchor, { start: 8, end: 9, quote: "new 1\nnew 2", commit: review.head });
-	assert.deepEqual(((await notes.request("read", { id: base.id })).note as Note).anchor, {
+	const ids = existing.notes as { id: string; external: string }[];
+	const byExternal = new Map(ids.map((row) => [row.external, row.id]));
+	const head = byExternal.get(first.id) as string;
+	const base = byExternal.get(second.id) as string;
+	const imported = lineNote((await notes.request("read", { id: head })).note as Note);
+	assert.deepEqual(imported.anchor, {
+		start: 8,
+		end: 9,
+		quote: "new 1\nnew 2",
+		commit: review.head,
+	});
+	assert.equal(imported.reviewKey, `${review.base}..${review.head}`);
+	assert.deepEqual(lineNote((await notes.request("read", { id: base })).note as Note).anchor, {
 		start: 31,
 		end: 31,
 		quote: "line 31",
 		commit: review.base,
 	});
+	assert.deepEqual(
+		targetNote((await notes.request("read", { id: byExternal.get(file.id) as string })).note as Note).target,
+		{
+			kind: "file",
+			path: newPath,
+		},
+	);
+	assert.deepEqual(
+		targetNote((await notes.request("read", { id: byExternal.get(commit.id) as string })).note as Note).target,
+		{
+			kind: "commit",
+			commit: review.head,
+		},
+	);
+	assert.deepEqual(
+		targetNote((await notes.request("read", { id: byExternal.get(reviewed.id) as string })).note as Note).target,
+		{
+			kind: "review",
+			review: { kind: "range", base: review.base, head: review.head },
+		},
+	);
 	assert.equal(imported.author, "remote");
 	assert.equal(imported.url, first.url);
 	assert.equal(imported.thread[0].author, "remote");
 	assert.equal(imported.thread[0].by, "Author");
-	await notes.request("reply", { id: head.id, author: "operator", text: "Local reply" });
-	const local = ((await notes.request("read", { id: head.id })).note as Note).thread[1];
+	await notes.request("reply", {
+		id: head,
+		author: "operator",
+		text: "Local reply",
+	});
+	const local = ((await notes.request("read", { id: head })).note as Note).thread[1];
 	const revised = await notes.request("import", {
 		review,
 		comments: [
@@ -250,41 +476,85 @@ test("imports anchor against either commit, update in place, and retain local re
 			},
 		],
 	});
-	assert.deepEqual(revised, { created: 0, updated: 1, notes: [head], skipped: [] });
-	const saved = (await notes.request("read", { id: head.id })).note as Note;
+	assert.deepEqual(revised, {
+		created: 0,
+		updated: 1,
+		notes: [{ id: head, external: first.id }],
+		skipped: [],
+	});
+	const saved = lineNote((await notes.request("read", { id: head })).note as Note);
 	assert.equal(saved.state, "resolved");
 	assert.equal(saved.side, "base");
 	assert.equal(saved.by, "New reviewer");
 	assert.equal(saved.url, undefined);
 	assert.deepEqual(saved.thread.slice(1), [imported.thread[0], local]);
 	assert.equal(saved.thread[0].at, "2026-01-12T08:30:00.000Z");
-	assert.equal(
-		envelope(JSON.stringify({ version: 1, store: dir, root, op: "list" })).notes.find(
-			(note: Note) => note.id === head.id,
-		).external,
-		first.id,
+	await assert.rejects(
+		notes.request("update", {
+			id: head,
+			text: "Not editable",
+			expectedUpdatedAt: saved.updatedAt,
+		}),
+		{
+			code: "conflict",
+		},
 	);
-	await assert.rejects(notes.request("update", { id: head.id, text: "Not editable" }), { code: "conflict" });
-	await notes.request("state", { ids: [head.id], state: "open" });
-	await notes.request("delete", { id: head.id });
-	assert.deepEqual(
-		((await notes.request("list")).notes as Note[]).map((note) => note.id),
-		[base.id],
-	);
+	await notes.request("state", { ids: [head], state: "open" });
+	await notes.request("delete", { id: head });
+	assert.equal(((await notes.request("list")).notes as Note[]).length, 4);
 });
 
-test("exports exact Git hunk positions on both sides of a rename", async (t) => {
+test("exports exact Git hunk positions on both sides of a rename and excludes targets", async (t) => {
 	const { notes, git, review, oldPath, newPath } = await remoteFixture(t);
-	const add = async (patch: Partial<CreateNote>) =>
+	const add = async (patch: Partial<CreateLineNote>) =>
 		((await notes.request("create", { note: { ...example, ...patch } })).note as Note).id;
-	const added = await add({ path: newPath, start: 8, end: 9, quote: "new 1\nnew 2" });
-	const removed = await add({ path: newPath, side: "base", start: 31, end: 31, quote: "line 31", state: "sent" });
-	const moved = await add({ path: newPath, start: 1, end: 1, quote: "line 32" });
-	const beyond = await add({ path: newPath, start: 41, end: 41, quote: "line 40" });
-	const partial = await add({ path: newPath, start: 4, end: 5, quote: "line 4\nline 5" });
+	const added = await add({
+		path: newPath,
+		start: 8,
+		end: 9,
+		quote: "new 1\nnew 2",
+	});
+	const removed = await add({
+		path: newPath,
+		side: "base",
+		start: 31,
+		end: 31,
+		quote: "line 31",
+		state: "sent",
+	});
+	const moved = await add({
+		path: newPath,
+		start: 1,
+		end: 1,
+		quote: "line 32",
+	});
+	const beyond = await add({
+		path: newPath,
+		start: 41,
+		end: 41,
+		quote: "line 40",
+	});
+	const partial = await add({
+		path: newPath,
+		start: 4,
+		end: 5,
+		quote: "line 4\nline 5",
+	});
 	const stale = await add({ path: newPath, quote: "no match" });
 	const resolved = await add({ path: newPath, state: "open", quote: "new 1" });
 	const agent = await add({ path: newPath, author: "agent" });
+	const target = (
+		(
+			await notes.request("create", {
+				note: {
+					target: { kind: "file", path: newPath },
+					text: "Freeform",
+					author: "operator",
+					state: "sent",
+				},
+			})
+		).note as Note
+	).id;
 	const patch = git("diff", "--find-renames", "-U3", review.base, review.head);
 	assert.match(patch, /rename from "old .*\nrename to new path.txt/u);
 	assert.match(patch, /@@ -5,6 \+5,8 @@ line 4\n line 5\n line 6\n line 7\n\+new 1\n\+new 2/u);
@@ -299,11 +569,21 @@ test("exports exact Git hunk positions on both sides of a rename", async (t) => 
 	assert.equal(pinned.base, review.base);
 	assert.equal(pinned.head, review.head);
 	const position = (index: number, start: unknown, end: unknown, inDiff: boolean) =>
-		assert.deepEqual(rows[index].position, { oldPath, newPath, start, end, inDiff });
+		assert.deepEqual(rows[index].position, {
+			oldPath,
+			newPath,
+			start,
+			end,
+			inDiff,
+		});
 	position(0, { old: null, new: 8, kind: "added" }, { old: null, new: 9, kind: "added" }, true);
 	const deleted = { old: 31, new: null, kind: "deleted" };
 	position(1, deleted, deleted, true);
-	const context = (old: number, fresh: number) => ({ old, new: fresh, kind: "context" });
+	const context = (old: number, fresh: number) => ({
+		old,
+		new: fresh,
+		kind: "context",
+	});
 	position(2, context(32, 33), context(32, 33), true);
 	assert.equal(rows[2].start, 33);
 	position(3, context(40, 41), context(40, 41), false);
@@ -315,7 +595,12 @@ test("exports exact Git hunk positions on both sides of a rename", async (t) => 
 		new Set([added, removed, moved, beyond, partial, stale]),
 	);
 	assert.equal(((await notes.request("export", { review, ids: [resolved] })).notes as Note[]).length, 1);
-	await assert.rejects(notes.request("export", { review, ids: [agent] }), { code: "invalid" });
+	await assert.rejects(notes.request("export", { review, ids: [agent] }), {
+		code: "invalid",
+	});
+	await assert.rejects(notes.request("export", { review, ids: [target] }), {
+		code: "invalid",
+	});
 });
 
 test("worktree review positions include new files and do not run clean filters", async (t) => {
@@ -326,11 +611,19 @@ test("worktree review positions include new files and do not run clean filters",
 	git("config", "filter.custom.clean", "touch .filter-ran && cat");
 	git("config", "filter.custom.required", "true");
 	const review = { kind: "uncommitted" };
-	const create = async (patch: Partial<CreateNote>) =>
+	const create = async (patch: Partial<CreateLineNote>) =>
 		((await notes.request("create", { note: { ...example, ...patch } })).note as Note).id;
 	const a = await create({ quote: "inserted" });
-	const b = await create({ path: "new.ts", start: 1, end: 1, quote: "new file" });
-	const { notes: rows } = (await notes.request("export", { review, ids: [a, b] })) as {
+	const b = await create({
+		path: "new.ts",
+		start: 1,
+		end: 1,
+		quote: "new file",
+	});
+	const { notes: rows } = (await notes.request("export", {
+		review,
+		ids: [a, b],
+	})) as {
 		notes: { position: unknown }[];
 	};
 	for (const [index, path, fresh] of [
@@ -338,7 +631,13 @@ test("worktree review positions include new files and do not run clean filters",
 		[1, "new.ts", 1],
 	] as const) {
 		const point = { old: null, new: fresh, kind: "added" };
-		assert.deepEqual(rows[index].position, { oldPath: path, newPath: path, start: point, end: point, inDiff: true });
+		assert.deepEqual(rows[index].position, {
+			oldPath: path,
+			newPath: path,
+			start: point,
+			end: point,
+			inDiff: true,
+		});
 	}
 	await assert.rejects(stat(join(root, ".filter-ran")), { code: "ENOENT" });
 });
@@ -348,7 +647,9 @@ test("review state and recents remain separate from note records", async (t) => 
 	const head = "a".repeat(40);
 	const key = `empty..${head}`;
 	assert.deepEqual(await notes.request("review-get", { key }), { viewed: [] });
-	assert.deepEqual(await notes.request("marker", { branch: "__proto__" }), { head: null });
+	assert.deepEqual(await notes.request("marker", { branch: "__proto__" }), {
+		head: null,
+	});
 	const review = await notes.request("review-set", {
 		key,
 		viewed: ["code.ts", "code.ts"],
@@ -358,10 +659,19 @@ test("review state and recents remain separate from note records", async (t) => 
 	});
 	assert.deepEqual(review.viewed, ["code.ts"]);
 	assert.deepEqual(await notes.request("review-get", { key }), review);
-	assert.deepEqual(await notes.request("marker", { branch: "__proto__" }), { head });
-	assert.deepEqual(await notes.request("review-set", { key: "worktree@empty", viewed: ["code.ts"], finished: true }), {
-		viewed: ["code.ts"],
+	assert.deepEqual(await notes.request("marker", { branch: "__proto__" }), {
+		head,
 	});
+	assert.deepEqual(
+		await notes.request("review-set", {
+			key: "worktree@empty",
+			viewed: ["code.ts"],
+			finished: true,
+		}),
+		{
+			viewed: ["code.ts"],
+		},
+	);
 	assert.equal((await stat(join(repoDir, "reviews", `${sha256(key)}.json`))).mode & 0o777, 0o600);
 	assert.deepEqual(await recentRoots(dir), []);
 	await notes.request("remember");
@@ -390,7 +700,14 @@ test("invalid, oversized and linked records are counted and never overwritten", 
 		(result.notes as Note[]).map((note) => note.id),
 		[good.id],
 	);
-	await assert.rejects(notes.request("update", { id: broken.id, text: "Do not repair" }), { code: "not-found" });
+	await assert.rejects(
+		notes.request("update", {
+			id: broken.id,
+			text: "Do not repair",
+			expectedUpdatedAt: good.updatedAt,
+		}),
+		{ code: "not-found" },
+	);
 	assert.equal(await readFile(record(broken.id), "utf8"), invalid);
 });
 
@@ -441,10 +758,12 @@ test("linked Git worktrees share note identity and resolve moved lines separatel
 	git("worktree", "add", "--detach", linked, "HEAD");
 	const repo = await resolveRepository(root);
 	const source = new NotesStore(dir, repo);
-	const { note } = (await source.request("create", { note: { ...example, commit: repo.head } })) as { note: Note };
+	const { note } = (await source.request("create", {
+		note: { ...example, commit: repo.head },
+	})) as { note: Note };
 	await writeFile(join(linked, example.path), "new\nintro\ntarget\nend\ntarget\n");
 	const alternate = new NotesStore(dir, await resolveRepository(linked));
-	const moved = (await alternate.request("read", { id: note.id })).note as Note;
+	const moved = lineNote((await alternate.request("read", { id: note.id })).note as Note);
 	assert.deepEqual([moved.location, moved.start, moved.movedFrom], ["moved", 3, 2]);
-	assert.equal(((await source.request("read", { id: note.id })).note as Note).location, "same");
+	assert.equal(lineNote((await source.request("read", { id: note.id })).note as Note).location, "same");
 });

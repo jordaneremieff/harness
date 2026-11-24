@@ -96,7 +96,7 @@ struct ExplorerServices {
         case "notes.list":
             return try helper.call("list", fields: fields["path"] == nil ? [:] : ["path": try path()])
         case "notes.write":
-            guard let op = fields["op"] as? String, ["create", "update", "reply", "state", "delete", "tour-delete"].contains(op) else {
+            guard let op = fields["op"] as? String, ["create", "update", "reply", "state", "delete"].contains(op) else {
                 throw ExplorerError("invalid", "Unknown notes operation.")
             }
             return try helper.call(op, fields: fields)

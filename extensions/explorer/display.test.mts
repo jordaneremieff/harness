@@ -29,7 +29,6 @@ function bind(key: "ctrl+o" | []) {
 bind("ctrl+o");
 const ui = { requestRender() {} } as TUI;
 const noteId = "n-01234567890123456789";
-const tourId = "t-09876543210987654321";
 const location = { root: "/work", path: "source.ts", line: 12, end: 40 };
 
 function card(name: string, args: unknown, tool?: ToolDefinition) {
@@ -54,7 +53,11 @@ function hints(rows: string[]) {
 	return rows.filter((row) => row.startsWith("... ("));
 }
 function settle(component: ToolExecutionComponent, outcome: Outcome, details?: Record<string, unknown>) {
-	component.updateResult({ content: outcomeContent(outcome), details, isError: !outcome.ok });
+	component.updateResult({
+		content: outcomeContent(outcome),
+		details,
+		isError: !outcome.ok,
+	});
 }
 
 test("show call names the requested lines and review; clipping alone uses a configured key", (t) => {
@@ -73,7 +76,13 @@ test("show call names the requested lines and review; clipping alone uses a conf
 	t.after(() => bind("ctrl+o"));
 	const narrow = card(name, { path: subject, line: 2 });
 	assert.deepEqual(hints(screen(narrow, 64)), []);
-	settle(narrow, { ok: true, op: "show", summary: "Prepared command.", show: ["launch", subject], target: location });
+	settle(narrow, {
+		ok: true,
+		op: "show",
+		summary: "Prepared command.",
+		show: ["launch", subject],
+		target: location,
+	});
 	assert.deepEqual(hints(screen(narrow, 64)), ["... (click to expand)"]);
 });
 
@@ -81,7 +90,10 @@ test("show distinguishes acknowledged navigation, launch preparation, a refusal,
 	for (const [extra, outcome, forbidden] of [
 		[{ moved: true }, "The connected Explorer pane confirmed navigation.", /prepared a pane command/u],
 		[
-			{ show: ["explorer", "file with a space"], paneInput: ":open source.ts\r" },
+			{
+				show: ["explorer", "file with a space"],
+				paneInput: ":open source.ts\r",
+			},
 			"Explorer prepared a pane command. No pane opened.",
 			/confirmed navigation/u,
 		],
@@ -91,15 +103,28 @@ test("show distinguishes acknowledged navigation, launch preparation, a refusal,
 			/confirmed navigation/u,
 		],
 		[
-			{ navigation: "uncertain", summary: "The Explorer pane did not confirm the location.", ok: false },
+			{
+				navigation: "uncertain",
+				summary: "The Explorer pane did not confirm the location.",
+				ok: false,
+			},
 			"The Explorer pane did not confirm the location.",
 			/prepared a pane command|confirmed navigation/u,
 		],
 	] as const) {
-		const component = card("explorer_show", { path: "source.ts", line: 12, endLine: 40, tour: tourId });
-		settle(component, { ok: true, op: "show", summary: "Producer summary.", target: location, ...extra });
+		const component = card("explorer_show", {
+			path: "source.ts",
+			line: 12,
+			endLine: 40,
+		});
+		settle(component, {
+			ok: true,
+			op: "show",
+			summary: "Producer summary.",
+			target: location,
+			...extra,
+		});
 		const rows = screen(component);
-		assert.ok(rows.includes(tourId));
 		assert.ok(rows.includes(outcome));
 		assert.doesNotMatch(rows.join("\n"), forbidden);
 		assert.deepEqual(hints(rows), ["... (ctrl+o to expand)"]);
@@ -118,7 +143,10 @@ test("show distinguishes acknowledged navigation, launch preparation, a refusal,
 });
 
 test("partial result takes the last and only hint; a complete short result needs none", () => {
-	const component = card("explorer_notes", { op: "list", root: `/${"r".repeat(140)}` });
+	const component = card("explorer_notes", {
+		op: "list",
+		root: `/${"r".repeat(140)}`,
+	});
 	assert.deepEqual(hints(screen(component, 64)), ["... (ctrl+o to expand)"]);
 	component.updateResult({ content: [], isError: false }, true);
 	const rows = screen(component, 64);
@@ -126,7 +154,10 @@ test("partial result takes the last and only hint; a complete short result needs
 	assert.deepEqual(hints(rows), ["... (ctrl+o to expand)"]);
 	assert.equal(rows.at(-1), hints(rows)[0]);
 	const short = card("explorer_notes", { op: "list" });
-	short.updateResult({ content: [{ type: "text", text: "No notes returned." }], isError: false });
+	short.updateResult({
+		content: [{ type: "text", text: "No notes returned." }],
+		isError: false,
+	});
 	assert.deepEqual(screen(short), ["explorer_notes list", "No notes returned."]);
 });
 
@@ -134,8 +165,8 @@ test("bare host errors do not reveal withheld note text before expansion", () =>
 	const privateText = "Private text from an unsubmitted note.";
 	const receipts = [
 		{
-			args: { op: "tour", title: "Review", stops: [{ path: "file.ts", text: privateText }] },
-			diagnostic: `Validation failed for tool "explorer_notes":\n- stops.0.start: required\n\nReceived arguments:\n{"stops":[{"text":"${privateText}"}]}`,
+			args: { op: "note", notes: [{ path: "file.ts", text: privateText }] },
+			diagnostic: `Validation failed for tool "explorer_notes":\n- notes.0.start: required\n\nReceived arguments:\n{"notes":[{"text":"${privateText}"}]}`,
 		},
 		{
 			args: {},
@@ -144,7 +175,10 @@ test("bare host errors do not reveal withheld note text before expansion", () =>
 	];
 	for (const { args, diagnostic } of receipts) {
 		const component = card("explorer_notes", args);
-		component.updateResult({ content: [{ type: "text", text: diagnostic }], isError: true });
+		component.updateResult({
+			content: [{ type: "text", text: diagnostic }],
+			isError: true,
+		});
 		const rows = screen(component);
 		assert.ok(rows.includes("The Explorer tool returned an error."));
 		assert.ok(!rows.join("\n").includes(privateText));
@@ -161,7 +195,13 @@ test("note prose previews stop at five actual rows and display bounds are distin
 		ok: true,
 		op: "read",
 		summary: `Read ${noteId}.`,
-		note: { id: noteId, text, textTruncated: true, path: "source.ts", anchor: { quote: "q".repeat(33000) } },
+		note: {
+			id: noteId,
+			text,
+			textTruncated: true,
+			path: "source.ts",
+			anchor: { quote: "q".repeat(33000) },
+		},
 	});
 	const narrow = screen(component, 56);
 	assert.equal(narrow.filter((row) => /^x+$/u.test(row)).length, 5);
@@ -181,29 +221,43 @@ test("bounded note listings distinguish returned scope from display limits", () 
 		ok: true,
 		op: "list",
 		summary: "7 notes match in fixture.",
-		notes: [{ id: noteId, path: "file.ts", start: 1, end: 5, preview: "A retained preview", state: "open" }],
-		tours: [{ id: tourId, title: "Review", stopCount: 2 }],
+		notes: [
+			{
+				id: noteId,
+				path: "file.ts",
+				start: 1,
+				end: 5,
+				preview: "A retained preview",
+				state: "open",
+			},
+			{
+				id: "n-00000000000000000000",
+				target: { kind: "commit", commit: "a".repeat(40) },
+				state: "open",
+			},
+		],
 		limited: true,
 		unreadable: 1,
 	});
 	const collapsed = screen(component);
-	assert.ok(
-		collapsed.includes(
-			"The partial list contains 1 note and 1 walkthrough · 1 unreadable record; no continuation cursor.",
-		),
-	);
+	assert.ok(collapsed.includes("The partial list contains 2 notes · 1 unreadable record; no continuation cursor."));
 	assert.ok(collapsed.includes(`${noteId} · file.ts:1-5 · open`));
+	assert.ok(collapsed.includes(`n-00000000000000000000 · commit ${"a".repeat(40)} · open`));
 	assert.equal(collapsed.at(-1), "... (ctrl+o to expand)");
 	assert.doesNotMatch(collapsed.join("\n"), /A retained preview|\[Truncated:/u);
 	component.setExpanded(true);
 	const expanded = screen(component).join("\n");
 	assert.match(expanded, /preview: A retained preview/u);
-	assert.match(expanded, /stopCount: 2/u);
+	assert.match(expanded, /"kind": "commit"/u);
 });
 
 test("review cards show partial imports and export positions without comment prose in the preview", () => {
 	const review = { range: "base...head" };
-	const imported = card("explorer_notes", { op: "import", review, comments: [{ text: "Private comment text" }] });
+	const imported = card("explorer_notes", {
+		op: "import",
+		review,
+		comments: [{ text: "Private comment text" }],
+	});
 	const call = screen(imported).join("\n");
 	assert.match(call, /review base\.\.\.head · 1 comment/u);
 	assert.doesNotMatch(call, /Private comment text/u);
@@ -226,7 +280,16 @@ test("review cards show partial imports and export positions without comment pro
 		op: "export",
 		summary: "Export receipt.",
 		review: { label: "Resolved review" },
-		notes: [{ id: noteId, path: "file.ts", start: 3, end: 3, text: "Operator comment", position: { inDiff: false } }],
+		notes: [
+			{
+				id: noteId,
+				path: "file.ts",
+				start: 3,
+				end: 3,
+				text: "Operator comment",
+				position: { inDiff: false },
+			},
+		],
 	});
 	const collapsed = screen(exported).join("\n");
 	assert.match(collapsed, /Exported 1 operator note\./u);
@@ -237,19 +300,24 @@ test("review cards show partial imports and export positions without comment pro
 	assert.equal(hints(screen(exported)).length, 0);
 });
 
-test("note listings omit empty groups and distinguish complete from partial empty lists", () => {
+test("note listings omit empty notes and distinguish complete from partial empty lists", () => {
 	const component = card("explorer_notes", { op: "list" });
-	const receipt = { ok: true, op: "list", summary: "0 notes match in fixture.", notes: [], tours: [], unreadable: 0 };
+	const receipt = {
+		ok: true,
+		op: "list",
+		summary: "0 notes match in fixture.",
+		notes: [],
+		unreadable: 0,
+	};
 	for (const [fields, expected] of [
 		[{ notes: [{ id: noteId }] }, "Returned 1 note."],
-		[{ tours: [{ id: tourId }] }, "Returned 1 walkthrough."],
-		[{}, "No notes or walkthroughs were returned."],
+		[{}, "No notes were returned."],
 		[{ limited: true }, "The partial list is empty; no continuation cursor."],
 	] as const) {
 		settle(component, { ...receipt, ...fields });
 		const rows = screen(component);
 		assert.ok(rows.includes(expected));
-		assert.doesNotMatch(rows.join("\n"), /\b0 (notes|walkthroughs|unreadable records)\b/u);
+		assert.doesNotMatch(rows.join("\n"), /\b0 (notes|unreadable records)\b/u);
 	}
 });
 
@@ -259,14 +327,23 @@ test("expanded note listings render the count once and preserve author text verb
 		ok: true,
 		op: "list",
 		summary: "1 notes match in field-guide.",
-		notes: [{ id: noteId, path: "guide.md", preview: "I wrote 1 notes match on purpose." }],
-		tours: [],
+		notes: [
+			{
+				id: noteId,
+				path: "guide.md",
+				preview: "I wrote 1 notes match on purpose.",
+			},
+		],
 		limited: false,
 		unreadable: 0,
 	};
 	const content = outcomeContent(receipt);
 	const retained = structuredClone(content);
-	component.updateResult({ content, details: { summary: receipt.summary }, isError: false });
+	component.updateResult({
+		content,
+		details: { summary: receipt.summary },
+		isError: false,
+	});
 	assert.ok(screen(component).includes("Returned 1 note."));
 	component.setExpanded(true);
 	const expanded = screen(component);
@@ -277,18 +354,23 @@ test("expanded note listings render the count once and preserve author text verb
 });
 
 test("main call body and expanded arguments have independent display bounds", () => {
-	const component = card("explorer_show", { path: "source.ts", note: { text: "x".repeat(700) } });
+	const component = card("explorer_show", {
+		path: "source.ts",
+		note: { text: "x".repeat(700) },
+	});
 	const pending = screen(component, 56);
 	assert.equal(pending.filter((row) => /^x+$/u.test(row)).length, 5);
 	assert.equal(pending.at(-1), "... (8 more lines, ctrl+o to expand)");
-	const tour = card("explorer_notes", {
-		op: "tour",
-		title: "Review",
-		stops: Array.from({ length: 4 }, () => ({ path: "file", text: "x".repeat(10_000) })),
+	const batch = card("explorer_notes", {
+		op: "note",
+		notes: Array.from({ length: 4 }, () => ({
+			path: "file",
+			text: "x".repeat(10_000),
+		})),
 	});
-	assert.ok(screen(tour).includes("4 stops"));
-	tour.setExpanded(true);
-	assert.match(screen(tour).join("\n"), /\[Truncated: showing 32000 of \d+ characters\]/u);
+	assert.ok(screen(batch).includes("4 notes"));
+	batch.setExpanded(true);
+	assert.match(screen(batch).join("\n"), /\[Truncated: showing 32000 of \d+ characters\]/u);
 });
 
 test("ordinary registration and publication use the same display and keep the actual launch refusal envelope", {
@@ -350,5 +432,5 @@ test("ordinary registration and publication use the same display and keep the ac
 	const listing = await notes.execute("notes", { op: "list" }, undefined, undefined, ctx);
 	const listCard = card(notes.name, { op: "list" }, notes);
 	listCard.updateResult({ ...listing, isError: false });
-	assert.ok(screen(listCard).includes("No notes or walkthroughs were returned."));
+	assert.ok(screen(listCard).includes("No notes were returned."));
 });

@@ -32,7 +32,6 @@ export function createBridge(
 			cardDrafts: new Map<string, ExplorerCardDraft>(),
 			editDrafts: new Map<string, ExplorerEditDraft>(),
 			notes: new Map<string, ExplorerNote>(),
-			tours: new Map<string, ExplorerTour>(),
 		};
 	}
 	const initial = rootState(baseRepo, { path: defaultPath, view: "file" });
@@ -63,7 +62,7 @@ export function createBridge(
 		state,
 		title,
 		text,
-	}: ExplorerCreateNote): ExplorerNote => {
+	}: ExplorerCreateNote): ExplorerLineNote => {
 		if (
 			![start, end].every(Number.isSafeInteger) ||
 			start < 1 ||
@@ -77,7 +76,7 @@ export function createBridge(
 		)
 			throw new Error("Invalid note.");
 		repo.read(path, commit);
-		const note: ExplorerNote = {
+		const note: ExplorerLineNote = {
 			id: id("n"),
 			path,
 			start,
@@ -96,9 +95,8 @@ export function createBridge(
 		active.notes.set(note.id, note);
 		return note;
 	};
-	const tourId = "t-route-review";
-	const stop = (path: string, start: number, title: string, text: string, order: number) => {
-		const note = makeNote({
+	const fixtureLine = (path: string, start: number, title: string, text: string) =>
+		makeNote({
 			path,
 			start,
 			end: start,
@@ -110,28 +108,45 @@ export function createBridge(
 			title,
 			text,
 		});
-		note.tour = { id: tourId, order };
-		return note.id;
+	const fixtureTarget = (target: ExplorerNoteTarget, title: string, text: string, reviewKey?: string) => {
+		const at = now();
+		const note: ExplorerTargetNote = {
+			id: id("n"),
+			target,
+			title,
+			text,
+			author: "agent",
+			state: "open",
+			thread: [],
+			createdAt: at,
+			updatedAt: at,
+			reviewKey,
+		};
+		active.notes.set(note.id, note);
 	};
-	active.tours.set(tourId, {
-		id: tourId,
-		title: "Retry policy walkthrough",
-		scope: uncommitted,
-		url: "https://example.com/team/waypoint/merge_requests/42",
-		summary:
-			"The change slows retries and changes the fallback route.\n\n- **Risk:** `schedule` at src/router.ts:24-29 multiplies the new delay by the route priority.\n- The fallback route moved; check the L20 lookup.",
-		stops: [
-			stop(
-				defaultPath,
-				9,
-				"Retry delay",
-				"The default wait **increased** before each retry.\n\n`schedule` (src/router.ts:24-29) multiplies it by the route priority, so a priority 2 route now waits twice as long. Lines 20 to 22 are unchanged.\n\n```ts\nqueue.add(route.path, retryDelay * Math.max(1, route.priority));\n```\n\nIntroduced in 3b59add.",
-				1,
-			),
-			stop("config/routes.json", 2, "Attempt limit", "The configuration now allows **four** attempts.", 2),
-		],
-		createdAt: now(),
-	});
+	fixtureLine(
+		defaultPath,
+		9,
+		"Retry delay",
+		"The default wait **increased** before each retry. Check src/router.ts:24-29.",
+	);
+	fixtureLine("config/routes.json", 2, "Attempt limit", "The configuration now allows **four** attempts.");
+	fixtureTarget(
+		{ kind: "file", path: defaultPath },
+		"Route priority",
+		"Inspect the priority multiplier before the fallback route runs.",
+	);
+	fixtureTarget(
+		{ kind: "commit", commit: repo.head() },
+		"Retry policy",
+		"The committed retry policy sets the baseline for this change.",
+	);
+	fixtureTarget(
+		{ kind: "review", review: uncommitted },
+		"Fallback change",
+		"Check the fallback route and its retry budget.",
+		active.review.files(uncommitted).resolved.key,
+	);
 	{
 		const note = makeNote({
 			path: defaultPath,
@@ -164,7 +179,12 @@ export function createBridge(
 		}
 		return line;
 	}
+	function matchesNotePath(note: ExplorerNote, path?: string) {
+		if (!path) return true;
+		return note.target ? note.target.kind === "file" && note.target.path === path : note.path === path;
+	}
 	function locate(note: ExplorerNote): ExplorerNote {
+		if (note.target) return note;
 		const { start, end, quote, commit } = note.anchor;
 		const source = lines(repo.read(note.path, note.side === "base" ? commit : undefined).text);
 		const span = end - start + 1;
@@ -180,21 +200,14 @@ export function createBridge(
 			if (!note) throw new Error("Note not found.");
 			return note;
 		};
-		const editable = (key: string) => {
-			const note = get(key);
-			if (note.author !== "operator" || !["draft", "open"].includes(note.state))
-				throw new Error("This note is not editable.");
-			return note;
-		};
 		let result = {};
 		switch (message.op) {
 			case "create":
 				result = { note: locate(makeNote(message.note)) };
 				break;
 			case "update": {
-				const note = editable(message.id);
-				if (typeof message.text !== "string" || !message.text.trim()) throw new Error("Note text is required.");
-				Object.assign(note, { text: message.text, updatedAt: now() });
+				const note = get(message.id);
+				updateNote(note, message);
 				result = { note: locate(note) };
 				break;
 			}
@@ -211,11 +224,8 @@ export function createBridge(
 				result = changeNoteState(message, get);
 				break;
 			case "delete":
-				if (get(message.id).author !== "remote") editable(message.id);
+				get(message.id);
 				active.notes.delete(message.id);
-				break;
-			case "tour-delete":
-				removeTour(message.id);
 				break;
 			default:
 				throw new Error("Unknown notes operation.");
@@ -232,9 +242,12 @@ export function createBridge(
 		}
 		return { notes: selected.map(locate) };
 	}
-	function removeTour(key: string) {
-		if (!active.tours.delete(key)) throw new Error("Tour not found.");
-		for (const note of active.notes.values()) if (note.tour?.id === key) delete note.tour;
+	function updateNote(note: ExplorerNote, fields: Extract<ExplorerNoteWrite, { op: "update" }>) {
+		if (note.author === "remote") throw new Error("This note is not editable.");
+		if (fields.expectedUpdatedAt !== note.updatedAt) throw new Error("The note changed. Open it again to edit it.");
+		if (fields.text !== undefined) note.text = fields.text;
+		if (fields.title !== undefined) note.title = fields.title ?? undefined;
+		note.updatedAt = new Date(Math.max(Date.now(), Date.parse(note.updatedAt) + 1)).toISOString();
 	}
 	function writeNote(message: ExplorerNoteWrite) {
 		const result = mutateNote(message);
@@ -532,8 +545,7 @@ export function createBridge(
 					break;
 				case "notes.list":
 					result = {
-						notes: [...active.notes.values()].filter((note) => !message.path || message.path === note.path).map(locate),
-						tours: [...active.tours.values()],
+						notes: [...active.notes.values()].filter((note) => matchesNotePath(note, message.path)).map(locate),
 					};
 					break;
 				case "notes.write":

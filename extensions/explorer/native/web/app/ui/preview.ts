@@ -1,6 +1,6 @@
 (() => {
 	const app = window.explorer;
-	const { el } = app.dom;
+	const { el, noteMarker } = app.dom;
 	const { sourceSpan, cover, link, slugs } = app.markdown;
 	type Block = { node: HTMLElement; span: ExplorerRange; children: Block[] };
 	type Options = ExplorerCodeOptions & { html?: string };
@@ -40,9 +40,8 @@
 		return range.intersectsNode(text) && !!text.data.slice(from, to).trim();
 	}
 
-	function noteRange(note: ExplorerNote, opts: Options | null): ExplorerRange | null {
-		if (note.state === "resolved" || note.location === "outdated" || note.side !== "head" || note.path !== opts?.path)
-			return null;
+	function noteRange(note: ExplorerLineNote, opts: Options | null): ExplorerRange | null {
+		if (note.location === "outdated" || note.side !== "head" || note.path !== opts?.path) return null;
 		const matches = (start: number, end: number) =>
 			end <= opts.head.length && opts.head.slice(start - 1, end).join("\n") === note.anchor.quote;
 		if (matches(note.start, note.end)) return note;
@@ -118,12 +117,12 @@
 		let roots: Block[] = [];
 		const mapped = new Map<Element, Block>();
 		const headings = new Map<string, HTMLElement>();
-		const painted = new Map<HTMLElement, ExplorerNote[]>();
+		const painted = new Map<HTMLElement, ExplorerLineNote[]>();
+		const markers = new Map<HTMLElement, HTMLButtonElement>();
 		const matches = new Map<ExplorerMatch, Range>();
 		let selected: Block[] = [],
 			flashed: HTMLElement | null = null;
-		let flashTimer = 0,
-			clickTimer = 0;
+		let flashTimer = 0;
 		const target = (node: Node | null) => (node instanceof Element ? node : node?.parentElement);
 		const blockAt = (node: Node | null) => {
 			for (let element = target(node); element && element !== article; element = element.parentElement) {
@@ -138,11 +137,11 @@
 			mapped.clear();
 			headings.clear();
 			painted.clear();
+			markers.clear();
 			matches.clear();
 			selected = [];
 			flashed = null;
 			clearTimeout(flashTimer);
-			clearTimeout(clickTimer);
 			CSS.highlights?.delete("explorer-preview-find");
 			CSS.highlights?.delete("explorer-preview-current");
 			article.replaceChildren();
@@ -155,7 +154,6 @@
 				else
 					a.addEventListener("click", (event) => {
 						event.preventDefault();
-						clearTimeout(clickTimer);
 						if (window.getSelection()?.isCollapsed !== false) follow(destination);
 					});
 			}
@@ -291,22 +289,53 @@
 			const range = selectedLines(dom);
 			return range ? { range, text: selected.toString(), rect: dom.getBoundingClientRect() } : null;
 		}
-		function paintNote(node: HTMLElement, note: ExplorerNote) {
+		function paintNote(node: HTMLElement, note: ExplorerLineNote) {
 			node.classList.add("has-note");
 			const prior = painted.get(node);
 			if (prior) prior.push(note);
 			else painted.set(node, [note]);
 		}
-		function updateNotes(notes: ExplorerNote[]) {
+		function clearNoteMarks() {
 			for (const node of painted.keys()) node.classList.remove("has-note", "has-draft", "has-agent", "has-remote");
 			painted.clear();
-			for (const note of notes) {
-				const range = noteRange(note, opts);
-				if (range) for (const { node } of blocksFor(range)) paintNote(node, note);
+			const focused = document.activeElement;
+			let focusBlock: HTMLElement | undefined;
+			for (const [block, marker] of markers) {
+				if (focused === marker) focusBlock = block;
+				block.classList.remove("preview-note-host");
+				marker.remove();
 			}
+			markers.clear();
+			return focusBlock;
+		}
+		function collectNoteBlocks(notes: ExplorerNote[]) {
+			const starts = new Map<Block, ExplorerLineNote[]>();
+			for (const note of notes) if (note.target === undefined) collectNoteBlock(starts, note);
+			return starts;
+		}
+		function collectNoteBlock(starts: Map<Block, ExplorerLineNote[]>, note: ExplorerLineNote) {
+			const range = noteRange(note, opts);
+			if (!range) return;
+			const blocks = blocksFor(range);
+			const [first] = blocks;
+			if (!first) return;
+			const group = starts.get(first) ?? [];
+			group.push(note);
+			starts.set(first, group);
+			if (note.state !== "resolved") for (const { node } of blocks) paintNote(node, note);
+		}
+		function updateNotes(notes: ExplorerNote[]) {
+			const focusBlock = clearNoteMarks();
+			for (const [{ node, span }, group] of collectNoteBlocks(notes)) {
+				const marker = noteMarker(group, `near line ${span.start}`, () => opts?.onNote(group));
+				node.classList.add("preview-note-host");
+				node.append(marker);
+				markers.set(node, marker);
+			}
+			if (focusBlock) markers.get(focusBlock)?.focus({ preventScroll: true });
 			painted.forEach(tintNote);
 		}
-		function tintNote(notes: ExplorerNote[], node: HTMLElement) {
+		function tintNote(notes: ExplorerLineNote[], node: HTMLElement) {
 			node.classList.toggle(
 				"has-draft",
 				notes.some((note) => note.state === "draft"),
@@ -320,29 +349,6 @@
 				notes.every((note) => note.author === "remote"),
 			);
 		}
-		function plainClick(event: MouseEvent) {
-			return (
-				!event.defaultPrevented &&
-				event.button === 0 &&
-				event.detail <= 1 &&
-				!event.shiftKey &&
-				!event.metaKey &&
-				!event.ctrlKey &&
-				!event.altKey
-			);
-		}
-		document.addEventListener("pointerdown", () => clearTimeout(clickTimer), true);
-		article.addEventListener("click", (event) => {
-			clearTimeout(clickTimer);
-			if (!plainClick(event) || window.getSelection()?.isCollapsed === false) return;
-			let block = blockAt(event.target as Node | null);
-			while (block && !painted.has(block.node)) block = blockAt(block.node.parentElement);
-			const notes = block ? painted.get(block.node) : undefined;
-			if (notes?.length)
-				clickTimer = window.setTimeout(() => {
-					if (window.getSelection()?.isCollapsed !== false) opts?.onNote(notes);
-				}, 500);
-		});
 		article.addEventListener("auxclick", (event) => {
 			if (target(event.target as Node | null)?.closest("a")) event.preventDefault();
 		});

@@ -1,6 +1,6 @@
 (() => {
 	const app = window.explorer;
-	const { el, get, icon, button, glyph, iconButton } = app.dom;
+	const { el, get, icon, button, glyph, iconButton, noteMarker } = app.dom;
 	const { request, model } = app;
 	const shell = get("app"),
 		body = get("view-body"),
@@ -51,8 +51,11 @@
 	app.flushDraft = async () => {
 		await Promise.all([...draftWrites, editor.flush()]);
 	};
-	let notes: ExplorerNote[] = [],
-		tours: ExplorerTour[] = [];
+	let notes: ExplorerNote[] = [];
+	let latestNotes: Promise<void> | undefined;
+	let showOtherNotes = true;
+	let reviewIntent = 0;
+	let launchStamp = 0;
 	let editedPaths = new Set<string>();
 	type PathIndex = ExplorerRequests["files.list"][1];
 	let index: PathIndex | undefined;
@@ -99,17 +102,79 @@
 		void p.catch((error) => notice(errorText(error)));
 	};
 	const sameScope = (a?: ExplorerScope, b?: ExplorerScope) => JSON.stringify(a) === JSON.stringify(b);
-	const activeNotes = () => notes.filter((note) => note.path === path);
-	// A rendered block covers a span. A source row represents one line.
-	const notesOn = (range: ExplorerRange) =>
-		activeNotes().filter(
-			(note) =>
-				note.location !== "outdated" &&
-				note.state !== "resolved" &&
-				note.side === range.side &&
-				note.start <= (code === preview ? range.end : range.start) &&
-				range.start <= note.end,
-		);
+	const inReview = () => view === "changes" && root.kind === "git";
+	const showsNote = (note: ExplorerNote) => showOtherNotes || note.author === "operator";
+	const atReview = (note: ExplorerNote) => !note.reviewKey || note.reviewKey === review?.resolved.key;
+	const reviewNotes = () => notes.filter((note) => showsNote(note) && atReview(note));
+	const fileNotes = () => notes.filter((note) => showsNote(note) && !note.reviewKey);
+	const changePath = (change: ExplorerChange, side?: ExplorerSide) =>
+		side === "base" ? (change.oldPath ?? change.path) : change.path;
+	type FileNote = ExplorerTargetNote & { target: Extract<ExplorerNoteTarget, { kind: "file" }> };
+	const fileTargets = (pool: ExplorerNote[], item: string, change?: ExplorerChange) =>
+		pool.filter((note): note is FileNote => {
+			const target = note.target;
+			return (
+				target?.kind === "file" &&
+				(change ? target.path === changePath(change, target.side) : target.side !== "base" && target.path === item)
+			);
+		});
+	const lineNotes = (pool: ExplorerNote[], item: string, change?: ExplorerChange) =>
+		pool
+			.filter(
+				(note): note is ExplorerLineNote =>
+					note.target === undefined &&
+					(change ? note.path === changePath(change, note.side) : note.side === "head" && note.path === item),
+			)
+			.sort((a, b) => (a.side === b.side ? a.start - b.start || a.end - b.end : a.side === "base" ? -1 : 1));
+	const currentChange = () => review?.files.find((item) => item.path === path);
+	function activeNotes() {
+		if (!inReview()) return lineNotes(fileNotes(), path);
+		const change = currentChange();
+		return change ? lineNotes(reviewNotes(), path, change) : [];
+	}
+	function reviewTargets(pool: ExplorerNote[], resolved: ExplorerResolved) {
+		return pool.filter(({ target, reviewKey }) => {
+			if (target?.kind !== "review") return false;
+			const pinned = target.review;
+			if (pinned.kind === "uncommitted") return resolved.head === "worktree" && reviewKey === resolved.key;
+			if (pinned.kind === "range") return pinned.base === resolved.base && pinned.head === resolved.head;
+			return pinned.kind === "commit" && resolved.scope.kind === "commit" && pinned.commit === resolved.head;
+		});
+	}
+	const commitTargets = (pool: ExplorerNote[], commit: string) =>
+		pool.filter(({ target }) => target?.kind === "commit" && target.commit === commit);
+	function changedFileSequence(pool: ExplorerNote[], item: ExplorerChange) {
+		const files = fileTargets(pool, item.path, item);
+		const lines = lineNotes(pool, item.path, item);
+		return [
+			...files.filter(({ target }) => target.side === undefined),
+			...files.filter(({ target }) => target.side === "base"),
+			...lines.filter(({ side }) => side === "base"),
+			...files.filter(({ target }) => target.side === "head"),
+			...lines.filter(({ side }) => side === "head"),
+		];
+	}
+	function noteSequence() {
+		if (!inReview()) {
+			const pool = fileNotes();
+			return [...fileTargets(pool, path), ...lineNotes(pool, path)];
+		}
+		if (!review) return [];
+		const pool = reviewNotes();
+		const ordered = [
+			...reviewTargets(pool, review.resolved),
+			...review.commits.flatMap(({ commit }) => commitTargets(pool, commit)),
+			...review.files.flatMap((item) => changedFileSequence(pool, item)),
+		];
+		return [...new Set(ordered)];
+	}
+	// The context menu matches the lines or rendered block under its pointer.
+	function notesOn(range: ExplorerRange) {
+		return activeNotes().filter((note) => {
+			const spot = locateNote(note);
+			return spot?.side === range.side && spot.start <= range.end && range.start <= spot.end;
+		});
+	}
 	const openLabel = (marked: ExplorerNote[]) => {
 		if (marked.length > 1) return `Open ${marked.length} notes`;
 		return marked[0].state === "draft" ? "Open review comment" : "Open note";
@@ -191,15 +256,19 @@
 		root: () => root,
 		scope: scopeLabel,
 		live: () => live,
-		drafts: () => notes.filter((note) => note.state === "draft"),
+		drafts: () =>
+			reviewNotes().filter((note): note is ExplorerLineNote => note.target === undefined && note.state === "draft"),
 		notes: () => notes,
+		shows: showsNote,
+		sequence: noteSequence,
+		inReview,
 		excerpt: selectionExcerpt,
-		bounds: code.anchor,
+		bounds: (range) => code.anchor(range),
 		highlight: (range) => {
 			code.highlight(range);
 			setAnchorLine(range?.start ?? null);
 		},
-		go: (note, tour) => goTourNote(note, tour),
+		go: goNote,
 		follow: followTarget,
 		refresh: refreshNotes,
 		finish: () => {
@@ -211,8 +280,9 @@
 			};
 		},
 		saveDraft(draftPath, draft) {
-			const fields = draft && draftPath === path ? { view, line: anchoredLine ?? latestLine, review: scope } : {};
-			const write = request("state.save", { ...fields, path: draftPath, draft }).then(() => {});
+			const location = draftStatePath(draftPath, draft);
+			const fields = draft && location === path ? { view, line: anchoredLine ?? latestLine, review: scope } : {};
+			const write = request("state.save", { ...fields, path: location, draft }).then(() => {});
 			draftWrites.add(write);
 			void write.then(
 				() => draftWrites.delete(write),
@@ -277,6 +347,10 @@
 		editedPaths = new Set(result.paths);
 		if (settings.tab === "files") renderSidebar();
 	}
+	function draftStatePath(draftPath: string, draft: ExplorerCardDraft | null) {
+		if (inReview() && diff?.oldPath === draftPath && (!draft || draft.range?.side === "base")) return path;
+		return draftPath;
+	}
 	function excerptCommit(side?: ExplorerSide) {
 		if (view !== "changes") return null;
 		if (side === "base") return review?.resolved.base ?? null;
@@ -292,7 +366,14 @@
 		const start = Math.max(1, range.start),
 			end = Math.min(lines.length, range.end);
 		if (end < start) return null;
-		return { path, start, end, quote: lines.slice(start - 1, end).join("\n"), commit, text: "" };
+		return {
+			path: range.side === "base" ? (diff?.oldPath ?? path) : path,
+			start,
+			end,
+			quote: lines.slice(start - 1, end).join("\n"),
+			commit,
+			text: "",
+		};
 	}
 	function liveChrome() {
 		const node = get("connection");
@@ -735,7 +816,11 @@
 		if (viewed.has(item.path)) check.append(icon("check"));
 		return check;
 	}
-	function changeRow(item: ExplorerChange) {
+	function targetMarker(marked: ExplorerNote[], label: string, destination?: string) {
+		if (!marked.length) return null;
+		return noteMarker(marked, label, () => report(openNote(marked, destination)));
+	}
+	function changeRow(item: ExplorerChange, pool: ExplorerNote[]) {
 		const row = el("div", `change-row${item.path === path ? " current" : ""}`);
 		const open = button("", () => report(navigate({ path: item.path, view: "changes" })), "changed-open");
 		const kind = el(
@@ -752,8 +837,10 @@
 		open.append(kind, description, count);
 		open.dataset.path = item.path;
 		if (item.path === path) open.setAttribute("aria-current", "true");
-		const check = viewedButton(item);
-		row.append(open, check);
+		row.append(open);
+		const marker = targetMarker(fileTargets(pool, item.path, item), `on ${item.path}`, item.path);
+		if (marker) row.append(marker);
+		row.append(viewedButton(item));
 		return row;
 	}
 	function appendReviewSummary(summary: HTMLElement) {
@@ -769,22 +856,31 @@
 			summary.append(ref, el("p", "", `${count} of ${review.files.length} viewed${outcome}`));
 		} else summary.append(el("p", "", reviewError || "Reading review…"));
 	}
-	function commitList(entries: ExplorerReview["commits"]) {
+	let commitsExpanded = false;
+	function commitList(entries: ExplorerReview["commits"], pool: ExplorerNote[]) {
 		const details = el("details");
+		details.open = commitsExpanded;
+		details.addEventListener("toggle", () => {
+			if (details.isConnected) commitsExpanded = details.open;
+		});
 		details.append(el("summary", "", `${entries.length} commit${entries.length === 1 ? "" : "s"} in this range`));
 		const commits = el("ol");
 		for (const commit of entries) {
 			const item = el("li");
-			item.append(el("code", "", commit.short), ` ${commit.subject}`);
+			const label = el("span", "commit-label");
+			label.append(el("code", "", commit.short), ` ${commit.subject}`);
+			item.append(label);
+			const marker = targetMarker(commitTargets(pool, commit.commit), `on commit ${commit.short}`);
+			if (marker) item.append(marker);
 			commits.append(item);
 		}
 		details.append(commits);
 		return details;
 	}
-	function renderChangedFiles() {
+	function renderChangedFiles(pool: ExplorerNote[]) {
 		if (review?.files.length) list.append(el("div", "list-label", "CHANGED FILES"));
 		for (const item of review?.files ?? []) {
-			list.append(changeRow(item));
+			list.append(changeRow(item, pool));
 		}
 		if (review && !review.files.length) list.append(el("p", "empty-list", "No files changed in this scope."));
 	}
@@ -814,24 +910,30 @@
 		const summary = el("div", "range-box");
 		const kicker = el("div", "range-kicker", "REVIEW RANGE");
 		kicker.prepend(icon("branch"));
+		const pool = reviewNotes();
+		if (review) {
+			const marker = targetMarker(reviewTargets(pool, review.resolved), "on this review");
+			if (marker) kicker.append(marker);
+		}
 		summary.append(kicker, makeScopeControl(true));
 		appendReviewSummary(summary);
-		for (const tour of tours) {
-			const entry = button("", () => report(startTour(tour)), "tour-launch");
-			entry.append(icon("tour"), el("span", "", tour.title), el("small", "", `${tour.stops.length} stops`));
-			summary.append(entry);
-		}
-		if (review?.commits.length) summary.append(commitList(review.commits));
+		if (review?.commits.length) summary.append(commitList(review.commits, pool));
 		heading.append(summary);
-		renderChangedFiles();
+		renderChangedFiles(pool);
 	}
 	// A note anchored at the open review's own commit keeps its lines in that review.
-	function anchoredInReview(note: ExplorerNote) {
+	function anchoredInReview(note: ExplorerLineNote) {
 		const resolved = review?.resolved;
 		const commit = note.side === "base" ? resolved?.base : resolved?.head;
 		return !!commit && note.anchor.commit === commit;
 	}
+	function targetLocation(target: ExplorerNoteTarget) {
+		if (target.kind === "commit") return `Commit ${sha(target.commit)}`;
+		if (target.kind === "review") return "Review";
+		return target.side === "base" ? "Old file" : "File";
+	}
 	function noteLocation(note: ExplorerNote) {
+		if (note.target !== undefined) return targetLocation(note.target);
 		if (note.location === "outdated" && anchoredInReview(note)) return `L${note.anchor.start} · in this review`;
 		if (note.location === "outdated") return `Outdated · was L${note.anchor.start}`;
 		if (note.location === "moved") return `L${note.start} · moved from L${note.movedFrom ?? note.anchor.start}`;
@@ -839,7 +941,7 @@
 	}
 	function noteRow(note: ExplorerNote) {
 		const row = el("div", "note-list-row");
-		const open = button("", () => report(goNote(note)), "note-open");
+		const open = button("", () => report(openNote([note])), "note-open");
 		open.dataset.path = note.id;
 		const kind = el("span", `note-kind ${note.author}`);
 		kind.append(icon(note.author === "operator" ? "note" : note.author === "agent" ? "ask" : "comment-remote"));
@@ -849,7 +951,7 @@
 			el("strong", "", note.title || note.text.split("\n")[0]),
 			el(
 				"small",
-				note.location === "moved" ? "moved-fact" : "",
+				note.target === undefined && note.location === "moved" ? "moved-fact" : "",
 				`${loc} · ${note.author === "remote" ? (note.by ?? "Reviewer") : note.author === "agent" ? "Agent" : "You"} · ${note.state}`,
 			),
 		);
@@ -859,10 +961,7 @@
 	}
 	function renderNotes() {
 		const intro = el("div", "notes-heading");
-		intro.append(
-			el("strong", "", "Repository notes"),
-			el("p", "", "Notes follow their quoted lines across worktrees."),
-		);
+		intro.append(el("strong", "", "Repository notes"));
 		heading.append(intro);
 		if (notesError) {
 			list.append(
@@ -871,24 +970,41 @@
 			);
 			return;
 		}
-		if (!notes.length) {
-			list.append(el("p", "empty-list", "No notes yet. Select a line to keep a note."));
+		const indexed = reviewNotes();
+		if (!indexed.length) {
+			list.append(el("p", "empty-list", "No notes to show."));
 			return;
 		}
-		const grouped = new Map<string, ExplorerNote[]>();
-		for (const note of notes) {
-			const items = grouped.get(note.path) ?? [];
-			items.push(note);
-			grouped.set(note.path, items);
-		}
-		for (const [item, entries] of grouped) {
+		for (const { label, folder, entries } of groupNotes(indexed)) {
 			const group = el("section", "note-group");
 			const header = el("header");
-			header.append(el("strong", "", basename(item)), el("small", "", dirname(item) || root.name));
+			header.append(el("strong", "", label), el("small", "", folder));
 			group.append(header);
 			for (const note of entries) group.append(noteRow(note));
 			list.append(group);
 		}
+	}
+	function noteGroupKey(note: ExplorerNote): { kind: "file"; path: string } | { kind: "commit" | "review" } {
+		if (note.target === undefined) return { kind: "file", path: note.path };
+		return note.target.kind === "file" ? { kind: "file", path: note.target.path } : { kind: note.target.kind };
+	}
+	function groupNotes(items: ExplorerNote[]) {
+		const groups = new Map<string, { label: string; folder: string; entries: ExplorerNote[] }>();
+		for (const note of items) {
+			const target = noteGroupKey(note);
+			const key = JSON.stringify(target);
+			let group = groups.get(key);
+			if (!group) {
+				group = { ...noteGroupLabel(target), entries: [] };
+				groups.set(key, group);
+			}
+			group.entries.push(note);
+		}
+		return groups.values();
+	}
+	function noteGroupLabel(target: ReturnType<typeof noteGroupKey>) {
+		if (target.kind === "file") return { label: basename(target.path), folder: dirname(target.path) || root.name };
+		return { label: target.kind === "commit" ? "Commits" : "Reviews", folder: root.name };
 	}
 	function prepareSidebarHeading() {
 		if (settings.tab === "files") {
@@ -909,7 +1025,8 @@
 		const tabs = get("note-tabs");
 		for (const tab of tabs.querySelectorAll<HTMLElement>("[data-tab]")) pressed(tab, tab.dataset.tab === settings.tab);
 		get("change-count").textContent = review ? String(review.files.length) : "";
-		get("note-count").textContent = notes.length ? String(notes.length) : "";
+		const noteCount = reviewNotes().length;
+		get("note-count").textContent = noteCount ? String(noteCount) : "";
 		if (settings.tab === "files") {
 			renderTree();
 			return;
@@ -950,15 +1067,17 @@
 		renderSidebar();
 		saveSettings();
 		savePosition();
-		if (tab === "changes" && root.kind === "git") {
-			if (!review) await refreshReview();
-			if (switchView && review?.files.length && view !== "changes")
-				await navigate(
-					{ path: review.files.find((item) => item.path === path)?.path ?? review.files[0].path, view: "changes" },
-					{ keepSheet: true, keepTab: true },
-				);
-			else renderHeader();
-		}
+		if (tab === "changes" && root.kind === "git") return showChangesTab(switchView);
+		if (tab === "files" && switchView && view === "changes")
+			await navigate({ path, view: "file" }, { keepSheet: true, keepTab: true });
+	}
+	async function showChangesTab(switchView: boolean) {
+		if (!review) await refreshReview();
+		if (settings.tab !== "changes") return;
+		if (switchView && review && !inReview()) {
+			const candidate = currentChange() ?? review.files[0];
+			await navigate({ path: candidate?.path ?? "", view: "changes" }, { keepSheet: true, keepTab: true });
+		} else renderHeader();
 	}
 	function indexInUse() {
 		return mode === "quick" || tabUsesIndex(settings.tab);
@@ -1024,22 +1143,32 @@
 			}),
 		);
 	}
-	async function refreshNotes() {
-		const stamp = ++notesStamp;
-		try {
-			const result = await request("notes.list");
-			if (stamp !== notesStamp) return;
-			notes = result.notes;
-			tours = result.tours;
-			notesError = "";
-		} catch (error) {
-			if (stamp === notesStamp) notesError = errorText(error);
-		}
-		if (stamp !== notesStamp) return;
+	function renderNotePresentation() {
 		renderSidebar();
+		renderFileMarkers();
 		renderOutdated();
 		code.updateNotes(activeNotes());
 		reviewUI.refresh();
+	}
+	function refreshNotes() {
+		const stamp = ++notesStamp;
+		const origin = rootStamp;
+		latestNotes = loadNotes(stamp, origin);
+		return latestNotes;
+	}
+	async function loadNotes(stamp: number, origin: number): Promise<void> {
+		try {
+			const result = await request("notes.list");
+			if (stamp === notesStamp) {
+				notes = result.notes;
+				notesError = "";
+			}
+		} catch (error) {
+			if (stamp === notesStamp) notesError = errorText(error);
+		}
+		if (origin !== rootStamp) return;
+		if (stamp !== notesStamp) return latestNotes;
+		renderNotePresentation();
 	}
 	async function refreshScopes() {
 		if (root.kind !== "git") return;
@@ -1059,13 +1188,14 @@
 	function staleReview(stamp: number, requested: ExplorerScope) {
 		return stamp !== reviewStamp || !sameScope(requested, scope);
 	}
-	async function refreshReview() {
+	async function refreshReview(confirmed?: ExplorerReview) {
+		const origin = rootStamp;
 		if (!scope) await refreshScopes();
-		if (!scope || root.kind !== "git") return;
+		if (origin !== rootStamp || !scope || root.kind !== "git") return;
 		const stamp = ++reviewStamp;
 		const requested = scope;
 		try {
-			const result = await request("review.files", { scope: requested });
+			const result = confirmed ?? (await request("review.files", { scope: requested }));
 			if (staleReview(stamp, requested)) return;
 			const state = await request("review.state", { op: "get", key: result.resolved.key });
 			if (staleReview(stamp, requested)) return;
@@ -1078,8 +1208,8 @@
 			review = null;
 			viewed.clear();
 		}
-		renderSidebar();
 		renderHeader();
+		renderNotePresentation();
 	}
 	function writeReviewState(key: string, viewed: string[], finish: boolean, sent: boolean) {
 		return request("review.state", {
@@ -1183,6 +1313,25 @@
 		if (change?.oldPath) info.append(el("span", "rename-caption", `From ${change.oldPath}`));
 		toolbar.replaceChildren(info, diffModes());
 	}
+	const fileMarkers = el("span", "file-note-markers");
+	get("file-title").after(fileMarkers);
+	const otherNotesToggle = iconButton("note", "Show agent and remote notes", () => {
+		showOtherNotes = !showOtherNotes;
+		pressed(otherNotesToggle, showOtherNotes);
+		renderNotePresentation();
+	});
+	otherNotesToggle.classList.add("notes-visibility");
+	pressed(otherNotesToggle, showOtherNotes);
+	get("ask-file").after(otherNotesToggle);
+	function renderFileMarkers() {
+		const change = inReview() ? currentChange() : undefined;
+		const pool = inReview() ? (change ? reviewNotes() : []) : fileNotes();
+		const marker = path ? targetMarker(fileTargets(pool, path, change), `on ${path}`, change?.path) : null;
+		const focused = fileMarkers.contains(document.activeElement);
+		fileMarkers.replaceChildren(...(marker ? [marker] : []));
+		fileMarkers.hidden = !marker;
+		if (focused) (marker ?? otherNotesToggle).focus({ preventScroll: true });
+	}
 	function renderHeader() {
 		const editing = editor.active();
 		shell.classList.toggle("editing", editing);
@@ -1193,6 +1342,7 @@
 		pressed(pencil, editing);
 		renderCrumbs();
 		get("file-title").textContent = basename(path) || root.name;
+		renderFileMarkers();
 		pressed(get("file-view"), view === "file");
 		pressed(get("diff-view"), view === "changes");
 		pressed(get("wrap-lines"), settings.wrap);
@@ -1220,7 +1370,7 @@
 		anchor.hidden = editor.active() || !old.length;
 		if (anchor.hidden) return;
 		for (const note of old) {
-			const display = button("", () => reviewUI.thread([note]));
+			const display = button("", () => reviewUI.thread([note], null));
 			display.append(
 				el("strong", "", "Outdated note"),
 				` · ${note.title || note.text.split("\n")[0]} · was L${note.anchor.start}`,
@@ -1351,7 +1501,7 @@
 			wrap: settings.wrap,
 			size: settings.textSize,
 			notes: activeNotes(),
-			onNote: reviewUI.thread,
+			onNote: openLineMarker,
 			onRange: changeRange,
 			onScroll: (line) => {
 				if (line !== latestLine) {
@@ -1371,18 +1521,24 @@
 		refresh?: boolean;
 		side?: ExplorerSide;
 		noHistory?: boolean;
+		keepCard?: boolean;
 	};
 	function recordNavigation(target: ExplorerLaunch, replace?: boolean) {
 		const nav = { path, view: target.view ?? view, line: target.line, review: scope };
 		if (replace && historyAt >= 0) history[historyAt] = nav;
-		else if (history[historyAt]?.path !== path || history[historyAt]?.view !== nav.view || target.line !== undefined) {
+		else if (
+			history[historyAt]?.path !== path ||
+			history[historyAt]?.view !== nav.view ||
+			!sameScope(history[historyAt]?.review, nav.review) ||
+			target.line !== undefined
+		) {
 			history = history.slice(0, historyAt + 1);
 			history.push(nav);
 			historyAt = history.length - 1;
 		}
 	}
-	function clearNavigationSelection() {
-		if (!keepCardOnNavigate) reviewUI.escape();
+	function clearNavigationSelection(keepCard = false) {
+		if (!keepCard) reviewUI.escape();
 		window.getSelection()?.removeAllRanges();
 		lineRange = null;
 		placeStrip();
@@ -1406,7 +1562,7 @@
 		targetRange = null;
 		anchoredLine = null;
 		if (historyAt >= 0 && !options.noHistory) history[historyAt].line = latestLine;
-		if (leavesView(target, options, candidatePath, requestedView)) clearNavigationSelection();
+		if (leavesView(target, options, candidatePath, requestedView)) clearNavigationSelection(options.keepCard);
 		if (!options.keepSheet) narrowClose();
 		if (!options.keepTab && target.view) settings.tab = target.view === "file" ? "files" : target.view;
 		path = candidatePath;
@@ -1497,6 +1653,7 @@
 		if (!options.refresh && target.line !== undefined) showTargetLines(target.line, target.end, options.side);
 		renderLocation();
 		savePosition();
+		reviewUI.refresh();
 		reviewUI.reposition();
 	}
 	function prepareFileRead(refresh: boolean | undefined, line?: number) {
@@ -1541,7 +1698,7 @@
 	async function navigate(target: ExplorerLaunch, options: NavigationOptions = {}) {
 		const candidatePath = target.path ?? path;
 		const requestedView = target.view === "changes" ? "changes" : "file";
-		if (navigationKeepsEditor(candidatePath, requestedView)) return;
+		if (navigationKeepsEditor(candidatePath, requestedView)) return true;
 		editor.detach();
 		const stamp = ++openStamp;
 		const previous = code.place();
@@ -1551,13 +1708,14 @@
 			syncNavigationSidebar(previousPath);
 		}
 		fileError = "";
-		if (!prepareFileRead(options.refresh, target.line)) return;
+		if (!prepareFileRead(options.refresh, target.line)) return true;
 		const reveal = revealOnNavigate(options);
 		const result = await navigationRead(stamp, options);
 		await reveal;
-		if (stamp !== openStamp) return;
+		if (stamp !== openStamp) return false;
 		finishNavigation(target, options, previous);
 		if (result?.draft) openEditor(result.draft);
+		return true;
 	}
 	async function moveHistory(delta: number) {
 		const next = historyAt + delta;
@@ -1565,50 +1723,50 @@
 		history[historyAt].line = latestLine;
 		historyAt = next;
 		const target = history[next];
+		const origin = openStamp;
+		const intent = ++reviewIntent;
 		if (target.review && !sameScope(target.review, scope)) {
-			scope = target.review;
+			setScope(target.review);
 			await refreshReview();
 		}
-		await navigate(target, { noHistory: true });
+		if (origin === openStamp && intent === reviewIntent) await navigate(target, { noHistory: true });
 	}
-	async function selectScope(next: ExplorerScope) {
+	function setScope(next: ExplorerScope) {
+		if (sameScope(next, scope)) return;
 		scope = next;
+		review = null;
 		reviewError = "";
+		viewed.clear();
+		reviewStamp++;
+	}
+	async function selectScope(next: ExplorerScope, keepCard = false, confirmed?: ExplorerReview) {
+		const origin = openStamp;
+		const intent = ++reviewIntent;
+		if (!keepCard) clearNavigationSelection();
+		setScope(next);
 		settings.tab = "changes";
 		saveSettings();
-		await refreshReview();
-		if (!sameScope(next, scope)) return;
-		const candidate = review?.files.find((item) => item.path === path) ?? review?.files[0];
-		await navigate({ path: candidate?.path ?? "", view: "changes" }, { keepSheet: true, keepTab: true });
-		if (reviewError) notice(reviewError);
+		renderNotePresentation();
+		await refreshReview(confirmed);
+		if (origin !== openStamp || intent !== reviewIntent || !sameScope(next, scope)) return false;
+		const candidate = currentChange() ?? review?.files[0];
+		const opened = await navigate(
+			{ path: candidate?.path ?? "", view: "changes" },
+			{ keepSheet: true, keepTab: true, keepCard },
+		);
+		if (opened && reviewError) notice(reviewError);
+		return opened && !!review;
 	}
-	let keepCardOnNavigate = false;
-	// A walkthrough with a review shows its stops in that review's changes.
-	async function goTourNote(note: ExplorerNote, tour?: ExplorerTour) {
-		if (tour?.scope && !sameScope(tour.scope, scope)) {
-			scope = tour.scope;
-			settings.tab = "changes";
-			await refreshReview();
-		}
-		return goNote(note, false, !!tour?.scope);
-	}
-	async function keepCard(work: () => Promise<void>) {
-		keepCardOnNavigate = true;
-		try {
-			await work();
-		} finally {
-			keepCardOnNavigate = false;
-		}
-	}
-	// Opens a review of a commit or range named in card text, after Git confirms it.
+	// Leave the current review intact if a reference in a note does not resolve.
 	async function followScope(next: ExplorerScope) {
+		const origin = openStamp;
+		const intent = ++reviewIntent;
 		try {
-			await request("review.files", { scope: next });
+			const result = await request("review.files", { scope: next });
+			if (origin === openStamp && intent === reviewIntent) await selectScope(next, true, result);
 		} catch (error) {
-			notice(errorText(error));
-			return;
+			if (origin === openStamp && intent === reviewIntent) notice(errorText(error));
 		}
-		await keepCard(() => selectScope(next));
 	}
 	async function followTarget(target: ExplorerRichTarget, side: ExplorerSide | null) {
 		if (target.kind === "url") {
@@ -1617,61 +1775,107 @@
 		}
 		if (target.kind === "commit") return followScope({ kind: "commit", commit: target.commit });
 		if (target.kind === "range") return followScope({ kind: "range", base: target.base, head: target.head });
-		const change = review?.files.some((item) => item.path === target.path);
+		await followFileTarget(target, side ?? undefined);
+	}
+	async function followFileTarget(
+		target: Extract<ExplorerRichTarget, { kind: "file" | "lines" }>,
+		side?: ExplorerSide,
+	) {
+		const change = noteChange(target.path, side);
 		const lines = target.kind === "lines" ? target : undefined;
-		const useDiff = !!change && (view === "changes" || side === "base");
-		await keepCard(() =>
-			navigate(
-				{ path: target.path, line: lines?.start, end: lines?.end, view: useDiff ? "changes" : "file" },
-				{ keepTab: true, side: useDiff && side ? side : "head" },
-			),
+		const useDiff = !!change && (inReview() || side === "base");
+		await navigate(
+			{
+				path: useDiff ? change.path : target.path,
+				line: lines?.start,
+				end: lines?.end,
+				view: useDiff ? "changes" : "file",
+			},
+			{ keepTab: true, side: useDiff ? side : "head", keepCard: true },
 		);
 	}
-	async function goNote(note: ExplorerNote, show = true, preferChanges = false) {
-		if (note.side === "base" && !review && root.kind === "git") await refreshReview();
-		const change = review?.files.some((item) => item.path === note.path);
-		const useDiff = !!change && (note.side === "base" || view === "changes" || preferChanges);
-		const side = note.side;
-		keepCardOnNavigate = !show;
-		try {
-			await navigate(
-				{ path: note.path, line: note.start, view: useDiff ? "changes" : "file" },
-				{ keepTab: true, side },
-			);
-			if (show && side === "head" && useDiff && !locateNote(note))
-				await navigate({ path: note.path, line: note.start, view: "file" }, { keepTab: true });
-		} finally {
-			keepCardOnNavigate = false;
-		}
+	function noteChange(item: string, side?: ExplorerSide, preferred?: string) {
+		const matches = (change: ExplorerChange) => changePath(change, side) === item;
+		const preferredChange = review?.files.find((change) => change.path === (preferred ?? path) && matches(change));
+		return preferredChange ?? review?.files.find(matches);
+	}
+	function locateNote(note: ExplorerLineNote): ExplorerRange | null {
+		const { side } = note;
+		if (!inReview() && (side === "base" || note.location === "outdated")) return null;
+		const lines = side === "base" ? baseLines : headLines;
+		const spots = note.location === "outdated" ? [note.anchor] : [note, note.anchor];
+		const ranges = spots.map(({ start, end }) => ({ side, start, end }));
+		return ranges.find((range) => range.end <= lines.length && quoteMatches(note, range)) ?? null;
+	}
+	function quoteMatches(note: ExplorerLineNote, range: ExplorerRange) {
+		const shown = selectionExcerpt(range);
+		return shown?.path === note.path && shown.quote === note.anchor.quote;
+	}
+	function openLineMarker(marked: ExplorerNote[]) {
+		strip.hidden = true;
+		reviewUI.thread(marked);
+	}
+	function alignNote(note: ExplorerLineNote) {
 		const range = locateNote(note);
+		targetRange = null;
 		if (range) {
-			code.jump(range.start, range.side, true);
 			code.jump(range.end, range.side, true);
 			code.jump(range.start, range.side, true);
-			code.highlight(range);
-			setAnchorLine(range.start);
-		} else {
-			targetRange = null;
-			code.highlight(null);
 		}
-		if (show) reviewUI.thread([note], range);
+		code.highlight(range);
+		setAnchorLine(range?.start ?? null);
 		return range;
 	}
-	function locateNote(note: ExplorerNote): ExplorerRange | null {
-		if (path !== note.path) return null;
-		for (const spot of [{ start: note.start, end: note.end }, note.anchor]) {
-			const range = { ...spot, side: note.side };
-			if (selectionExcerpt(range)?.quote === note.anchor.quote) return range;
-		}
-		return null;
+	function isReviewTargetHere(note: ExplorerNote, target: Exclude<ExplorerNoteTarget, { kind: "file" }>) {
+		if (!inReview() || !review) return false;
+		return target.kind === "review"
+			? reviewTargets([note], review.resolved).length > 0
+			: review.commits.some(({ commit }) => commit === target.commit);
 	}
-	async function startTour(tour: ExplorerTour) {
-		if (tour.scope && !sameScope(tour.scope, scope)) {
-			scope = tour.scope;
-			settings.tab = "changes";
-			await refreshReview();
-		}
-		await reviewUI.tour(tour);
+	async function navigateReviewNote(note: ExplorerNote, target: Exclude<ExplorerNoteTarget, { kind: "file" }>) {
+		const next = target.kind === "review" ? target.review : { kind: "commit" as const, commit: target.commit };
+		if (isReviewTargetHere(note, target) || (await selectScope(next, true))) return { range: null };
+	}
+	async function noteReviewReady(side?: ExplorerSide) {
+		if (review || side !== "base" || root.kind !== "git") return true;
+		const origin = openStamp;
+		await refreshReview();
+		return origin === openStamp;
+	}
+	async function navigateNoteFile(item: string, side: ExplorerSide | undefined, scoped: boolean, preferred?: string) {
+		if (!(await noteReviewReady(side))) return false;
+		const change = noteChange(item, side, preferred);
+		const useDiff = !!change && (inReview() || side === "base" || scoped || !!preferred);
+		const destination = useDiff ? change.path : item;
+		const nextView = useDiff ? "changes" : "file";
+		if (!loadingFile && destination === path && nextView === view) return true;
+		return navigate({ path: destination, view: nextView }, { keepTab: true, keepCard: true, side });
+	}
+	async function navigateNote(
+		note: ExplorerNote,
+		preferred?: string,
+	): Promise<{ range: ExplorerRange | null } | undefined> {
+		if (!showsNote(note) || !atReview(note)) return;
+		const target = note.target;
+		if (target?.kind === "commit" || target?.kind === "review") return navigateReviewNote(note, target);
+		const location = note.target === undefined ? note : target;
+		if (!location) return;
+		if (await navigateNoteFile(location.path, location.side, !!note.reviewKey, preferred))
+			return { range: note.target === undefined ? alignNote(note) : null };
+	}
+	async function goNote(note: ExplorerNote) {
+		return (await navigateNote(note))?.range ?? null;
+	}
+	async function openNote(marked: ExplorerNote[], preferred?: string) {
+		const origin = rootStamp;
+		const [first] = marked;
+		const opened = first && (await navigateNote(first, preferred));
+		if (!opened || origin !== rootStamp) return;
+		const ids = new Set(marked.map(({ id }) => id));
+		const fresh = notes.filter((note) => ids.has(note.id) && showsNote(note) && atReview(note));
+		if (!fresh.length) return;
+		if (sheet) narrowClose();
+		reviewUI.thread(fresh, opened.range);
 	}
 
 	const findSlot = get("find-slot");
@@ -1921,7 +2125,7 @@
 				label: openLabel(marked),
 				key: "",
 				glyph: marked.some((note) => note.state === "draft") ? "note" : "bookmark",
-				run: () => reviewUI.thread(marked),
+				run: () => openLineMarker(marked),
 			});
 		if (fileHere)
 			result.push({
@@ -2487,13 +2691,14 @@
 	function restoreLaunchDraft(target: ExplorerLaunch, candidate: string | undefined, stamp: number) {
 		if (!editor.active() && target.draft && candidate === path && stamp === rootStamp) {
 			targetRange = null;
-			reviewUI.restore(path, target.draft);
+			const sourcePath = target.draft.range?.side === "base" ? (diff?.oldPath ?? path) : path;
+			reviewUI.restore(sourcePath, target.draft);
 		}
 	}
 	async function openPath(target: ExplorerLaunch, requested: ExplorerLaunch["view"], stamp: number) {
 		const candidate = target.path ?? (requested === "changes" ? review?.files[0]?.path : "");
 		const anchor = target.draft?.range;
-		await navigate(
+		const opened = await navigate(
 			{
 				...target,
 				path: candidate ?? "",
@@ -2503,43 +2708,44 @@
 			},
 			{ keepTab: !requested, keepSheet: true, side: anchor?.side },
 		);
-		restoreLaunchDraft(target, candidate, stamp);
-		if (target.tour || target.note)
-			notice(target.tour ? "That walkthrough is not available." : "That note is not available.");
+		if (opened) restoreLaunchDraft(target, candidate, stamp);
 	}
-	function launchView(target: ExplorerLaunch) {
-		return target.view ?? (target.review || target.tour ? "changes" : undefined);
+	function launchNoteFile(note: ExplorerNote, requested: ExplorerLaunch["view"]) {
+		if (requested !== "changes") return;
+		const location = note.target ?? note;
+		if ("path" in location) return noteChange(location.path, location.side)?.path;
 	}
-	function launchNeedsReview(requested: ExplorerLaunch["view"], target: ExplorerLaunch) {
-		return (requested === "changes" || target.review) && root.kind === "git";
+	async function openLaunchNote(id: string, requested: ExplorerLaunch["view"]) {
+		const note = notes.find((item) => item.id === id && showsNote(item) && atReview(item));
+		if (!note) {
+			notice("That note is not available.");
+			return false;
+		}
+		const destination = launchNoteFile(note, requested);
+		if (destination) settings.tab = "changes";
+		await openNote([note], destination);
+		return true;
 	}
-	function launchNeedsNotes(target: ExplorerLaunch) {
-		return (target.note || target.tour) && !notes.length;
+	function requestedLaunchView(target: ExplorerLaunch) {
+		return target.view ?? (target.review ? "changes" : undefined);
 	}
-	function prepareLaunch(target: ExplorerLaunch) {
-		if (target.review) scope = target.review;
-		const requested = launchView(target);
-		if (requested) settings.tab = requested === "file" ? "files" : requested;
-		return requested;
+	async function prepareLaunchReview(target: ExplorerLaunch, requested: ExplorerLaunch["view"]) {
+		if (target.review) setScope(target.review);
+		if (root.kind === "git" && (requested === "changes" || target.review)) await refreshReview();
 	}
 	async function open(target: ExplorerLaunch) {
-		const stamp = rootStamp;
-		const requested = prepareLaunch(target);
-		if (launchNeedsReview(requested, target)) await refreshReview();
-		if (stamp !== rootStamp) return;
-		if (launchNeedsNotes(target)) await refreshNotes();
-		if (stamp !== rootStamp) return;
-		const note = notes.find((note) => note.id === target.note);
-		const tour = tours.find((tour) => tour.id === target.tour);
-		if (tour) {
-			await startTour(tour);
-			return;
+		const stamp = ++launchStamp;
+		const origin = rootStamp;
+		const navOrigin = openStamp;
+		const current = () => stamp === launchStamp && origin === rootStamp && navOrigin === openStamp;
+		const requested = requestedLaunchView(target);
+		await prepareLaunchReview(target, requested);
+		if (!current()) return;
+		if (target.note) {
+			await refreshNotes();
+			if (!current() || (await openLaunchNote(target.note, requested))) return;
 		}
-		if (note) {
-			await goNote(note);
-			return;
-		}
-		await openPath(target, requested, stamp);
+		if (current()) await openPath(target, requested, origin);
 	}
 	function resetRoot(next: ExplorerRoot) {
 		editor.detach();
@@ -2559,7 +2765,8 @@
 		scopes = [];
 		review = null;
 		notes = [];
-		tours = [];
+		latestNotes = undefined;
+		commitsExpanded = false;
 		index = undefined;
 		indexedPaths = [];
 		indexPending = undefined;
@@ -2691,7 +2898,8 @@
 		const headChanged = updateHead(event.head);
 		const relevant = (candidate: string) =>
 			changed.some((item) => item === candidate || candidate.startsWith(`${item}/`));
-		const refreshThread = headChanged || !event.paths || notes.some((note) => relevant(note.path));
+		const refreshThread =
+			headChanged || !event.paths || notes.some((note) => note.target === undefined && relevant(note.path));
 		const refreshGit = root.kind === "git" && event.review;
 		const refreshFile = headChanged || !event.paths || relevant(path) || affectsWorkingDiff(refreshGit);
 		await Promise.all([
@@ -2740,6 +2948,18 @@
 				break;
 		}
 	});
+	function takeDeferredOpen() {
+		const deferred = pendingOpen;
+		pendingOpen = undefined;
+		booted = true;
+		if (!deferred?.root) return deferred;
+		base = deferred.base;
+		if (deferred.root.path !== root.path) resetRoot(deferred.root);
+		else root = deferred.root;
+		rootTrail();
+		rootChrome();
+		return deferred;
+	}
 	async function boot() {
 		try {
 			const result = await request("hello");
@@ -2763,18 +2983,10 @@
 				refreshScopes(),
 				refreshEditedPaths().catch((error) => notice(errorText(error))),
 			]);
-			const deferred = pendingOpen;
-			pendingOpen = undefined;
-			booted = true;
-			if (deferred?.root) {
-				base = deferred.base;
-				if (deferred.root.path !== root.path) resetRoot(deferred.root);
-				else root = deferred.root;
-				rootTrail();
-				rootChrome();
-			}
+			const deferred = takeDeferredOpen();
+			const launch = launchStamp;
 			await initial;
-			await open(deferred ?? result.launch);
+			if (launch === launchStamp) await open(deferred ?? result.launch);
 			if (root.kind === "git" && !review) report(refreshReview());
 		} catch (error) {
 			empty(
@@ -2946,7 +3158,7 @@
 		if (event.ctrlKey && key === "g" && (headLines.length || baseLines.length)) return () => command("line");
 		if (event.altKey && !event.metaKey && event.code === "KeyZ" && !editing) return toggleWrap;
 	}
-	function stepWalkthrough(key: string) {
+	function stepNotes(key: string) {
 		if (key === "arrowleft") return reviewUI.step(-1);
 		if (key === "arrowright") return reviewUI.step(1);
 		return false;
@@ -2980,7 +3192,7 @@
 			action();
 			return;
 		}
-		if (!editing && stepWalkthrough(key)) event.preventDefault();
+		if (!editing && !event.metaKey && !event.ctrlKey && !event.altKey && stepNotes(key)) event.preventDefault();
 	});
 	void boot();
 })();

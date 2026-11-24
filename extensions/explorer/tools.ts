@@ -1,18 +1,24 @@
-import { arr, bool, int, lit, obj, opt, type Static, str, union } from "@earendil-works/pi-schema";
+import { arr, bool, int, lit, nullable, obj, opt, type Static, str, union } from "@earendil-works/pi-schema";
 import type { LiveBridge } from "./live-bridge.ts";
 import { liveArguments } from "./live-launch.ts";
 import type { LiveConfig } from "./live-protocol.ts";
-import { type Note, NotesError, NotesStore, type Tour } from "./notes-store.ts";
+import { type CreateNote, type Note, NotesError, NotesStore } from "./notes-store.ts";
 import { BUILD_COMMAND, type LaunchTarget, paneLaunch } from "./pane-command.ts";
 import {
+	type Anchor,
 	isRelativePath,
+	pinNoteReview,
 	type Repo,
 	type ResolvedScope,
 	type ReviewScope,
+	type ReviewSide,
+	readAnchor,
+	readReviewAnchor,
 	resolveReviewTarget,
 	resolveScope,
 	resolveTarget,
 	reviewAnchor,
+	verifyNoteFile,
 } from "./repository.ts";
 import type { AgentPane } from "./settings.ts";
 
@@ -21,28 +27,19 @@ const noteId = str({ pattern: "^n-[a-f0-9]{20}$" });
 const line = int({ minimum: 1, maximum: 2_147_483_647 });
 const title = str({ minLength: 1, maxLength: 200 });
 const text = str({ minLength: 1, maxLength: 16384 });
-const url = str({ minLength: 1, maxLength: 2048, description: "HTTP or HTTPS URL" });
-const reply = obj({ by: title, text, at: opt(str({ maxLength: 40, description: "ISO 8601 date and time" })) }, {});
-const comment = obj(
+const url = str({
+	minLength: 1,
+	maxLength: 2048,
+	description: "HTTP or HTTPS URL",
+});
+const side = union([lit("head"), lit("base")], {
+	description: "head (default) or base",
+});
+const reply = obj(
 	{
-		id: str({ minLength: 1, maxLength: 200, description: "Remote comment or discussion ID, unique in the repository" }),
-		path: str({
-			minLength: 1,
-			maxLength: 4096,
-			description: "Path on the comment's side: the new path for head, the old path for base",
-		}),
-		start: line,
-		end: line,
-		side: opt(
-			union([lit("head"), lit("base")], {
-				description: "head (default) for new or unchanged lines, base for removed lines with old line numbers",
-			}),
-		),
-		by: str({ minLength: 1, maxLength: 200, description: "Display name of the remote author" }),
+		by: title,
 		text,
-		url: opt(url),
-		resolved: opt(bool()),
-		replies: opt(arr(reply, { maxItems: 64 })),
+		at: opt(str({ maxLength: 40, description: "ISO 8601 date and time" })),
 	},
 	{},
 );
@@ -50,18 +47,74 @@ const review = obj(
 	{
 		scope: opt(union([lit("uncommitted"), lit("branch"), lit("since-review")])),
 		commit: opt(str({ minLength: 1, maxLength: 512 })),
-		range: opt(str({ minLength: 4, maxLength: 1027, description: "Two refs separated by .. or ..." })),
+		range: opt(
+			str({
+				minLength: 4,
+				maxLength: 1027,
+				description: "Two refs separated by .. or ...",
+			}),
+		),
 	},
 	{},
 );
-const stop = obj({ path: pathInput, start: line, end: line, title, text }, {});
+const commitId = str({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$", description: "Full Git commit SHA" });
+const target = union(
+	[
+		obj({ kind: lit("file"), path: pathInput, side: opt(side) }, {}),
+		obj({ kind: lit("commit"), commit: commitId }, {}),
+		obj({ kind: lit("review"), review }, {}),
+	],
+	{},
+);
+const comment = obj(
+	{
+		id: str({
+			minLength: 1,
+			maxLength: 200,
+			description: "Remote comment or discussion ID, unique in the repository",
+		}),
+		path: opt(
+			str({
+				minLength: 1,
+				maxLength: 4096,
+				description: "Path on the comment's side: the new path for head, the old path for base",
+			}),
+		),
+		start: opt(line),
+		end: opt(line),
+		side: opt(side),
+		commit: opt(commitId),
+		by: str({
+			minLength: 1,
+			maxLength: 200,
+			description: "Display name of the remote author",
+		}),
+		text,
+		url: opt(url),
+		resolved: opt(bool()),
+		replies: opt(arr(reply, { maxItems: 64 })),
+	},
+	{},
+);
+const noteInput = obj(
+	{
+		path: opt(pathInput),
+		side: opt(side),
+		start: opt(line),
+		end: opt(line),
+		target: opt(target),
+		title: opt(title),
+		text,
+		url: opt(url),
+	},
+	{},
+);
 export const ShowParameters = obj(
 	{
 		path: opt(pathInput),
 		line: opt(line),
 		endLine: opt(line),
 		review: opt(review),
-		tour: opt(str({ pattern: "^t-[a-f0-9]{20}$" })),
 		note: opt(obj({ title: opt(title), text }, {})),
 	},
 	{},
@@ -75,7 +128,8 @@ export const NotesParameters = obj(
 			lit("resolve"),
 			lit("reopen"),
 			lit("note"),
-			lit("tour"),
+			lit("update"),
+			lit("delete"),
 			lit("import"),
 			lit("export"),
 		]),
@@ -86,18 +140,30 @@ export const NotesParameters = obj(
 		state: opt(union([lit("draft"), lit("open"), lit("sent"), lit("answered"), lit("resolved")])),
 		start: opt(line),
 		end: opt(line),
+		side: opt(side),
 		text: opt(text),
-		title: opt(title),
+		title: opt(nullable(title)),
 		review: opt(review),
-		stops: opt(arr(stop, { minItems: 1, maxItems: 32 })),
+		target: opt(target),
+		notes: opt(arr(noteInput, { minItems: 1, maxItems: 64 })),
 		url: opt(url),
-		summary: opt(text),
+		expectedUpdatedAt: opt(str({ minLength: 1, maxLength: 40 })),
 		comments: opt(arr(comment, { minItems: 1, maxItems: 100 })),
 	},
 	{},
 );
 export type ShowInput = Static<typeof ShowParameters>;
 export type NotesInput = Static<typeof NotesParameters>;
+type NoteSpec = {
+	path?: string;
+	side?: ReviewSide;
+	start?: number;
+	end?: number;
+	target?: NotesInput["target"];
+	title?: string | null;
+	text: string;
+	url?: string;
+};
 // The two callers receive the same bounded JSON receipt. Fields depend on the operation.
 export const ToolOutcomeSchema = obj(
 	{
@@ -111,11 +177,14 @@ const diagnosticLength = Symbol("diagnostic length");
 export type Outcome = Static<typeof ToolOutcomeSchema> & Record<string, unknown> & { [diagnosticLength]?: number };
 export function outcomeDetails(value: Outcome) {
 	const retained = value[diagnosticLength];
-	return { summary: value.summary, ...(retained === undefined ? {} : { diagnosticLength: retained }) };
+	return {
+		summary: value.summary,
+		...(retained === undefined ? {} : { diagnosticLength: retained }),
+	};
 }
 export const NOTES_OUTPUT_BYTES = 128 * 1024;
 export const NOTES_DESCRIPTION =
-	"List, read, add, reply to, resolve or reopen Explorer notes, or save an ordered walkthrough. For a merge or pull request, import remote comments or export operator notes with diff positions. Supply review for import and export, and use the platform's own commands to fetch or post comments. Paths are relative to root. Use a tour ID with explorer_show. This tool opens no pane.";
+	"List, read, add, reply to, resolve or reopen Explorer notes, import remote comments, export operator notes, update or delete agent notes. Notes may point at lines, a file, a commit or a review. Supply review for import/export and for line anchoring. Paths are relative to root. This tool opens no pane.";
 type ShowAudience = AgentPane | "native";
 export function showGuidance(pane: ShowAudience): string {
 	const placement =
@@ -130,7 +199,7 @@ export function showGuidance(pane: ShowAudience): string {
 	return `${report} ${pane === "native" ? "For a requested display" : "In the interactive session with the operator, when the operator needs to see the code"}, if you receive show, use its exact argv as the program of a new ${placement}, with no target, without taking focus, and with the pane set to close when its program ends. Respect a different placement requested by the operator. Reuse one Explorer pane: moved confirms a live pane navigated, and paneInput is for a pane you already opened. Type into or close only your own pane. The operator can close it at any time. If navigation is unconfirmed, do not open a replacement automatically.`;
 }
 export const showDescription = (pane: ShowAudience) =>
-	`Show a file, line range, review or walkthrough in Explorer. For a supplied note, save an open agent note first. If a live pane from this conversation is connected, navigate it instead of creating another. No window opens by itself. ${showGuidance(pane)}`;
+	`Show a file, line range or review in Explorer. For a supplied note, save an open agent note first. If a live pane from this conversation is connected, navigate it instead of creating another. No window opens by itself. ${showGuidance(pane)}`;
 
 export function reviewInput(input: Static<typeof review>): ReviewScope {
 	const { scope, commit, range } = input;
@@ -141,7 +210,12 @@ export function reviewInput(input: Static<typeof review>): ReviewScope {
 	const [base, separator, head, extra] = (range ?? "").split(/(\.{2,})/u);
 	if (!base || !head || extra !== undefined || (separator !== ".." && separator !== "..."))
 		throw new Error("A review range must have the form base..head or base...head.");
-	return { kind: "range", base, head, ...(separator === "..." ? { mergeBase: true } : {}) };
+	return {
+		kind: "range",
+		base,
+		head,
+		...(separator === "..." ? { mergeBase: true } : {}),
+	};
 }
 export async function checkedScope(repo: Repo, store: NotesStore, scope: ReviewScope) {
 	const marker =
@@ -159,7 +233,10 @@ function failure(op: string, error: unknown): Outcome {
 		ok: false,
 		op,
 		summary,
-		error: { code: error instanceof NotesError ? error.code : "invalid", message: summary },
+		error: {
+			code: error instanceof NotesError ? error.code : "invalid",
+			message: summary,
+		},
 		...(diagnostic.length > summary.length ? { [diagnosticLength]: diagnostic.length } : {}),
 	};
 }
@@ -167,24 +244,88 @@ function required<T>(value: T | undefined, name: string): T {
 	if (value === undefined) throw new Error(`${name} is required.`);
 	return value;
 }
-async function agentNote(
+async function lineNote(
 	repo: Repo,
 	path: string,
 	start: number,
 	end: number,
-	text: string,
-	title?: string,
+	body: string,
+	heading?: string | null,
 	review?: ResolvedScope,
-) {
+	chosenSide?: ReviewSide,
+	link?: string,
+): Promise<CreateNote> {
 	if (!isRelativePath(path)) throw new Error("A note requires a path relative to the repository root.");
+	let anchored: Anchor & { side: ReviewSide };
+	if (review) {
+		anchored = chosenSide
+			? {
+					side: chosenSide,
+					...(await readReviewAnchor(repo, review, path, chosenSide, start, end)),
+				}
+			: await reviewAnchor(repo, path, start, end, review);
+	} else {
+		if (chosenSide === "base") throw new Error("A base-side line note requires a review.");
+		anchored = { side: "head", ...(await readAnchor(repo, path, start, end)) };
+	}
 	return {
 		path,
-		...(await reviewAnchor(repo, path, start, end, review)),
-		text,
-		title,
+		side: anchored.side,
+		start: anchored.start,
+		end: anchored.end,
+		commit: anchored.commit,
+		quote: anchored.quote,
+		text: body,
+		...(heading === undefined || heading === null ? {} : { title: heading }),
+		...(link === undefined ? {} : { url: link }),
 		author: "agent",
 		state: "open",
+		...(review === undefined ? {} : { reviewKey: review.key }),
 	};
+}
+async function noteFromSpec(
+	repo: Repo,
+	store: NotesStore,
+	spec: NoteSpec,
+	review?: ResolvedScope,
+): Promise<CreateNote> {
+	if (spec.target) return targetNoteFromSpec(repo, store, spec, spec.target, review);
+	const path = spec.path;
+	if (!path) throw new Error("A line note requires a path.");
+	if (spec.start === undefined || spec.end === undefined) throw new Error("A line note requires start and end lines.");
+	return lineNote(repo, path, spec.start, spec.end, spec.text, spec.title, review, spec.side, spec.url);
+}
+async function targetNoteFromSpec(
+	repo: Repo,
+	store: NotesStore,
+	spec: NoteSpec,
+	target: NonNullable<NoteSpec["target"]>,
+	review?: ResolvedScope,
+): Promise<CreateNote> {
+	if (spec.path !== undefined || spec.start !== undefined || spec.end !== undefined || spec.side !== undefined)
+		throw new Error("Place the path and side inside the file target. A target note does not take line fields.");
+	const common = {
+		text: spec.text,
+		title: spec.title ?? undefined,
+		url: spec.url,
+		author: "agent" as const,
+		state: "open" as const,
+	};
+	switch (target.kind) {
+		case "file":
+			await verifyNoteFile(repo, target.path, review, target.side);
+			return { ...common, target, reviewKey: review?.key };
+		case "commit": {
+			if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(target.commit))
+				throw new Error("A commit note requires a full commit SHA.");
+			await resolveScope(repo, target);
+			return { ...common, target };
+		}
+		case "review": {
+			const resolved = await checkedScope(repo, store, reviewInput(target.review));
+			return { ...common, target: { kind: "review", review: pinNoteReview(resolved) }, reviewKey: resolved.key };
+		}
+	}
 }
 interface Context {
 	cwd: string;
@@ -202,23 +343,20 @@ export function pinnedReview(review: Awaited<ReturnType<typeof checkedScope>>): 
 	if (review.scope.kind === "range" && review.base) return { kind: "range", base: review.base, head: review.head };
 	return review.scope;
 }
-async function launchScope(input: ShowInput, store: NotesStore): Promise<ReviewScope | undefined> {
-	const selected = input.review && reviewInput(input.review);
-	if (!input.tour) return selected;
-	const result = await store.request("list");
-	const tour = (result.tours as { id: string; scope?: ReviewScope }[]).find((row) => row.id === input.tour);
-	if (!tour) throw new Error("The walkthrough is not in this repository.");
-	return selected ?? tour.scope;
-}
 async function prepareTarget(input: ShowInput, context: ShowContext): Promise<LaunchTarget> {
 	const resolve = input.review ? resolveReviewTarget : resolveTarget;
 	const { repo, path } = await resolve(input.path, context.cwd);
 	const store = new NotesStore(context.dir, repo);
-	const target: LaunchTarget = { root: repo.root, path, line: input.line, end: input.endLine, tour: input.tour };
+	const target: LaunchTarget = {
+		root: repo.root,
+		path,
+		line: input.line,
+		end: input.endLine,
+	};
 	if (input.endLine !== undefined && (input.line === undefined || input.endLine < input.line))
 		throw new Error("endLine requires line and cannot precede it.");
 	if (input.line !== undefined && !path) throw new Error("A line requires a file path.");
-	const scope = await launchScope(input, store);
+	const scope = input.review ? reviewInput(input.review) : undefined;
 	const review = scope ? await checkedScope(repo, store, scope) : undefined;
 	if (review) {
 		target.review = pinnedReview(review);
@@ -228,7 +366,7 @@ async function prepareTarget(input: ShowInput, context: ShowContext): Promise<La
 	if (input.note) {
 		const start = input.line ?? 1;
 		const { note } = await store.request("create", {
-			note: await agentNote(
+			note: await lineNote(
 				repo,
 				required(path, "path"),
 				start,
@@ -286,7 +424,13 @@ export async function runShow(input: ShowInput, context: ShowContext): Promise<O
 			const result = await bridge.navigate(connected.handle, target, context.signal);
 			if (result.status === "ok")
 				return outcome("show", "The connected Explorer pane opened this location.", { ...detail, moved: true });
-			return { ...detail, ok: false, op: "show", summary: result.message, navigation: result.status };
+			return {
+				...detail,
+				ok: false,
+				op: "show",
+				summary: result.message,
+				navigation: result.status,
+			};
 		}
 		return await showLaunch(context, target, detail);
 	} catch (error) {
@@ -310,20 +454,26 @@ function boundedRows<T>(rows: T[], count: number, byteLimit: number): T[] {
 	return result;
 }
 function preview(note: Note) {
-	return {
+	const common = {
 		id: note.id,
-		path: note.path,
-		side: note.side,
-		start: note.start,
-		end: note.end,
 		state: note.state,
 		author: note.author,
 		by: note.by,
 		url: note.url,
-		location: note.location,
-		movedFrom: note.movedFrom,
+		reviewKey: note.reviewKey,
+		updatedAt: note.updatedAt,
 		preview: prefix(note.text, 256),
 		title: note.title,
+	};
+	if ("target" in note) return { ...common, target: note.target };
+	return {
+		...common,
+		path: note.path,
+		side: note.side,
+		start: note.start,
+		end: note.end,
+		location: note.location,
+		movedFrom: note.movedFrom,
 	};
 }
 function boundedNote(note: Note) {
@@ -331,29 +481,20 @@ function boundedNote(note: Note) {
 		...reply,
 		...(reply.text.length > 512 ? { text: prefix(reply.text, 512), truncated: true } : {}),
 	}));
+	const quoted = "anchor" in note ? note.anchor.quote : "";
 	return {
 		...note,
 		text: prefix(note.text, 4096),
 		textTruncated: note.text.length > 4096,
-		anchor: { ...note.anchor, quote: prefix(note.anchor.quote, 8192) },
+		...("anchor" in note
+			? {
+					anchor: { ...note.anchor, quote: prefix(note.anchor.quote, 8192) },
+					quoteTruncated: quoted.length > 8192,
+				}
+			: {}),
 		thread: retained,
 		threadOmitted: note.thread.length - retained.length,
-		quoteTruncated: note.anchor.quote.length > 8192,
 	};
-}
-async function createTour(input: NotesInput, context: Context, repo: Repo, store: NotesStore) {
-	const title = required(input.title, "title");
-	const stops = required(input.stops, "stops");
-	const review = input.review ? await checkedScope(repo, store, reviewInput(input.review)) : undefined;
-	const scope = review ? pinnedReview(review) : undefined;
-	const notes = [];
-	for (const row of stops) {
-		context.signal?.throwIfAborted();
-		notes.push(await agentNote(repo, row.path, row.start, row.end, row.text, row.title, review));
-	}
-	const { tour } = await store.request("tour-create", { title, scope, notes, url: input.url, summary: input.summary });
-	const { id } = tour as { id: string };
-	return outcome("tour", `Saved walkthrough ${id}.`, { tourId: id, tour });
 }
 async function exportNotes(input: NotesInput, context: Context, store: NotesStore) {
 	const review = reviewInput(required(input.review, "review"));
@@ -369,6 +510,74 @@ async function exportNotes(input: NotesInput, context: Context, store: NotesStor
 	return receipt;
 }
 
+async function createNotes(input: NotesInput, context: Context, repo: Repo, store: NotesStore) {
+	const op = "note";
+	if (
+		input.notes &&
+		[input.path, input.side, input.start, input.end, input.target, input.title, input.text, input.url].some(
+			(field) => field !== undefined,
+		)
+	)
+		throw new Error("Supply either a single note or a notes array.");
+	const review = input.review ? await checkedScope(repo, store, reviewInput(input.review)) : undefined;
+	const specs: NoteSpec[] =
+		input.notes !== undefined
+			? input.notes
+			: [
+					{
+						path: input.path,
+						side: input.side,
+						start: input.start,
+						end: input.end,
+						target: input.target,
+						title: input.title,
+						text: required(input.text, "text"),
+						url: input.url,
+					},
+				];
+	const notes = [];
+	for (const spec of specs) {
+		context.signal?.throwIfAborted();
+		notes.push(await noteFromSpec(repo, store, spec, review));
+	}
+	const saved = (await store.request("create", { notes })).notes as Note[];
+	const ids = saved.map((note) => note.id);
+	const rows = boundedRows(saved.map(preview), 64, 80 * 1024);
+	return outcome(op, `Saved ${ids.length} ${ids.length === 1 ? "note" : "notes"}.`, {
+		ids,
+		notes: rows,
+		limited: rows.length < saved.length,
+		...(saved.length === 1 ? { note: boundedNote(saved[0]) } : {}),
+	});
+}
+async function updateNote(input: NotesInput, store: NotesStore) {
+	const op = "update";
+	const id = required(input.id, "id");
+	if (input.text === undefined && input.title === undefined) throw new Error("Note text or title is required.");
+	const { note } = await store.request("update", {
+		id,
+		...(input.text === undefined ? {} : { text: input.text }),
+		...(input.title === undefined ? {} : { title: input.title }),
+		expectedUpdatedAt: required(input.expectedUpdatedAt, "expectedUpdatedAt"),
+		agentOnly: true,
+	});
+	return outcome(op, `Updated ${id}.`, {
+		ids: [id],
+		note: boundedNote(note as Note),
+	});
+}
+async function listNotes(input: NotesInput, repo: Repo, store: NotesStore) {
+	const op = "list";
+	const listed = await store.request("list", { path: input.path });
+	const notes = (listed.notes as Note[]).filter((note) => input.state === undefined || note.state === input.state);
+	const rows = boundedRows(notes.slice(0, 64).map(preview), 64, 80 * 1024);
+	return outcome(op, `${notes.length} notes match in ${repo.label}.`, {
+		notes: rows,
+		limited: rows.length < notes.length || listed.truncated === true,
+		unreadable: listed.unreadable,
+	});
+}
+
 export async function runNotes(input: NotesInput, context: Context): Promise<Outcome> {
 	try {
 		context.signal?.throwIfAborted();
@@ -376,27 +585,8 @@ export async function runNotes(input: NotesInput, context: Context): Promise<Out
 		const store = new NotesStore(context.dir, repo);
 		const { op } = input;
 		switch (op) {
-			case "list": {
-				const listed = await store.request("list", { path: input.path });
-				const notes = (listed.notes as Note[]).filter(
-					(note) => input.state === undefined || note.state === input.state,
-				);
-				const tours = listed.tours as Tour[];
-				const rows = boundedRows(notes.slice(0, 64).map(preview), 64, 80 * 1024);
-				const walks = boundedRows(
-					tours
-						.slice(0, 32)
-						.map(({ id, title, scope, stops, url }) => ({ id, title, scope, url, stopCount: stops.length })),
-					32,
-					16 * 1024,
-				);
-				return outcome(op, `${notes.length} notes match in ${repo.label}.`, {
-					notes: rows,
-					tours: walks,
-					limited: rows.length < notes.length || walks.length < tours.length || listed.truncated === true,
-					unreadable: listed.unreadable,
-				});
-			}
+			case "list":
+				return await listNotes(input, repo, store);
 			case "read":
 			case "reply": {
 				const id = required(input.id, "id");
@@ -411,28 +601,30 @@ export async function runNotes(input: NotesInput, context: Context): Promise<Out
 			case "resolve":
 			case "reopen": {
 				const ids = required(input.ids, "ids");
-				const { notes } = await store.request("state", { ids, state: op === "resolve" ? "resolved" : "open" });
+				const { notes } = await store.request("state", {
+					ids,
+					state: op === "resolve" ? "resolved" : "open",
+				});
 				return outcome(op, `${op === "resolve" ? "Resolved" : "Reopened"} ${(notes as Note[]).length} notes.`, {
-					notes: (notes as Note[]).map(({ id, state, updatedAt }) => ({ id, state, updatedAt })),
+					notes: (notes as Note[]).map(({ id, state, updatedAt }) => ({
+						id,
+						state,
+						updatedAt,
+					})),
 				});
 			}
-			case "note": {
-				const selected = input.review ? await checkedScope(repo, store, reviewInput(input.review)) : undefined;
-				const { note } = await store.request("create", {
-					note: await agentNote(
-						repo,
-						required(input.path, "path"),
-						required(input.start, "start"),
-						required(input.end, "end"),
-						required(input.text, "text"),
-						input.title,
-						selected,
-					),
+			case "note":
+				return await createNotes(input, context, repo, store);
+			case "update":
+				return await updateNote(input, store);
+			case "delete": {
+				const ids = required(input.ids, "ids");
+				const result = await store.request("delete", { ids, agentOnly: true });
+				const removed = result.ids as string[];
+				return outcome(op, `Deleted ${removed.length} ${removed.length === 1 ? "note" : "notes"}.`, {
+					ids: removed,
 				});
-				return outcome(op, `Saved ${(note as Note).id}.`, { note: boundedNote(note as Note) });
 			}
-			case "tour":
-				return await createTour(input, context, repo, store);
 			case "import": {
 				const review = reviewInput(required(input.review, "review"));
 				const result = await store.request(
@@ -440,7 +632,11 @@ export async function runNotes(input: NotesInput, context: Context): Promise<Out
 					{ review, comments: required(input.comments, "comments") },
 					context.signal,
 				);
-				const { created, updated, skipped } = result as { created: number; updated: number; skipped: unknown[] };
+				const { created, updated, skipped } = result as {
+					created: number;
+					updated: number;
+					skipped: unknown[];
+				};
 				return outcome(
 					op,
 					`Imported comments: ${created} created, ${updated} updated, ${skipped.length} skipped.`,

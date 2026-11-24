@@ -218,7 +218,6 @@ struct WorkspaceTests {
 
     @Test func reviewStateAndMarkersDoNotInvalidateNotes() {
         #expect(affectsNotes("repos/key/notes/note.json"))
-        #expect(affectsNotes("repos/key/tours/tour.json"))
         #expect(affectsNotes("repos/key/repo.json"))
         #expect(!affectsNotes("repos/key/reviews/review.json"))
         #expect(!affectsNotes("repos/key/markers.json"))
@@ -293,7 +292,7 @@ struct WorkspaceTests {
         #expect(implicit["line"] as? Int == 9)
         #expect((implicit["draft"] as? [String: Any])?["text"] as? String == "Question?")
         #expect(reopened.restore(root: a, launch: ["path": "two.ts"])["draft"] != nil)
-        for pin: [String: Any] in [["line": 3], ["end": 4], ["note": "n-a"], ["tour": "tour-a"]] {
+        for pin: [String: Any] in [["line": 3], ["end": 4], ["note": "n-a"]] {
             let launch = ["path": "two.ts"].merging(pin) { _, right in right }
             #expect(reopened.restore(root: a, launch: launch)["draft"] == nil)
         }

@@ -122,7 +122,7 @@ struct ExplorerState {
         var next = launch
         if launch.isEmpty, let stored = load(location(root.path)), (try? Launch.validate(stored, launch: false)) != nil { next = stored }
         guard let path = next["path"] as? String,
-              ["line", "end", "note", "tour"].allSatisfy({ launch[$0] == nil }) else { return next }
+              ["line", "end", "note"].allSatisfy({ launch[$0] == nil }) else { return next }
         let key = root.path + "\0" + path
         if next["line"] == nil, let position = load(location(key)), (try? Launch.validate(position, launch: false)) != nil {
             next["line"] = position["line"]

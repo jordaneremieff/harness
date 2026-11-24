@@ -12,7 +12,6 @@ export interface LaunchTarget {
 	end?: number;
 	view?: "file" | "changes" | "notes";
 	review?: ReviewScope;
-	tour?: string;
 	note?: string;
 }
 export const BUILD_COMMAND = "node extensions/explorer/native/build.mts";
@@ -70,7 +69,7 @@ export async function readBuild(app: string): Promise<PaneBuild | undefined> {
 
 export function targetArgs(target: LaunchTarget): string[] {
 	const args = ["--root", target.root];
-	for (const name of ["path", "line", "end", "view", "review", "tour", "note"] as const) {
+	for (const name of ["path", "line", "end", "view", "review", "note"] as const) {
 		const value = target[name];
 		if (value !== undefined) args.push(`--${name}`, name === "review" ? JSON.stringify(value) : String(value));
 	}

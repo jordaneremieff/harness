@@ -327,31 +327,56 @@ kbd {
   color: var(--ink-2);
   margin: 6px 0 11px;
 }
-.tour-launch {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  padding: 7px;
-  background: var(--agent-soft);
-  color: var(--agent-text);
-  text-align: left;
-  font-size: 13px;
-  font-weight: 635;
-}
-.tour-launch:not(:disabled):hover,
 .agent-button:not(:disabled):hover {
   background: color-mix(in oklch, var(--agent) 24%, var(--paper));
 }
-.tour-launch .ico {
-  width: 13px;
-  height: 13px;
+button.note-marker {
+  --marker-color: var(--accent-text);
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--marker-color);
+  background: color-mix(in oklch, var(--marker-color) 10%, transparent);
 }
-.tour-launch small {
+button.note-marker.agent {
+  --marker-color: var(--agent-text);
+}
+button.note-marker.remote {
+  --marker-color: var(--remote);
+}
+button.note-marker.draft {
+  --marker-color: var(--warn);
+}
+button.note-marker .ico {
+  width: 14px;
+  height: 14px;
+  color: inherit;
+}
+button.note-marker:hover {
+  background: color-mix(in oklch, var(--marker-color) 20%, transparent);
+}
+button.note-dot.note-marker {
+  width: 13px;
+  height: 14px;
+  background: transparent;
+}
+button.note-dot.note-marker .ico {
+  display: none;
+}
+button.note-dot.note-marker:hover {
+  background: var(--hover);
+}
+.range-kicker > .note-marker {
   margin-left: auto;
-  white-space: nowrap;
-  font-weight: 500;
-  font-size: 11px;
+}
+.commit-label {
+  overflow-wrap: anywhere;
+}
+.range-box li > .note-marker {
+  height: 20px;
+  width: 21px;
+  vertical-align: middle;
+  margin-left: 4px;
 }
 .range-box details {
   font-size: 11px;
@@ -664,8 +689,30 @@ button.folder-list-status {
   gap: 4px;
   flex: none;
 }
-.file-actions .tool-button[aria-pressed="true"] {
+.file-actions .tool-button[aria-pressed="true"],
+.notes-visibility[aria-pressed="true"] {
   background: var(--accent-soft);
+}
+.notes-visibility[aria-pressed="false"] {
+  color: var(--ink-3);
+}
+.file-note-markers {
+  display: inline-flex;
+  flex: none;
+}
+.markdown-preview .preview-note-host {
+  position: relative;
+}
+.markdown-preview .preview-note-host > .note-marker {
+  position: absolute;
+  top: 0;
+  right: calc(100% + 2px);
+  width: 18px;
+  height: 18px;
+}
+.markdown-preview pre.preview-note-host > .note-marker {
+  top: 2px;
+  right: 2px;
 }
 #file-facts {
   display: flex;

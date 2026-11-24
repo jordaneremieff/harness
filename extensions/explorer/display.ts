@@ -53,7 +53,10 @@ function review(value: unknown): string {
 function bound(text: string) {
 	if (text.length <= DISPLAY_LIMIT) return { text };
 	const end = /[\ud800-\udbff]/u.test(text[DISPLAY_LIMIT - 1]) ? DISPLAY_LIMIT - 1 : DISPLAY_LIMIT;
-	return { text: text.slice(0, end), limit: `[Truncated: showing ${end} of ${text.length} characters]` };
+	return {
+		text: text.slice(0, end),
+		limit: `[Truncated: showing ${end} of ${text.length} characters]`,
+	};
 }
 
 function component(draw: (width: number) => string[]): Component {
@@ -106,21 +109,20 @@ function callParts(name: string, args: Record<string, unknown>) {
 	const root = pathLine(args.root);
 	const reviewRef = review(args.review);
 	if (name === "explorer_show") {
-		const tour = line(args.tour);
 		const note = record(args.note);
 		return {
-			subject: path || tour || (reviewRef ? `Review ${reviewRef}` : "Working directory"),
+			subject: path || (reviewRef ? `Review ${reviewRef}` : "Working directory"),
 			suffix: range(args.line, args.endLine),
-			facts: [path && tour, (path || tour) && reviewRef && `review ${reviewRef}`, line(note.title)].filter(Boolean),
+			facts: [path && reviewRef && `review ${reviewRef}`, line(note.title)].filter(Boolean),
 			body: bodyText(note.text),
 			hidden:
-				Object.keys(args).some((key) => !["path", "line", "endLine", "review", "tour", "note"].includes(key)) ||
+				Object.keys(args).some((key) => !["path", "line", "endLine", "review", "note"].includes(key)) ||
 				Object.keys(note).some((key) => key !== "title" && key !== "text"),
 		};
 	}
 	const op = line(args.op);
 	const ids = array(args.ids).map(line).filter(Boolean);
-	const stops = array(args.stops);
+	const notes = array(args.notes);
 	const comments = array(args.comments);
 	const targets = [path, line(args.id), ids.join(", "), line(args.title), root].filter(Boolean);
 	const [main, ...others] = targets;
@@ -131,25 +133,47 @@ function callParts(name: string, args: Record<string, unknown>) {
 			...others,
 			reviewRef && `review ${reviewRef}`,
 			line(args.state),
-			stops.length && count(stops.length, "stop"),
+			notes.length && count(notes.length, "note"),
 			comments.length && count(comments.length, "comment"),
 		].filter(Boolean),
 		body: bodyText(args.text),
 		hidden:
-			stops.length > 0 ||
+			notes.length > 0 ||
 			Object.keys(args).some(
 				(key) =>
-					!["op", "path", "id", "ids", "title", "root", "start", "end", "review", "state", "stops", "text"].includes(
-						key,
-					),
+					![
+						"op",
+						"path",
+						"id",
+						"ids",
+						"title",
+						"root",
+						"start",
+						"end",
+						"side",
+						"review",
+						"state",
+						"notes",
+						"target",
+						"text",
+						"url",
+						"expectedUpdatedAt",
+					].includes(key),
 			),
 	};
 }
 
 function noteLocation(note: Record<string, unknown>) {
-	return [line(note.id), `${pathLine(note.path)}${range(note.start, note.end)}`, line(note.state), line(note.by)]
-		.filter(Boolean)
-		.join(" · ");
+	const target = record(note.target);
+	const where =
+		target.kind === "file"
+			? `${pathLine(target.path)}${line(target.side) ? ` (${line(target.side)})` : ""}`
+			: target.kind === "commit"
+				? `commit ${line(target.commit)}`
+				: target.kind === "review"
+					? `review ${review(target.review)}`
+					: `${pathLine(note.path)}${range(note.start, note.end)}`;
+	return [line(note.id), where, line(note.state), line(note.by)].filter(Boolean).join(" · ");
 }
 
 type Readout = {
@@ -185,7 +209,6 @@ function showReadout(d: Record<string, unknown>): Readout {
 			root: target.path ? target.root : undefined,
 			review: review(target.review) || undefined,
 			view: target.view,
-			walkthrough: target.tour,
 			"navigation status": d.navigation,
 			"Launch argv": d.show,
 			"Pane input": typeof d.paneInput === "string" ? JSON.stringify(d.paneInput) : undefined,
@@ -212,25 +235,19 @@ function noteReadout(note: Record<string, unknown>, outcome: string, reading: bo
 
 function listReadout(d: Record<string, unknown>): Readout {
 	const notes = array(d.notes).map(record);
-	const tours = array(d.tours).map(record);
-	const body = [
-		...notes.map(noteLocation),
-		...tours.map((tour) => [line(tour.id), line(tour.title)].filter(Boolean).join(" · ")),
-	].join("\n");
-	const totals = [notes.length && count(notes.length, "note"), tours.length && count(tours.length, "walkthrough")]
-		.filter(Boolean)
-		.join(" and ");
+	const body = notes.map(noteLocation).join("\n");
+	const totals = notes.length && count(notes.length, "note");
 	const unreadable =
 		typeof d.unreadable === "number" && d.unreadable > 0 ? ` · ${count(d.unreadable, "unreadable record")}` : "";
 	const limited = d.limited === true;
-	const listing = totals ? `Returned ${totals}` : "No notes or walkthroughs were returned";
+	const listing = totals ? `Returned ${totals}` : "No notes were returned";
 	const partialListing = totals ? `The partial list contains ${totals}` : "The partial list is empty";
 	return {
 		outcome: limited ? `${partialListing}${unreadable}; no continuation cursor.` : `${listing}${unreadable}.`,
 		warning: limited || Boolean(unreadable),
 		body,
 		replacesBody: true,
-		expanded: [...notes.map(fields), ...tours.map(fields)].filter(Boolean).join("\n\n"),
+		expanded: notes.map(fields).filter(Boolean).join("\n\n"),
 		limits: notes.length ? ["[Excerpt: each note preview retains up to 256 characters]"] : [],
 	};
 }
@@ -248,7 +265,10 @@ function importedReadout(d: Record<string, unknown>): Readout {
 	return {
 		outcome: changed ? `Import: ${changed}.` : "No remote comments imported.",
 		warning: skipped.length > 0,
-		expanded: fields({ notes: notes.length ? notes : undefined, skipped: skipped.length ? skipped : undefined }),
+		expanded: fields({
+			notes: notes.length ? notes : undefined,
+			skipped: skipped.length ? skipped : undefined,
+		}),
 	};
 }
 
@@ -271,29 +291,43 @@ function exportedReadout(d: Record<string, unknown>): Readout {
 }
 
 function notesReadout(d: Record<string, unknown>): Readout {
-	if (d.ok === true) {
-		if (d.op === "list") return listReadout(d);
-		if (d.op === "import") return importedReadout(d);
-		if (d.op === "export") return exportedReadout(d);
-	}
 	const outcome = firstLine(bodyText(d.summary));
+	if (d.ok !== true) return { outcome, expanded: fields({ "Error code": record(d.error).code }) };
+	switch (d.op) {
+		case "list":
+			return listReadout(d);
+		case "import":
+			return importedReadout(d);
+		case "export":
+			return exportedReadout(d);
+		case "delete": {
+			const ids = array(d.ids).map(line).filter(Boolean);
+			return { outcome, body: ids.join("\n"), replacesBody: true, expanded: fields({ ids }) };
+		}
+	}
 	const note = record(d.note);
 	if (typeof note.text === "string") return noteReadout(note, outcome, d.op === "read");
-	if (d.ok === true && (d.op === "resolve" || d.op === "reopen")) {
-		const notes = array(d.notes).map(record);
-		return {
-			outcome: `${d.op === "resolve" ? "Resolved" : "Reopened"} ${count(notes.length, "note")}.`,
-			body: notes.map(noteLocation).join("\n"),
-			replacesBody: true,
-			expanded: notes.map(fields).join("\n\n"),
-		};
-	}
-	return { outcome, expanded: fields({ walkthrough: d.tour, "Error code": record(d.error).code }) };
+	return noteRowsReadout(d, outcome);
+}
+function noteRowsReadout(d: Record<string, unknown>, outcome: string): Readout {
+	const notes = array(d.notes).map(record);
+	if (d.op === "resolve" || d.op === "reopen")
+		outcome = `${d.op === "resolve" ? "Resolved" : "Reopened"} ${count(notes.length, "note")}.`;
+	return {
+		outcome,
+		body: notes.map(noteLocation).join("\n"),
+		replacesBody: true,
+		expanded: notes.map(fields).join("\n\n"),
+	};
 }
 
 function fallbackReadout(summary: string, raw: string, error: boolean): Readout {
 	// Host diagnostics can echo the original arguments, even on their first line.
-	if (error) return { outcome: "The Explorer tool returned an error.", expanded: raw || summary };
+	if (error)
+		return {
+			outcome: "The Explorer tool returned an error.",
+			expanded: raw || summary,
+		};
 	const [head, ...tail] = (summary || raw).trimStart().split("\n");
 	const outcome = line(head) || "Explorer returned no result text.";
 	if (summary && raw !== summary) return { outcome, expanded: raw };
@@ -308,7 +342,9 @@ function resultReadout(
 	error: boolean,
 ): Readout {
 	if (partial)
-		return { outcome: name === "explorer_show" ? "Preparing the Explorer location…" : "Processing Explorer notes…" };
+		return {
+			outcome: name === "explorer_show" ? "Preparing the Explorer location…" : "Processing Explorer notes…",
+		};
 	const summary = bodyText(details.summary);
 	if (typeof details.ok !== "boolean" || typeof details.op !== "string") return fallbackReadout(summary, raw, error);
 	const view = name === "explorer_show" ? showReadout(details) : notesReadout(details);
@@ -414,5 +450,8 @@ function card(name: "explorer_show" | "explorer_notes"): Card {
 }
 
 export function toolDisplay() {
-	return { version: 1 as const, tools: [card("explorer_show"), card("explorer_notes")] };
+	return {
+		version: 1 as const,
+		tools: [card("explorer_show"), card("explorer_notes")],
+	};
 }

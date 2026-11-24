@@ -21,7 +21,7 @@ enum ExplorerCheck {
         let target = try Launch(arguments: ["root", "path", "line"].flatMap { key in raw[key].map { ["--\(key)", $0] } ?? [] })
         let scratch = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
-        // A named store shows its notes and walkthroughs; the snapshot can write page state into it.
+        // A named store shows its notes; the snapshot can write page state into it.
         let store = raw["store"].map { URL(fileURLWithPath: $0) } ?? scratch
         try execute(target: target, resources: resources, store: store, width: width, height: height, appearance: raw["appearance"], zoom: zoom,
                     showIgnored: try ignoredOption(raw["ignored"])) { host, _ in
@@ -133,11 +133,14 @@ enum ExplorerCheck {
             };
             const press = key => document.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles:true, cancelable:true}));
             globalThis.explorer.receive({v:1, type:'notes.changed'});
-            const marked = await until(() => document.querySelector('.code-cell.has-note .source'), 'note mark');
-            marked.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, button:0, detail:1}));
-            const opened = await until(() => document.querySelector('.float-card'), 'marked line opens its note');
+            const marked = await until(() => document.querySelector('.gutter .note-dot'), 'note mark');
+            marked.click();
+            const opened = await until(() => document.querySelector('.note-card'), 'line marker opens its note');
             if (!opened.textContent.includes('Notice')) throw Error('note card text');
-            press('Escape');
+            await accept('notes.write', {op:'update', id:note.note.id, text:'**Expanded** note', title:'New title', expectedUpdatedAt:note.note.updatedAt});
+            await until(() => opened.querySelector('.ask-head strong')?.textContent === 'New title' && opened.querySelector('.rich strong')?.textContent === 'Expanded', 'open card refresh');
+            await accept('notes.write', {op:'delete', id:note.note.id});
+            await until(() => !document.querySelector('.note-card'), 'deleted note closes its card');
             globalThis.explorer.receive({v:1, type:'open', path:'lines.ts', view:'file'});
             await until(() => document.getElementById('file-title')?.textContent === 'lines.ts' && document.querySelectorAll('.gutter .line-number').length >= 3, 'second file');
             const comment = async line => {
@@ -174,9 +177,10 @@ enum ExplorerCheck {
             explorer.receive({ v:1, type:'open', path:'guide.md', line:3 });
             const paragraph = await waitFor('.markdown-preview p.has-note');
             if (!paragraph.classList.contains('markdown-jump')) throw Error('Markdown line jump');
-            paragraph.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, button:0, detail:1}));
-            const previewCard = await waitFor('.float-card');
-            if (!previewCard.textContent.includes('Markdown note')) throw Error('Marked block opens its note');
+            const previewMarker = await waitFor('.markdown-preview p.has-note .note-marker');
+            previewMarker.click();
+            const previewCard = await waitFor('.note-card');
+            if (!previewCard.textContent.includes('Markdown note')) throw Error('Markdown marker opens its note');
             press('Escape');
             getSelection().selectAllChildren(paragraph);
             document.dispatchEvent(new Event('selectionchange'));

@@ -26,7 +26,7 @@ struct Launch {
     }
 
     init(arguments: [String]) throws {
-        let allowed = Set(["root", "path", "line", "end", "view", "review", "tour", "note"])
+        let allowed = Set(["root", "path", "line", "end", "view", "review", "note"])
         let parsed = try options(arguments, allowed: allowed)
         var target: [String: Any] = parsed
         for key in ["line", "end"] where parsed[key] != nil {
@@ -43,7 +43,7 @@ struct Launch {
     }
 
     static func validate(_ fields: [String: Any], launch: Bool) throws {
-        let allowed = Set(launch ? ["path", "line", "end", "view", "review", "tour", "note"] : ["path", "line", "view", "review"])
+        let allowed = Set(launch ? ["path", "line", "end", "view", "review", "note"] : ["path", "line", "view", "review"])
         guard Set(fields.keys).isSubset(of: allowed) else { throw ExplorerError("invalid", "Unknown location field.") }
         if let path = fields["path"], (path as? String).map(validPath) != true { throw ExplorerError("invalid-path", "The file path is not relative to the opened folder.") }
         for key in ["line", "end"] {
@@ -59,10 +59,8 @@ struct Launch {
             throw ExplorerError("invalid", "The view must be file, changes or notes.")
         }
         if let review = fields["review"] { _ = try scopeShape(review) }
-        for key in ["tour", "note"] {
-            if let raw = fields[key], (raw as? String)?.range(of: #"^[a-zA-Z0-9_-]{1,128}$"#, options: .regularExpression) == nil {
-                throw ExplorerError("invalid", "The \(key) identifier is invalid.")
-            }
+        if let raw = fields["note"], (raw as? String)?.range(of: #"^[a-zA-Z0-9_-]{1,128}$"#, options: .regularExpression) == nil {
+            throw ExplorerError("invalid", "The note identifier is invalid.")
         }
     }
 }

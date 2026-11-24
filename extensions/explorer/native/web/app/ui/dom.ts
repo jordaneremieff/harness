@@ -14,7 +14,6 @@
 		forward: "M12 5l5 5-5 5M3 10h14",
 		up: "M5 12l5-5 5 5",
 		down: "M5 8l5 5 5-5",
-		tour: "M5 3v14l12-7z",
 		external: "M11 4h5v5M16 4l-7 7M14 11v5H4V6h5",
 		"comment-remote": "M3 4h14v10H9l-4 3v-3H3zM7 9h6",
 		close: "m5 5 10 10M15 5 5 15",
@@ -73,5 +72,16 @@
 		glyph(node, name);
 		return node;
 	}
-	window.explorer.dom = { el, get, icon, button, iconButton, glyph };
+	function noteMarker(notes: ExplorerNote[], label: string, action: () => void) {
+		const summary = `Open ${notes.length === 1 ? "note" : `${notes.length} notes`} ${label}`;
+		const kind = notes.some((note) => note.state === "draft")
+			? "draft"
+			: notes.every((note) => note.author === notes[0]?.author)
+				? notes[0]?.author
+				: "operator";
+		const node = iconButton("note", summary, action);
+		node.classList.add("note-marker", kind ?? "operator");
+		return node;
+	}
+	window.explorer.dom = { el, get, icon, button, iconButton, glyph, noteMarker };
 })();
