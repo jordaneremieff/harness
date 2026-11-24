@@ -1329,6 +1329,12 @@ function seededCompactionInstructions(instructions: string | undefined): string 
 
 const compactionTokens = { CompactionTask, CompactionEntry, LiveDoc, InboxDoc };
 
+/** A second request while one compaction runs or awaits placement starts nothing; the first one still applies. */
+export const COMPACTION_IN_PROGRESS =
+	"This conversation already has a compaction in progress. Do not request another: its summary applies at a later boundary. Continue the work; agent_status shows the compaction state.";
+export const COMPACTION_AWAITS_PLACEMENT =
+	"A compaction summary already awaits placement in this conversation. Do not request another: it applies at the next tool or answer boundary. Continue the work.";
+
 /** A completed conversation-owned summary can still await placement at a tool or answer boundary. */
 export async function admitManualCompaction(
 	tx: Tx,
@@ -1338,10 +1344,10 @@ export async function admitManualCompaction(
 	tokens = compactionTokens,
 ): Promise<{ taskId: TaskId<CompactionResult> } | { refusal: string }> {
 	const live = await tx.doc(tokens.LiveDoc, conversationId);
-	if (live.compactions?.length) return { refusal: "This conversation already has a compaction in progress." };
+	if (live.compactions?.length) return { refusal: COMPACTION_IN_PROGRESS };
 	const inbox = await tx.doc(tokens.InboxDoc, conversationId);
 	if (inbox.items.some((item) => item.mode === "write" && item.entry.kind === tokens.CompactionEntry.kind))
-		return { refusal: "A compaction summary already awaits placement in this conversation." };
+		return { refusal: COMPACTION_AWAITS_PLACEMENT };
 	const taskId = await tx.createTask(
 		tokens.CompactionTask,
 		{ reason: "manual", instructions: seededCompactionInstructions(instructions) },

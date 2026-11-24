@@ -2559,7 +2559,7 @@ it("refuses self and external requests during self-compaction and retains its fa
 		error: "Summarization failed: prompt is too long",
 	});
 	const rejected = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.isError);
-	assert.match(rejected?.text ?? "", /already has a compaction in progress/u);
+	assert.match(rejected?.text ?? "", /already has a compaction in progress\. Do not request another/u);
 });
 
 it("refuses external and self requests while a completed external summary awaits placement", {
@@ -2609,7 +2609,7 @@ it("refuses external and self requests while a completed external summary awaits
 	assert.equal((await submission.wait(context)).status, "done");
 	const self = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_compact");
 	assert.equal(self?.isError, true);
-	assert.match(self.text, /already|pending|queued|awaiting placement/iu);
+	assert.match(self.text, /already awaits placement in this conversation\. Do not request another/u);
 	const tasks = await storage.scanTasks({ kind: Durable.CompactionTask.definition.name }, 10, undefined, context);
 	assert.equal(tasks.items.length, 1);
 	assert.equal((await entriesOf(harness, root.id)).filter(Durable.CompactionEntry.is).length, 1);
