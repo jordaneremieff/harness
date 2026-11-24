@@ -796,10 +796,11 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		parameters: EditParams,
 		renderCall: renderEditCall,
 		renderResult: renderEditResult,
-		async execute(_toolCallId, params: Static<typeof EditParams>, signal) {
+		async execute(_toolCallId, params: Static<typeof EditParams>, signal, _onUpdate, ctx) {
 			const result = await withStashTarget(params.id, signal, (dir, targetId) =>
 				editStash(dir, targetId, params, signal),
 			);
+			reportHandover(pi.events, currentSessionId(ctx), result.id, result.meta.title);
 			return {
 				content: [
 					{

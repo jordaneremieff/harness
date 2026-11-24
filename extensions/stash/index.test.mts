@@ -96,7 +96,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 	return { tools, guidelines, commands, shortcuts, renderers, sent, safety, events, pi, launches };
 }
 
-it("reports handovers that the session writes, reads, or picks up, and never checkpoints", async () => {
+it("reports handovers that the session writes, reads, edits or picks up, and never checkpoints", async () => {
 	const { tools, commands, pi } = registry();
 	const reports: unknown[] = [];
 	const emit = pi.events.emit;
@@ -130,7 +130,21 @@ it("reports handovers that the session writes, reads, or picks up, and never che
 	assert.deepEqual(reports.at(-1), { ...handover, sessionId: "reader" });
 	await commands.get("stash").handler(`get ${id}`, session("resumer"));
 	assert.deepEqual(reports.at(-1), { ...handover, sessionId: "resumer" });
-	assert.equal(reports.length, 3);
+	const current = await tools.get("stash_read").execute("read", { id }, undefined, undefined, session("resumer"));
+	await tools.get("stash_edit").execute(
+		"edit",
+		{
+			id,
+			expectedDigest: current.details.digest,
+			edits: [{ oldText: "Plan.", newText: "Plan, amended." }],
+			allowActive: true,
+		},
+		undefined,
+		undefined,
+		session("editor"),
+	);
+	assert.deepEqual(reports.at(-1), { ...handover, sessionId: "editor" });
+	assert.equal(reports.length, 5);
 });
 
 it("exposes safe reports for write, checkpoint, edit, and completion tools", async () => {

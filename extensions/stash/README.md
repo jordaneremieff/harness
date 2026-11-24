@@ -58,7 +58,8 @@ pickup path as `/stash get <id>`; cancellation does nothing. Print and JSON mode
 have no UI and retain directions to the direct commands and tools.
 
 In ordinary Pi, writing a handover with `stash_write`, reading one with
-`stash_read`, and picking one up emit one `harness:work-reference` event with
+`stash_read`, amending one with `stash_edit`, and picking one up emit one
+`harness:work-reference` event with
 kind `handover`, the handover id and its title, as the
 [work references convention](../../docs/conventions/work-references.md)
 defines. Checkpoints, failed operations and native tool runs emit nothing. The
