@@ -5,7 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { Harness, MemoryStorage, type CommitResult, type Seq, type StorageWrite } from "@earendil-works/pi-durable";
+import {
+	Harness,
+	MemoryStorage,
+	type CommitResult,
+	type ConversationId,
+	type Seq,
+	type StorageWrite,
+} from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import {
 	acknowledgeReports,
@@ -14,6 +21,7 @@ import {
 	settleDeliveries,
 	submitConversation,
 	ThreadDeliveryDoc,
+	type DeliveryIntent,
 	type DeliveryReport,
 } from "./durable-controls.ts";
 import {
@@ -35,6 +43,7 @@ import {
 	snapshotReceipt,
 	storeDeliveryRow,
 	terminalDeliveryState,
+	unsettledIntentReader,
 } from "./delivery-store.ts";
 import { readDashboard } from "./durable-observation.ts";
 import {
@@ -396,6 +405,49 @@ it("does not create retained documents for absent observation or acknowledgement
 		[],
 	);
 	assert.equal(storage.operations, 0, "distinct absent keys produce no retained document writes");
+});
+
+it("reads the intent of an input that has not settled and creates no row for an input without one", async (t) => {
+	const storage = new CountedStorage();
+	const harness = await Harness.open(
+		storage,
+		{ models: await fixtureRuntime("answer"), registry: fixtureRegistry() },
+		context,
+	);
+	t.after(() => harness.close(context));
+	await migrateDeliveryStore(harness, context);
+	const intent = (requestId: string): DeliveryIntent => ({
+		requestId,
+		ownerId: "owner",
+		conversationId: 1 as ConversationId,
+		message: "work",
+		whenBusy: null,
+		operationId: null,
+		submissionId: null,
+		origin: "model",
+	});
+	await harness.commit(async (tx) => {
+		await storeDeliveryRow(tx, "intent", intent("waits"), true);
+		await storeDeliveryRow(
+			tx,
+			"intent",
+			{ ...intent("refused"), delivery: { state: "terminal", reason: "refused" } },
+			true,
+		);
+	}, context);
+	storage.operations = 0;
+	const found = await harness.commit(async (tx) => {
+		const intentOf = await unsettledIntentReader(tx);
+		for (let index = 0; index < 100; index++) assert.equal(await intentOf(1, `event-${index}`), undefined);
+		assert.equal(await intentOf(2, "waits"), undefined, "another conversation's request ID is another key");
+		return [await intentOf(1, "waits"), await intentOf(1, "refused")];
+	}, context);
+	assert.deepEqual(
+		found.map((row) => row?.requestId),
+		["waits", "refused"],
+	);
+	assert.equal(storage.operations, 0, "the reader writes nothing for keys without an intent");
+	assert.equal(await snapshotIntent(harness, 1, "event-0", context), undefined);
 });
 
 it("retains terminal diagnostics and owner acknowledgement without active traversal", async (t) => {

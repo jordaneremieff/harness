@@ -5,7 +5,8 @@ import type { ReportIntervention } from "./report-intervention.ts";
 import { communicationIdentity } from "./communication.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import { RequestContextDoc, type RequestContext } from "./request-context.ts";
-import { retainedIntent } from "./delivery-store.ts";
+import { unsettledIntentReader } from "./delivery-store.ts";
+import type { DeliveryIntent } from "./durable-controls.ts";
 
 function interventionConversation(storageId: string, sender: string, recipient: string): ConversationId {
 	if (!communicationIdentity(sender) || !communicationIdentity(recipient))
@@ -32,11 +33,12 @@ async function recipientInput(
 	recipient: string,
 	inputId: SubmissionId,
 	routes: readonly RequestContext[],
+	intentOf: (conversationId: number, requestId: string) => Promise<DeliveryIntent | undefined>,
 ): Promise<ResultReference | undefined> {
 	const input = await tx.submission(inputId);
 	if (input?.type !== "input" || input.conversationId !== conversationId || input.requestId === undefined)
 		return undefined;
-	const intent = await retainedIntent(tx, conversationId, input.requestId);
+	const intent = await intentOf(conversationId, input.requestId);
 	const route = routes.find((item) => item.requestId === input.requestId);
 	const owner = intent?.ownerId ?? route?.replyTo;
 	const origin = intent?.origin ?? route?.origin;
@@ -57,8 +59,10 @@ export async function validateReportIntervention(
 		throw new Error("Report intervention does not identify the current producer run");
 	const routes = await tx.doc(RequestContextDoc, conversationId);
 	const associated: ResultReference[] = [];
+	// The inputs of the live run have not settled, so the reader finds each retained intent and creates no row.
+	const intentOf = await unsettledIntentReader(tx);
 	for (const inputId of live.run.inputs) {
-		const input = await recipientInput(tx, conversationId, sender, recipient, inputId, routes.requests);
+		const input = await recipientInput(tx, conversationId, sender, recipient, inputId, routes.requests, intentOf);
 		if (input === undefined) continue;
 		const supplied = intervention.producerResults.find((result) => result.submissionId === inputId);
 		associated.push(input);

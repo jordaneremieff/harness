@@ -35,6 +35,7 @@ import {
 	planningBudgetSelfId,
 	planningBudgetSourceId,
 } from "./continuity-budget.ts";
+import { DeliveryRowDoc, intentKey } from "./delivery-store.ts";
 import { answerMessage, completed, fixtureRegistry } from "./durable-host-fixture.mts";
 import { readOutcome, submitConversation, undeliveredReports, type DeliveryReport } from "./durable-controls.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
@@ -505,6 +506,39 @@ it("records one capacity report per model-origin recipient and run, with every e
 		);
 	}
 	assert.equal((await undeliveredReports(f.harness, ownerA, context)).length, 1);
+});
+
+it("creates no delivery row for an input of the reported run that never had an answer route", {
+	timeout: 30000,
+}, async (t) => {
+	const f = await fixture(t, small, [gateCall(small, 60_000), gateCall(small, 120_007), answer(small, 122_000)]);
+	const owned = await send(f, "owned-1", ownerA, "model");
+	await f.gate.entered(0);
+	const event = await submitConversation(
+		f.root,
+		{ message: "an event", requestId: "event-1", whenBusy: "steer" },
+		context,
+	);
+	f.gate.release(0);
+	await f.gate.entered(1);
+	const run = await liveRun(f);
+	await f.reports.flush();
+	assert.deepEqual([...run.inputs].sort(), [owned.submissionId, event.submissionId].sort());
+	const reports = await undeliveredReports(f.harness, ownerA, context);
+	assert.equal(reports.length, 1);
+	assert.deepEqual(reports[0].intervention?.producerResults, [
+		{ sessionId: storageId, submissionId: owned.submissionId, requestId: "owned-1" },
+	]);
+	assert.equal(
+		await f.harness.snapshot(DeliveryRowDoc, intentKey(f.root.id, "event-1"), context),
+		undefined,
+		"the report read a row for an input without an intent and so created it",
+	);
+	assert.notEqual(await f.harness.snapshot(DeliveryRowDoc, intentKey(f.root.id, "owned-1"), context), undefined);
+	assert.deepEqual(f.errors, []);
+	f.gate.release(1);
+	await readOutcome(f.harness, owned.submissionId, context);
+	await f.reports.close();
 });
 
 it("reports at exactly 90% and does not repeat the retained report after the observer restarts on the same storage", {

@@ -16,6 +16,7 @@ import {
 	type Harness,
 	type LiveState,
 	type SubmissionId,
+	type SubmissionRecord,
 	type TaskId,
 	type Tx,
 } from "@earendil-works/pi-durable";
@@ -27,7 +28,7 @@ import {
 	planningBudgetSelfId,
 	planningBudgetSourceId,
 } from "./continuity-budget.ts";
-import { retainedIntent, retainedReportRequest } from "./delivery-store.ts";
+import { retainedReportRequest, unsettledIntentReader } from "./delivery-store.ts";
 import { recordReportInTransaction } from "./durable-controls.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import { safeProviderError } from "./primary-observation.ts";
@@ -261,10 +262,16 @@ async function runRecipients(
 ): Promise<Map<string, ResultReference[]>> {
 	const routes = (await tx.doc(RequestContextDoc, conversationId)).requests;
 	const owners = new Map<string, ResultReference[]>();
+	const submissions: Extract<SubmissionRecord, { type: "input" }>[] = [];
 	for (const id of inputs) {
 		const input = await tx.submission(id);
-		if (input?.type !== "input" || input.conversationId !== conversationId || input.requestId === undefined) continue;
-		const intent = await retainedIntent(tx, conversationId, input.requestId);
+		if (input?.type === "input" && input.conversationId === conversationId) submissions.push(input);
+	}
+	// The inputs of a live run have not settled, so the reader finds each retained intent and creates no row.
+	const intentOf = await unsettledIntentReader(tx);
+	for (const input of submissions) {
+		if (input.requestId === undefined) continue;
+		const intent = await intentOf(conversationId, input.requestId);
 		const route = routes.find((item) => item.requestId === input.requestId);
 		const ownerId = intent?.ownerId ?? route?.replyTo;
 		if (ownerId === undefined || (intent?.origin ?? route?.origin) !== "model") continue;
