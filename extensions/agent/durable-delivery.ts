@@ -115,7 +115,8 @@ const PRIMARY_DIRECTORY_VISITS = 256;
 const PRIMARY_LIST_LIMIT = 20;
 const FALLBACK_LABEL = "no live owning session";
 /** Bound for one peer body; the marker names the retained source for the full text. */
-const PEER_TEXT_LIMIT = 16_000;
+/** UTF-16 units of a message body that a recipient reads; a longer body keeps its head. */
+export const PEER_TEXT_LIMIT = 16_000;
 const PEER_TRUNCATION_MARKER = "\n\n[text truncated; use agent_inspect for retained full text]";
 /** The passive-submit host operation bounds the entire model message, not its body. */
 const PASSIVE_MESSAGE_BYTES = 16 * 1024;

@@ -1264,6 +1264,7 @@ export class DurableHost {
 		const message = requestRequiredString(params, "message");
 		const replyTo = requestString(params, "replyTo");
 		const passive = requestBoolean(params, "passive");
+		const direct = requestBoolean(params, "direct");
 		const report = await recordReport(
 			this.harness,
 			{
@@ -1273,6 +1274,7 @@ export class DurableHost {
 				message,
 				...(replyTo === undefined ? {} : { replyTo }),
 				...(passive === undefined ? {} : { passive }),
+				...(direct === true ? { direct } : {}),
 				...(params?.intervention === undefined
 					? {}
 					: { intervention: parseReportIntervention(params.intervention), storageId: this.storageId }),

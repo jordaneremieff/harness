@@ -23,14 +23,18 @@ export const NativeQuestionsDoc = defineDoc<NativeQuestions>({
 
 export const NATIVE_QUESTIONS_FULL = `This conversation has ${MAX_OPEN_QUESTIONS} open questions; each closes when its reply or non-reply notice arrives. Send this message without expectReply, or continue other work until an answer event arrives`;
 
-/** Reserve a question before its delivery, so a reply can never arrive before the record. */
+/**
+ * Reserve a question before its delivery, so a reply can never arrive before the record. A replayed ask
+ * finds its own record: `open` while no reply or notice has closed it, `closed` after one did.
+ */
 export async function reserveNativeQuestion(
 	tx: Tx,
 	conversationId: ConversationId,
 	question: { id: string; peer: string; message: string; at: number },
-): Promise<"reserved" | "known" | "full"> {
+): Promise<"reserved" | "open" | "closed" | "full"> {
 	const state = await tx.doc(NativeQuestionsDoc, conversationId);
-	if (state.closed.includes(question.id) || state.open.some((item) => item.id === question.id)) return "known";
+	if (state.closed.includes(question.id)) return "closed";
+	if (state.open.some((item) => item.id === question.id)) return "open";
 	if (state.open.length >= MAX_OPEN_QUESTIONS) return "full";
 	state.open.push({
 		id: question.id,

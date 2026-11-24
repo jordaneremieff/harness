@@ -64,7 +64,7 @@ it("keeps a Durable asker's open questions in its storage, closes them only from
 		);
 
 	assert.equal(await ask(`question:${storageId}:1`), "reserved");
-	assert.equal(await ask(`question:${storageId}:1`), "known", "a replayed ask reserves nothing new");
+	assert.equal(await ask(`question:${storageId}:1`), "open", "a replayed ask reserves nothing new");
 	assert.equal(await ask(`question:${storageId}:2`), "reserved");
 	assert.equal(await ask(`question:${storageId}:3`), "reserved");
 
@@ -76,7 +76,7 @@ it("keeps a Durable asker's open questions in its storage, closes them only from
 		(await open()).map((item) => item.id),
 		[`question:${storageId}:3`],
 	);
-	assert.equal(await ask(`question:${storageId}:1`), "known", "a replayed ask cannot reopen an answered question");
+	assert.equal(await ask(`question:${storageId}:1`), "closed", "a replayed ask cannot reopen an answered question");
 	await host.harness.commit((tx) => releaseNativeQuestion(tx, ROOT, `question:${storageId}:3`), context);
 	assert.equal((await open()).length, 0);
 
@@ -93,7 +93,11 @@ it("keeps a Durable asker's open questions in its storage, closes them only from
 		at: 1,
 		excerpt: "Are retries idempotent?",
 	});
-	const note = nativeContinuityText(storageId, 9, [], { headId: 9, items: [] }, { open: retained.slice(0, 1) });
+	const note = nativeContinuityText(storageId, 9, [], {
+		headId: 9,
+		items: [],
+		questions: { open: retained.slice(0, 1), ended: [] },
+	});
 	assert.match(
 		note,
 		new RegExp(
@@ -102,7 +106,7 @@ it("keeps a Durable asker's open questions in its storage, closes them only from
 		),
 	);
 	assert.doesNotMatch(
-		nativeContinuityText(storageId, 9, [], { headId: 9, items: [] }, { open: [] }),
+		nativeContinuityText(storageId, 9, [], { headId: 9, items: [], questions: { open: [], ended: [] } }),
 		/Questions this session/u,
 	);
 });

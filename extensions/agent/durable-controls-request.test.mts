@@ -329,6 +329,13 @@ it("records explicit reports without an input, answer owner, or check-in task", 
 	assert.equal(after.submissions.length, before.submissions.length);
 	assert.equal(after.tasks.length, before.tasks.length);
 	assert.equal((await readRetainedDelivery(harness, context, true))?.reports.length, 1);
+	assert.equal(report.direct, undefined, "a report without direct may reach a fallback recipient");
+	const direct = await recordReport(
+		harness,
+		{ ownerId: "requester-b", senderIdentity: "worker", message: "Ready?", requestId: "question:w:1", direct: true },
+		context,
+	);
+	assert.equal(direct.direct, true, "a direct report reaches only its owner");
 });
 
 it("commits a display name and its managed instructions together", async (t) => {

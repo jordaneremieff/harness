@@ -6,6 +6,7 @@ import {
 	type OpenQuestion,
 	PEER_QUESTION_ENTRY,
 	type PeerQuestionFact,
+	validQuestionId,
 } from "./peer-questions.ts";
 
 export const CONTINUITY_ENTRY = "agent.continuity";
@@ -23,8 +24,14 @@ export type ContinuityFact = {
 export type ContinuityEvent = ContinuityFact & { readonly afterHead: number };
 /** One declared open item: the request that owes a final report, its reply recipient, and the exact results it waits for. */
 export type ContinuityOpenWork = { requestId: string; replyTo: string; results: ResultReference[] };
-/** Declared open work of a conversation, read once at the first request of one context head. */
-export type ContinuityWork = { headId: number; items: ContinuityOpenWork[] };
+/** Questions a conversation asked, read with its open work: still open, and closed by that read because the asked session ended. */
+export type ContinuityQuestion = { id: string; peer: string; at: number; excerpt: string };
+export type ContinuityQuestions = { open: ContinuityQuestion[]; ended: ContinuityQuestion[] };
+/**
+ * Declared open work of a conversation, read once at the first request of one context head, with the
+ * questions read in the same commit. A record without `questions` predates that read.
+ */
+export type ContinuityWork = { headId: number; items: ContinuityOpenWork[]; questions?: ContinuityQuestions };
 export type ContinuityState = { events: ContinuityEvent[]; work?: ContinuityWork };
 
 function validIdentity(value: unknown): value is string {
@@ -56,10 +63,39 @@ export function validateContinuityFact(value: unknown): asserts value is Continu
 		throw new TypeError("Continuity admission requires a submission");
 	if (fact.timerId !== undefined && !positiveInteger(fact.timerId)) throw new TypeError("Invalid continuity timer");
 }
+/** Each list holds at most the asker's bound of open questions, so the frozen record stays small. */
+const MAX_FROZEN_QUESTIONS = 64;
+function validQuestionList(value: unknown): boolean {
+	return (
+		Array.isArray(value) &&
+		value.length <= MAX_FROZEN_QUESTIONS &&
+		value.every(
+			(item: ContinuityQuestion | null) =>
+				item !== null &&
+				typeof item === "object" &&
+				validQuestionId(item.id) &&
+				validIdentity(item.peer) &&
+				Number.isSafeInteger(item.at) &&
+				typeof item.excerpt === "string" &&
+				item.excerpt.length <= 512,
+		)
+	);
+}
+function validateContinuityQuestions(value: unknown): void {
+	const questions = value as ContinuityQuestions | null;
+	if (
+		questions === null ||
+		typeof questions !== "object" ||
+		!validQuestionList(questions.open) ||
+		!validQuestionList(questions.ended)
+	)
+		throw new TypeError("Invalid continuity questions");
+}
 export function validateContinuityWork(value: unknown): asserts value is ContinuityWork {
 	const work = value as ContinuityWork | null;
 	if (work === null || typeof work !== "object" || !positiveInteger(work.headId) || !Array.isArray(work.items))
 		throw new TypeError("Invalid continuity open work");
+	if (work.questions !== undefined) validateContinuityQuestions(work.questions);
 	for (const item of work.items) {
 		if (
 			item === null ||
@@ -216,7 +252,7 @@ export function continuityText(
 					),
 				]
 			: []),
-		`Not covered: messages sent to an ordinary primary${questions !== undefined && questions.asked.length + questions.received.length > 0 ? " without expectReply" : ""}; requests that another session routed here.`,
+		`Not covered: messages sent to an ordinary primary${questions !== undefined && questions.asked.length + questions.received.length + (questions.ended?.length ?? 0) > 0 ? " without expectReply" : ""}; requests that another session routed here.`,
 		"Creation records are provenance, not ownership.",
 	].join("\n");
 }
@@ -248,20 +284,25 @@ export function continuityWorkText(ownerId: string, items: readonly ContinuityOp
 		? list
 		: `${list}\nAn arrived result closes no item: agent_work complete closes it, and a host abort or reset closes it with a final report. Read current items, notes and dependency states with ${status}.`;
 }
-/** `work` counts only when it was read for this head; open work of another head never enters the note. */
+/**
+ * `work` counts only when it was read for this head; open work of another head never enters the note.
+ * The questions come from the same frozen read, so every request of the head, also after a host restart,
+ * states the same questions.
+ */
 export function nativeContinuityText(
 	ownerId: string,
 	headId: number,
 	events: readonly ContinuityEvent[],
 	work?: ContinuityWork,
-	questions?: { readonly open: readonly OpenQuestion[]; readonly ended?: readonly OpenQuestion[] },
 ): string {
+	const read = work?.headId === headId ? work : undefined;
+	const questions = read?.questions;
 	return `${continuityText(
 		ownerId,
 		headId,
 		events.filter((event) => event.afterHead < headId),
 		questions === undefined ? undefined : { asked: questions.open, received: [], ended: questions.ended },
-	)}\n${continuityWorkText(ownerId, work?.headId === headId ? work.items : undefined)}`;
+	)}\n${continuityWorkText(ownerId, read?.items)}`;
 }
 
 /** Pi supplies the current compaction entry ID through buildContextEntries()[0]. */

@@ -7,6 +7,7 @@ import { ContinuityDoc, recordContinuityDelivered, recordContinuityFact } from "
 import { onStoredCommit } from "./commit-observation.ts";
 import { ContinuityMirror } from "./continuity-mirror.ts";
 import { OpenWorkDoc, type OpenWorkItem } from "./open-work.ts";
+import { NativeQuestionsDoc, reserveNativeQuestion } from "./native-questions.ts";
 
 async function fixture(t: TestContext) {
 	const harness = await Harness.open(
@@ -164,6 +165,7 @@ it("reads declared open work once for a head, retains it, and keeps the note thr
 			},
 			{ requestId: "request-b", replyTo: "owner", results: [] },
 		],
+		questions: { open: [], ended: [] },
 	});
 
 	// Later open-work changes and later continuity facts never change the note of this head.
@@ -256,4 +258,61 @@ it("states a failed open-work read in the note of that head and does not repeat 
 		/\{"requestId":"request-a","replyTo":"owner","dependsOn":\[\]\}/u,
 		"a cancelled read is not a failed read",
 	);
+});
+
+it("retains the questions read for a head, so a host restart states them again and a stale head closes none", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	const live = "01a20c9b-0000-75a2-9fc7-00000000000a";
+	const gone = "01a20c9b-0000-75a2-9fc7-00000000000b";
+	const ended = (peer: string) => peer === gone;
+	const mirror = new ContinuityMirror(harness, "owner", ended);
+	t.after(() => mirror.close());
+	await mirror.initialize(context);
+	await harness.commit(async (tx) => {
+		await reserveNativeQuestion(tx, conversation.id, { id: "question:owner:1", peer: live, message: "Live?", at: 1 });
+		await reserveNativeQuestion(tx, conversation.id, { id: "question:owner:2", peer: gone, message: "Gone?", at: 2 });
+	}, context);
+	await harness.commit((tx) => tx.appendEntry(conversation.id, { kind: "pi.reset", head: "self" }), context);
+	await mirror.prepare(conversation.id, context);
+	const frozen = mirror.current(conversation.id);
+	assert.ok(frozen);
+	assert.match(
+		frozen.text,
+		/no reply or non-reply notice here: \n\{"sessionId":"[^"]+a","question":"question:owner:1"\}/u,
+	);
+	assert.match(
+		frozen.text,
+		/asked session ended; no reply will come: \n\{"sessionId":"[^"]+b","question":"question:owner:2"\}/u,
+	);
+
+	mirror.close();
+	const restarted = new ContinuityMirror(harness, "owner", () => true);
+	t.after(() => restarted.close());
+	await restarted.initialize(context);
+	await restarted.prepare(conversation.id, context);
+	assert.equal(restarted.current(conversation.id)?.text, frozen.text, "the restarted host states the same note");
+
+	// A read for a head that is no longer the newest closes nothing, so no ended question goes unreported.
+	const stale = new ContinuityMirror(harness, "owner", () => true);
+	t.after(() => stale.close());
+	await stale.initialize(context);
+	await harness.commit((tx) => tx.appendEntry(conversation.id, { kind: "pi.reset", head: "self" }), context);
+	await harness.commit(async (tx) => {
+		const state = await tx.doc(NativeQuestionsDoc, conversation.id);
+		assert.deepEqual(
+			state.open.map((item) => item.id),
+			["question:owner:1"],
+		);
+	}, context);
+	const { freezeContinuityWork } = await import("./continuity-native.ts");
+	const { reconcileNativeQuestions } = await import("./native-questions.ts");
+	const read = await harness.commit(
+		(tx) =>
+			freezeContinuityWork(tx, conversation.id, frozen.head.id, () =>
+				reconcileNativeQuestions(tx, conversation.id, () => true),
+			),
+		context,
+	);
+	assert.equal(read, undefined);
+	assert.equal((await harness.snapshot(NativeQuestionsDoc, conversation.id, context))?.open.length, 1);
 });

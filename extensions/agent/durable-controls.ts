@@ -1676,6 +1676,8 @@ export type RecordReportParams = {
 	readonly requestId: string;
 	readonly replyTo?: string;
 	readonly passive?: boolean;
+	/** The report reaches only its owner; while the owner has no live endpoint it waits without a fallback copy. */
+	readonly direct?: boolean;
 	readonly intervention?: ReportIntervention;
 	readonly storageId?: string;
 };
@@ -1686,6 +1688,10 @@ export async function recordReport(
 ): Promise<DeliveryReport> {
 	await migrateDeliveryStore(harness, context);
 	return harness.commit((tx) => recordReportInTransaction(tx, params), context);
+}
+
+function directField(params: RecordReportParams): { direct?: true } {
+	return params.direct === true ? { direct: true } : {};
 }
 
 /** Capacity capture and source validation share one commit with their retained report. */
@@ -1716,6 +1722,7 @@ export async function recordReportInTransaction(tx: Tx, params: RecordReportPara
 		message,
 		replyTo: replyTo ?? null,
 		...(passive === undefined ? {} : { passive }),
+		...directField(params),
 		...(intervention === undefined ? {} : { intervention }),
 		acknowledged: false,
 		createdAt: Date.now(),

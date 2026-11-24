@@ -57,7 +57,12 @@ import { isThinkingLevel } from "./configuration.ts";
 import type { ModelChoicesSchema } from "./observation-schema.ts";
 import type { Static } from "@earendil-works/pi-schema";
 import { AgentManager } from "./manager.ts";
-import { startDurableDelivery, type DurableDelivery, type NativeTargetFailure } from "./durable-delivery.ts";
+import {
+	PEER_TEXT_LIMIT,
+	startDurableDelivery,
+	type DurableDelivery,
+	type NativeTargetFailure,
+} from "./durable-delivery.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
 import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 
@@ -254,6 +259,20 @@ export function modelChoices(services: Pick<DurableServices, "services">): Stati
 }
 
 /** Constructed only after the process claims the storage writer. */
+/** A message to an ordinary primary; a question must fit the report body that the recipient reads. */
+function assertPrimaryMessage(method: string, params: Record<string, unknown>): void {
+	if (method === "collaboration-mutate")
+		throw new Error(
+			"Threads of an ordinary primary live in that primary's own thread storage; repeat agent_collaborate create without sessionId to create the thread in your own storage",
+		);
+	if (method !== "submit") throw new Error("A registered primary accepts messages, not Durable session controls");
+	const length = typeof params.message === "string" ? params.message.length : 0;
+	if (params.expectReply === true && length > PEER_TEXT_LIMIT)
+		throw new Error(
+			`This question is ${length} characters with its reply instructions, and the recipient reads at most ${PEER_TEXT_LIMIT}. Shorten the message by at least ${length - PEER_TEXT_LIMIT} characters, or put long material in a file and name its path`,
+		);
+}
+
 export async function createDurableRuntime(
 	metadata: HostMetadata,
 	options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {},
@@ -600,14 +619,18 @@ export async function createDurableRuntime(
 				await manager.close();
 			}
 		}
-		if (method !== "submit") throw new Error("A registered primary accepts messages, not Durable session controls");
+		assertPrimaryMessage(method, params);
 		const channel = await connectPrimaryChannel({
 			id: sessionId,
 			sessionsRoot: dirname(dirname(metadata.storagePath)),
 		});
 		try {
 			markRecoveryDue(true);
-			const report = (await host.request("report", { ...params, ownerId: sessionId })) as { sourceId: string };
+			// A message names its recipient: if that session ends first, the message waits for it and never
+			// reaches another session as an informational copy.
+			const report = (await host.request("report", { ...params, ownerId: sessionId, direct: true })) as {
+				sourceId: string;
+			};
 			return {
 				sessionId,
 				admitted: true,

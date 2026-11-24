@@ -541,7 +541,8 @@ const SendParams = obj(
 		checkInMinutes: CheckInParams,
 		expectReply: opt(
 			bool({
-				description: "Ordinary primary target only: a question; its reply or non-reply notice arrives as a report.",
+				description:
+					"Ordinary primary target only: ask a question. Its reply, or one notice when the session's run ends without one, arrives as a report that names the question ID.",
 			}),
 		),
 	},
@@ -1924,29 +1925,62 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const endedPrimary = (peer: string): boolean =>
 		host.catalogRoot !== undefined && primarySessionEnded(dirname(host.catalogRoot), peer);
 	const questionRefusal = (args: SendInput): string | undefined => {
-		if (args.mode === "report" || args.deliverAt !== undefined || args.replyTo !== undefined)
-			return "expectReply asks an immediate question: omit mode report, deliverAt and replyTo, and repeat the call";
+		if (
+			args.mode === "report" ||
+			args.deliverAt !== undefined ||
+			args.replyTo !== undefined ||
+			args.passive !== undefined ||
+			args.checkInMinutes !== undefined
+		)
+			return "expectReply asks an immediate question: omit mode report, deliverAt, replyTo, passive and checkInMinutes, and repeat the call";
 		return target(args.sessionId).kind === "foreign" ? undefined : DURABLE_TARGET_QUESTION;
 	};
-	/** Reserve the question in this conversation's storage, then deliver it; a failed delivery drops the reservation. */
+	/** The canonical identity of the asked session, or why the question refuses. */
+	const questionPeer = (args: SendInput): { identity: string } | { error: string } => {
+		const refusal = questionRefusal(args);
+		if (refusal !== undefined) return { error: refusal };
+		try {
+			return { identity: targetIdentity(args.sessionId, host.catalogRoot) };
+		} catch (error) {
+			return { error: error instanceof Error ? error.message : String(error) };
+		}
+	};
+	/** A full reservation refuses; a replay of a closed question returns it without a second delivery. */
+	const reservedResult = (
+		state: Awaited<ReturnType<typeof reserveNativeQuestion>>,
+		id: string,
+		peer: string,
+	): Durable.ToolExecutionResult<ControlDetails> | undefined => {
+		if (state === "full") return errorResult(NATIVE_QUESTIONS_FULL);
+		if (state !== "closed") return undefined;
+		return textResult(
+			`Question ${id} to ${peer} was delivered and has closed: its reply or non-reply notice arrived as a report.`,
+			{ sessionId: peer, question: id },
+		);
+	};
+	/**
+	 * Reserve the question in this conversation's storage, then deliver it; a failed delivery drops the
+	 * reservation. The question document tracks it, so the ask writes no admission fact or delegation edge.
+	 * A replay after its reply or notice arrived returns the closed question without a second delivery.
+	 */
 	const askPrimary = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		context: Context,
 		args: SendInput,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
-		const refusal = questionRefusal(args);
-		if (refusal !== undefined) return errorResult(refusal);
+		const peer = questionPeer(args);
+		if ("error" in peer) return errorResult(peer.error);
 		const asker = identity(api.conversationId);
 		const id = `question:${asker}:${api.taskId}`;
-		const question = {
+		const reserved = await reserveQuestion(api, context, {
 			id,
-			peer: targetIdentity(args.sessionId, host.catalogRoot),
+			peer: peer.identity,
 			message: args.message,
 			at: Date.now(),
-		};
-		const reserved = await reserveQuestion(api, context, question);
+		});
 		if ("error" in reserved) return errorResult(reserved.error);
-		if (reserved.full) return withEndedQuestions(errorResult(NATIVE_QUESTIONS_FULL), reserved.ended);
+		const settled = reservedResult(reserved.state, id, peer.identity);
+		if (settled !== undefined) return withEndedQuestions(settled, reserved.ended);
 		const result = await dispatchControl(
 			"submit",
 			{
@@ -1961,7 +1995,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				expectReply: true,
 			},
 			`Question to ${args.sessionId} failed`,
-			{ api, context },
+			undefined,
+			context,
 		);
 		if (result.isError === true) await api.commit((tx) => releaseNativeQuestion(tx, api.conversationId, id), context);
 		return withEndedQuestions(result, reserved.ended);
@@ -1971,12 +2006,13 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		context: Context,
 		question: { id: string; peer: string; message: string; at: number },
-	): Promise<{ ended: OpenQuestion[]; full: boolean } | { error: string }> => {
+	): Promise<
+		{ ended: OpenQuestion[]; state: Awaited<ReturnType<typeof reserveNativeQuestion>> } | { error: string }
+	> => {
 		try {
 			return await api.commit(async (tx) => {
 				const closed = (await reconcileNativeQuestions(tx, api.conversationId, endedPrimary)).ended;
-				const full = (await reserveNativeQuestion(tx, api.conversationId, question)) === "full";
-				return { ended: closed, full };
+				return { ended: closed, state: await reserveNativeQuestion(tx, api.conversationId, question) };
 			}, context);
 		} catch (error) {
 			if (context.abortSignal?.aborted) throw error;
@@ -2104,7 +2140,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const sendTool = durable.defineTool<typeof SendParams, ControlDetails>({
 		name: "agent_send",
-		description: `Send a message to an agent conversation. A busy conversation receives it at its next tool boundary, the end of its current tool round; mode is the class of the message, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Reports request attention by default. For progress that asks for no action, set mode:'report',passive:true. Passive reports enter context at the next result or normal boundary. They do not wake the recipient. Keep questions, blockers, corrections and capacity interventions active. Send explicit instructions as followUp or steer, not passive reports. Task answers report back to you. With deliverAt, schedule the input instead of admitting it now. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool.`,
+		description: `Send a message to an agent conversation. A busy conversation receives it at its next tool boundary, the end of its current tool round; mode is the class of the message, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Reports request attention by default. For progress that asks for no action, set mode:'report',passive:true. Passive reports enter context at the next result or normal boundary. They do not wake the recipient. Keep questions, blockers, corrections and capacity interventions active. Send explicit instructions as followUp or steer, not passive reports. Task answers report back to you. With expectReply, ask an ordinary session a question: its reply, or one notice that its run ended without a reply, arrives as a report. With deliverAt, schedule the input instead of admitting it now. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool.`,
 		parameters: SendParams,
 		replay: "safe",
 		execute: (args: SendInput, api, context) =>

@@ -9,6 +9,7 @@ import {
 	validateContinuityState,
 	validateContinuityWork,
 	type ContinuityFact,
+	type ContinuityQuestions,
 	type ContinuityState,
 	type ContinuityWork,
 } from "./continuity-facts.ts";
@@ -79,17 +80,28 @@ export async function recordContinuityDelivered(
  * Read the conversation's declared open work once for its current context head and retain what was
  * read, so every later request of that head, also after a host restart, states the same items. A
  * retained read of the head is returned unchanged. Undefined when `headId` is no longer the newest
- * head. The open-work read comes before the document write of this commit.
+ * head; `questions` then does not run, so nothing that it closes goes unreported. The open-work read
+ * comes before the document write of this commit. `questions` runs in the same commit and its result
+ * is retained with the items; a retained read without questions gains them once.
  */
 export async function freezeContinuityWork(
 	tx: Tx,
 	conversationId: ConversationId,
 	headId: number,
+	questions?: () => Promise<ContinuityQuestions>,
 ): Promise<ContinuityWork | undefined> {
 	if ((await tx.latestHeadMarker(conversationId))?.id !== headId) return undefined;
 	const state = await tx.doc(ContinuityDoc, conversationId);
 	validateContinuityState(state);
-	if (state.work?.headId === headId) return JSON.parse(JSON.stringify(state.work)) as ContinuityWork;
+	if (state.work?.headId === headId) {
+		if (state.work.questions === undefined && questions !== undefined) {
+			const read = await questions();
+			const work: ContinuityWork = { ...state.work, questions: read };
+			validateContinuityWork(work);
+			state.work = work;
+		}
+		return JSON.parse(JSON.stringify(state.work)) as ContinuityWork;
+	}
 	const items = (await openWorkItems(tx, conversationId)).map((item) => ({
 		requestId: item.requestId,
 		replyTo: item.replyTo,
@@ -99,7 +111,7 @@ export async function freezeContinuityWork(
 			...(result.requestId === undefined ? {} : { requestId: result.requestId }),
 		})),
 	}));
-	const work: ContinuityWork = { headId, items };
+	const work: ContinuityWork = { headId, items, ...(questions === undefined ? {} : { questions: await questions() }) };
 	validateContinuityWork(work);
 	state.work = work;
 	return JSON.parse(JSON.stringify(work)) as ContinuityWork;
