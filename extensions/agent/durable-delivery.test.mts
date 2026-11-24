@@ -1,5 +1,5 @@
 import { onStoredCommit } from "./commit-observation.ts";
-import { parseCommunication, parseCommunicationPassive } from "./communication.ts";
+import { COMMUNICATION_BODY_BYTES, parseCommunication, parseCommunicationPassive } from "./communication.ts";
 import { AwaitDoc } from "./awaited-results.ts";
 import type { ReceiptContinuation } from "./result-schema.ts";
 import {
@@ -32,6 +32,8 @@ import { AgentCatalog } from "./catalog.ts";
 import {
 	ThreadDeliveryDoc,
 	type AgentDeliveryState,
+	RECEIPT_ANSWER_UNITS,
+	receiptAnswerEnd,
 	recordReport,
 	richSubmitConversation,
 	settleDeliveries,
@@ -1226,7 +1228,7 @@ for (const route of ["primary", "same-storage", "catalog"] as const)
 		const root = fixtureRoot(t);
 		const sessionsRoot = join(root, "sessions");
 		const sourcePath = join(root, "source.sqlite");
-		const prefix = "x".repeat(2399);
+		const prefix = "x".repeat(RECEIPT_ANSWER_UNITS - 1);
 		const suffix = `😀${"y".repeat(15000)}ANSWER-END`;
 		const answer = prefix + suffix;
 		const source = await DurableHost.open(
@@ -1365,6 +1367,140 @@ for (const route of ["primary", "same-storage", "catalog"] as const)
 			next = result.nextOffset;
 		}
 		assert.equal(retained, answer);
+	});
+
+it("ends an inline answer at a code point within the unit bound and the serialized byte bound", () => {
+	const serialized = (text: string) => Buffer.byteLength(JSON.stringify(text)) - 2;
+	for (const [name, text] of [
+		["plain text", "x".repeat(RECEIPT_ANSWER_UNITS + 10)],
+		["a pair at the unit bound", `${"x".repeat(RECEIPT_ANSWER_UNITS - 1)}😀tail`],
+		["three-byte characters", "漢".repeat(RECEIPT_ANSWER_UNITS)],
+		["control characters", "\u0001".repeat(RECEIPT_ANSWER_UNITS)],
+		["quotes and line ends", '"\\\r\n\t'.repeat(RECEIPT_ANSWER_UNITS)],
+		["surrogate pairs", "😀".repeat(RECEIPT_ANSWER_UNITS)],
+		["a lone surrogate", `${"\ud83d".repeat(4000)}tail`],
+	] as const) {
+		const end = receiptAnswerEnd(text);
+		const excerpt = text.slice(0, end);
+		assert.ok(end <= RECEIPT_ANSWER_UNITS, name);
+		assert.ok(serialized(excerpt) <= COMMUNICATION_BODY_BYTES, name);
+		assert.equal(Array.from(excerpt).join(""), excerpt, name);
+		assert.equal(text.startsWith(excerpt), true, name);
+		const next = Array.from(text.slice(end))[0];
+		if (next !== undefined)
+			assert.ok(
+				end + next.length > RECEIPT_ANSWER_UNITS || serialized(excerpt + next) > COMMUNICATION_BODY_BYTES,
+				`${name}: the excerpt ends only where the next code point does not fit`,
+			);
+	}
+	assert.equal(receiptAnswerEnd("short"), 5);
+	assert.equal(receiptAnswerEnd(""), 0);
+});
+
+for (const [name, answer, complete] of [
+	["an answer of 6,000 units", `${"word ".repeat(1199)}DONE!`, true],
+	["an answer of three-byte characters above the body byte bound", `${"漢".repeat(7000)}END`, false],
+] as const)
+	it(`delivers ${name} ${complete ? "whole, with no continuation" : "with one end for its text and its structured body"}`, {
+		timeout: 15000,
+	}, async (t) => {
+		const root = fixtureRoot(t);
+		const sessionsRoot = join(root, "sessions");
+		const sourcePath = join(root, "source.sqlite");
+		const source = await DurableHost.open(
+			{
+				storagePath: sourcePath,
+				storageId: "11111111-1111-4111-8111-111111111111",
+				cwd: root,
+				models: await scriptedRuntime([answerMessage(answer), answerMessage(answer)]),
+				registry: fixtureRegistry(),
+				agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
+			},
+			BACKGROUND_CONTEXT,
+		);
+		t.after(() => source.close());
+		const catalog = new AgentCatalog(root);
+		const primary = randomUUID();
+		const received = eventLog<PrimaryDelivery>();
+		const channel = await createPrimaryChannel({
+			id: primary,
+			cwd: root,
+			sessionsRoot,
+			deliver: (message) => {
+				received.push(message);
+			},
+			promptTrust: async () => undefined,
+		});
+		t.after(() => channel.close());
+		const native = catalog.create({
+			cwd: root,
+			agentDir: join(root, "agent"),
+			packageDir: join(root, "package"),
+			model: { provider: fixtureProvider, modelId: fixtureModelId },
+			thinkingLevel: "off",
+			ownerId: "requester",
+		}).storageId;
+		const nativeReceived = eventLog<RequestParams>();
+		const submissions: SubmissionId[] = [];
+		for (const [requestId, ownerId] of [
+			["to-primary", primary],
+			["to-native", native],
+		]) {
+			const producer = await source.harness.createConversation(
+				{ ownership: { kind: "ownerless" }, agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } },
+				BACKGROUND_CONTEXT,
+			);
+			const submitted = (await source.request(
+				"submit",
+				{ sessionId: `${source.storageId}:${producer.id}`, message: "Report", requestId, ownerId, origin: "model" },
+				BACKGROUND_CONTEXT,
+			)) as { submissionId: SubmissionId };
+			await source.wait(submitted.submissionId, BACKGROUND_CONTEXT);
+			submissions.push(submitted.submissionId);
+		}
+		const watcher = startDurableDelivery({
+			host: source,
+			metadata: sourceMetadata(root, source.storageId, sourcePath),
+			catalog,
+			sessionsRoot,
+			signal: new AbortController().signal,
+			acquire: async () =>
+				({
+					closed: false,
+					close: async () => {},
+					request: async (_method: string, params: RequestParams) => {
+						nativeReceived.push(params);
+						return { submissionId: 1, requestId: params.requestId, status: "queued" };
+					},
+				}) as unknown as HostConnection,
+		});
+		t.after(() => watcher.close());
+		await received.waitForCount(1);
+		await nativeReceived.waitForCount(1);
+		const end = complete ? answer.length : receiptAnswerEnd(answer);
+		const excerpt = answer.slice(0, end);
+		for (const id of submissions) {
+			const receipt = (await deliveryState(source))?.receipts[String(id)];
+			assert.equal(receipt?.answer, excerpt);
+			assert.equal(receipt?.answerTruncated, !complete);
+			assert.equal(receipt?.answerLength, answer.length);
+		}
+		const primaryDetails = received[0].details as { answer: string; continuation?: { offset: number } };
+		const nativeText = String(nativeReceived[0].message);
+		const communication = parseCommunication(nativeReceived[0].communication);
+		assert.equal(primaryDetails.answer, excerpt);
+		assert.equal(received[0].text.includes(excerpt), true);
+		assert.equal(nativeText.includes(excerpt), true);
+		assert.deepEqual(communication?.body, { text: excerpt, complete, redacted: false });
+		if (complete) {
+			assert.equal(primaryDetails.continuation, undefined);
+			for (const text of [received[0].text, nativeText])
+				assert.doesNotMatch(text, /Answer continues:|Read retained answer:|\[text truncated/u);
+			return;
+		}
+		assert.ok(end < RECEIPT_ANSWER_UNITS, "the byte bound of the structured body ends this excerpt");
+		assert.equal(primaryDetails.continuation?.offset, end);
+		assert.match(nativeText, new RegExp(`Answer continues: \\{.*"offset":${end}\\}`, "u"));
 	});
 
 it("bounds a check-in digest while retaining the full source", { timeout: 30000 }, async (t) => {
@@ -2306,8 +2442,8 @@ it("names the work state of each request of a shared answer and continues a cut 
 			cwd: root,
 			models: await scriptedRuntime([
 				toolCallMessage("gate"),
-				answerMessage("shared".repeat(500)),
-				answerMessage("shared".repeat(500)),
+				answerMessage("shared".repeat(2000)),
+				answerMessage("shared".repeat(2000)),
 			]),
 			registry: fixtureRegistry([gateTool(gate, () => started.push(undefined))]),
 			agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
@@ -2378,7 +2514,7 @@ it("names the work state of each request of a shared answer and continues a cut 
 			sessionId: storageId,
 			submissionId: plain.submissionId,
 			requestId: "task-b",
-			offset: 2400,
+			offset: RECEIPT_ANSWER_UNITS,
 		};
 		assert.ok(text.includes(JSON.stringify(continuation)));
 		assert.deepEqual((received[0].details as { continuation: unknown }).continuation, continuation);
@@ -2473,7 +2609,7 @@ it("keeps the final report read as the only result pointer for a cut state note"
 					status: "done",
 					message: "Final report.",
 				}),
-				answerMessage("state note ".repeat(500)),
+				answerMessage("state note ".repeat(1000)),
 			]),
 			registry: fixtureRegistry([workTool(storageId)]),
 			agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },

@@ -275,6 +275,10 @@ poll.
 
 Read the Agent [result contract](../extensions/agent/README.md#read-peer-results)
 for immediate result reads, answer continuations and receipt-reference pages.
+A result notice carries the answer inline up to the bound that the contract
+states, and names the exact call that reads the rest of a longer answer. A
+recipient that needs the rest spends one more request on it, so put the
+conclusion first in a long answer.
 Result inspection neither withdraws nor acknowledges normal delivery. A report,
 a result and a new request retain their own meaning and routes when they join
 the same run.

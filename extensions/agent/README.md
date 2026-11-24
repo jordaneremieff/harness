@@ -2245,8 +2245,13 @@ Sources: `durable-controls.ts` (`placementMode`, `admitConversation`),
 `currentStep`, `noticeDue`),
 and `durable-observation.ts` (`readConversationStatus`).
 
-A receipt retains up to 2,400 UTF-16 units of answer text without splitting a
-surrogate pair. `answerLength` is the length of the original answer and
+A receipt retains up to 8,000 UTF-16 units of answer text, and a result notice
+carries that text inline. The text ends at a code point boundary, and earlier
+when its serialized form would exceed the 16 KiB bound of a communication
+body, so the notice text and the structured body end at the same unit. The
+bound keeps most answers whole: a recipient that receives a cut answer usually
+reads the rest with one more request, which costs more than the longer notice.
+`answerLength` is the length of the original answer and
 `answerTruncated` records whether any text was cut. A complete answer has no
 body continuation. A cut answer names the `view: "result"` call that starts at
 the first omitted unit. Ordinary primary details include that call as

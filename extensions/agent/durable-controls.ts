@@ -71,6 +71,7 @@ import type { PrimaryRepositoryState } from "./primary-channel.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import { canonicalIdentity } from "./native-identity.ts";
+import { COMMUNICATION_BODY_BYTES } from "./communication.ts";
 import type { CatalogIntentClaims, CatalogViewRow } from "./catalog-view.ts";
 import { admitPassiveWrite } from "./stranded-inputs.ts";
 import type { Context } from "@earendil-works/chord/context";
@@ -1755,7 +1756,38 @@ type SettledInputRecord = Extract<SubmissionRecord, { readonly type: "input" }> 
 };
 
 type ReceiptAnswer = Pick<DeliveryReceipt, "answer" | "answerTruncated" | "answerLength">;
-const RECEIPT_ANSWER_UNITS = 2400;
+/**
+ * UTF-16 units of answer text that a result notice carries inline. A longer answer names the call that reads the
+ * rest, and a recipient that needs the rest spends one more request on it; most answers fit below this bound.
+ */
+export const RECEIPT_ANSWER_UNITS = 8000;
+
+/** UTF-8 bytes of one code point inside a JSON string. */
+function serializedPointBytes(point: string): number {
+	const code = point.codePointAt(0) as number;
+	if (code === 0x22 || code === 0x5c) return 2;
+	if (code < 0x20) return code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d ? 2 : 6;
+	if (code < 0x80) return 1;
+	if (code < 0x800) return 2;
+	if (code >= 0xd800 && code <= 0xdfff) return 6;
+	return code < 0x10000 ? 3 : 4;
+}
+
+/**
+ * End of the inline excerpt of an answer: at most `RECEIPT_ANSWER_UNITS`, at a code point boundary, and within the
+ * byte bound of a communication body in serialized form. The notice text and its structured body then end at the
+ * same unit, and the continuation offset names the first unit that neither of them carries.
+ */
+export function receiptAnswerEnd(text: string): number {
+	let end = 0;
+	let bytes = 0;
+	for (const point of text) {
+		bytes += serializedPointBytes(point);
+		if (end + point.length > RECEIPT_ANSWER_UNITS || bytes > COMMUNICATION_BODY_BYTES) break;
+		end += point.length;
+	}
+	return end;
+}
 
 function receiptRow(intent: DeliveryIntent, record: SettledInputRecord, answer: ReceiptAnswer): DeliveryReceipt {
 	return {
@@ -1786,10 +1818,8 @@ async function receiptAnswer(tx: Tx, record: SettledInputRecord): Promise<Receip
 	const entry = await tx.entry(AssistantEntry, record.answer);
 	if (!entry) return { answer: null };
 	const text = assistantTextOf(entry.model);
-	const truncated = text.length > RECEIPT_ANSWER_UNITS;
-	let end = Math.min(text.length, RECEIPT_ANSWER_UNITS);
-	if (truncated && /[\uD800-\uDBFF]/u.test(text[end - 1]) && /[\uDC00-\uDFFF]/u.test(text[end])) end--;
-	return { answer: text.slice(0, end) || null, answerTruncated: truncated, answerLength: text.length };
+	const end = receiptAnswerEnd(text);
+	return { answer: text.slice(0, end) || null, answerTruncated: end < text.length, answerLength: text.length };
 }
 
 async function finalizeReceipt(
