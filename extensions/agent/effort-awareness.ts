@@ -213,7 +213,9 @@ function promptEffortRow(effort: RelatedEffort) {
 		contactThreadClaim,
 		request: intentClaim || purposeClaim ? undefined : promptRequest(effort),
 		sharedWork: promptSharedWork(effort),
-		sharedTopics: effort.relationship === "machine" ? effort.sharedTopics?.slice(0, 4) : undefined,
+		// A stronger reason already explains a row from the same location or one with shared items.
+		sharedTopics:
+			effort.relationship === "machine" && !effort.sharedWork?.length ? effort.sharedTopics?.slice(0, 4) : undefined,
 	};
 }
 

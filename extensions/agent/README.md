@@ -3008,8 +3008,8 @@ directory outside Git. It also names live sessions elsewhere on this machine
 that share work with the caller, with their purpose-level claim, contact thread,
 session name, first-request excerpt (`request`, at most 200 characters, only
 without a claim) and up to four shared items in identity order as `sharedWork`.
-Live sessions elsewhere that share only a topic appear with up to four of the
-shared words as `sharedTopics`; at most four such rows appear, those with the
+Live sessions elsewhere that share a topic but no item appear with up to four
+of the shared words as `sharedTopics`; at most four such rows appear, those with the
 most shared words first, after every row from the same location and every row
 that shares an item, within the section's twenty rows. A session that shares
 no item, no topic and no location stays out of the section, so the section
