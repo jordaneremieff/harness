@@ -41,12 +41,12 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { observeClaim } from "./claims.ts";
 import { hostPaths } from "./host-protocol.ts";
 import type { HostMetadata } from "./host-protocol.ts";
-import { sweepAbandonedSnapshots } from "./snapshot-capture.ts";
 
 interface ColdObservationRuntime {
 	readonly createModels: typeof import("@earendil-works/pi-ai").createModels;
 	readonly createRegistry: typeof import("@earendil-works/pi-durable").createRegistry;
 	readonly DurableObservation: typeof import("./durable-observation.ts").DurableObservation;
+	readonly sweepAbandonedSnapshots: typeof import("./snapshot-capture.ts").sweepAbandonedSnapshots;
 }
 
 let coldObservationRuntimePromise: Promise<ColdObservationRuntime> | undefined;
@@ -56,10 +56,12 @@ function loadColdObservationRuntime(): Promise<ColdObservationRuntime> {
 		import("@earendil-works/pi-ai"),
 		import("@earendil-works/pi-durable"),
 		import("./durable-observation.ts"),
-	]).then(([ai, durable, observation]) => ({
+		import("./snapshot-capture.ts"),
+	]).then(([ai, durable, observation, capture]) => ({
 		createModels: ai.createModels,
 		createRegistry: durable.createRegistry,
 		DurableObservation: observation.DurableObservation,
+		sweepAbandonedSnapshots: capture.sweepAbandonedSnapshots,
 	}));
 	return coldObservationRuntimePromise;
 }
@@ -215,9 +217,10 @@ function claimState(metadata: HostMetadata): {
 
 /** The default public snapshot opener: no services, no model runtime, no resume. */
 export async function openColdObservationSnapshot(input: ColdOpenInput): Promise<ColdObservationHandle> {
+	const { createModels, createRegistry, DurableObservation, sweepAbandonedSnapshots } =
+		await loadColdObservationRuntime();
 	// Copies that a killed process left go in the background; no read waits for their removal.
 	void sweepAbandonedSnapshots().catch(() => undefined);
-	const { createModels, createRegistry, DurableObservation } = await loadColdObservationRuntime();
 	const options = {
 		storageId: input.storageId,
 		models: createModels(),
