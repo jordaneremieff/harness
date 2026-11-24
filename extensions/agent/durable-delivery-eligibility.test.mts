@@ -205,6 +205,50 @@ for (const example of cases)
 		assert.equal(watcher.busy, false);
 	});
 
+for (const own of [false, true])
+	it(`terminates a row addressed to ${own ? "its own" : "another"} thread storage without a delivery attempt`, {
+		timeout: 10000,
+	}, async (t) => {
+		const f = await fixture(t);
+		const primary = randomUUID();
+		const { ownerId: _ownerId, storageId: _storageId, storagePath: _storagePath, ...input } = f.metadata;
+		const threads = hostMetadata(f.catalog.createThreadStorage({ ...input, ownerId: primary }).record);
+		await f.host.harness.commit(
+			async (tx) =>
+				editDeliveryFixture(tx, async (deliveryFixtureState) => {
+					deliveryFixtureState.receipts["999"] = receipt(threads.storageId);
+				}),
+			context,
+		);
+		const idle = eventLog<void>();
+		const attempts: string[] = [];
+		const request = f.host.request.bind(f.host);
+		f.host.request = async (method, ...rest) => {
+			if (method === "submit" || method === "task-submit" || method === "passive-submit") attempts.push(method);
+			return request(method, ...rest);
+		};
+		const watcher = startDurableDelivery({
+			host: f.host,
+			metadata: own ? threads : f.metadata,
+			catalog: f.catalog,
+			sessionsRoot: f.root,
+			signal: new AbortController().signal,
+			onIdle: () => idle.push(undefined),
+			connectTarget: async (record) => {
+				attempts.push(record.storageId);
+				throw new Error("a thread storage host must not be acquired for delivery");
+			},
+		});
+		t.after(() => watcher.close());
+		await idle.waitForCount(1);
+		await watcher.close();
+		assert.deepEqual((await readRetainedDelivery(f.host.harness, context, true))?.receipts["999"].delivery, {
+			state: "terminal",
+			reason: `recipient is a thread storage of ${primary}; it holds threads and receives no agent input`,
+		});
+		assert.deepEqual(attempts, []);
+	});
+
 it("retains a terminal reason through reopen and never routes the row", { timeout: 10000 }, async (t) => {
 	const f = await fixture(t);
 	await f.host.harness.commit(

@@ -63,6 +63,7 @@ import {
 import { abortScopeConversations } from "./abort-scope.ts";
 import { captureStoppedWork, PENDING_TASKS_LIMIT, recoverStoppedTasks, stopScope } from "./conversation-stop.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
+import { threadStorageRefusal, threadStorageServes } from "./identity.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord/context";
@@ -217,6 +218,8 @@ export interface DurableHostOptions {
 	readonly planningBudget?: PlanningBudgetLookup;
 	readonly onReport?: HarnessOptions["onReport"];
 	readonly requestRelease?: () => Promise<{ readonly retiring: boolean; readonly blockers: readonly string[] }>;
+	/** The owner of a thread storage. Its host refuses every operation that admits agent work or agent input. */
+	readonly threadStorageOwner?: string;
 }
 
 /** A request arrived after close, or a long wait was interrupted by close. */
@@ -392,6 +395,7 @@ export class DurableHost {
 	private resumeWork: Promise<void> | undefined;
 	private recoveryError: ((error: unknown) => void) | undefined;
 	private requestRelease: DurableHostOptions["requestRelease"];
+	private threadStorageOwner: string | undefined;
 
 	private constructor(
 		harness: Harness,
@@ -603,6 +607,7 @@ export class DurableHost {
 				now,
 			);
 			host.requestRelease = options.requestRelease;
+			host.threadStorageOwner = options.threadStorageOwner;
 			host.providerModels = providerModels;
 			host.continuity = continuity;
 			host.continuityDiagnostic = report;
@@ -769,6 +774,7 @@ export class DurableHost {
 		context: Context | AbortSignal = BACKGROUND_CONTEXT,
 	): Promise<unknown> {
 		await this.requireOpen();
+		this.refuseThreadStorageAdmission(method, params);
 		const requestContext = context instanceof AbortSignal ? withAbortSignal(context, BACKGROUND_CONTEXT) : context;
 		switch (method) {
 			case "collaboration-list":
@@ -899,6 +905,11 @@ export class DurableHost {
 			default:
 				throw new TypeError(`unknown durable host method ${method}`);
 		}
+	}
+
+	private refuseThreadStorageAdmission(method: string, params: RequestParams | undefined): void {
+		if (this.threadStorageOwner !== undefined && !threadStorageServes(method, params))
+			throw new Error(threadStorageRefusal(this.storageId, this.threadStorageOwner));
 	}
 
 	/** Read publication rows and evidence together without changing the host wire contract. */

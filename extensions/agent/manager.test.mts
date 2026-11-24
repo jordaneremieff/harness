@@ -3282,6 +3282,74 @@ it("creates an ordinary primary's thread in its own thread storage without an ag
 	assert.equal(page.coverage.catalog.storages, 1, "agent views count the agent and omit the thread storage");
 });
 
+it("admits no agent work or input into a thread storage from an ordinary session", async (t) => {
+	const root = fixtureRoot(t);
+	const requests: Array<{ storageId: string; method: string }> = [];
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method) => {
+					requests.push({ storageId: metadata.storageId, method });
+					return {};
+				}),
+		}),
+	);
+	t.after(() => manager.close());
+	const primary = randomUUID();
+	const caller = { id: primary, cwd: root, name: "Docs review", model: { provider: "acme", modelId: "model-x" } };
+	const storageId = manager.catalog.createThreadStorage({
+		cwd: root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
+		model: caller.model,
+		thinkingLevel: "off",
+		ownerId: primary,
+	}).record.storageId;
+	const agent = createRecord(manager, root, primary);
+	const refusal = `${storageId} is a thread storage of ${primary}; it holds threads and runs no agent work. Use agent_collaborate with a threadId it holds, or message its owner ${primary}`;
+	for (const [method, input] of [
+		["submit", { message: "work" }],
+		["report", { message: "note" }],
+		["rewind", { entryId: 1 }],
+		["fork", {}],
+		["compact", {}],
+		["configure", { name: "Agent" }],
+		["command", { name: "reload" }],
+		["reset", {}],
+		["timer-schedule", { message: "later", deliverAt: Date.now() + 60_000 }],
+		["profile-update", { role: "Agent" }],
+		["interrupt-continue", {}],
+		["attach", { model: "acme/model-x" }],
+	] as const)
+		await assert.rejects(
+			manager.control(method, { ...input, sessionId: storageId }, caller),
+			{ message: refusal },
+			method,
+		);
+	const recipient = (field: string, identity = storageId) =>
+		`${field} ${identity} is a thread storage of ${primary}; it holds threads and receives no agent input. Name its owner ${primary} instead`;
+	for (const replyTo of [storageId, `${storageId}:2`])
+		await assert.rejects(manager.control("submit", { sessionId: agent.storageId, message: "work", replyTo }, caller), {
+			message: recipient("replyTo", replyTo),
+		});
+	const frame = {
+		action: "create",
+		title: "Review",
+		purpose: "Test",
+		authority: "Task",
+		source: "Test",
+		restrictions: "Local",
+		acceptance: "Verified",
+	};
+	await assert.rejects(manager.collaborate({ ...frame, notify: [agent.storageId, storageId] }, caller), {
+		message: recipient("notify[1]"),
+	});
+	await assert.rejects(manager.collaborate({ ...frame, integrator: storageId }, caller), {
+		message: recipient("integrator"),
+	});
+	assert.deepEqual(requests, [], "no refused control reaches a host");
+});
+
 it("refuses a question and a malformed reply to a Durable target, whose answer arrives through its request result", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root));

@@ -7,7 +7,7 @@ import { it } from "node:test";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { acquireHost, type HostConnection } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState } from "./host-fixture.mts";
-import { handleStorageId, targetIdentity } from "./identity.ts";
+import { handleStorageId, isThreadStorage, targetIdentity, threadStorageId, threadStorageServes } from "./identity.ts";
 import { AgentManager } from "./manager.ts";
 
 it("isolates the same handle across stores sharing cwd and agent directory", { timeout: 30000 }, async (t) => {
@@ -63,4 +63,38 @@ it("isolates the same handle across stores sharing cwd and agent directory", { t
 	assert.equal(readFixtureState(join(catalogs[1].root, "state.json")).effects, 1);
 	assert.equal(targetIdentity(records[0].storageId), records[0].storageId);
 	assert.throws(() => targetIdentity("@history"), /catalog namespace/u);
+});
+
+it("derives a thread storage address from the real catalog root and keeps that resolution", (t) => {
+	const root = mkdtempSync(join(tmpdir(), "thread-identity-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const catalog = new AgentCatalog(root);
+	const unresolved = threadStorageId("owner", catalog.root);
+	mkdirSync(catalog.root, { recursive: true });
+	const address = threadStorageId("owner", catalog.root);
+	assert.equal(threadStorageId("owner", `${catalog.root}/.`), address, "directory aliases share one namespace");
+	assert.notEqual(threadStorageId("other", catalog.root), address);
+	assert.equal(isThreadStorage({ storageId: address, ownerId: "owner" }, catalog.root), true);
+	assert.equal(isThreadStorage({ storageId: address, ownerId: "other" }, catalog.root), false);
+	assert.equal(isThreadStorage({ storageId: address }, catalog.root), false);
+	rmSync(root, { recursive: true, force: true });
+	assert.equal(threadStorageId("owner", catalog.root), address, "a resolved root needs no later filesystem call");
+	assert.equal(typeof unresolved, "string");
+});
+
+it("serves threads, observation, delivery state and stops in a thread storage, and nothing that admits work", () => {
+	for (const operation of ["collaboration-mutate", "status", "inspect", "receipts", "acknowledge", "abort", "release"])
+		assert.equal(threadStorageServes(operation), true, operation);
+	for (const operation of [
+		"submit",
+		"task-submit",
+		"passive-submit",
+		"report",
+		"spawn",
+		"configure",
+		"an-added-operation",
+	])
+		assert.equal(threadStorageServes(operation), false, operation);
+	assert.equal(threadStorageServes("attach", {}), true);
+	assert.equal(threadStorageServes("attach", { model: "acme/model-x" }), false);
 });

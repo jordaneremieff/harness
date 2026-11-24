@@ -35,6 +35,12 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { AgentCatalog, storageIdOf, validateDeliveryRecipient } from "./catalog.ts";
+import {
+	isThreadStorage,
+	threadStorageRecipientRefusal,
+	threadStorageRefusal,
+	threadStorageServes,
+} from "./identity.ts";
 import { storageStatusPageInput } from "./storage-status.ts";
 import { boundCatalogView, withAttentionHints, withModelEvidence, type CatalogView } from "./catalog-view.ts";
 import { projectCatalogAttention } from "./catalog-attention.ts";
@@ -55,15 +61,16 @@ import { startDurableDelivery, type DurableDelivery, type NativeTargetFailure } 
 import { writeDeliveryWake } from "./delivery-wake.ts";
 import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 
-function validateControlRecipient(method: string, params: Readonly<Record<string, unknown>>): void {
-	if (method === "rewind" && params.selfOwned === true) return;
+/** The identity that a control's answer, report or scheduled input is addressed to. */
+function controlRecipient(method: string, params: Readonly<Record<string, unknown>>): string | undefined {
+	if (method === "rewind" && params.selfOwned === true) return undefined;
 	const recipient =
 		method === "task-submit"
 			? (params.replyTo ?? params.requester)
 			: ["submit", "report", "rewind", "timer-schedule"].includes(method)
 				? params.ownerId
 				: undefined;
-	if (typeof recipient === "string") validateDeliveryRecipient(recipient);
+	return typeof recipient === "string" ? recipient : undefined;
 }
 
 function controlParams(input: unknown): Record<string, unknown> {
@@ -281,6 +288,23 @@ export async function createDurableRuntime(
 	let unsubscribeObservation: (() => void) | undefined;
 	let unsubscribeClose: (() => void) | undefined;
 	const catalog = new AgentCatalog(dirname(dirname(metadata.storagePath)));
+	const threadStorageOwner = isThreadStorage(metadata, catalog.root) ? metadata.ownerId : undefined;
+	/** A recipient in this storage needs no catalog read; any other identity costs one record stat. */
+	function refuseThreadStorageRecipient(field: string, recipient: string): void {
+		let storageId: string;
+		try {
+			storageId = storageIdOf(recipient);
+		} catch {
+			return;
+		}
+		const owner = storageId === metadata.storageId ? threadStorageOwner : catalog.threadStorageOwner(storageId);
+		if (owner !== undefined) throw new Error(threadStorageRecipientRefusal(field, recipient, owner));
+	}
+	/** The target's own host refuses too; a host that started before it learned the refusal does not. */
+	function refuseThreadStorageTarget(target: HostMetadata, method: string, params: Record<string, unknown>): void {
+		if (isThreadStorage(target, catalog.root) && !threadStorageServes(method, params))
+			throw new Error(threadStorageRefusal(target.storageId, String(target.ownerId)));
+	}
 	const unavailableDeliveryTargets = new Map<string, NativeTargetFailure>();
 	let deliveries: DurableDelivery;
 	let publishTimer: ReturnType<typeof setTimeout> | undefined;
@@ -640,14 +664,16 @@ export async function createDurableRuntime(
 			packageDir: metadata.packageDir,
 		});
 		try {
+			let target: HostMetadata;
 			try {
-				manager.nativeTarget(sessionId);
+				target = manager.nativeTarget(sessionId);
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 				if (!readPrimaryEndpointDescriptor(dirname(dirname(metadata.storagePath)), sessionId).info)
 					throw new Error("The exact native target is not retained and no ordinary primary is registered");
 				return await primaryControl(method, params, sessionId);
 			}
+			refuseThreadStorageTarget(target, method, params);
 			if (
 				FOREIGN_OBSERVATION_METHODS.has(method) ||
 				method === "abort" ||
@@ -755,6 +781,7 @@ export async function createDurableRuntime(
 		params: Record<string, unknown>,
 		context: Context = BACKGROUND_CONTEXT,
 	): Promise<unknown> => {
+		if (typeof params.replyTo === "string") refuseThreadStorageRecipient("replyTo", params.replyTo);
 		if (method === "report")
 			return request("report", { ...params, ownerId: params.sessionId }, controlRequestId(params));
 		if (method === "collaboration-mutate" && typeof params.threadId === "string")
@@ -826,6 +853,7 @@ export async function createDurableRuntime(
 			commands: services.commands,
 			contributionHost: services.contributionHost,
 			resume: false,
+			...(threadStorageOwner === undefined ? {} : { threadStorageOwner }),
 			onReport: (report) => {
 				process.stderr.write(`Durable task: ${report.kind}: ${String(report.error)}\n`);
 			},
@@ -1064,6 +1092,8 @@ export async function createDurableRuntime(
 	async function request(method: string, input: unknown, requestId: string, signal?: AbortSignal): Promise<unknown> {
 		if (runtimeUnavailable()) throw new Error("Durable host is closed");
 		if (reloading) throw new Error("Durable host reload is in progress; retry the control after reload");
+		if (threadStorageOwner !== undefined && !threadStorageServes(method, (input ?? undefined) as { model?: unknown }))
+			throw new Error(threadStorageRefusal(metadata.storageId, threadStorageOwner));
 		const reload = method === "command" && (input as { name?: unknown } | undefined)?.name === "reload";
 		if (reload && activeRequests > 0) throw new Error("Reload requires all other controls to settle");
 		const counted = method !== "receipts";
@@ -1186,7 +1216,11 @@ export async function createDurableRuntime(
 		signal?: AbortSignal,
 	): Promise<unknown> {
 		const params = controlParams(input);
-		validateControlRecipient(method, params);
+		const recipient = controlRecipient(method, params);
+		if (recipient !== undefined) {
+			validateDeliveryRecipient(recipient);
+			refuseThreadStorageRecipient("recipient", recipient);
+		}
 		if (method === "recovery-state") {
 			return recoveryState(true);
 		}

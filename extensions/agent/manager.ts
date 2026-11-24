@@ -17,6 +17,9 @@ import {
 	handleStorageId,
 	isThreadStorage,
 	threadStorageId,
+	threadStorageRecipientRefusal,
+	threadStorageRefusal,
+	threadStorageServes,
 } from "./identity.ts";
 import { durableTargetInput, peerMessageText, peerQuestionFields, questionReceipt } from "./peer-questions.ts";
 import { profileText, type AgentProfile } from "./profile-schema.ts";
@@ -122,18 +125,6 @@ function loadResultReference(): Promise<typeof import("./result-reference.ts")> 
 	return resultReferencePromise;
 }
 
-/** Controls a thread storage serves; every other control would start agent work in it. */
-const THREAD_STORAGE_METHODS = new Set([
-	"collaboration-mutate",
-	"inspect",
-	"status",
-	"snapshot",
-	"dashboard",
-	"profile-read",
-	"attach",
-	"abort",
-	"release",
-]);
 let collaborationPromise: Promise<typeof import("./collaboration.ts")> | undefined;
 function loadCollaboration(): Promise<typeof import("./collaboration.ts")> {
 	collaborationPromise ??= import("./collaboration.ts");
@@ -1099,7 +1090,7 @@ export class AgentManager {
 		const selector = String(input.sessionId ?? "");
 		const sessionId = await this.resolveTarget(selector, options?.signal);
 		if (typeof input.replyTo === "string")
-			input = { ...input, replyTo: await this.resolveTarget(input.replyTo, options?.signal) };
+			input = { ...input, replyTo: await this.resolveReplyTo(input.replyTo, options?.signal) };
 		options?.signal?.throwIfAborted();
 		if (
 			sessionId === caller.id &&
@@ -1116,10 +1107,8 @@ export class AgentManager {
 			return this.primaryControl(method, input, sessionId, caller);
 		}
 		({ method, input } = durableTargetInput(method, input, caller.id, caller.name));
-		if (isThreadStorage(record, this.catalog.root) && !THREAD_STORAGE_METHODS.has(method))
-			throw new Error(
-				`${sessionId} is a thread storage of ${record.ownerId}; it holds threads and runs no agent work. Use agent_collaborate with a threadId it holds, or message its owner ${record.ownerId}`,
-			);
+		if (isThreadStorage(record, this.catalog.root) && !threadStorageServes(method, input))
+			throw new Error(threadStorageRefusal(record.storageId, String(record.ownerId)));
 		const params = this.nativeControlParams(method, input, sessionId, caller.id);
 		if (["inspect", "status", "snapshot", "dashboard", "profile-read"].includes(method))
 			return this.observe(record, method, params, undefined, options?.signal);
@@ -1129,6 +1118,14 @@ export class AgentManager {
 			this.failures.delete(record.storageId);
 		}
 		return this.selectedControl(record, method, params, caller, selector, options?.signal, options?.launch ?? true);
+	}
+
+	/** An answer route to a thread storage would address agent input to it. */
+	private async resolveReplyTo(selector: string, signal: AbortSignal | undefined): Promise<string> {
+		const replyTo = await this.resolveTarget(selector, signal);
+		const owner = this.catalog.threadStorageOwner(replyTo);
+		if (owner !== undefined) throw new Error(threadStorageRecipientRefusal("replyTo", replyTo, owner));
+		return replyTo;
 	}
 
 	private async selectedControl(
@@ -1807,10 +1804,17 @@ export class AgentManager {
 			}
 			return collaborationIdentity(resolved, field);
 		};
-		for (const key of ["sessionId", "integrator"])
-			if (params[key] !== undefined) params[key] = await resolveIdentity(params[key], key);
+		// A notice to a thread storage, or a frame it integrates, would address agent input to it.
+		const resolveParticipant = async (value: unknown, field: string): Promise<string> => {
+			const identity = await resolveIdentity(value, field);
+			const owner = this.catalog.threadStorageOwner(identity);
+			if (owner !== undefined) throw new Error(threadStorageRecipientRefusal(field, identity, owner));
+			return identity;
+		};
+		if (params.sessionId !== undefined) params.sessionId = await resolveIdentity(params.sessionId, "sessionId");
+		if (params.integrator !== undefined) params.integrator = await resolveParticipant(params.integrator, "integrator");
 		if (Array.isArray(params.notify))
-			params.notify = await Promise.all(params.notify.map((id, index) => resolveIdentity(id, `notify[${index}]`)));
+			params.notify = await Promise.all(params.notify.map((id, index) => resolveParticipant(id, `notify[${index}]`)));
 		return params;
 	}
 

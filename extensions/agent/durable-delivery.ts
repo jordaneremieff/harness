@@ -55,6 +55,7 @@ import {
 } from "./open-work.ts";
 import type { ConversationId, Harness, Tx } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
+import { isThreadStorage } from "./identity.ts";
 import { foldContinuity } from "./continuity-facts.ts";
 import { ContinuityDoc } from "./continuity-native.ts";
 import {
@@ -982,6 +983,8 @@ export interface DeliveryFacts {
 	readonly primaryState: ReturnType<typeof primaryEndpointStatus>["state"];
 	readonly primaryVersion?: string;
 	readonly fallbackFailure?: string;
+	/** Set when the recipient is a thread storage: it holds threads and admits no agent input. */
+	readonly threadStorageOwner?: string;
 }
 
 /** Eligibility depends on retained facts and current reachability, never elapsed time. */
@@ -992,6 +995,11 @@ export function classifyDelivery(facts: DeliveryFacts): DeliveryEligibility {
 	} catch {
 		return { state: "terminal", reason: "malformed recipient identity" };
 	}
+	if (facts.threadStorageOwner !== undefined)
+		return {
+			state: "terminal",
+			reason: `recipient is a thread storage of ${facts.threadStorageOwner}; it holds threads and receives no agent input`,
+		};
 	if (!facts.originValid) return { state: "terminal", reason: "corrupt admission origin" };
 	if (facts.missingSubmission) return { state: "terminal", reason: "linked native submission is absent" };
 	if (facts.pendingIntent) return { state: "active", reason: "native admission or submission is pending" };
@@ -1029,15 +1037,21 @@ interface EligibilityOptions {
 	readonly packageDir?: string;
 	readonly fallbackFailures?: ReadonlyMap<string, string>;
 	readonly activeOnly?: boolean;
+	/** The owner of the observing storage when that storage is itself a thread storage. */
+	readonly threadStorageOwner?: string;
 }
 
 /** Namespace lookup failure is unavailability, not permission to assume a live route. */
 function recipientFacts(
 	ownerId: string,
 	options: EligibilityOptions,
-): Pick<DeliveryFacts, "nativeRecord" | "nativeFailure" | "primaryState" | "primaryVersion"> {
+): Pick<DeliveryFacts, "nativeRecord" | "nativeFailure" | "primaryState" | "primaryVersion" | "threadStorageOwner"> {
 	if (options.storageId !== undefined && ownerStorageId(ownerId) === options.storageId)
-		return { nativeRecord: true, primaryState: "absent" };
+		return {
+			nativeRecord: true,
+			primaryState: "absent",
+			...(options.threadStorageOwner === undefined ? {} : { threadStorageOwner: options.threadStorageOwner }),
+		};
 	let record: CatalogRecord | undefined;
 	try {
 		record = options.readTarget ? options.readTarget(ownerId) : options.catalog.read(ownerId);
@@ -1058,6 +1072,9 @@ function recipientFacts(
 		primaryState: primary.state,
 		primaryVersion: primary.version,
 		nativeFailure,
+		...(record !== undefined && isThreadStorage(record, options.catalog.root)
+			? { threadStorageOwner: record.ownerId }
+			: {}),
 	};
 }
 
@@ -1216,6 +1233,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		readTarget: options.readTarget,
 		unavailableTargets,
 		fallbackFailures,
+		...(isThreadStorage(metadata, catalog.root) ? { threadStorageOwner: metadata.ownerId } : {}),
 	};
 	let eligibility = new Map<string, DeliveryEligibility>();
 	const retryOwners = new Set<string>();

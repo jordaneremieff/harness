@@ -23,7 +23,7 @@ import { CLAIM_BYTES, observeClaim, observeClaimAsync, type ClaimObservation } f
 import { isThinkingLevel } from "./configuration.ts";
 import { type HostMetadata, hostPaths, parseHostMetadata } from "./host-protocol.ts";
 
-import { handleSlug, handleStorageId, threadStorageId } from "./identity.ts";
+import { handleSlug, handleStorageId, isThreadStorage, threadStorageId } from "./identity.ts";
 import { profileText } from "./profile-schema.ts";
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
@@ -609,7 +609,32 @@ export class AgentCatalog {
 		}
 	}
 
+	/**
+	 * The owner when the identity names a thread storage of this catalog. Undefined for every other
+	 * identity, including one that has no record or an unreadable one.
+	 */
+	threadStorageOwner(identity: string): string | undefined {
+		try {
+			const { record } = this.readRetained(identity, true);
+			return isThreadStorage(record, this.root) ? record.ownerId : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
 	private readWithTime(identity: string): { record: CatalogRecord; modifiedAt: number; fileStamp: string } {
+		const { retained, ...value } = this.readRetained(identity, true);
+		return retained ? { ...value, record: structuredClone(value.record) } : value;
+	}
+
+	/**
+	 * One validated read. A retained record is the cache's own object: read it, never change it or
+	 * return it. `remember` false neither enters a parsed record into the cache nor renews its entry.
+	 */
+	private readRetained(
+		identity: string,
+		remember: boolean,
+	): { record: CatalogRecord; modifiedAt: number; fileStamp: string; retained: boolean } {
 		const storageId = storageIdOf(identity);
 		const path = this.path(storageId);
 		const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -620,15 +645,17 @@ export class AgentCatalog {
 			const revision = fileStamp(info);
 			const cached = validatedRecords.get(path);
 			if (cached?.revision === revision) {
-				validatedRecords.delete(path);
-				validatedRecords.set(path, cached);
-				return { record: structuredClone(cached.record), modifiedAt: Number(info.mtimeMs), fileStamp: revision };
+				if (remember) {
+					validatedRecords.delete(path);
+					validatedRecords.set(path, cached);
+				}
+				return { record: cached.record, modifiedAt: Number(info.mtimeMs), fileStamp: revision, retained: true };
 			}
 			forgetValidatedRecord(path);
 			const { record, length } = this.parseRecord(fd, storageId);
 			const after = fstatSync(fd, { bigint: true });
-			if (fileStamp(after) === revision) rememberValidatedRecord(path, revision, record, length);
-			return { record, modifiedAt: Number(info.mtimeMs), fileStamp: revision };
+			if (remember && fileStamp(after) === revision) rememberValidatedRecord(path, revision, record, length);
+			return { record, modifiedAt: Number(info.mtimeMs), fileStamp: revision, retained: false };
 		} finally {
 			closeSync(fd);
 		}
