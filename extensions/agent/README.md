@@ -4511,12 +4511,20 @@ owner as dead and never falls back for it. Endpoint identity and local process
 ownership are checked before delivery compatibility. An owner is proven dead
 when no process holds its PID, or by the reuse proof: its socket accepts no
 connection (refused, or the socket file is missing) and the process that now
-holds its PID started more than 2 s after the record was written. Neither half
-alone proves anything: a busy owner with a full listen queue refuses, and a
-cleaned temporary directory loses a live owner's socket file. The start time
-comes from `ps` elapsed time, which a step of the wall clock moves together with
-the current time, so a clock step fakes no proof; no comparison of the record's
-time with the boot time enters. A live foreign PID is probed in the background
+holds its PID is another process than the record's writer. Neither half alone
+proves anything: a busy owner with a full listen queue refuses, and a cleaned
+temporary directory loses a live owner's socket file. Each endpoint record
+carries its writer's process start token, `processStart`, read by a method that
+no step of the wall clock changes: on Linux the boot identity and the start in
+clock ticks since boot from `/proc`, on macOS the start time that `ps -o lstart`
+prints, which the kernel keeps as set at the process's creation. The holder of
+the PID is another process when its token, read by the same method, differs.
+A record without a token, written by earlier code, proves reuse on macOS when
+the holder started more than 2 s after the record's write time, two wall times
+that a later step leaves as they were; on Linux, where `ps` derives start times
+from the boot time and a step moves them, and on other platforms, such a record
+ends only when no process holds its PID. No comparison of the record's time with
+the boot time enters. A live foreign PID is probed in the background
 once its last probe is older than 10 s; a reader that needs the answer waits
 only for a record's first probe. A new registration replaces a stored endpoint
 only on such proof and an unchanged file identity, regardless of the stored

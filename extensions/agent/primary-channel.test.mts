@@ -29,6 +29,9 @@ import {
 	primaryEndpointPath,
 	primaryEndpointStatus,
 	readPrimaryEndpointDescriptor,
+	ownerStartReused,
+	processStartToken,
+	type ProcessStartSource,
 	readVerifiedPrimaryEndpointDescriptor,
 	removeDeadPrimaryEndpoint,
 	PrimaryChannelConflictError,
@@ -374,6 +377,8 @@ async function killedOwnerSocket(root: string): Promise<string> {
 }
 /** A record written before this process started, as the crashed owner of a PID that this process now holds. */
 const beforeThisProcess = () => new Date(Date.now() - process.uptime() * 1000 - 60_000).toISOString();
+/** The start token of another process than this one, as a crashed owner's record carries it. */
+const anotherProcessStart = `${process.platform}:0`;
 
 it("reads a record as dead once its PID belongs to a process that started after the record", async (t) => {
 	const root = testRoot(t);
@@ -382,7 +387,12 @@ it("reads a record as dead once its PID belongs to a process that started after 
 	const socketPath = await killedOwnerSocket(root);
 	writeFileSync(
 		primaryEndpointPath(root, id),
-		endpointRecord(root, id, { pid: process.pid, socketPath, startedAt: beforeThisProcess() }),
+		endpointRecord(root, id, {
+			pid: process.pid,
+			socketPath,
+			startedAt: beforeThisProcess(),
+			processStart: anotherProcessStart,
+		}),
 	);
 	assert.equal(primaryEndpointStatus(root, id).state, "live", "an unprobed live PID reads as live");
 	assert.equal((await readVerifiedPrimaryEndpointDescriptor(root, id)).state, "dead");
@@ -397,12 +407,104 @@ it("replaces an endpoint whose PID another process took after the owner was kill
 	const socketPath = await killedOwnerSocket(root);
 	writeFileSync(
 		primaryEndpointPath(root, id),
-		endpointRecord(root, id, { pid: process.pid, socketPath, startedAt: beforeThisProcess() }),
+		endpointRecord(root, id, {
+			pid: process.pid,
+			socketPath,
+			startedAt: beforeThisProcess(),
+			processStart: anotherProcessStart,
+		}),
 	);
 	const channel = await createPrimaryChannel(channelOptions(root, id));
 	t.after(() => void channel.close().catch(() => undefined));
 	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { socketPath: string };
 	assert.notEqual(record.socketPath, socketPath);
+});
+
+/** A process start source with fixed answers, as one platform reports them. */
+function startSource(
+	platform: NodeJS.Platform,
+	files: Record<string, string> = {},
+	lstart?: string,
+): ProcessStartSource {
+	return { platform, readFile: (path) => files[path], psStart: async () => lstart };
+}
+const BOOT = "5f0c1a2e-0000-4000-8000-000000000001";
+/** A `/proc/<pid>/stat` line whose command name holds spaces and whose field 22 is `ticks`. */
+function procStat(pid: number, ticks: number): string {
+	const after = Array.from({ length: 50 }, (_, index) => (index === 19 ? String(ticks) : "0"));
+	return `${pid} (pi agent) ${after.join(" ")}`;
+}
+
+it("reads a process start token that no clock step changes on Linux and macOS", async () => {
+	const linux = startSource("linux", {
+		"/proc/41/stat": procStat(41, 123456),
+		"/proc/sys/kernel/random/boot_id": `${BOOT}\n`,
+	});
+	assert.equal(await processStartToken(41, linux), `linux:${BOOT}:123456`);
+	assert.equal(await processStartToken(42, linux), undefined, "an unreadable stat yields no token");
+	const darwin = startSource("darwin", {}, "Tue Nov 24 11:55:00 2026\n");
+	assert.equal(await processStartToken(41, darwin), `darwin:${Date.UTC(2026, 10, 24, 11, 55, 0) / 1000}`);
+	assert.equal(await processStartToken(41, startSource("darwin", {}, "garbled")), undefined);
+	assert.equal(await processStartToken(41, startSource("win32")), undefined);
+});
+
+it("never proves a live owner's PID reused after a forward clock step, and proves real reuse", async () => {
+	const written = "2026-11-24T11:00:00.000Z";
+	// After a forward step of an hour, Linux ps derives a start an hour later; the boot-relative ticks stay.
+	const steppedLinux = startSource(
+		"linux",
+		{ "/proc/41/stat": procStat(41, 5000), "/proc/sys/kernel/random/boot_id": BOOT },
+		"Tue Nov 24 12:59:59 2026",
+	);
+	assert.equal(
+		await ownerStartReused({ pid: 41, startedAt: written }, steppedLinux),
+		false,
+		"a Linux record without a token proves nothing, so a step cannot fake the proof",
+	);
+	assert.equal(
+		await ownerStartReused({ pid: 41, startedAt: written, processStart: `linux:${BOOT}:5000` }, steppedLinux),
+		false,
+		"the same start ticks are the same process",
+	);
+	assert.equal(
+		await ownerStartReused({ pid: 41, startedAt: written, processStart: `linux:${BOOT}:4000` }, steppedLinux),
+		true,
+		"other start ticks are another process",
+	);
+	assert.equal(
+		await ownerStartReused({ pid: 41, startedAt: written, processStart: "linux:earlier-boot:5000" }, steppedLinux),
+		true,
+		"a record of another boot names another process",
+	);
+	// macOS keeps the wall time set at the process's creation, so a later step leaves lstart as it was.
+	const darwinLive = startSource("darwin", {}, "Tue Nov 24 10:59:30 2026");
+	assert.equal(await ownerStartReused({ pid: 41, startedAt: written }, darwinLive), false);
+	const darwinLater = startSource("darwin", {}, "Tue Nov 24 11:30:00 2026");
+	assert.equal(
+		await ownerStartReused({ pid: 41, startedAt: written }, darwinLater),
+		true,
+		"a holder that started after the record was written",
+	);
+	const token = `darwin:${Date.UTC(2026, 10, 24, 10, 59, 30) / 1000}`;
+	assert.equal(await ownerStartReused({ pid: 41, startedAt: written, processStart: token }, darwinLive), false);
+	assert.equal(await ownerStartReused({ pid: 41, startedAt: written, processStart: token }, darwinLater), true);
+	assert.equal(
+		await ownerStartReused({ pid: 41, startedAt: written, processStart: token }, steppedLinux),
+		false,
+		"tokens of different sources decide nothing",
+	);
+	assert.equal(await ownerStartReused({ pid: 41, startedAt: written }, startSource("win32")), false);
+});
+
+it("records this process's start token in its endpoint", async (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	const channel = await createPrimaryChannel(channelOptions(root, id));
+	t.after(() => void channel.close().catch(() => undefined));
+	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { processStart?: string };
+	if (process.platform === "darwin") assert.match(record.processStart ?? "", /^darwin:\d+$/u);
+	else if (process.platform === "linux") assert.match(record.processStart ?? "", /^linux:[^:]+:\d+$/u);
+	assert.equal((await readVerifiedPrimaryEndpointDescriptor(root, id)).state, "live", "the writer reads as live");
 });
 
 it("keeps a busy live owner whose full listen queue refuses connections", async (t) => {
@@ -518,6 +620,7 @@ it("reads an earlier-boot record whose PID a later process holds and whose socke
 			pid: process.pid,
 			socketPath: join(root, "cleared.sock"),
 			startedAt: beforeThisProcess(),
+			processStart: anotherProcessStart,
 		}),
 	);
 	assert.equal(primaryEndpointStatus(root, id).state, "live", "no probe has run yet");
