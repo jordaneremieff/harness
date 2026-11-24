@@ -116,6 +116,8 @@ const PRIMARY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-
 const PRIMARY_DIRECTORY_VISITS = 256;
 const PRIMARY_LIST_LIMIT = 20;
 const FALLBACK_LABEL = "no live owning session";
+/** Distinct fallback failures that the parked reason of one owner states. */
+const FALLBACK_FAILURE_TEXTS = 4;
 /** Bound for one peer body; the marker names the retained source for the full text. */
 /** UTF-16 units of a message body that a recipient reads; a longer body keeps its head. */
 export const PEER_TEXT_LIMIT = 16_000;
@@ -1240,6 +1242,18 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let unsubscribe: (() => void) | undefined;
 	const unavailableTargets = options.unavailableTargets ?? new Map<string, NativeTargetFailure>();
 	const fallbackFailures = new Map<string, string>();
+	const fallbackFailureTexts = new Map<string, Set<string>>();
+	/**
+	 * One owner often has several parked rows, and each row meets the same failure. The parked reason of every row
+	 * states each distinct failure once, so its length does not grow with the number of rows.
+	 */
+	const noteFallbackFailure = (owner: string, message: string): void => {
+		const texts = fallbackFailureTexts.get(owner) ?? new Set<string>();
+		fallbackFailureTexts.set(owner, texts);
+		if (texts.has(message) || texts.size >= FALLBACK_FAILURE_TEXTS) return;
+		texts.add(message);
+		fallbackFailures.set(owner, [...texts].join("; "));
+	};
 	const eligibilityOptions = {
 		catalog,
 		sessionsRoot,
@@ -1778,7 +1792,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const fallbackCandidates = async (owner: string, row: DeliveryRow): Promise<readonly string[]> => {
 		const discovery = await listPrimaryChannels(sessionsRoot);
 		if (!discovery.complete)
-			fallbackFailures.set(owner, `primary discovery is incomplete after ${discovery.visited} visits`);
+			noteFallbackFailure(owner, `primary discovery is incomplete after ${discovery.visited} visits`);
 		const normalOwners = row.kind === "receipt" ? row.receipts.map((receipt) => receipt.ownerId) : [owner];
 		const candidates = discovery.ids.filter((id) => !normalOwners.includes(id));
 		if (candidates.length === 0)
@@ -1996,10 +2010,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		try {
 			await deliverFallbackOwner(row, deliverySender(row, host), owner);
 		} catch (error) {
-			fallbackFailures.set(
-				owner,
-				`${fallbackFailures.has(owner) ? `${fallbackFailures.get(owner)}; ` : ""}${asError(error).message}`,
-			);
+			noteFallbackFailure(owner, asError(error).message);
 		}
 	};
 
@@ -2164,6 +2175,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			automaticCursor = undefined;
 			routingFailed = false;
 			fallbackFailures.clear();
+			fallbackFailureTexts.clear();
 			retryOwners.clear();
 			traversalFailure = undefined;
 			parked = new Map();
