@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
+// Pi's extension loader maps only the root of this package for an extension; a subpath does not resolve there.
+import { isRetryableAssistantError, type AssistantMessage } from "@earendil-works/pi-ai";
 import { str, int, bool, lit, union, arr, obj, type Static } from "@earendil-works/pi-schema";
 import { ResultReferenceSchema } from "./result-schema.ts";
 import { safeProviderError } from "./primary-observation.ts";
