@@ -68,6 +68,8 @@ export interface OrdinaryWorkOptions {
 		/** Lines for the model about questions that this read closed because their asked session ended. */
 		readonly ended?: string;
 	};
+	/** Settle what the question read needs before it runs, such as the liveness of the asked sessions. */
+	readonly prepareQuestions?: (sessionId: string) => Promise<void>;
 	readonly now?: () => number;
 }
 
@@ -237,6 +239,7 @@ export function registerOrdinaryWork(
 				}
 				return { content: [{ type: "text", text: ORDINARY_TEXT_ANSWER }], details, structuredContent: details };
 			}
+			await options.prepareQuestions?.(ctx.sessionManager.getSessionId());
 			const { rows: open, ended } = waitingRows(options, () => ctx.sessionManager.getSessionId());
 			const shown: OrdinaryWorkDetails = {
 				...details,

@@ -35,6 +35,7 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { opendir } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { connect } from "node:net";
 import { hostname, uptime } from "node:os";
 import { join, resolve } from "node:path";
@@ -291,15 +292,119 @@ function processState(pid: number): "dead" | "live" | "unknown" {
 /** Clock adjustment that a record's start time may carry relative to the boot time. */
 const BOOT_TOLERANCE_MS = 120_000;
 let bootStartedAt: number | undefined;
+/** How long a probe result stands before the next read probes again. */
+const OWNER_PROBE_TTL_MS = 10_000;
+/** Probe results kept per process; the oldest is dropped beyond the bound. */
+const OWNER_PROBE_LIMIT = 1024;
+/** Resolution of a process start time read from `ps`, and the clock tolerance beside it. */
+const PROCESS_START_TOLERANCE_MS = 2_000;
+type OwnerRecord = {
+	readonly pid: number;
+	readonly startedAt: string;
+	readonly serverId: string;
+	readonly socketPath: string;
+};
 /**
- * State of the process that published a record. A record written before the current boot names a process
- * of an earlier boot, whatever now holds its PID; within one boot only the PID is checked synchronously.
+ * `reused` is proof: the process that holds the PID started after the record was written, so the record's
+ * owner has ended. `listening` and `unproven` (a refused connection from the process that wrote the record,
+ * as from a busy owner with a full listen queue, or a start time that could not be read) keep the owner live.
  */
-function ownerState(record: { readonly pid: number; readonly startedAt: string }): "dead" | "live" | "unknown" {
+type OwnerProbe = { readonly result: "listening" | "unproven" | "reused"; readonly at: number };
+const ownerProbes = new Map<string, OwnerProbe>();
+const ownerProbing = new Map<string, Promise<void>>();
+/** Server identities of the channels that this process holds open; their owner is this process. */
+const ownServers = new Set<string>();
+const probeKey = (record: OwnerRecord) => `${record.pid}\u0000${record.serverId}\u0000${record.socketPath}`;
+
+/** A record written before the current boot, or a PID with no process: proof that the owner ended. */
+function provenEnded(record: OwnerRecord): "dead" | "live" | "unknown" {
 	bootStartedAt ??= Date.now() - uptime() * 1000;
 	const started = Date.parse(record.startedAt);
 	if (Number.isFinite(started) && started < bootStartedAt - BOOT_TOLERANCE_MS) return "dead";
 	return processState(record.pid);
+}
+
+/**
+ * State of the process that published a record. A record written before the current boot names a process of
+ * an earlier boot, whatever now holds its PID. Within one boot a crashed owner's PID can belong to another
+ * process: a read of a live foreign PID starts a background probe when the last one is stale, and the record
+ * reads as dead once a probe proved the PID reused. Until then it reads as live, so a late end is possible
+ * and a false end is not.
+ */
+function ownerState(record: OwnerRecord): "dead" | "live" | "unknown" {
+	const state = provenEnded(record);
+	if (state !== "live" || ownServers.has(record.serverId)) return state;
+	const probe = ownerProbes.get(probeKey(record));
+	if (probe?.result === "reused") return "dead";
+	if (probe === undefined || Date.now() - probe.at > OWNER_PROBE_TTL_MS) void probeOwner(record);
+	return "live";
+}
+
+/** Seconds of `[[dd-]hh:]mm:ss`, the elapsed-time column of `ps`. */
+function elapsedSeconds(text: string): number | undefined {
+	const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/u.exec(text.trim());
+	if (match === null) return undefined;
+	const [, days = "0", hours = "0", minutes, seconds] = match;
+	return ((Number(days) * 24 + Number(hours)) * 60 + Number(minutes)) * 60 + Number(seconds);
+}
+/** When the process that holds a PID started, from `ps`; undefined when that cannot be read. */
+function processStartedAt(pid: number): Promise<number | undefined> {
+	return new Promise((done) => {
+		execFile("ps", ["-o", "etime=", "-p", String(pid)], { timeout: 2_000 }, (error, stdout) => {
+			const elapsed = error === null ? elapsedSeconds(String(stdout)) : undefined;
+			done(elapsed === undefined ? undefined : Date.now() - elapsed * 1000);
+		});
+	});
+}
+/**
+ * Whether the process that holds a record's PID started after the record was written: then the PID was
+ * reused and the record's owner has ended. A busy live owner started before its record, so it never
+ * produces this evidence.
+ */
+async function pidReused(record: OwnerRecord): Promise<boolean> {
+	const written = Date.parse(record.startedAt);
+	const started = await processStartedAt(record.pid);
+	return Number.isFinite(written) && started !== undefined && started > written + PROCESS_START_TOLERANCE_MS;
+}
+
+/** One deduplicated probe: a connection proves the owner live; a refusal is checked against the PID's start. */
+function probeOwner(record: OwnerRecord): Promise<void> {
+	const key = probeKey(record);
+	const running = ownerProbing.get(key);
+	if (running !== undefined) return running;
+	const probe = (async () => {
+		const result = (await socketListening(record.socketPath))
+			? "listening"
+			: (await pidReused(record))
+				? "reused"
+				: "unproven";
+		ownerProbes.delete(key);
+		ownerProbes.set(key, { result, at: Date.now() });
+		if (ownerProbes.size > OWNER_PROBE_LIMIT) ownerProbes.delete(ownerProbes.keys().next().value as string);
+	})().finally(() => ownerProbing.delete(key));
+	ownerProbing.set(key, probe);
+	return probe;
+}
+
+/**
+ * Wait until each named record whose PID is alive and that has never been probed in this process has its
+ * first probe, so the synchronous readers that follow classify a crashed owner whose PID another process holds
+ * as dead. A record with an earlier probe result keeps it while a stale one is probed again in the background.
+ */
+export async function verifyPrimaryOwners(sessionsRoot: string, ids: Iterable<string>): Promise<void> {
+	const probes: Promise<unknown>[] = [];
+	for (const id of new Set(ids)) {
+		if (!UUID_ANY.test(id)) continue;
+		let record: RecordedPrimaryEndpoint | undefined;
+		try {
+			record = readValidatedEndpoint(primaryEndpointPath(sessionsRoot, id));
+		} catch {
+			continue;
+		}
+		if (record === undefined || record.id !== id) continue;
+		probes.push(settledClassification(record, id));
+	}
+	await Promise.all(probes);
 }
 
 /**
@@ -707,8 +812,11 @@ async function removeDeadEndpoint(endpointPath: string, id: string, replaceOwn =
 			`primary channel ${id} is registered on another host (${file.endpoint.hostname}); refusing local replacement`,
 		);
 	if (replaceOwn && file.endpoint.pid === process.pid) return "replace";
-	const state = ownerState(file.endpoint);
-	if (state !== "dead" && !(state === "live" && !(await socketListening(file.endpoint.socketPath))))
+	const state = provenEnded(file.endpoint);
+	const replaceable =
+		state === "dead" ||
+		(state === "live" && !(await socketListening(file.endpoint.socketPath)) && (await pidReused(file.endpoint)));
+	if (!replaceable)
 		throw new PrimaryChannelConflictError(
 			`primary channel ${id} is already registered by live PID ${file.endpoint.pid}; refusing replacement`,
 		);
@@ -722,9 +830,10 @@ async function removeDeadEndpoint(endpointPath: string, id: string, replaceOwn =
 }
 
 /**
- * Remove one endpoint record whose owner is proven dead: its process no longer runs, or it was written before
- * the current boot. A live, unknown, foreign, malformed or concurrently replaced record stays. A reader can call
- * this for a record that it classified as dead, so dead records do not accumulate. True when it removed one.
+ * Remove one endpoint record whose owner is proven dead by the strongest evidence only: no process holds its
+ * PID, or it was written before the current boot. A socket probe never authorizes a removal, so a live, busy
+ * owner keeps its record whatever a probe saw. A live, unknown, foreign, malformed or concurrently replaced
+ * record stays. True when it removed one.
  */
 export function removeDeadPrimaryEndpoint(sessionsRoot: string, id: string): boolean {
 	if (!UUID_ANY.test(id)) return false;
@@ -736,7 +845,8 @@ export function removeDeadPrimaryEndpoint(sessionsRoot: string, id: string): boo
 		return false;
 	}
 	if (file === undefined || file.endpoint.id !== id || file.endpoint.hostname !== hostname()) return false;
-	if (ownerState(file.endpoint) !== "dead") return false;
+	// Only a dead PID or a record of an earlier boot removes a file; no socket probe result ever does.
+	if (provenEnded(file.endpoint) !== "dead") return false;
 	const current = lstatSync(endpointPath, { throwIfNoEntry: false });
 	if (current === undefined || current.dev !== file.dev || current.ino !== file.ino) return false;
 	removeFile(endpointPath);
@@ -905,9 +1015,11 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 		throw error;
 	}
 	try {
+		ownServers.add(serverId);
 		if (existing === "replace") rewriteEndpoint(endpointPath, endpoint);
 		else publishEndpoint(endpointPath, endpoint);
 	} catch (error) {
+		ownServers.delete(serverId);
 		await server.close().catch(() => undefined);
 		removeFile(socketPath);
 		if (errnoCode(error) === "EEXIST")
@@ -922,6 +1034,7 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 		if (closePromise) return closePromise;
 		closePromise = (async () => {
 			options.signal?.removeEventListener("abort", onAbort);
+			ownServers.delete(serverId);
 			await server.close().catch(() => undefined);
 			removeFile(socketPath);
 			try {
@@ -1072,6 +1185,40 @@ export function readPrimaryEndpointDescriptor(
 	} catch {
 		return { state: "unknown", unreadable: true };
 	}
+}
+
+/**
+ * The descriptor that `readPrimaryEndpointDescriptor` returns, after the probe that its classification of a
+ * live PID started has settled, so a crashed owner whose PID another process holds reads as dead. One record
+ * read; a current probe adds no connection and no wait.
+ */
+export async function readVerifiedPrimaryEndpointDescriptor(
+	sessionsRoot: string,
+	id: string,
+): Promise<ReturnType<typeof readPrimaryEndpointDescriptor>> {
+	if (!UUID_ANY.test(id)) return { state: "unknown", unreadable: true };
+	let endpoint: RecordedPrimaryEndpoint | undefined;
+	try {
+		endpoint = readValidatedEndpoint(primaryEndpointPath(sessionsRoot, id));
+	} catch {
+		return { state: "unknown", unreadable: true };
+	}
+	if (!endpoint) return { state: "absent" };
+	if (endpoint.id !== id) return { state: "unknown", unreadable: true };
+	const { version: _version, serverId: _serverId, ...info } = endpoint;
+	return { ...(await settledClassification(endpoint, id)), info };
+}
+
+/** Classify a record, waiting for the socket probe that classifying a live PID started. */
+async function settledClassification(record: RecordedPrimaryEndpoint, id: string): Promise<PrimaryEndpointStatus> {
+	const status = classifyEndpoint(record, id);
+	if (status.state !== "live" && status.state !== "incompatible") return status;
+	// Only a record without any result waits; a stale result stands while its next probe runs.
+	const key = probeKey(record);
+	const running = ownerProbes.has(key) ? undefined : ownerProbing.get(key);
+	if (running === undefined) return status;
+	await running;
+	return classifyEndpoint(record, id);
 }
 
 /** Owner state alone; a live incompatible owner never authorizes fallback or replacement. */

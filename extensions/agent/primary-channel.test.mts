@@ -15,7 +15,7 @@ import {
 import { hostname, tmpdir, uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
-import { createServer, type Socket } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { spawn, spawnSync } from "node:child_process";
 import { eventLog } from "./host-fixture.mts";
 import { createTransportServer, unixSocketPath } from "../../transport/index.ts";
@@ -29,6 +29,7 @@ import {
 	primaryEndpointPath,
 	primaryEndpointStatus,
 	readPrimaryEndpointDescriptor,
+	readVerifiedPrimaryEndpointDescriptor,
 	removeDeadPrimaryEndpoint,
 	PrimaryChannelConflictError,
 	PrimaryChannelUnavailableError,
@@ -357,11 +358,8 @@ it("refuses replacement while the recorded owner is an unreachable live process"
 	assert.equal(readFileSync(path, "utf8"), record);
 });
 
-it("replaces an endpoint whose live-looking PID no longer serves the recorded socket", async (t) => {
-	const root = testRoot(t);
-	const id = uuidV7();
-	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
-	// A killed owner leaves its socket file behind, and another process can now hold its PID.
+/** A socket file that refuses connections, as a killed owner leaves it. */
+async function killedOwnerSocket(root: string): Promise<string> {
 	const socketPath = join(root, "killed.sock");
 	const owner = spawn(process.execPath, [
 		"-e",
@@ -372,11 +370,73 @@ it("replaces an endpoint whose live-looking PID no longer serves the recorded so
 	owner.kill("SIGKILL");
 	await exited;
 	assert.ok(existsSync(socketPath));
-	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { pid: process.pid, socketPath }));
+	return socketPath;
+}
+/** A record written before this process started, as the crashed owner of a PID that this process now holds. */
+const beforeThisProcess = () => new Date(Date.now() - process.uptime() * 1000 - 60_000).toISOString();
+
+it("reads a record as dead once its PID belongs to a process that started after the record", async (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const socketPath = await killedOwnerSocket(root);
+	writeFileSync(
+		primaryEndpointPath(root, id),
+		endpointRecord(root, id, { pid: process.pid, socketPath, startedAt: beforeThisProcess() }),
+	);
+	assert.equal(primaryEndpointStatus(root, id).state, "live", "an unprobed live PID reads as live");
+	assert.equal((await readVerifiedPrimaryEndpointDescriptor(root, id)).state, "dead");
+	assert.equal(primaryEndpointStatus(root, id).state, "dead", "the proof stands for later synchronous reads");
+	assert.equal(removeDeadPrimaryEndpoint(root, id), false, "a probe result never removes a record");
+});
+
+it("replaces an endpoint whose PID another process took after the owner was killed", async (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const socketPath = await killedOwnerSocket(root);
+	writeFileSync(
+		primaryEndpointPath(root, id),
+		endpointRecord(root, id, { pid: process.pid, socketPath, startedAt: beforeThisProcess() }),
+	);
 	const channel = await createPrimaryChannel(channelOptions(root, id));
 	t.after(() => void channel.close().catch(() => undefined));
 	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { socketPath: string };
 	assert.notEqual(record.socketPath, socketPath);
+});
+
+it("keeps a busy live owner whose full listen queue refuses connections", async (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const socketPath = join(root, "busy.sock");
+	// The owner listens with a queue of one, then blocks its event loop, so it accepts nothing.
+	const owner = spawn(process.execPath, [
+		"-e",
+		`require("node:net").createServer().listen({ path: ${JSON.stringify(socketPath)}, backlog: 1 }, () => { process.stdout.write("ready"); const end = Date.now() + 8000; while (Date.now() < end); })`,
+	]);
+	t.after(() => owner.kill("SIGKILL"));
+	await new Promise<void>((done) => owner.stdout.once("data", () => done()));
+	assert.ok(owner.pid);
+	const queued: Socket[] = [];
+	t.after(() => {
+		for (const socket of queued) socket.destroy();
+	});
+	let refused = false;
+	for (let attempt = 0; attempt < 16 && !refused; attempt++) {
+		const socket = connect(socketPath);
+		queued.push(socket);
+		refused = await new Promise<boolean>((done) => {
+			socket.once("connect", () => done(false));
+			socket.once("error", (error: NodeJS.ErrnoException) => done(error.code === "ECONNREFUSED"));
+		});
+	}
+	if (process.platform === "darwin") assert.ok(refused, "a full listen queue refuses connections");
+	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { pid: owner.pid, socketPath }));
+	assert.equal((await readVerifiedPrimaryEndpointDescriptor(root, id)).state, "live");
+	assert.equal(removeDeadPrimaryEndpoint(root, id), false);
+	await assert.rejects(createPrimaryChannel(channelOptions(root, id)), /refusing replacement/u);
+	assert.equal(primaryEndpointStatus(root, id).state, "live");
 });
 
 it("replaces its own process's record in one rename for a session that registers again", async (t) => {

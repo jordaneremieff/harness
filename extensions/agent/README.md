@@ -4457,9 +4457,17 @@ An owner endpoint carries the primary channel contract version. A host
 that meets a live owner with another version holds that delivery pending and
 reports the endpoint version and the restart that clears it; it never treats the
 owner as dead and never falls back for it. Endpoint identity and local process
-ownership are checked before delivery compatibility. A new registration removes
-a stored endpoint only for a proven dead local PID and an unchanged file
-identity, regardless of the stored contract tag. Foreign or unverified ownership
+ownership are checked before delivery compatibility. An owner is proven dead
+when no process holds its PID, when its record was written before the current
+boot, or when its socket refuses a connection and the process that now holds
+its PID started after the record was written. A refused connection alone, as
+from a busy owner with a full listen queue, keeps it live. A live foreign PID is
+probed in the background once its last probe is older than 10 s; a reader that
+needs the answer waits only for a record's first probe. A new registration
+replaces a stored endpoint only on such proof and an unchanged file identity,
+regardless of the stored contract tag. `removeDeadPrimaryEndpoint`, which
+readers call so dead records do not accumulate, removes one only for a dead PID
+or a record of an earlier boot; a probe result never removes a file. Foreign or unverified ownership
 stays protected. Ownership metadata never authorizes a retired delivery payload.
 A fallback broadcast checks every registered primary before the first delivery,
 so one incompatible candidate

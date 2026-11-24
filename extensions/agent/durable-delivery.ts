@@ -102,6 +102,7 @@ import {
 	primaryEndpointIncompatibleError,
 	primaryEndpointStatus,
 	readPrimaryEndpointDescriptor,
+	verifyPrimaryOwners,
 	type PrimaryChannelConnection,
 	type PrimaryDelivery,
 } from "./primary-channel.ts";
@@ -1870,6 +1871,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 				`delivery owner ${owner} has no catalog record and is not a canonical primary id; refusing fallback`,
 			);
 		const identity = deliverySender(row, host);
+		await verifyPrimaryOwners(sessionsRoot, [owner]);
 		const status = primaryEndpointStatus(sessionsRoot, owner);
 		if (status.state === "live") await deliverLiveOwner(row, identity, owner);
 		else if (status.state === "incompatible")

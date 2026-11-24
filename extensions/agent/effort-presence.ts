@@ -1,7 +1,7 @@
 import { opendir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
-import { readPrimaryEndpointDescriptor } from "./primary-channel.ts";
+import { readVerifiedPrimaryEndpointDescriptor } from "./primary-channel.ts";
 import type {
 	PrimaryInfo,
 	PrimaryObservedPurpose,
@@ -318,19 +318,31 @@ async function collectEffort(
 	appendEffort(page, effortRow(info, self, liveness, relationship, topics, prompt), prompt);
 }
 
-async function visitEntry(
+/**
+ * Start the verified read of one endpoint record. The reads of a walk run concurrently, so the socket probes
+ * of live PIDs overlap; their results are applied in walk order.
+ */
+function startEntry(
 	sessionsRoot: string,
 	self: PresenceSelf,
 	page: EffortPresencePage,
 	entry: Dirent,
-	scope?: EffortProjectScope,
-): Promise<void> {
+	pending: Promise<Awaited<ReturnType<typeof readVerifiedPrimaryEndpointDescriptor>>>[],
+): void {
 	const id = entry.name.endsWith(".json") ? entry.name.slice(0, -5) : undefined;
 	if (!entry.isFile() || id === undefined || id === self.id) {
 		page.coverage.unrelated += 1;
 		return;
 	}
-	const descriptor = readPrimaryEndpointDescriptor(sessionsRoot, id);
+	pending.push(readVerifiedPrimaryEndpointDescriptor(sessionsRoot, id));
+}
+
+async function visitEntry(
+	self: PresenceSelf,
+	page: EffortPresencePage,
+	descriptor: Awaited<ReturnType<typeof readVerifiedPrimaryEndpointDescriptor>>,
+	scope?: EffortProjectScope,
+): Promise<void> {
 	if (descriptor.unreadable || !descriptor.info || descriptor.state === "absent") {
 		page.coverage.unreadable += 1;
 		markPartial(page, "unreadable");
@@ -497,12 +509,21 @@ export async function readRelatedEfforts(
 		limits: EFFORT_PRESENCE_LIMITS,
 	};
 	if (self.repositoryState === "unknown") markPartial(page, "repository-unknown");
+	const pending: Parameters<typeof startEntry>[4] = [];
+	const visitPending = async () => {
+		for (const descriptor of pending.splice(0)) await visitEntry(self, page, await descriptor, scope);
+	};
 	await visitDirectory(
 		join(sessionsRoot, ".primaries"),
 		page,
 		(name) => name.endsWith(".json"),
-		(entry) => visitEntry(sessionsRoot, self, page, entry, scope),
+		async (entry) => {
+			startEntry(sessionsRoot, self, page, entry, pending);
+			// The last permitted visit applies the started reads before the walk reports its limit.
+			if (page.coverage.visited >= page.limits.visits) await visitPending();
+		},
 	);
+	await visitPending();
 	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(resources.catalog, self, page, records, scope);
 	if (scope?.prompt)
 		page.efforts.splice(0, page.efforts.length, ...selectPromptEfforts(page.efforts, page.limits.results));
