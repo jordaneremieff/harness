@@ -136,13 +136,19 @@ it("bounds directory visits without invoking the unbounded paged catalog listing
 	assert.ok(page.coverage.reasons.includes("visit-limit"));
 });
 
-it("counts irrelevant directory entries against traversal and handles absent or unreadable roots", async (t) => {
-	const { root, catalog } = fixture(t);
-	for (let index = 0; index < 260; index++) writeFileSync(join(catalog.root, `irrelevant-${index}`), "");
+it("spends no visits on names that are not catalog records and handles absent or unreadable roots", async (t) => {
+	const { root, catalog, input } = fixture(t);
+	for (let index = 0; index < 260; index++) writeFileSync(join(catalog.root, `irrelevant-${index}.sqlite`), "");
+	const [thread] = publish(catalog, input, [1]);
 	const page = await readRecentCollaboration(catalog);
-	assert.equal(page.coverage.visited, 256);
-	assert.equal(page.coverage.records, 0);
-	assert.equal(page.coverage.unvisited, true);
+	assert.equal(page.coverage.visited, 1, "storage files beside the records cost no visit");
+	assert.equal(page.coverage.records, 1);
+	assert.equal(page.coverage.unvisited, false);
+	assert.equal(page.coverage.complete, true);
+	assert.deepEqual(
+		page.items.map((item) => item.id),
+		[thread.id],
+	);
 	const absent = await readRecentCollaboration(new AgentCatalog(join(root, "absent")));
 	assert.equal(absent.coverage.complete, true);
 	const fileRoot = join(root, "not-a-directory");
@@ -191,7 +197,42 @@ it("reads priority contacts outside the directory sample without expanding its v
 	assert.ok(read.mock.callCount() <= RECENT_COLLABORATION_LIMITS.visits);
 });
 
-it("counts duplicate directory encounters without duplicate hints and ignores absent optional priorities", async (t) => {
+it("keeps priority threads ahead of sampled ones in a prompt read", async (t) => {
+	const { catalog, input } = fixture(t);
+	const threads = Array.from({ length: RECENT_COLLABORATION_LIMITS.results + 3 }, () => {
+		const record = catalog.create(input);
+		const id = `${record.storageId}/${"0".repeat(32)}`;
+		catalog.updateView(
+			record.storageId,
+			{
+				storageId: record.storageId,
+				updatedAt: "2026-10-04T10:00:00.000Z",
+				rows: [],
+				coverage: { complete: true, omitted: 0 },
+			},
+			{
+				items: [{ id, title: "Thread", purpose: "Coordination", updatedAt: 1, closed: false, members: 1 }],
+				omitted: 0,
+				updatedAt: "2026-10-04T10:00:00.000Z",
+			},
+		);
+		return id;
+	}).sort();
+	// The contact's thread has the largest identity, so identity order alone would drop it.
+	const priority = threads.at(-1) as string;
+	const page = await readRecentCollaboration(catalog, [priority.split("/")[0]], {
+		prompt: true,
+		matches: async () => true,
+	});
+	assert.equal(page.items.length, RECENT_COLLABORATION_LIMITS.results);
+	assert.equal(page.items[0]?.id, priority, "the contact's thread outranks every sampled identity");
+	assert.deepEqual(
+		page.items.slice(1).map((item) => item.id),
+		threads.slice(0, RECENT_COLLABORATION_LIMITS.results - 1),
+	);
+});
+
+it("visits a priority record once, without duplicate hints, and spends no visit on an absent priority", async (t) => {
 	const { catalog, input } = fixture(t);
 	const [thread] = publish(catalog, input, [10]);
 	const storageId = thread.id.split("/")[0];
@@ -200,7 +241,7 @@ it("counts duplicate directory encounters without duplicate hints and ignores ab
 	const page = await readRecentCollaboration(catalog, [`${storageId}:2`, storageId, randomUUID()]);
 	assert.deepEqual(page.items, baseline.items);
 	assert.equal(page.coverage.records, 1);
-	assert.equal(page.coverage.visited, baseline.coverage.visited + 2);
+	assert.equal(page.coverage.visited, baseline.coverage.visited, "an ordinary session identity has no record to visit");
 	assert.equal(page.coverage.unreadable, 0);
 	assert.equal(page.coverage.missingHints, 0);
 	assert.equal(page.coverage.complete, true);

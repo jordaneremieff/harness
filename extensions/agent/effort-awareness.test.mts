@@ -214,10 +214,8 @@ it("names live sessions in other repositories that used the same work items, wit
 	assert.ok(prompt.includes(unrelated) === false);
 	assert.match(prompt, /"sessionName":"SomeServiceFile\.php"/u);
 	assert.match(prompt, /"request":"Review the service design for edge cases"/u);
-	assert.match(
-		prompt,
-		/"sharedWork":\["document md-design \(Service design\)","handover 20261124T010203Z-plan \(Verification plan\)"\]/u,
-	);
+	assert.match(prompt, /"sharedWork":\["document md-design","handover 20261124T010203Z-plan"\]/u);
+	assert.doesNotMatch(prompt, /Service design|Verification plan/u, "producer titles stay out of the prompt row");
 	const reordered = {
 		...view,
 		presence: {
@@ -248,6 +246,81 @@ it("names live sessions in other repositories that used the same work items, wit
 	assert.equal(row?.relationship, "machine");
 	assert.deepEqual(row?.sharedWork, [design, plan]);
 	assert.equal(observation.presence.efforts.find((effort) => effort.id === unrelated)?.sharedWork, undefined);
+});
+
+it("keeps a shared-work row when the other session reorders more items than an observation shows", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const project = join(root, "project");
+	const other = join(root, "other");
+	mkdirSync(project);
+	mkdirSync(other);
+	for (const cwd of [project, other]) execFileSync("git", ["init", "--quiet", cwd], { timeout: 3000 });
+	const items = Array.from({ length: 12 }, (_, index) => ({ kind: "document", id: `md-${index.toString(16)}` }));
+	const peer = randomUUID();
+	const current = { ...self, cwd: project, workRefs: items };
+	const shared = resources(root, catalog);
+	const rowFor = async (workRefs: typeof items) => {
+		publish(root, peer, null, other, undefined, { workRefs });
+		const prompt = formatEffortAwareness(await readEffortAwareness(shared, current, "canonical", "prompt"), "prompt");
+		return prompt.split("\n").find((line) => line.includes(peer));
+	};
+	const before = await rowFor(items);
+	assert.match(before ?? "", /"sharedWork":\["document md-0","document md-1","document md-2","document md-3"\]/u);
+	assert.equal(await rowFor(items.toReversed()), before, "the newest eight of the other session do not select the row");
+});
+
+it("reads thread hints of shared-work peers but not of peers that share only a topic", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const project = join(root, "project");
+	const other = join(root, "other");
+	mkdirSync(project);
+	mkdirSync(other);
+	for (const cwd of [project, other]) execFileSync("git", ["init", "--quiet", cwd], { timeout: 3000 });
+	const first = (text: string) => ({ source: "interactive-input" as const, text });
+	const plan = { kind: "handover", id: "20261124T010203Z-plan" };
+	const topical = randomUUID();
+	publish(root, topical, null, other, first("Payment refund ledger reconciliation"));
+	const working = randomUUID();
+	publish(root, working, null, other, first("Unrelated words here"), { workRefs: [plan] });
+	const peerThread = (owner: string, title: string) => {
+		const { record } = catalog.createThreadStorage({
+			cwd: other,
+			agentDir: root,
+			packageDir: root,
+			model: { provider: "faux", modelId: "faux-1" },
+			thinkingLevel: "off",
+			ownerId: owner,
+		});
+		const id = `${record.storageId}/${"b".repeat(32)}`;
+		catalog.updateView(
+			record.storageId,
+			{
+				storageId: record.storageId,
+				updatedAt: "2026-10-04T10:00:00.000Z",
+				rows: [],
+				coverage: { complete: true, omitted: 0 },
+				intentClaims: { rows: {}, coverage: { complete: true, omitted: 0 } },
+			},
+			{
+				items: [{ id, title, purpose: "Peer coordination", updatedAt: 100, closed: false, members: 2 }],
+				omitted: 0,
+				updatedAt: "2026-10-04T10:00:00.000Z",
+			},
+		);
+	};
+	peerThread(topical, "Topic peer thread");
+	peerThread(working, "Shared work peer thread");
+	const current = {
+		...self,
+		cwd: project,
+		observedPurpose: first("Reconcile the payment refund ledger"),
+		workRefs: [plan],
+	};
+	const view = await readEffortAwareness(resources(root, catalog), current, "canonical", "prompt");
+	const prompt = formatEffortAwareness(view, "prompt");
+	assert.ok(prompt.includes(topical), "the topic peer keeps its row");
+	assert.match(prompt, /Shared work peer thread/u);
+	assert.doesNotMatch(prompt, /Topic peer thread/u, "a shared topic alone never promotes thread hints");
 });
 
 it("names sessions in other repositories whose purposes share a topic, strongest four, after project rows", async (t) => {

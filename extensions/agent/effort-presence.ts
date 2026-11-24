@@ -71,9 +71,10 @@ export interface RelatedEffort {
 	/** Distinctive words that both sessions' stated purposes, names and item titles use, in alphabetical order. */
 	readonly sharedTopics?: string[];
 }
+const CATALOG_RECORD_NAME = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u;
 /** Prompt rows that a shared topic alone adds, strongest first; shared items and location add more. */
 export const PROMPT_TOPIC_ROWS = 4;
-/** Shared work items shown per related effort. */
+/** Shared work items an observation shows per related effort, newest first for the other session. */
 const SHARED_WORK_SHOWN = 8;
 export interface EffortPresenceCoverage {
 	/** Producers or document rows without native intent support are not omitted claims. */
@@ -208,10 +209,14 @@ function effortRow(
 	liveness: RelatedEffort["liveness"],
 	relationship: RelatedEffort["relationship"],
 	topics: string[],
+	prompt: boolean,
 ): RelatedEffort {
 	const { id, cwd, name, repository, repositoryState, startedAt, lastActivityAt, intentClaim, observedPurpose } = info;
 	const overlap = relationship === "machine" ? undefined : claimOverlap(self.intentClaim, intentClaim);
-	const sharedWork = sharedWorkReferences(self.workRefs, info.workRefs).slice(0, SHARED_WORK_SHOWN);
+	// A prompt selects shared items in identity order from the whole bounded list, so a recency
+	// change on the other session never changes which items the row names.
+	const shared = sharedWorkReferences(self.workRefs, info.workRefs);
+	const sharedWork = prompt ? shared : shared.slice(0, SHARED_WORK_SHOWN);
 	return {
 		id,
 		cwd,
@@ -308,7 +313,8 @@ async function collectEffort(
 		page.coverage.unrelated++;
 		return;
 	}
-	appendEffort(page, effortRow(info, self, liveness, relationship, topics), scope?.prompt ?? false);
+	const prompt = scope?.prompt ?? false;
+	appendEffort(page, effortRow(info, self, liveness, relationship, topics, prompt), prompt);
 }
 
 async function visitEntry(
@@ -337,9 +343,11 @@ async function visitEntry(
 	await collectEffort(page, self, descriptor.info, descriptor.state, scope);
 }
 
+/** A directory entry that names no record (a socket, a storage file) costs no visit. */
 async function visitDirectory(
 	path: string,
 	page: EffortPresencePage,
+	record: (name: string) => boolean,
 	visit: (entry: Dirent) => void | Promise<void>,
 ): Promise<void> {
 	let directory: Awaited<ReturnType<typeof opendir>>;
@@ -351,6 +359,7 @@ async function visitDirectory(
 	}
 	try {
 		for await (const entry of directory) {
+			if (!record(entry.name)) continue;
 			if (page.coverage.visited >= page.limits.visits) {
 				markPartial(page, "visit-limit");
 				break;
@@ -412,7 +421,7 @@ async function visitNativeRecord(
 	claims: Map<string, ClaimObservation>,
 	scope?: EffortProjectScope,
 ): Promise<void> {
-	if (!entry.isFile() || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u.test(entry.name)) {
+	if (!entry.isFile()) {
 		page.coverage.unrelated++;
 		return;
 	}
@@ -454,7 +463,12 @@ async function visitNativeRoot(
 ): Promise<void> {
 	// One writer claim observation serves every claim row in this record during one pass.
 	const claims = new Map<string, ClaimObservation>();
-	await visitDirectory(catalog.root, page, (entry) => visitNativeRecord(catalog, entry, self, page, claims, scope));
+	await visitDirectory(
+		catalog.root,
+		page,
+		(name) => CATALOG_RECORD_NAME.test(name),
+		(entry) => visitNativeRecord(catalog, entry, self, page, claims, scope),
+	);
 }
 
 /** Read-only presence page; ordinary records and native projections share all visit, result and byte caps. */
@@ -480,8 +494,11 @@ export async function readRelatedEfforts(
 		limits: EFFORT_PRESENCE_LIMITS,
 	};
 	if (self.repositoryState === "unknown") markPartial(page, "repository-unknown");
-	await visitDirectory(join(sessionsRoot, ".primaries"), page, (entry) =>
-		visitEntry(sessionsRoot, self, page, entry, scope),
+	await visitDirectory(
+		join(sessionsRoot, ".primaries"),
+		page,
+		(name) => name.endsWith(".json"),
+		(entry) => visitEntry(sessionsRoot, self, page, entry, scope),
 	);
 	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(resources.catalog, self, page, scope);
 	if (scope?.prompt)

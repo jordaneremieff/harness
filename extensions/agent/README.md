@@ -2976,8 +2976,11 @@ ancestry entries. Native conversations report no references. Old readers ignore
 the added endpoint field.
 
 Two live sessions share work when both lists contain an equal `kind` and `id`.
-Presence rows then carry `sharedWork`, at most eight shared items in the other
-session's order, and the caller's own `workRefs` appear in its awareness. A
+Observation rows then carry `sharedWork`, at most eight shared items in the other
+session's order, and the caller's own `workRefs` appear in its awareness. Prompt
+rows select up to four shared items in identity order from both whole lists and
+name them by kind and identity without titles, so a reorder or a title change in
+the other session leaves the row unchanged. A
 reference is the producer's report of use, not verified access, a lock or
 authority over the item or the other session.
 
@@ -3065,11 +3068,17 @@ the extension does not infer intent from file names or coordinate work for them.
 Carried operator directions appear as quoted, scoped claims, never as permission
 for the reader. Active peer-thread hints appear newest-first within the covered
 store records. Declared contact-thread owners receive priority catalog reads,
-followed by current and live effort identities, before the directory sample.
-These reads share one visit budget; duplicate and irrelevant directory entries
-still consume visits without repeating hints. An absent optional priority record
-does not mark the general sample unreadable. Missing hints and unvisited records
-leave global recency unknown.
+followed by the caller's own storages and the live efforts that share its
+location or an item, before the directory sample; an effort that shares only a
+topic adds its row, not its threads. These reads share one visit budget. A
+directory entry that names no catalog record, such as a storage file, costs no
+visit, and an absent priority record, such as an ordinary session's identity,
+costs none either. A duplicate record is read once. The sample reports
+unvisited records only when another record remains past the budget. Missing
+hints and unvisited records leave global recency unknown. In the prompt,
+threads from priority sources rank ahead of sampled threads, each group in
+identity order, so the twelve-thread bound never drops a contact's thread for
+a sampled one.
 
 Use `agent_intent({ action: "read" })` in either runtime for current bounded
 awareness without publishing or clearing a claim. Its `awareness` result contains
@@ -3108,7 +3117,8 @@ reports its presentation omissions; tool observations also report finite travers
 coverage. Ordinary descriptors, native catalogue
 entries and native claim rows share the visit, result and byte caps in the tool
 result. Ordinary descriptors consume visits first, so a large ordinary sample
-leaves fewer visits for native roots. A cut-off scan reports partial coverage.
+leaves fewer visits for native roots. Sockets and storage files beside those
+records cost no visit. A cut-off scan reports partial coverage.
 Native producers without intent support count separately from omitted claims;
 their absence is not a lost supported claim.
 

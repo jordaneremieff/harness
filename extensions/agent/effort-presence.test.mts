@@ -181,6 +181,24 @@ it("bounds visits and results and reports exact visited omissions", async (t) =>
 	assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 16384);
 });
 
+it("spends no visits on sockets and storage files beside the records", async (t) => {
+	const root = rootFor(t);
+	const catalog = new AgentCatalog(root);
+	mkdirSync(catalog.root, { recursive: true });
+	for (let index = 0; index < 300; index += 1) {
+		writeFileSync(join(root, ".primaries", `${randomUUID()}.sock`), "");
+		writeFileSync(join(catalog.root, `${randomUUID()}.sqlite`), "");
+	}
+	const peer = record(root);
+	const page = await readRelatedEfforts({ catalog, locations: createPrimaryLocationResolver() }, self());
+	assert.deepEqual(
+		page.efforts.map((effort) => effort.id),
+		[peer],
+	);
+	assert.equal(page.coverage.visited, 1);
+	assert.equal(page.coverage.complete, true);
+});
+
 it("bounds serialized pages with large intent claims", async (t) => {
 	const root = rootFor(t);
 	const large = { ...intent(), purpose: "界".repeat(1024), integration: "i".repeat(2048), authority: "a".repeat(2048) };

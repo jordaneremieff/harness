@@ -32,9 +32,15 @@ function recentPartial(page: RecentCollaborationPage, reason: string): void {
 	page.coverage.complete = false;
 	if (!page.coverage.reasons.includes(reason)) page.coverage.reasons.push(reason);
 }
+/**
+ * A prompt keeps threads from priority sources (contacts, the reader's own storages, related live
+ * efforts) ahead of sampled ones, each group in identity order; an observation shows newest first.
+ */
 async function collectRecentHints(
 	page: RecentCollaborationPage,
 	record: CatalogRecord,
+	ranks: Map<string, number>,
+	rank: number,
 	scope?: ThreadProjectScope,
 ): Promise<void> {
 	if (record.threads === undefined) {
@@ -50,8 +56,14 @@ async function collectRecentHints(
 		if (scope.prompt) return;
 	}
 	for (const thread of active) {
+		if (ranks.has(thread.id)) continue;
+		ranks.set(thread.id, rank);
 		page.items.push(thread);
-		page.items.sort((a, b) => (scope?.prompt ? 0 : b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
+		page.items.sort(
+			(a, b) =>
+				(scope?.prompt ? (ranks.get(a.id) ?? 1) - (ranks.get(b.id) ?? 1) : b.updatedAt - a.updatedAt) ||
+				a.id.localeCompare(b.id),
+		);
 		if (page.items.length > page.limits.results) {
 			page.items.pop();
 			page.coverage.omittedResults += 1;
@@ -59,41 +71,88 @@ async function collectRecentHints(
 		}
 	}
 }
+/** An absent priority record, such as an ordinary session's identity, costs no visit. */
 async function collectPriorityRecord(
 	page: RecentCollaborationPage,
 	catalog: AgentCatalog,
 	name: string,
+	ranks: Map<string, number>,
 	scope?: ThreadProjectScope,
 ): Promise<void> {
+	let record: CatalogRecord;
 	try {
-		const record = catalog.read(name.slice(0, -5));
-		page.coverage.records += 1;
-		// A priority source is related by contact or presence, so project scope does not filter it.
-		await collectRecentHints(page, record, scope && { prompt: scope.prompt, matches: async () => true });
+		record = catalog.read(name.slice(0, -5));
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-			page.coverage.records += 1;
-			page.coverage.unreadable += 1;
-			recentPartial(page, "unreadable-records");
-		}
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+		page.coverage.visited += 1;
+		page.coverage.records += 1;
+		page.coverage.unreadable += 1;
+		recentPartial(page, "unreadable-records");
+		return;
 	}
+	page.coverage.visited += 1;
+	page.coverage.records += 1;
+	// A priority source is related by contact or presence, so project scope does not filter it.
+	await collectRecentHints(page, record, ranks, 0, scope && { prompt: scope.prompt, matches: async () => true });
 }
 async function collectRecentRecord(
 	page: RecentCollaborationPage,
 	catalog: AgentCatalog,
 	entry: import("node:fs").Dirent,
-	seen: Set<string>,
+	ranks: Map<string, number>,
 	scope?: ThreadProjectScope,
 ): Promise<void> {
-	if (!CATALOG_RECORD_NAME.test(entry.name) || seen.has(entry.name)) return;
-	seen.add(entry.name);
 	page.coverage.records += 1;
 	try {
 		if (!entry.isFile()) throw new Error("Not a catalog file");
-		await collectRecentHints(page, catalog.read(entry.name.slice(0, -5)), scope);
+		await collectRecentHints(page, catalog.read(entry.name.slice(0, -5)), ranks, 1, scope);
 	} catch {
 		page.coverage.unreadable += 1;
 		recentPartial(page, "unreadable-records");
+	}
+}
+
+/**
+ * Reading directly bounds directory traversal; catalog.page materializes the whole directory.
+ * Storage files beside the records cost no visit, and a full budget is unvisited only when another
+ * record remains.
+ */
+async function sampleDirectory(
+	page: RecentCollaborationPage,
+	catalog: AgentCatalog,
+	seen: Set<string>,
+	ranks: Map<string, number>,
+	scope?: ThreadProjectScope,
+): Promise<void> {
+	let directory: Awaited<ReturnType<typeof opendir>>;
+	try {
+		directory = await opendir(catalog.root, { bufferSize: 32 });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			page.coverage.unvisited = true;
+			recentPartial(page, "directory-unreadable");
+		}
+		return;
+	}
+	try {
+		for (;;) {
+			const entry = await directory.read();
+			if (entry === null) break;
+			if (!CATALOG_RECORD_NAME.test(entry.name) || seen.has(entry.name)) continue;
+			if (page.coverage.visited >= page.limits.visits) {
+				page.coverage.unvisited = true;
+				recentPartial(page, "visit-limit");
+				break;
+			}
+			seen.add(entry.name);
+			page.coverage.visited += 1;
+			await collectRecentRecord(page, catalog, entry, ranks, scope);
+		}
+	} catch {
+		page.coverage.unvisited = true;
+		recentPartial(page, "directory-unreadable");
+	} finally {
+		await directory.close().catch(() => {});
 	}
 }
 
@@ -119,41 +178,15 @@ export async function readRecentCollaboration(
 		},
 	};
 	const seen = new Set<string>();
-	for (const identity of priorityIdentities.slice(0, page.limits.visits)) {
+	const ranks = new Map<string, number>();
+	for (const identity of priorityIdentities) {
+		if (page.coverage.visited >= page.limits.visits) break;
 		const name = `${identity.split(":")[0]}.json`;
 		if (!CATALOG_RECORD_NAME.test(name) || seen.has(name)) continue;
 		seen.add(name);
-		page.coverage.visited += 1;
-		await collectPriorityRecord(page, catalog, name, scope);
+		await collectPriorityRecord(page, catalog, name, ranks, scope);
 	}
-	let directory: Awaited<ReturnType<typeof opendir>>;
-	try {
-		directory = await opendir(catalog.root, { bufferSize: 1 });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-			page.coverage.unvisited = true;
-			recentPartial(page, "directory-unreadable");
-		}
-		return page;
-	}
-	try {
-		// Reading directly bounds directory traversal; catalog.page materializes the whole directory.
-		while (page.coverage.visited < page.limits.visits) {
-			const entry = await directory.read();
-			if (entry === null) break;
-			page.coverage.visited += 1;
-			await collectRecentRecord(page, catalog, entry, seen, scope);
-		}
-		if (page.coverage.visited === page.limits.visits) {
-			page.coverage.unvisited = true;
-			recentPartial(page, "visit-limit");
-		}
-	} catch {
-		page.coverage.unvisited = true;
-		recentPartial(page, "directory-unreadable");
-	} finally {
-		await directory.close().catch(() => {});
-	}
+	await sampleDirectory(page, catalog, seen, ranks, scope);
 	while (!scope?.prompt && Buffer.byteLength(JSON.stringify(page)) > page.limits.bytes && page.items.length > 0) {
 		page.items.pop();
 		page.coverage.omittedResults += 1;

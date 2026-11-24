@@ -116,7 +116,10 @@ export async function readEffortAwareness(
 		self.intentClaim?.contactThread,
 		...presence.efforts.map((effort) => effort.intentClaim?.contactThread ?? effort.contactThreadClaim),
 	];
-	const live = presence.efforts.filter((effort) => effort.liveness === "live").map((effort) => effort.id);
+	// A shared topic alone is a weak signal: it adds a row, never the other session's thread hints.
+	const live = presence.efforts
+		.filter((effort) => effort.liveness === "live" && (effort.relationship !== "machine" || effort.sharedWork?.length))
+		.map((effort) => effort.id);
 	const priorities = [
 		...contacts.filter((thread): thread is string => thread !== undefined).map((thread) => thread.split("/")[0]),
 		self.id,
@@ -191,14 +194,14 @@ function promptRequest(effort: RelatedEffort): string | undefined {
 	return origin?.source === "interactive-input" ? textPrefix(origin.text, 200) : undefined;
 }
 
-/** Shared items name what links the sessions; titles are producer text for display only. */
+/**
+ * Shared items name what links the sessions. The reader used each item itself, so the row names it
+ * by kind and identity only: titles are producer text that the other session can change.
+ */
 function promptSharedWork(effort: RelatedEffort): string[] | undefined {
-	// Identity order keeps the section's bytes when the other session only reorders its recent items.
-	return effort.sharedWork
-		?.map(({ kind, id, title }) => ({ key: `${kind}\u0000${id}`, text: `${kind} ${id}${title ? ` (${title})` : ""}` }))
-		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
-		.slice(0, 4)
-		.map(({ text }) => text);
+	// Identity order keeps the row when the other session only reorders its recent items.
+	const items = effort.sharedWork?.map(({ kind, id }) => `${kind} ${id}`).sort();
+	return items?.length ? items.slice(0, 4) : undefined;
 }
 
 /** One prompt row: stable identity and declarations, never clocks or coverage. */
