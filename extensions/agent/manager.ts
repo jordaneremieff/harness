@@ -75,6 +75,7 @@ import {
 import { readPrimaryObservation, type OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { readRelatedEfforts, type EffortPresencePage, type EffortReadResources } from "./effort-presence.ts";
 import { createPrimaryLocationResolver, type PrimaryLocationResolver } from "./effort-location.ts";
+import { LaunchFailures } from "./launch-failures.ts";
 import { RecoveryOrder } from "./recovery-order.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
@@ -519,6 +520,12 @@ export class AgentManager {
 	private readonly delivered: BoundedMap<symbol>;
 	private readonly failures: BoundedMap<string>;
 	private readonly crashes = new BoundedMap<{ times: number[]; stopped: boolean }>(DEFAULT_FAILURE_LIMIT);
+	/** Recovery acquisitions that failed, so catalog notices cannot launch one failing host over and over. */
+	private readonly launchFailures = new LaunchFailures({
+		limit: MAX_AUTOMATIC_RESTARTS,
+		windowMs: CRASH_WINDOW_MS,
+		storages: DEFAULT_FAILURE_LIMIT,
+	});
 	private readonly recoveryErrors = new BoundedMap<string>(DEFAULT_FAILURE_LIMIT);
 	private readonly recoveryNotes = new BoundedMap<string>(DEFAULT_FAILURE_LIMIT);
 	private readonly queuedRecovery = new Set<string>();
@@ -1129,6 +1136,7 @@ export class AgentManager {
 			return this.observe(record, method, params, undefined, options?.signal);
 		if (method === "attach") {
 			this.crashes.delete(record.storageId);
+			this.launchFailures.clear(record.storageId);
 			this.recoveryErrors.delete(record.storageId);
 			this.failures.delete(record.storageId);
 		}
@@ -2477,6 +2485,8 @@ export class AgentManager {
 			if (registeringPrimary === undefined) return;
 			this.recoveryHolds.set(record.storageId, Symbol());
 		}
+		// A launch that keeps failing waits for its window; a registration is an explicit act and tries at once.
+		if (registeringPrimary === undefined && this.launchFailures.capped(record.storageId)) return;
 		this.recovering.add(record.storageId);
 		try {
 			const launchNeeded = () => this.recoveryLaunchNeeded(record.storageId, primary, registeringPrimary);
@@ -2492,17 +2502,27 @@ export class AgentManager {
 			}
 			this.recoveryErrors.delete(record.storageId);
 			this.recoveryHolds.delete(record.storageId);
+			this.launchFailures.clear(record.storageId);
 			await this.monitorRecovery(record.storageId, client, primary);
 		} catch (error) {
 			this.recovering.delete(record.storageId);
 			if (error instanceof HostLaunchDemandEnded) return;
-			if (error instanceof HostBusyEndpointUnavailableError) {
-				this.recoveryNotes.set(record.storageId, error.message);
-				void this.refreshFooter();
-				return;
-			}
-			this.recordRecoveryError(record.storageId, errorText(error));
+			this.recoveryFailed(record.storageId, error);
 		}
+	}
+
+	/**
+	 * One recovery acquisition ended without a link. Each counts in the storage's launch window. A busy runner
+	 * stays a note, and an error is recorded once for each text of a window, not at every later notice.
+	 */
+	private recoveryFailed(storageId: string, error: unknown): void {
+		const busy = error instanceof HostBusyEndpointUnavailableError;
+		const report = this.launchFailures.failed(storageId, errorText(error));
+		if (busy) {
+			if (this.recoveryNotes.get(storageId) === error.message) return;
+			this.recoveryNotes.set(storageId, error.message);
+			void this.refreshFooter();
+		} else if (report !== undefined) this.recordRecoveryError(storageId, report);
 	}
 
 	/** An advertised interface difference is a live-host fact, never a transport loss. */

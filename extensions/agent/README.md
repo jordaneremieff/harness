@@ -4969,6 +4969,16 @@ settled after a read began completes that read's entry for the storage, so reads
 that overlap share one acquisition, whether it connected a host or failed. A
 read that begins later acts on the marker again: a record that is still due
 with no link is acquired again, which tries a failed launch once more. A
+storage gets at most three failed recovery acquisitions in 60 seconds from
+catalog notices, so a host that never starts cannot be launched at the rate of
+the notices; a runner that reports the storage busy counts too. While the
+storage waits, a notice read skips it. A primary registration and
+`agent_attach` are explicit acts and try at once; `agent_attach` and a
+successful acquisition also end the wait. One error text is recorded once in
+those 60 seconds, and the failure that uses the last automatic launch replaces
+it once with `Recovery waits after 3 failed launches in 60
+seconds; agent_attach or a primary registration tries at once. Last error:
+<error>`. Host losses after a link keep their own limit. A
 transient recovery link closes when the internal `recovery-state` check reports
 no pending native work and no active delivery; host change notifications trigger
 that check, not polling. A row addressed only to a proven-dead ordinary primary

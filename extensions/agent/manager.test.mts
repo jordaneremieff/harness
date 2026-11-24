@@ -3053,6 +3053,63 @@ it("tries a failing launch once for two reads that overlap, and again for a late
 	assert.deepEqual(acquired.slice().sort(), [...due, ...due].sort());
 });
 
+it("launches a host that never starts at most three times a minute under a burst of catalog notices", {
+	timeout: 60000,
+}, async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+	const root = fixtureRoot(t);
+	let launches = 0;
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			locations: immediateLocations,
+			acquire: async () => {
+				launches++;
+				throw new Error("Host launch failed");
+			},
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+		}),
+	);
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	await catalogNoticesSent(manager, root);
+	const burst = async (notices: number) => {
+		for (let index = 0; index < notices; index++) {
+			(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([record.storageId]);
+			await settleCatalogueRecovery(manager);
+		}
+	};
+	const failure = async () =>
+		((await manager.status()) as { failures: Array<{ storageId: string; error: string }> }).failures;
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	assert.equal(launches, 1, "the registration launches once");
+	assert.deepEqual(await failure(), [{ storageId: record.storageId, error: "Host launch failed" }]);
+	await burst(200);
+	assert.equal(launches, 3, "two automatic retries follow, and 198 notices launch nothing");
+	const waiting =
+		"Recovery waits after 3 failed launches in 60 seconds; agent_attach or a primary registration tries at once. Last error: Host launch failed";
+	assert.deepEqual(await failure(), [{ storageId: record.storageId, error: waiting }]);
+
+	// A registration is an explicit act: it launches at once and leaves the automatic launches waiting.
+	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
+	assert.equal(launches, 4);
+	await burst(20);
+	assert.equal(launches, 4);
+
+	// The window passes: the automatic launches of the next window run, and no more.
+	t.mock.timers.tick(60_000);
+	await burst(200);
+	assert.equal(launches, 7);
+
+	// An explicit attachment launches at once and ends the wait.
+	await assert.rejects(manager.control("attach", { sessionId: record.storageId }, { id: "caller", cwd: root }));
+	assert.equal(launches, 8);
+	await burst(200);
+	assert.equal(launches, 11, "the attachment cleared the window, so three automatic launches follow");
+});
+
 it("serializes simultaneous primary registrations without duplicate recovery", { timeout: 60000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const launched = eventLog<string>();
