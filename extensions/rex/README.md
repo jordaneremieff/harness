@@ -336,9 +336,9 @@ the ordinary session that created it, even when another session sends it work.
 
 ## Set up palette commands in Rex
 
-In interactive Pi, a multi-line `/rex` report opens a scrollable local view.
-Single receipts use Pi notifications. Neither adds a message to the model's
-context, and non-TUI hosts retain the command's notice output.
+Each `/rex` command ends with at most one Pi notification, which adds nothing
+to the model's context. `/rex status` shows Pi's commands in Rex itself when
+Rex can run them, as described below.
 
 Rex lets only an action that the server configuration defines show a question; a Lua script that
 `rex do` runs, including a `rex_native` Lua call, receives `unsupported`. The runtime of
@@ -358,18 +358,20 @@ the Rex configuration that `/rex setup` writes.
   a file with several hard links or a file of another kind is refused. Pi keeps the previous file
   beside the configured path, with `.before-pi-setup` added to its name, and runs
   `rex config reload`.
-- Setup and remove recognise only the exact current block for this agent directory. They
-  refuse any other block, including a partial or repeated block, and leave the file untouched.
-  If the file holds a block of another version, remove that block by hand before you run
-  `/rex setup`.
+- Setup and remove recognise the exact current block for this agent directory. A block whose
+  begin marker names an earlier version is Pi's earlier block: setup asks to update it and
+  replaces it where it stands, and remove deletes it. They refuse any other block, including a
+  partial, repeated or changed block or a block of a later version, and leave the file untouched.
 - When the file already holds the block but the server has not loaded one of its actions, such as
   the action of a palette command recorded since the last reload, setup offers to run
   `rex config reload`, which reads the whole file again, and runs it only after confirmation.
-- `/rex status` first lists the Pi commands that the palette offers now, or says that it offers
-  none. Below that it names each problem with the step that fixes it: no Pi block in the file, a
-  server too old for Pi commands, no recorded command, a command that the server has not loaded,
-  no connected Rex app, or a fact that Rex did not report. A check that passes adds no line, so a
-  working palette shows only its commands. Setup ends with the same summary.
+- `/rex status` in interactive Pi opens **Pi: Run Command…** in Rex, as if from Pi's own pane,
+  when Rex can run Pi's commands: Rex's picker lists them, and the one you choose runs and opens
+  its pane beside Pi. Pi does not wait for the choice. Otherwise status reports one notice that
+  names the first problem and the step that fixes it: no reachable server, a server too old for
+  Pi's commands, no or an earlier Pi block, Pi's commands not loaded, no connected Rex app, or no
+  recorded command. A command that the palette does not list yet also gets a notice. Non-TUI
+  hosts report the commands in the notice instead of the picker. Setup ends with one notice.
 - `/rex remove` deletes the block the same way, with confirmation.
 
 Palette commands need API revision 17 or later on the server (Rex
@@ -399,8 +401,9 @@ publishes no command of its own. The [Explorer extension](../explorer/README.md)
   reports a failed record.
 - Each command appears as `Pi: <title>` (the action `pi_<extension>_<name>`) when Rex loads its
   configuration. Reload the configuration after a command first appears in the registry or drops
-  out to refresh the palette. `Pi: Run Command` (`pi_command`) runs a command by its ID for a key
-  binding, for example `rex.bind("cmd+shift+o", "pi_command", { id = "explorer.folder" })`.
+  out to refresh the palette. `Pi: Run Command…` (`pi_command`) lists Pi's commands in Rex's picker
+  and runs the chosen one. With an `id` argument it runs that command directly, for a key binding,
+  for example `rex.bind("cmd+shift+o", "pi_command", { id = "explorer.folder" })`.
 - The runtime looks up the command by ID each time an action runs. Updated arguments take effect
   without a reload, and an action cannot run a command absent from the registry. The runtime keeps
   only well-formed recorded commands, runs at most eight steps of 20 seconds

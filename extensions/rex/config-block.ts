@@ -1,5 +1,8 @@
-/** The version of the configuration block. Setup recognises only the exact block of this version. */
-export const BLOCK_VERSION = 5;
+/**
+ * The version of the configuration block. Setup keeps the exact block of this version, replaces a block of an earlier
+ * version after the operator confirms, and refuses any other text between the markers.
+ */
+export const BLOCK_VERSION = 6;
 const BEGIN = /^-- pi-harness: pi actions v(\d+) begin\r?$/gm;
 const END = /^-- pi-harness: pi actions end\r?$/gm;
 const MARKER = /^-- pi-harness: .*$/gm;
@@ -161,13 +164,31 @@ function pi_harness.run(ctx, registry, entry)
   pi_harness.problem(entry.title .. " asked more questions than Pi allows.")
 end
 
+function pi_harness.choose(ctx)
+  pi_harness.require_ui()
+  local registry, problem = pi_harness.read_registry()
+  if registry == nil then return pi_harness.problem(problem) end
+  local items = {}
+  for _, entry in ipairs(registry.commands) do
+    local item = { id = entry.id, title = entry.title }
+    if type(entry.description) == "string" then item.subtitle = pi_harness.one_line(entry.description) end
+    items[#items + 1] = item
+  end
+  if #items == 0 then return pi_harness.say("Pi has no commands for Rex yet.") end
+  local chosen = rex.ui.pick{ title = "Pi commands", placeholder = "Run a Pi command", items = items }
+  if type(chosen) == "string" then pi_harness.run_id(ctx, chosen) end
+end
+
 rex.action{
   name = "pi_command",
-  title = "Pi: Run Command",
-  description = "Runs one Pi command by its ID, for a key binding. Pi records its commands in " .. pi_harness.registry .. ".",
+  title = "Pi: Run Command…",
+  description = "Lists Pi's commands and runs the one you choose, or the one that an id argument names. Pi records its commands in " .. pi_harness.registry .. ".",
   category = "Pi",
-  args = { id = "string" },
-  run = function(ctx, args) pi_harness.run_id(ctx, args.id) end,
+  args = { id = "string?" },
+  run = function(ctx, args)
+    if args.id == nil then return pi_harness.choose(ctx) end
+    pi_harness.run_id(ctx, args.id)
+  end,
 }
 
 do
@@ -209,12 +230,15 @@ ${RUNTIME}
 interface Block {
 	start: number;
 	end: number;
+	/** The block that an earlier version of Pi wrote, which setup replaces and remove deletes. */
+	earlier: boolean;
 }
 
 /**
- * The block that setup wrote, if the configuration holds one. Only the exact text of the current block counts, so
- * marker lines around other text, such as inside a Lua string, are never taken for it. A partial, repeated or changed
- * block is refused and stays for the operator to correct.
+ * The block that setup wrote, if the configuration holds one. Only the exact text of the current block counts as
+ * current, so marker lines around other text, such as inside a Lua string, are never taken for it. A block whose
+ * begin marker names an earlier version counts as Pi's earlier block. A partial, repeated or changed block, or a block
+ * of a later version, is refused and stays for the operator to correct.
  */
 export function findConfigBlock(source: string, registryPath: string): Block | undefined {
 	const begins = [...source.matchAll(BEGIN)];
@@ -232,7 +256,13 @@ export function findConfigBlock(source: string, registryPath: string): Block | u
 			"The Rex configuration has a partial or repeated Pi block. Correct it by hand, then run /rex setup again.",
 		);
 	const stop = end.index + end[0].length;
-	const region = { start: begin.index, end: source[stop] === "\n" ? stop + 1 : stop };
+	const region = { start: begin.index, end: source[stop] === "\n" ? stop + 1 : stop, earlier: false };
+	const version = Number(begin[1]);
+	if (version < BLOCK_VERSION) return { ...region, earlier: true };
+	if (version > BLOCK_VERSION)
+		throw new Error(
+			`A later Pi wrote the Pi block in the Rex configuration (version ${version}). Run /rex setup from that Pi.`,
+		);
 	const text = source.slice(region.start, region.end).replaceAll("\r\n", "\n");
 	const block = configBlock(registryPath);
 	if (text !== `${block}\n` && text !== block)
@@ -247,7 +277,9 @@ export function findConfigBlock(source: string, registryPath: string): Block | u
  * that already holds the block stays as it is.
  */
 export function withConfigBlock(source: string, registryPath: string): string {
-	if (findConfigBlock(source, registryPath)) return source;
+	const found = findConfigBlock(source, registryPath);
+	if (found?.earlier) return `${source.slice(0, found.start)}${configBlock(registryPath)}\n${source.slice(found.end)}`;
+	if (found) return source;
 	return `${source}${source.length > 0 && !source.endsWith("\n") ? "\n" : ""}${configBlock(registryPath)}\n`;
 }
 
