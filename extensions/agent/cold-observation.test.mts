@@ -486,6 +486,38 @@ it("discards a read in place when the source changes during it and reads again",
 	await closeColdObservations();
 });
 
+it("opens nothing for a queued read that its caller abandoned", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "cold-abandoned-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const storage = (name: string) => {
+		const storagePath = join(root, `${name}.sqlite`);
+		writeFileSync(storagePath, name);
+		return { ...fixtureMetadata(root), storagePath };
+	};
+	const opened: string[] = [];
+	let release!: () => void;
+	const first = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const hooks: ColdObservationHooks = {
+		open: async (input) => {
+			opened.push(input.storagePath);
+			if (opened.length === 1) await first;
+			return { request: async () => input.storagePath, close: async () => {} };
+		},
+	};
+	const held = cache.observe(storage("held"), "snapshot", {}, { hooks });
+	const passed = new AbortController();
+	const abandoned = cache.observe(storage("passed"), "snapshot", {}, { hooks, signal: passed.signal });
+	const wanted = cache.observe(storage("wanted"), "snapshot", {}, { hooks, signal: new AbortController().signal });
+	passed.abort(new Error("selection moved"));
+	release();
+	await assert.rejects(abandoned, /selection moved/u);
+	assert.equal(await held, join(root, "held.sqlite"));
+	assert.equal(await wanted, join(root, "wanted.sqlite"));
+	assert.deepEqual(opened, [join(root, "held.sqlite"), join(root, "wanted.sqlite")]);
+});
+
 it("names the remedy when a source that needs a copy exceeds the copy bound", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "cold-bound-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));

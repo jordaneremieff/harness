@@ -189,3 +189,31 @@ test("a control without launch uses only a running host and never starts one", {
 		"the default still starts a host for an explicit control",
 	);
 });
+
+test("a stored-message read whose caller left while it waited in the queue reads nothing", {
+	timeout: 15000,
+}, async (t) => {
+	const { manager, record } = await fixture(t);
+	manager.subscribeRoster(() => {});
+	const entered = deferred(),
+		release = deferred();
+	t.after(() => release.resolve());
+	const open = DurableObservation.open;
+	t.mock.method(DurableObservation, "open", async (...args: Parameters<typeof open>) => {
+		entered.resolve();
+		await release.promise;
+		return open(...args);
+	});
+	const requests = t.mock.method(DurableObservation.prototype, "request");
+	const first = manager.snapshot(record.storageId);
+	await entered.promise;
+	const caller = new AbortController();
+	const abandoned = manager.snapshot(record.storageId, { limit: 1 }, caller.signal);
+	caller.abort(new Error("selection moved"));
+	await assert.rejects(abandoned, /selection moved/u);
+	release.resolve();
+	assert.match(JSON.stringify(await first), /retained cold history/);
+	// A repeated read returns the retained result after the abandoned read's turn in the queue.
+	await manager.snapshot(record.storageId);
+	assert.equal(requests.mock.callCount(), 1, "only the first read reached the storage");
+});

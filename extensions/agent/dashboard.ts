@@ -334,6 +334,7 @@ export class AgentDashboard implements Component, Focusable {
 	private rosterPending = false;
 	private rosterAgain = false;
 	private sourceGeneration = 0;
+	private selectionRead = new AbortController();
 	/** Newer operator intent: a selection, inspector or surface change outdates an answer asked for before it. */
 	private intent = 0;
 	private selectedMark = "";
@@ -809,6 +810,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.frames.cancelPending();
 		this.frameStarted = false;
 		this.source.select(undefined);
+		this.abandonSelectionRead();
 		this.sourceGeneration++;
 		this.operations.observed?.(undefined);
 	}
@@ -850,6 +852,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.frames.cancelPending();
 		this.frameStarted = false;
 		this.source.select(undefined);
+		this.abandonSelectionRead();
 		const generation = ++this.sourceGeneration;
 		this.branches.refresh(row.cwd, `selection:${row.id}:${generation}`);
 		this.operations.observed?.(row);
@@ -946,9 +949,15 @@ export class AgentDashboard implements Component, Focusable {
 		};
 	}
 
+	/** A selection that moves on abandons the stored-message read of the agent it passed. */
+	private abandonSelectionRead(): void {
+		this.selectionRead.abort();
+		this.selectionRead = new AbortController();
+	}
+
 	private async readSelected(row: AgentConversationSummary, generation: number): Promise<void> {
 		try {
-			const snapshot = await this.source.snapshot(row.id);
+			const snapshot = await this.source.snapshot(row.id, this.selectionRead.signal);
 			if (this.closed || generation !== this.sourceGeneration || this.source.availability(row.id)?.state === "live")
 				return;
 			this.history.tail(snapshot, this.console?.state.view.anchor?.id);
@@ -3221,6 +3230,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.branches.dispose();
 		this.relations.dispose();
 		this.console?.dispose();
+		this.selectionRead.abort();
 		this.sourceGeneration++;
 		for (const off of this.unsubscribe) off();
 		this.source.select(undefined);

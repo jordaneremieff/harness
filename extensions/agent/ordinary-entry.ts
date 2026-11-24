@@ -1482,7 +1482,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		createAgentObservationSource({
 			list: (input) => getManager().dashboardPage(input),
 			subscribeRoster: (listener) => getManager().subscribeRoster(listener),
-			snapshot: (id, params) => getManager().snapshot(id, params),
+			snapshot: (id, params, signal) => getManager().snapshot(id, params, signal),
 			observeLive: (id, scope, listener, signal) => getManager().observeLive(id, scope, listener, signal),
 		}),
 		{

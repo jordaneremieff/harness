@@ -148,7 +148,7 @@ export class TerminalController {
 		this.creation = options.creation;
 		this.source = createAgentObservationSource({
 			list: (input) => this.manager.dashboardPage(input),
-			snapshot: (id, params) => this.manager.snapshot(id, params),
+			snapshot: (id, params, signal) => this.manager.snapshot(id, params, signal),
 			observeLive: (id, scope, listener, signal) => this.manager.observeLive(id, scope, listener, signal),
 			subscribeRoster: (listener) => this.manager.subscribeRoster(listener),
 		});

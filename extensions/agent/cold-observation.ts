@@ -114,6 +114,8 @@ export interface ColdObservationHooks {
 
 export interface ColdObservationOptions {
 	readonly hooks?: ColdObservationHooks;
+	/** A read whose signal aborted before its turn in the queue opens and reads nothing. */
+	readonly signal?: AbortSignal;
 }
 
 function errnoCode(error: unknown): string | undefined {
@@ -408,6 +410,7 @@ export function createColdObservationCache() {
 		if (closed) throw new Error("Cold observation cache is closed");
 		const storagePath = resolve(metadata.storagePath);
 		return await runExclusive(async () => {
+			options.signal?.throwIfAborted();
 			for (let attempt = 0; attempt < IN_PLACE_READ_ATTEMPTS; attempt++) {
 				const value = await observeOnce(storagePath, metadata, method, params, options.hooks);
 				if (value !== CHANGED) return value;

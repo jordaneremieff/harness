@@ -5,7 +5,7 @@ import { storageIdOf } from "./catalog.ts";
 
 export interface AgentObservationHost {
 	list(input?: { cursor?: string; ownerId?: string }): Promise<AgentConversationPage>;
-	snapshot(id: string, params?: { before?: number }): Promise<ConversationSnapshotPage>;
+	snapshot(id: string, params?: { before?: number }, signal?: AbortSignal): Promise<ConversationSnapshotPage>;
 	observeLive(
 		id: string,
 		scope: "conversation" | "tasks",
@@ -19,7 +19,8 @@ export interface AgentObservationSource {
 	select(id: string | undefined): void;
 	/** Reattach an unavailable selection; a pending or live attachment is unchanged. */
 	refresh(id: string): void;
-	snapshot(id: string): Promise<AgentConversationSnapshot & { nextBefore?: number | null }>;
+	/** An aborted `signal` ends the wait; a read of stored messages that has not started never starts. */
+	snapshot(id: string, signal?: AbortSignal): Promise<AgentConversationSnapshot & { nextBefore?: number | null }>;
 	frame(id: string): ConversationFrame | undefined;
 	earlier(id: string, before: number): Promise<ConversationSnapshotPage>;
 	tasks(id: string): Promise<TasksFrame>;
@@ -161,7 +162,7 @@ export function createAgentObservationSource(host: AgentObservationHost): AgentO
 			select(undefined);
 			select(id);
 		},
-		async snapshot(id) {
+		async snapshot(id, signal) {
 			if (id === selected && frame && availability?.state === "live")
 				return {
 					entries: frame.entries,
@@ -169,7 +170,7 @@ export function createAgentObservationSource(host: AgentObservationHost): AgentO
 					revision: `r${frame.revision}`,
 					nextBefore: frame.nextBefore,
 				};
-			return host.snapshot(id);
+			return host.snapshot(id, undefined, signal);
 		},
 		frame: (id) => (id === selected ? frame : undefined),
 		availability: (id) => (id === selected ? availability : undefined),

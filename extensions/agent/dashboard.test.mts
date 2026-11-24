@@ -1513,3 +1513,40 @@ it("footer targets follow a resize", async () => {
 		f.ui.dispose();
 	}
 });
+
+it("a selection that moves on abandons the stored-message read of each agent it passed", async () => {
+	const rows = ["one", "two", "three", "four"].map((id, index) => row(id, { modifiedAt: 10 - index }));
+	const observed = source(rows);
+	const reads: { id: string; signal: AbortSignal | undefined }[] = [];
+	const pending = deferred<never>();
+	observed.snapshot = (id, signal) => {
+		reads.push({ id, signal });
+		// A read of stored messages that stays in the queue until its caller leaves.
+		return new Promise((_resolve, reject) => {
+			signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+			void pending.promise.catch(reject);
+		});
+	};
+	const f = fixture(80, 24, observed);
+	try {
+		await turn();
+		for (let moves = 0; moves < 3; moves++) {
+			f.ui.handleInput("\x1b[B");
+			await turn();
+		}
+		assert.equal(f.state.selected, "four");
+		assert.deepEqual(
+			reads.map((read) => [read.id, read.signal?.aborted]),
+			[
+				["one", true],
+				["two", true],
+				["three", true],
+				["four", false],
+			],
+		);
+		assert.doesNotMatch(f.ui.render(80).join("\n"), /Conversation unavailable/u);
+	} finally {
+		f.ui.dispose();
+	}
+	assert.equal(reads.at(-1)?.signal?.aborted, true, "closing the view abandons the last read");
+});

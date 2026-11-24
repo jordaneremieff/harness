@@ -698,7 +698,8 @@ export class AgentManager {
 
 	/**
 	 * An aborted `signal` ends the caller's wait at once and cancels a live host request. A cold read
-	 * cannot stop part way; it finishes, and only its result cache keeps the value.
+	 * that waits in the queue never starts. A cold read cannot stop part way; it finishes, and only its
+	 * result cache keeps the value.
 	 */
 	private observe(
 		record: CatalogRecord,
@@ -717,7 +718,7 @@ export class AgentManager {
 				if (primary?.signal.aborted) throw new Error("Agent primary released during observation");
 				if (this.options.observe) return this.options.observe(record, method, params);
 				if (this.shuttingDown) throw new Error("Agent manager is closed");
-				return cold.observe(record, method, params);
+				return cold.observe(record, method, params, signal === undefined ? {} : { signal });
 			})(),
 			signal,
 		);
@@ -1818,19 +1819,24 @@ export class AgentManager {
 		return { rows, skipped: view.coverage.complete ? 0 : 1, omitted: view.coverage.omitted, resolvedClaim };
 	}
 
+	/** An aborted `signal` ends the wait; a read of stored messages that has not started never starts. */
 	async snapshot(
 		sessionId: string,
 		params: { before?: number; limit?: number; maxBytes?: number } = {},
+		signal?: AbortSignal,
 	): Promise<ConversationSnapshotPage> {
-		sessionId = await this.resolveTarget(sessionId);
+		sessionId = await this.resolveTarget(sessionId, signal);
 		if (this.launchRows.has(storageIdOf(sessionId)) && this.opening.has(storageIdOf(sessionId))) {
 			const { emptyConversationSnapshot } = await loadDurableObservation();
 			return emptyConversationSnapshot();
 		}
-		return this.observe(this.nativeTarget(sessionId), "snapshot", {
-			sessionId,
-			...params,
-		}) as Promise<ConversationSnapshotPage>;
+		return this.observe(
+			this.nativeTarget(sessionId),
+			"snapshot",
+			{ sessionId, ...params },
+			undefined,
+			signal,
+		) as Promise<ConversationSnapshotPage>;
 	}
 
 	/**
