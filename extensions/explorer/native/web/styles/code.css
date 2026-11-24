@@ -78,6 +78,9 @@
 .note-dot.agent::before {
   background: var(--agent);
 }
+.note-dot.remote::before {
+  background: var(--remote);
+}
 .note-dot.draft::before {
   background: var(--warn);
 }
@@ -134,6 +137,11 @@
   --note-tint: var(--agent);
   --note-share: 12%;
   --note-hover: 21%;
+}
+.code-cell.has-remote, .markdown-preview .has-remote {
+  --note-tint: var(--remote);
+  --note-share: 13%;
+  --note-hover: 22%;
 }
 .code-cell.has-draft, .markdown-preview .has-draft {
   --note-tint: var(--comment-mark);

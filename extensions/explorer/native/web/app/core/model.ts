@@ -361,6 +361,12 @@
 		return rows;
 	}
 
+	// The note that an excerpt quotes, with the link of its remote discussion.
+	function noteTag(item: ExplorerExcerpt) {
+		if (!item.id) return "";
+		return ` (note ${item.id}${item.url ? `, ${item.url}` : ""})`;
+	}
+
 	function source(item: ExplorerExcerpt): string {
 		const span =
 			item.start === undefined
@@ -368,7 +374,7 @@
 				: item.end && item.end !== item.start
 					? `, lines ${item.start}–${item.end}`
 					: `, line ${item.start}`;
-		const reference = `${item.path}${span}, at ${item.commit ? item.commit.slice(0, 7) : "working tree"}${item.id ? ` (note ${item.id})` : ""}`;
+		const reference = `${item.path}${span}, at ${item.commit ? item.commit.slice(0, 7) : "working tree"}${noteTag(item)}`;
 		if (item.quote === undefined) return reference;
 		const fence = "`".repeat(Math.max(3, ...[...item.quote.matchAll(/`+/g)].map((match) => match[0].length + 1)));
 		const id = language(item.path).id;

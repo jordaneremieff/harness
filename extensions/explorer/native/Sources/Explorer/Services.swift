@@ -65,6 +65,15 @@ struct ExplorerServices {
             let at = fields["at"] as? String
             if type == "markdown.render" { return try workspace.renderMarkdown(path(), at: at) }
             return try workspace.readFile(path(), at: at)
+        case "markdown.text":
+            // Note text renders without images: card text has no file to resolve them against.
+            guard let text = fields["text"] as? String, text.utf8.count <= 128 * kib else {
+                throw ExplorerError("invalid", "The Markdown text is missing or too long.")
+            }
+            guard let html = MarkdownPreview.html(text, image: { _ in nil }) else {
+                throw ExplorerError("invalid", "The Markdown text could not be rendered.")
+            }
+            return ["html": html]
         case "file.write":
             guard fields["root"] as? String == workspace.root.path, let text = fields["text"] as? String,
                   let base = fields["base"] as? String else { throw ExplorerError("invalid", "The open root or edit is invalid.") }

@@ -99,6 +99,7 @@ type ExplorerDiff = {
 	head: string | null;
 	truncated?: boolean;
 };
+type ExplorerAuthor = "operator" | "agent" | "remote";
 type ExplorerNoteState = "draft" | "open" | "sent" | "answered" | "resolved";
 type ExplorerNote = {
 	id: string;
@@ -109,17 +110,33 @@ type ExplorerNote = {
 	location: "same" | "moved" | "outdated";
 	movedFrom?: number;
 	anchor: { start: number; end: number; commit: string | null; quote: string };
-	author: "operator" | "agent";
+	author: ExplorerAuthor;
+	/** Display name of a remote author. */
+	by?: string;
+	/** Link to the remote discussion. */
+	url?: string;
+	/** Identifier of the remote discussion that an agent imported. */
+	external?: string;
 	state: ExplorerNoteState;
 	title?: string;
 	text: string;
 	tour?: { id: string; order: number };
-	thread: { id: string; author: "operator" | "agent"; text: string; at: string }[];
+	thread: { id: string; author: ExplorerAuthor; by?: string; text: string; at: string }[];
 	requestId?: string;
 	createdAt: string;
 	updatedAt: string;
 };
-type ExplorerTour = { id: string; title: string; scope?: ExplorerScope; stops: string[]; createdAt: string };
+type ExplorerTour = {
+	id: string;
+	title: string;
+	scope?: ExplorerScope;
+	stops: string[];
+	createdAt: string;
+	/** Link to the reviewed merge or pull request, or another reference. */
+	url?: string;
+	/** Markdown overview shown before the first stop. */
+	summary?: string;
+};
 type ExplorerSearchResult = { path: string; line: number; column: number; preview: string };
 type ExplorerPacket = { requestId: string; threadId: string; text: string; noteIds?: string[] };
 type ExplorerPromptState = {
@@ -177,6 +194,7 @@ type ExplorerRequests = {
 	"root.open": [{ path: string }, object];
 	"file.read": [{ path: string; at?: string }, ExplorerFile];
 	"markdown.render": [{ path: string; at?: string }, { file: ExplorerFile; html?: string }];
+	"markdown.text": [{ text: string }, { html: string }];
 	"link.open": [{ url: string }, object];
 	"file.create": [ExplorerEditPath, object];
 	"file.write": [ExplorerEditPath & { text: string; base: string }, { base: string }];
@@ -214,6 +232,7 @@ type ExplorerExcerpt = {
 	commit: string | null;
 	text: string;
 	id?: string;
+	url?: string;
 };
 type ExplorerCodeRow =
 	| {
@@ -225,6 +244,23 @@ type ExplorerCodeRow =
 	  }
 	| { type: "hunk"; label: string }
 	| { type: "fold"; key: string; base: number; head: number; count: number };
+type ExplorerReference =
+	| { kind: "lines"; path?: string; start: number; end: number }
+	| { kind: "file"; path: string }
+	| { kind: "commit"; commit: string }
+	| { kind: "range"; base: string; head: string };
+type ExplorerReferenceSpan = { start: number; end: number; ref: ExplorerReference };
+type ExplorerRichTarget =
+	| { kind: "lines"; path: string; start: number; end: number }
+	| Exclude<ExplorerReference, { kind: "lines" }>
+	| { kind: "url"; url: string };
+type ExplorerRichOptions = {
+	/** File that relative links and bare line references name. */
+	path?: string;
+	open(target: ExplorerRichTarget): void;
+	/** Runs after rendered Markdown replaces the plain text. */
+	changed?: () => void;
+};
 type ExplorerLanguage = { id: string; label: string; mark: string };
 type ExplorerHit = { path: string; score: number };
 type ExplorerIndexedPath = string | { path: string; lower: string };
@@ -342,6 +378,11 @@ interface ExplorerApp {
 	};
 	code(body: HTMLElement): ExplorerCodeView;
 	preview(body: HTMLElement, follow: (link: ExplorerMarkdownLink) => void): ExplorerPreviewView;
+	rich: { render(text: string, options: ExplorerRichOptions): HTMLElement };
+	references: {
+		find(text: string): ExplorerReferenceSpan[];
+		lineLabel(start: number, end: number): string;
+	};
 	markdown: {
 		isMarkdown(path: string): boolean;
 		sourceSpan(sourcepos: string): ExplorerRange | null;
@@ -363,7 +404,10 @@ type ExplorerReviewContext = {
 	excerpt(range: ExplorerRange | null): ExplorerExcerpt | null;
 	bounds(range: ExplorerRange | null): DOMRect | null;
 	highlight(range: ExplorerRange | null): void;
-	go(note: ExplorerNote): Promise<void>;
+	/** Shows the note's lines, in the walkthrough's review when one is named, and returns where they are. */
+	go(note: ExplorerNote, tour?: ExplorerTour): Promise<ExplorerRange | null>;
+	/** Opens a location, commit, range or link named in card text while the card stays open. */
+	follow(target: ExplorerRichTarget, side: ExplorerSide | null): Promise<void>;
 	refresh(): Promise<void>;
 	finish(): () => Promise<void>;
 	saveDraft(path: string, draft: ExplorerCardDraft | null): Promise<void>;

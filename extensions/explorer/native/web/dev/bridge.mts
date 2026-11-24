@@ -117,12 +117,43 @@ export function createBridge(
 		id: tourId,
 		title: "Retry policy walkthrough",
 		scope: uncommitted,
+		url: "https://example.com/team/waypoint/merge_requests/42",
+		summary:
+			"The change slows retries and changes the fallback route.\n\n- **Risk:** `schedule` at src/router.ts:24-29 multiplies the new delay by the route priority.\n- The fallback route moved; check the L20 lookup.",
 		stops: [
-			stop(defaultPath, 9, "Retry delay", "The default wait increased before each retry.", 1),
-			stop("config/routes.json", 2, "Attempt limit", "The configuration now allows four attempts.", 2),
+			stop(
+				defaultPath,
+				9,
+				"Retry delay",
+				"The default wait **increased** before each retry.\n\n`schedule` (src/router.ts:24-29) multiplies it by the route priority, so a priority 2 route now waits twice as long. Lines 20 to 22 are unchanged.\n\n```ts\nqueue.add(route.path, retryDelay * Math.max(1, route.priority));\n```\n\nIntroduced in 3b59add.",
+				1,
+			),
+			stop("config/routes.json", 2, "Attempt limit", "The configuration now allows **four** attempts.", 2),
 		],
 		createdAt: now(),
 	});
+	{
+		const note = makeNote({
+			path: defaultPath,
+			start: 13,
+			end: 13,
+			side: "head",
+			commit: repo.head(),
+			quote: lines(repo.read(defaultPath).text)[12] ?? "",
+			author: "agent",
+			state: "open",
+			text: "Should `register` reject duplicate paths?",
+		});
+		Object.assign(note, {
+			author: "remote",
+			by: "Avery Reviewer",
+			url: "https://example.com/team/waypoint/merge_requests/42#note_7",
+			external: "discussion-7",
+			thread: [
+				{ id: id("r"), author: "remote", by: "Sam Author", text: "It overwrites on purpose; see L13.", at: now() },
+			],
+		});
+	}
 	function uniqueQuote(source: string[], quote: string, span: number) {
 		if (!quote) return undefined;
 		let line: number | undefined;
@@ -180,7 +211,7 @@ export function createBridge(
 				result = changeNoteState(message, get);
 				break;
 			case "delete":
-				editable(message.id);
+				if (get(message.id).author !== "remote") editable(message.id);
 				active.notes.delete(message.id);
 				break;
 			case "tour-delete":
@@ -479,6 +510,9 @@ export function createBridge(
 					result = { file: read, html: read.text === undefined ? undefined : renderFixtureMarkdown(read.text) };
 					break;
 				}
+				case "markdown.text":
+					result = { html: renderFixtureMarkdown(message.text) };
+					break;
 				case "file.create":
 				case "file.write":
 				case "edit.paths":

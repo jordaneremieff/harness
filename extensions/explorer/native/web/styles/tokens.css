@@ -37,6 +37,9 @@
     --agent: light-dark(#8839ef, #ca9ee6); /* mauve */
     --agent-soft: color-mix(in oklch, var(--agent) 14%, transparent);
     --agent-text: light-dark(#823be2, #ca9ee6); /* mauve, legible */
+    --remote: light-dark(#179299, #81c8be); /* teal: discussions from a remote review */
+    --remote-soft: color-mix(in oklch, var(--remote) 14%, transparent);
+    --remote-text: light-dark(#127c82, #81c8be); /* teal, legible */
     --ok: light-dark(#40a02b, #a6d189); /* green */
     --warn: light-dark(#df8e1d, #e5c890); /* yellow */
     --err: light-dark(#c5153e, #e78284); /* red, legible */

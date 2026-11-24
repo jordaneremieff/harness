@@ -15,6 +15,8 @@
 		up: "M5 12l5-5 5 5",
 		down: "M5 8l5 5 5-5",
 		tour: "M5 3v14l12-7z",
+		external: "M11 4h5v5M16 4l-7 7M14 11v5H4V6h5",
+		"comment-remote": "M3 4h14v10H9l-4 3v-3H3zM7 9h6",
 		close: "m5 5 10 10M15 5 5 15",
 		check: "m4 10 4 4 8-8",
 		branch:

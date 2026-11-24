@@ -164,6 +164,8 @@ enum ExplorerCheck {
             const rendered = await accept('markdown.render', {path:'guide.md'});
             if (!rendered.html.includes('<strong>rendered</strong>') || !rendered.html.includes('data-sourcepos="3:')) throw Error('Markdown render and source map');
             if ((await call('link.open', {url:'file:///etc/passwd'})).ok) throw Error('outside link accepted');
+            const card = await accept('markdown.text', {text:'See **lines.ts:2** <b>raw</b>\\n\\n![x](lines.ts)'});
+            if (!card.html.includes('<strong>lines.ts:2</strong>') || card.html.includes('<b>') || card.html.includes('src="lines.ts"')) throw Error('Card Markdown omits raw HTML and images');
             const waitFor = selector => until(() => document.querySelector(selector), 'Missing ' + selector);
             await accept('notes.write',{op:'create',note:{path:'guide.md',side:'head',start:3,end:3,commit:null,quote:'A **rendered** paragraph.',text:'Markdown note',state:'open',author:'operator'}});
             explorer.receive({ v:1, type:'notes.changed' });

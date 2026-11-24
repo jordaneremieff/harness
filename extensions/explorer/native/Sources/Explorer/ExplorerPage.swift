@@ -95,6 +95,7 @@ final class ExplorerPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler
                 let cap = switch type {
                 case "files.list": 64 * mib
                 case "files.folder": 4 * mib
+                case "markdown.text": 2 * mib
                 case "file.read", "markdown.render", "review.diff", "edit.draft", "clipboard.read": 32 * mib
                 default: 256 * kib
                 }

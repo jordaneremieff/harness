@@ -25,7 +25,27 @@ Select code, or click line numbers, to show the strip with **Ask**, **Comment**,
 
 Each card has one filled button on the right; cmd+return performs it. Text you type and do not save stays with its lines: selecting the same lines again brings it back, and other lines open an empty card. Unsent text also survives closing the pane.
 
-Marked lines are tinted: yellow for review comments, blue for your notes and questions, mauve for the agent's notes. Click a marked line, its dot or **Open note** in its menu to open the card; a further click on the same lines while the card is open shows the next note there. A review comment opens in its editor with **Remove**, **Send now** and **Save**. A note opens its thread: **Reply** sends the reply to the conversation when one is connected and otherwise saves it in the note; your own open notes can be edited, and your notes can be deleted. Viewed ticks and unsent comments persist. A review finishes when you send it or mark all its files Viewed.
+Marked lines are tinted: yellow for review comments, blue for your notes and questions, mauve for the agent's notes, teal for discussions imported from a remote review. Click a marked line, its dot or **Open note** in its menu to open the card; a further click on the same lines while the card is open shows the next note there. A review comment opens in its editor with **Remove**, **Send now** and **Save**. A note opens its thread: **Reply** sends the reply to the conversation when one is connected and otherwise saves it in the note; your own open notes can be edited, and your notes can be deleted. Viewed ticks and unsent comments persist. A review finishes when you send it or mark all its files Viewed.
+
+Cards render note text, replies and answers as Markdown without raw HTML or images. A file location such as `src/a.ts:12-20` or `docs/b.md#L4`, a line span such as `L12`, `L12-L20` or `lines 12 to 20` (of the note's own file), a commit such as `3b59add` and a two-dot range of commits become links. A location link opens the lines in the Changes view when the review contains the file, otherwise in the File view; a commit or range link opens its review after Git confirms it. The card stays open. Drag a card by its header to move it; double-click the header to return it to its place.
+
+## Walkthroughs
+
+An agent walkthrough is an ordered set of agent notes, optionally tied to a review scope, a link and a Markdown summary. Start it from the Changes list or from the agent's `explorer_show`. A walkthrough with a review shows each stop in that review's Changes view.
+
+The walkthrough card sits against the right and bottom edges of the code area. Drag it anywhere; later stops keep the new place until you double-click the header. The header names the walkthrough, shows the position and a progress bar, and lists all stops on request. Each stop shows its title, links to its file, lines and commit, and the rendered text. A summary opens as the first page, with the link and the list of stops. Use **Previous** and **Next**, or ← and →, to move.
+
+**Comment** turns a stop into a review comment on the same lines, starting from the stop's text, and the stop then shows that it is in your review. **Reply** sends a question about the stop to the conversation, or keeps it in the note without one.
+
+## Merge and pull request reviews
+
+Explorer reviews a merge or pull request through Git alone; it holds no platform code. The agent fetches the change, opens its diff as a review range (`target...head` selects the merge base, as review platforms do), and composes its own platform commands around three primitives of `explorer_notes`:
+
+- `tour` with `review`, `url` and `summary` shows the agent's findings as a walkthrough of the change.
+- `import` shows the change's existing discussions on the diff as remote notes, with their authors, replies, resolution and links. Importing the same discussion again updates it and keeps your local replies.
+- `export` returns your review comments with their exact diff positions: old and new path, old and new line at each end, whether each end is an added, removed or unchanged line, and whether the range lies inside a diff hunk. The agent posts them with the platform's own CLI or API.
+
+Add comments by selecting lines in the diff or with **Comment** on a walkthrough stop, then send them together. **Copy review** copies the same text. A reply on a remote note reaches the conversation with the note's link, so the agent can post it to that discussion.
 
 ## Markdown preview
 

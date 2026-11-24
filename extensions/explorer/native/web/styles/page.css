@@ -1002,20 +1002,6 @@ button.folder-list-status {
   font-size: 13px;
   color: var(--ink-3);
 }
-.tour-meta {
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  font-weight: 650;
-  color: var(--agent-text);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-.tour-meta span + span {
-  font-size: 11px;
-  letter-spacing: normal;
-}
 .agent-card {
   background: color-mix(in oklch, var(--agent) 5%, var(--raised));
 }

@@ -2,6 +2,7 @@
 	const app = window.explorer;
 	const { request, model } = app;
 	const { el, get, button, icon, iconButton } = app.dom;
+	const { lineLabel } = app.references;
 	const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 	const bytes = (text: string) => new TextEncoder().encode(text).length;
 	const anchorOf = (note: ExplorerNote): ExplorerRange | null =>
@@ -14,6 +15,7 @@
 		commit: note.anchor.commit,
 		text: note.text,
 		id: note.id,
+		url: note.url,
 	});
 	const label = (item: ExplorerExcerpt) =>
 		item.start === undefined
@@ -35,16 +37,23 @@
 	};
 	type CardMode = "ask" | "comment" | "note";
 	type DraftAction = "keep" | "add" | "send" | "save" | "remove";
+	// Distance of a moved card from the right edge of the pane and the top of the code viewport.
+	type Offset = { right: number; top: number };
 	type Card = {
 		node: HTMLElement;
+		head: HTMLElement;
+		identity: HTMLElement;
 		content: HTMLElement;
 		actions: HTMLElement;
 		tools: HTMLElement;
 		range: ExplorerRange | null;
 		root: string;
 		focus: HTMLElement | null;
+		kind: "card" | "tour";
+		moved: Offset | null;
 		rebuild?: () => void;
 	};
+	type Walk = { tour: ExplorerTour; index: number; serial: number; contents: boolean };
 
 	app.review = (ctx): ExplorerReviewUI => {
 		const container = get("floating");
@@ -59,7 +68,9 @@
 		const unsaved = new Map<string, ExplorerCardDraft>();
 		let card: Card | null = null;
 		let shownRun: Run | null = null;
-		let walkthrough: { tour: ExplorerTour; index: number; serial: number } | null = null;
+		let walkthrough: Walk | null = null;
+		// Where the operator moved the walkthrough card; later stops keep it there.
+		let tourOffset: Offset | null = null;
 		let removeUndo: { notes: ExplorerNote[]; root: string } | null = null;
 		let tourSerial = 0;
 		let lastOpened: { key: string; index: number } | null = null;
@@ -139,24 +150,108 @@
 			node.style.maxHeight = `${Math.min(260, Math.max(165, body.height * 0.34))}px`;
 		}
 
+		function frame() {
+			return { body: codeBody.getBoundingClientRect(), main: get("main").getBoundingClientRect() };
+		}
+
+		// Places a card at viewport coordinates inside the pane and the code viewport, and marks the edges it touches.
+		function placeAt(node: HTMLElement, left: number, top: number, body: DOMRect, main: DOMRect) {
+			const width = node.offsetWidth,
+				height = node.offsetHeight;
+			const x = Math.max(main.left, Math.min(left, main.right - width));
+			const y = Math.max(body.top, Math.min(top, body.bottom - height));
+			node.style.left = `${x}px`;
+			node.style.top = `${y}px`;
+			node.classList.toggle("edge-right", x + width >= main.right - 0.5);
+			node.classList.toggle("edge-bottom", y + height >= body.bottom - 0.5);
+			return { x, y };
+		}
+
+		// A walkthrough card starts against the right and bottom edges; a moved card keeps its offset.
+		function placeFree(current: Card, body: DOMRect, main: DOMRect) {
+			const node = current.node;
+			dock.hidden = true;
+			node.style.maxHeight = `${Math.max(120, Math.min(560, body.height))}px`;
+			const width = node.offsetWidth,
+				height = node.offsetHeight;
+			if (current.moved)
+				placeAt(node, main.right - current.moved.right - width, body.top + current.moved.top, body, main);
+			else placeAt(node, main.right - width, body.bottom - height, body, main);
+		}
+
+		// A walkthrough card is wider and may touch the pane edge; other cards keep a margin.
+		function cardWidth(current: Card, main: DOMRect, free: boolean) {
+			const limit = current.kind === "tour" ? 468 : 426;
+			return Math.min(Math.max(main.width - (free ? 0 : 20), 0), limit);
+		}
+
 		function reposition() {
 			if (!card) return;
 			const node = card.node;
-			const body = codeBody.getBoundingClientRect();
-			const main = get("main").getBoundingClientRect();
-			const anchor = ctx.bounds(card.range);
-			const width = Math.min(Math.max(main.width - 20, 0), 426);
+			const { body, main } = frame();
+			const free = card.kind === "tour" || !!card.moved;
+			const width = cardWidth(card, main, free);
 			node.style.width = `${width}px`;
-			node.style.left = `${Math.max(main.left + 10, main.right - width - 12)}px`;
 			if (!container.contains(node)) container.append(node);
 			node.classList.remove("docked");
+			if (free) return placeFree(card, body, main);
+			node.classList.remove("edge-right", "edge-bottom");
+			node.style.left = `${Math.max(main.left + 10, main.right - width - 12)}px`;
 			node.style.maxHeight = `${cardLimit(body)}px`;
+			const anchor = ctx.bounds(card.range);
 			attachCard(node, body, anchor, Math.min(node.scrollHeight + 2, cardLimit(body)));
 		}
 		const cardResize = new ResizeObserver(() => {
 			if (card && card.node.parentElement !== dock) reposition();
 		});
 		cardResize.observe(codeBody);
+
+		// Dragging the header moves the card; a double-click returns it to its default place.
+		function draggable(current: Card) {
+			const handle = current.head;
+			handle.classList.add("drag-handle");
+			const interactive = (target: EventTarget | null) =>
+				target instanceof Element && !!target.closest("button, a, input, textarea, select");
+			handle.addEventListener("pointerdown", (event) => {
+				if (event.button !== 0 || interactive(event.target)) return;
+				event.preventDefault();
+				const node = current.node;
+				const rect = node.getBoundingClientRect();
+				const grab = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+				if (node.parentElement === dock) {
+					container.append(node);
+					dock.hidden = true;
+				}
+				node.classList.remove("docked");
+				node.classList.add("dragging");
+				try {
+					handle.setPointerCapture(event.pointerId);
+				} catch {
+					// A pointer that the page cannot capture still moves the card while it stays over the header.
+				}
+				const move = (next: PointerEvent) => {
+					const { body, main } = frame();
+					const { x, y } = placeAt(node, next.clientX - grab.x, next.clientY - grab.y, body, main);
+					current.moved = { right: main.right - (x + node.offsetWidth), top: y - body.top };
+					if (current.kind === "tour") tourOffset = current.moved;
+				};
+				const end = () => {
+					node.classList.remove("dragging");
+					handle.removeEventListener("pointermove", move);
+					handle.removeEventListener("pointerup", end);
+					handle.removeEventListener("pointercancel", end);
+				};
+				handle.addEventListener("pointermove", move);
+				handle.addEventListener("pointerup", end);
+				handle.addEventListener("pointercancel", end);
+			});
+			handle.addEventListener("dblclick", (event) => {
+				if (interactive(event.target)) return;
+				current.moved = null;
+				if (current.kind === "tour") tourOffset = null;
+				reposition();
+			});
+		}
 
 		function closeCard(restore = true) {
 			const current = card;
@@ -180,10 +275,16 @@
 			closeCard();
 			return true;
 		}
-		function makeCard(title: string, caption: string, range: ExplorerRange | null, agent = false) {
+		function makeCard(
+			title: string,
+			caption: string,
+			range: ExplorerRange | null,
+			agent = false,
+			kind: Card["kind"] = "card",
+		) {
 			const focus = card?.focus ?? (document.activeElement as HTMLElement | null);
 			closeCard(false);
-			const node = el("section", `float-card${agent ? " agent-card" : ""}`);
+			const node = el("section", `float-card${agent ? " agent-card" : ""}${kind === "tour" ? " tour-card" : ""}`);
 			node.setAttribute("role", "dialog");
 			node.setAttribute("aria-label", title);
 			const header = el("div", "ask-head");
@@ -202,11 +303,43 @@
 			const content = el("div", "card-content"),
 				actions = el("div", "card-actions");
 			node.append(header, content, actions);
-			const next = { node, content, actions, tools, range, root: here(), focus };
+			const next: Card = {
+				node,
+				head: header,
+				identity,
+				content,
+				actions,
+				tools,
+				range,
+				root: here(),
+				focus,
+				kind,
+				moved: kind === "tour" ? tourOffset : null,
+			};
 			card = next;
 			container.append(node);
+			draggable(next);
 			ctx.highlight(range);
-			return next as Card;
+			return next;
+		}
+		// A card that follows a link elsewhere stays where it is instead of following its old lines.
+		function pinCard() {
+			if (!card || card.moved || card.kind === "tour" || card.node.parentElement === dock) return;
+			const { body, main } = frame();
+			const rect = card.node.getBoundingClientRect();
+			card.moved = { right: main.right - rect.right, top: rect.top - body.top };
+		}
+		// Card text as Markdown with links to the locations and commits it names.
+		function rich(text: string, path?: string, side: ExplorerSide | null = null) {
+			return app.rich.render(text, {
+				path,
+				open: (target) => {
+					if (target.kind !== "url") pinCard();
+					// Lines of the note's own file keep its side; other files open their current text.
+					report(ctx.follow(target, target.kind === "lines" && target.path === path ? side : null));
+				},
+				changed: reposition,
+			});
 		}
 		function textarea(name: string, value = "") {
 			const field = el("textarea");
@@ -468,11 +601,16 @@
 				disable(retry, !ctx.live().connected, reason());
 				disable(submit, !ctx.live().connected || !follow.value.trim(), ctx.live().connected ? undefined : reason());
 			}
+			let shownAnswer = "";
 			current.rebuild = () => {
 				progress.textContent = runMessage(run);
 				progress.classList.toggle("card-error", failedRun(run));
 				answer.hidden = run.last?.status !== "answer";
-				answer.textContent = answerText(run);
+				const latest = answerText(run);
+				if (latest !== shownAnswer) {
+					shownAnswer = latest;
+					answer.replaceChildren(latest ? rich(latest, run.item?.path) : "");
+				}
 				const ready = run.admission === "accepted";
 				follow.hidden = submit.hidden = !ready;
 				retry.hidden = !run.retryable;
@@ -821,7 +959,7 @@
 			const send = traySend(drafts, connected);
 			tray.replaceChildren(count);
 			if (undoVisible) tray.append(ctl("Undo remove", () => report(undo())));
-			if (!connected && drafts.length) tray.append(copyReview());
+			if (drafts.length) tray.append(copyReview());
 			tray.append(send);
 			if (!commands.hidden) renderDraftList(drafts);
 		}
@@ -838,7 +976,8 @@
 			card?.rebuild?.();
 		}
 
-		function authorName(author: string) {
+		function authorName(author: ExplorerAuthor, by?: string) {
+			if (author === "remote") return by ?? "Reviewer";
 			return author === "agent" ? "Agent" : "You";
 		}
 		function movedSuffix(note: ExplorerNote) {
@@ -848,8 +987,8 @@
 		}
 		function appendReplies(block: HTMLElement, note: ExplorerNote) {
 			for (const reply of note.thread) {
-				const response = el("div", "thread-reply");
-				response.append(el("strong", "", authorName(reply.author)), el("p", "", reply.text));
+				const response = el("div", `thread-reply by-${reply.author}`);
+				response.append(el("strong", "", authorName(reply.author, reply.by)), rich(reply.text, note.path, note.side));
 				block.append(response);
 			}
 		}
@@ -857,8 +996,8 @@
 		function threadEntry(note: ExplorerNote) {
 			const block = el("div", "thread-entry");
 			block.append(
-				el("p", "thread-meta", `${authorName(note.author)} · ${note.state}${movedSuffix(note)}`),
-				el("p", "note-text", note.text),
+				el("p", "thread-meta", `${authorName(note.author, note.by)} · ${note.state}${movedSuffix(note)}`),
+				rich(note.text, note.path, note.side),
 			);
 			if (note.location !== "same") drawQuote(block, note.anchor.quote);
 			appendReplies(block, note);
@@ -899,15 +1038,20 @@
 			const byId = new Map(ctx.notes().map((note) => [note.id, note]));
 			return notes.map((note) => byId.get(note.id) ?? note);
 		}
+		function threadTitle(notes: ExplorerNote[]) {
+			if (notes.length > 1) return `${notes.length} notes`;
+			return notes[0].author === "remote" ? "Discussion" : "Note";
+		}
 		function threadCard(notes: ExplorerNote[], position?: ExplorerRange | null) {
 			const first = notes[0];
 			const range = position === undefined ? anchorOf(first) : position;
 			const current = makeCard(
-				first.title ?? (notes.length > 1 ? `${notes.length} notes` : "Note"),
+				first.title ?? threadTitle(notes),
 				label(excerptOf(first)),
 				range,
 				first.author === "agent",
 			);
+			if (first.author === "remote") current.node.classList.add("remote-card");
 			const own = () => {
 				const latest = currentNotes([first])[0];
 				return latest.author === "operator" && (latest.state === "draft" || latest.state === "open");
@@ -1033,12 +1177,19 @@
 			const editButton = iconButton("edit", "Edit note", startEdit);
 			const deleteButton = iconButton("trash", "Delete note", askDelete);
 			current.tools.prepend(editButton, deleteButton);
+			const remoteUrl = first.url;
+			if (remoteUrl)
+				current.tools.prepend(
+					iconButton("external", "Open the discussion in the browser", () =>
+						report(request("link.open", { url: remoteUrl })),
+					),
+				);
 			current.content.append(entries, field, confirm, fail);
 			shortcuts(field, () => report(reply()));
 			function refreshThreadState(latest: ExplorerNote) {
 				state.textContent = latest.state === "resolved" ? "Reopen" : "Resolve";
 				state.hidden = latest.state === "draft";
-				const single = notes.length === 1 && latest.author === "operator";
+				const single = notes.length === 1 && latest.author !== "agent";
 				editButton.hidden = !single || !own();
 				deleteButton.hidden = !single;
 				if (!field.hidden) answer.textContent = replyLabel();
@@ -1057,67 +1208,248 @@
 			};
 			current.rebuild();
 		}
-		async function moveTour(index: number) {
-			const active = walkthrough;
-			if (!active || index < 0 || index >= active.tour.stops.length) return;
-			const note = ctx.notes().find((note) => note.id === active.tour.stops[index]);
-			if (!note) {
-				ctx.notice("This stop is not available.");
+		function firstStop(tour: ExplorerTour) {
+			return tour.summary ? -1 : 0;
+		}
+		function stopNote(tour: ExplorerTour, index: number) {
+			return ctx.notes().find((note) => note.id === tour.stops[index]);
+		}
+		// The walkthrough header: its name, the position, the stop list toggle and a progress bar.
+		function tourHead(current: Card, active: Walk) {
+			const { tour, index } = active;
+			const kicker = el("span", "tour-kicker");
+			kicker.append(icon("tour"), el("span", "", "Walkthrough"));
+			const name = el("span", "tour-name", tour.title);
+			name.title = tour.title;
+			current.identity.className = "tour-identity";
+			current.identity.replaceChildren(kicker, name);
+			const total = tour.stops.length;
+			const position = index < 0 ? `${total} stop${total === 1 ? "" : "s"}` : `${index + 1} / ${total}`;
+			const tools: HTMLElement[] = [el("span", "tour-count", position)];
+			if (index >= 0) tools.push(contentsToggle(active));
+			current.tools.prepend(...tools);
+			const progress = el("div", "tour-progress");
+			const fill = el("span");
+			fill.style.width = `${index < 0 ? 0 : ((index + 1) / Math.max(total, 1)) * 100}%`;
+			progress.append(fill);
+			current.head.after(progress);
+		}
+		function contentsToggle(active: Walk) {
+			const contents = iconButton("list", active.contents ? "Hide the stops" : "Show all stops", () => {
+				active.contents = !active.contents;
+				report(moveTour(active.index));
+			});
+			contents.setAttribute("aria-pressed", String(active.contents));
+			return contents;
+		}
+		function stopList(active: Walk) {
+			const list = el("ol", "tour-stops");
+			for (const [order, id] of active.tour.stops.entries()) {
+				const note = ctx.notes().find((item) => item.id === id);
+				const open = button("", () => report(moveTour(order)), "tour-stop");
+				if (order === active.index) open.setAttribute("aria-current", "step");
+				const text = el("span", "tour-stop-text");
+				text.append(
+					el("strong", "", note?.title ?? note?.text.split("\n")[0] ?? "Unavailable stop"),
+					el("small", "", note ? `${note.path} · ${lineLabel(note.start, note.end)}` : "The note is missing."),
+				);
+				open.append(el("span", "tour-stop-number", String(order + 1)), text);
+				open.disabled = !note;
+				const item = el("li");
+				item.append(open);
+				list.append(item);
+			}
+			return list;
+		}
+		function followLines(note: ExplorerNote, lines: ExplorerRange) {
+			return ctx.follow({ kind: "lines", path: note.path, start: lines.start, end: lines.end }, lines.side);
+		}
+		// The stop's file, lines and commit as links.
+		function stopPlace(note: ExplorerNote, range: ExplorerRange | null) {
+			const place = el("div", "stop-place");
+			const lines = range ?? { side: note.side, start: note.anchor.start, end: note.anchor.end };
+			const file = button("", () => report(followLines(note, lines)), "place-chip place-file");
+			const slash = note.path.lastIndexOf("/");
+			file.append(icon("file"));
+			// Marks keep the folder's trailing slash in place while the folder truncates from the left.
+			if (slash >= 0) file.append(el("span", "place-dir", `\u200e${note.path.slice(0, slash + 1)}\u200e`));
+			file.append(el("span", "place-name", note.path.slice(slash + 1)));
+			file.title = `Go to ${note.path}`;
+			const span = button(
+				`${lines.side === "base" ? "Old " : ""}${lineLabel(lines.start, lines.end)}`,
+				() => report(followLines(note, lines)),
+				"place-chip place-lines",
+			);
+			span.title = `Go to ${lineLabel(lines.start, lines.end)}`;
+			place.append(file, span);
+			const commit = note.anchor.commit;
+			if (commit) {
+				const chip = button(
+					commit.slice(0, 7),
+					() => report(ctx.follow({ kind: "commit", commit }, null)),
+					"place-chip place-commit",
+				);
+				chip.title = `Review commit ${commit}`;
+				place.append(chip);
+			}
+			if (!range) place.append(el("span", "place-chip place-warn", "Outdated"));
+			return place;
+		}
+		function reviewed(note: ExplorerNote, range: ExplorerRange | null) {
+			const lines = range ?? anchorOf(note);
+			if (!lines) return undefined;
+			return ctx
+				.drafts()
+				.find(
+					(draft) =>
+						draft.path === note.path &&
+						draft.side === lines.side &&
+						draft.start === lines.start &&
+						draft.end === lines.end,
+				);
+		}
+		function tourNavigation(current: Card, active: Walk) {
+			const previous = ctl("Previous", () => report(moveTour(active.index - 1)), "quiet");
+			previous.disabled = active.index <= firstStop(active.tour);
+			previous.title = "Previous stop (←)";
+			const next = ctl("Next", () => report(moveTour(active.index + 1)), "secondary");
+			next.disabled = active.index >= active.tour.stops.length - 1;
+			next.title = "Next stop (→)";
+			current.actions.append(previous, next, el("span", "grow"));
+		}
+		// Turns the stop into a review comment on the same lines, starting from the stop's text.
+		function adoptStop(current: Card, active: Walk, note: ExplorerNote, range: ExplorerRange | null) {
+			const item = (range && ctx.excerpt(range)) || excerptOf(note);
+			const box = el("div", "stop-comment");
+			const field = textarea("Write a review comment…", note.text);
+			field.maxLength = 16000;
+			const fail = errorField();
+			box.append(el("p", "stop-comment-label", "Review comment"), field, fail);
+			current.content.append(box);
+			let busy = false;
+			const add = ctl("Add to review", () => report(save()), "primary");
+			const cancel = ctl("Cancel", () => report(moveTour(active.index)), "quiet");
+			current.actions.replaceChildren(cancel, el("span", "grow"), add);
+			async function save() {
+				const text = field.value.trim();
+				if (busy || !text || current.root !== here()) return;
+				busy = true;
+				add.disabled = true;
+				try {
+					await create({ ...item, text }, range?.side ?? note.side, "draft");
+					await ctx.refresh();
+					ctx.notice("Comment added to review");
+					if (walkthrough === active) await moveTour(active.index);
+				} catch (error) {
+					announce(fail, message(error));
+					busy = false;
+					add.disabled = false;
+				}
+			}
+			field.oninput = () => disable(add, busy || !field.value.trim());
+			shortcuts(field, () => report(save()));
+			reposition();
+			field.focus({ preventScroll: true });
+			field.setSelectionRange(field.value.length, field.value.length);
+		}
+		// Sends a reply about the stop to the conversation, or keeps it in the note without one.
+		function replyToStop(current: Card, note: ExplorerNote, control: HTMLButtonElement) {
+			if (!ctx.live().connected) {
+				thread([note]);
 				return;
 			}
-			active.index = index;
-			const serial = ++tourSerial;
-			await ctx.go(note);
-			if (walkthrough !== active || serial !== tourSerial) return;
-			const current = makeCard(note.title ?? active.tour.title, label(excerptOf(note)), anchorOf(note), true);
-			const count = el("div", "tour-meta");
-			count.append(el("span", "", "AGENT WALKTHROUGH"), el("span", "", `${index + 1} of ${active.tour.stops.length}`));
-			current.node.prepend(count);
-			const wording = el("p", "note-text", note.text);
-			current.content.append(wording);
-			const previous = ctl("Previous", () => report(moveTour(index - 1)));
-			previous.disabled = index === 0;
-			const next = ctl("Next", () => report(moveTour(index + 1)));
-			next.disabled = index >= active.tour.stops.length - 1;
-			const reply = ctl(
-				"Reply",
-				() => {
-					if (!ctx.live().connected) {
-						thread([note]);
-						return;
-					}
-					const item = excerptOf(note);
-					const field = textarea("Write a reply…");
-					const sendReply = () => {
-						const question = field.value.trim();
-						if (!question) return;
-						report(
-							(async () => {
-								if (current.root !== here()) return;
-								await request("notes.write", { op: "reply", id: note.id, text: question, author: "operator" });
-								const run = runFor(bake([{ ...item, text: question }]), question, [], item);
-								run.ids = [note.id];
-								showRun(run, current.range);
-								await send(run);
-							})(),
-						);
-					};
-					current.content.append(field);
-					shortcuts(field, sendReply);
-					reply.textContent = "Send reply";
-					const submit = ctl("Send reply", sendReply, "agent-button");
-					reply.replaceWith(submit);
-					field.focus({ preventScroll: true });
-					reposition();
-				},
-				"agent-button",
-			);
-			current.actions.append(previous, next, el("span", "grow"), reply);
+			const item = excerptOf(note);
+			const field = textarea("Write a reply…");
+			const sendReply = () => {
+				const question = field.value.trim();
+				if (!question) return;
+				report(
+					(async () => {
+						if (current.root !== here()) return;
+						await request("notes.write", { op: "reply", id: note.id, text: question, author: "operator" });
+						const run = runFor(bake([{ ...item, text: question }]), question, [], item);
+						run.ids = [note.id];
+						showRun(run, current.range);
+						await send(run);
+					})(),
+				);
+			};
+			current.content.append(field);
+			shortcuts(field, sendReply);
+			control.replaceWith(ctl("Send reply", sendReply, "agent-button"));
+			field.focus({ preventScroll: true });
 			reposition();
 		}
+		function showStop(active: Walk, note: ExplorerNote, range: ExplorerRange | null) {
+			const current = makeCard(note.title ?? `Stop ${active.index + 1}`, "", range, true, "tour");
+			tourHead(current, active);
+			current.content.append(el("h3", "stop-title", note.title ?? `Stop ${active.index + 1}`), stopPlace(note, range));
+			current.content.append(rich(note.text, note.path, range?.side ?? note.side));
+			if (note.thread.length) {
+				const replies = el("div", "stop-replies");
+				appendReplies(replies, note);
+				current.content.append(replies);
+			}
+			const adopted = reviewed(note, range);
+			if (adopted) current.content.append(el("p", "stop-adopted", "In your review"));
+			if (active.contents) current.content.append(stopList(active));
+			tourNavigation(current, active);
+			const reply = ctl("Reply", () => replyToStop(current, note, reply), "quiet");
+			const comment = ctl(
+				adopted ? "Comment again" : "Comment",
+				() => adoptStop(current, active, note, range),
+				"agent-button",
+			);
+			comment.title = "Add this stop to your review as a comment";
+			current.actions.append(reply, comment);
+			reposition();
+		}
+		function showOverview(active: Walk) {
+			const { tour } = active;
+			const current = makeCard(tour.title, "", null, true, "tour");
+			tourHead(current, active);
+			current.content.append(el("h3", "stop-title", tour.title));
+			const url = tour.url;
+			if (url) {
+				const place = el("div", "stop-place");
+				const link = button("", () => report(request("link.open", { url })), "place-chip place-url");
+				link.append(icon("external"), el("span", "", url.replace(/^https?:\/\//u, "")));
+				link.title = `Open ${url}`;
+				place.append(link);
+				current.content.append(place);
+			}
+			if (tour.summary) current.content.append(rich(tour.summary));
+			current.content.append(el("p", "tour-section", "Stops"), stopList(active));
+			const start = ctl("Start", () => report(moveTour(0)), "primary");
+			start.title = "First stop (→)";
+			current.actions.append(el("span", "grow"), start);
+			reposition();
+		}
+		function showMissingStop(active: Walk) {
+			const current = makeCard(`Stop ${active.index + 1}`, "", null, true, "tour");
+			tourHead(current, active);
+			current.content.append(
+				el("h3", "stop-title", `Stop ${active.index + 1} is unavailable`),
+				el("p", "card-error", "Its note was deleted or could not be read."),
+			);
+			tourNavigation(current, active);
+			reposition();
+		}
+		async function moveTour(index: number) {
+			const active = walkthrough;
+			if (!active || index < firstStop(active.tour) || index >= active.tour.stops.length) return;
+			active.index = index;
+			const serial = ++tourSerial;
+			if (index < 0) return showOverview(active);
+			const note = stopNote(active.tour, index);
+			if (!note) return showMissingStop(active);
+			const range = await ctx.go(note, active.tour);
+			if (walkthrough !== active || serial !== tourSerial) return;
+			showStop(active, note, range);
+		}
 		async function tour(tour: ExplorerTour) {
-			walkthrough = { tour, index: 0, serial: ++tourSerial };
-			await moveTour(0);
+			walkthrough = { tour, index: firstStop(tour), serial: ++tourSerial, contents: false };
+			await moveTour(walkthrough.index);
 		}
 		function step(direction: number) {
 			if (!walkthrough) return false;

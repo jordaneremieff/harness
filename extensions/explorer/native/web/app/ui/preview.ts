@@ -298,7 +298,7 @@
 			else painted.set(node, [note]);
 		}
 		function updateNotes(notes: ExplorerNote[]) {
-			for (const node of painted.keys()) node.classList.remove("has-note", "has-draft", "has-agent");
+			for (const node of painted.keys()) node.classList.remove("has-note", "has-draft", "has-agent", "has-remote");
 			painted.clear();
 			for (const note of notes) {
 				const range = noteRange(note, opts);
@@ -314,6 +314,10 @@
 			node.classList.toggle(
 				"has-agent",
 				notes.every((note) => note.author === "agent"),
+			);
+			node.classList.toggle(
+				"has-remote",
+				notes.every((note) => note.author === "remote"),
 			);
 		}
 		function plainClick(event: MouseEvent) {

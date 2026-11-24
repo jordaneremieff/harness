@@ -262,16 +262,17 @@
 			opts?.onRange(selected);
 		}
 
+		// Review comments, then agent notes, then remote discussions choose the marker colour.
+		function dotKind(notes: ExplorerNote[]) {
+			if (notes.some((note) => note.state === "draft")) return "draft";
+			if (notes.some((note) => note.author === "agent")) return "agent";
+			return notes.some((note) => note.author === "remote") ? "remote" : "";
+		}
 		// Adds the note marker for a gutter line that carries notes.
 		function appendNoteDot(cell: HTMLElement, line: number, side: ExplorerSide) {
 			const notes = gutterNotes.get(`${side}:${line}`);
 			if (!notes?.length) return;
-			const kind = notes.some((note) => note.state === "draft")
-				? "draft"
-				: notes.some((note) => note.author === "agent")
-					? "agent"
-					: "";
-			const mark = button("", () => opts?.onNote(notes), `note-dot ${kind}`);
+			const mark = button("", () => opts?.onNote(notes), `note-dot ${dotKind(notes)}`);
 			mark.setAttribute("aria-label", `Open ${notes.length === 1 ? "note" : `${notes.length} notes`} on line ${line}`);
 			cell.append(mark);
 		}
@@ -529,12 +530,13 @@
 				(note) => note.side === side && note.state !== "resolved" && note.start <= line && line <= note.end,
 			);
 		}
-		// Review comments, then agent notes, choose the tint of a marked line.
+		// Review comments, then agent notes, then remote discussions choose the tint of a marked line.
 		function noteClasses(side: ExplorerSide, line: number) {
 			const covering = notesAt(side, line);
 			if (!covering.length) return [];
 			if (covering.some((note) => note.state === "draft")) return ["has-note", "has-draft"];
-			return covering.every((note) => note.author === "agent") ? ["has-note", "has-agent"] : ["has-note"];
+			if (covering.every((note) => note.author === "agent")) return ["has-note", "has-agent"];
+			return covering.every((note) => note.author === "remote") ? ["has-note", "has-remote"] : ["has-note"];
 		}
 		function plainClick(event: MouseEvent) {
 			return (

@@ -199,9 +199,8 @@
 			code.highlight(range);
 			setAnchorLine(range?.start ?? null);
 		},
-		go: async (note) => {
-			await goNote(note, false);
-		},
+		go: (note, tour) => goTourNote(note, tour),
+		follow: followTarget,
 		refresh: refreshNotes,
 		finish: () => {
 			const key = review?.resolved.key;
@@ -819,11 +818,7 @@
 		appendReviewSummary(summary);
 		for (const tour of tours) {
 			const entry = button("", () => report(startTour(tour)), "tour-launch");
-			entry.append(
-				icon("tour"),
-				el("span", "", tours.length === 1 ? "Walkthrough" : tour.title),
-				el("small", "", `${tour.stops.length} stops`),
-			);
+			entry.append(icon("tour"), el("span", "", tour.title), el("small", "", `${tour.stops.length} stops`));
 			summary.append(entry);
 		}
 		if (review?.commits.length) summary.append(commitList(review.commits));
@@ -840,7 +835,7 @@
 		const open = button("", () => report(goNote(note)), "note-open");
 		open.dataset.path = note.id;
 		const kind = el("span", `note-kind ${note.author}`);
-		kind.append(icon(note.author === "agent" ? "ask" : "note"));
+		kind.append(icon(note.author === "operator" ? "note" : note.author === "agent" ? "ask" : "comment-remote"));
 		const preview = el("span", "note-preview");
 		const loc = noteLocation(note);
 		preview.append(
@@ -848,7 +843,7 @@
 			el(
 				"small",
 				note.location === "moved" ? "moved-fact" : "",
-				`${loc} · ${note.author === "agent" ? "Agent" : "You"} · ${note.state}`,
+				`${loc} · ${note.author === "remote" ? (note.by ?? "Reviewer") : note.author === "agent" ? "Agent" : "You"} · ${note.state}`,
 			),
 		);
 		open.append(kind, preview);
@@ -1580,10 +1575,54 @@
 		if (reviewError) notice(reviewError);
 	}
 	let keepCardOnNavigate = false;
-	async function goNote(note: ExplorerNote, show = true) {
+	// A walkthrough with a review shows its stops in that review's changes.
+	async function goTourNote(note: ExplorerNote, tour?: ExplorerTour) {
+		if (tour?.scope && !sameScope(tour.scope, scope)) {
+			scope = tour.scope;
+			settings.tab = "changes";
+			await refreshReview();
+		}
+		return goNote(note, false, !!tour?.scope);
+	}
+	async function keepCard(work: () => Promise<void>) {
+		keepCardOnNavigate = true;
+		try {
+			await work();
+		} finally {
+			keepCardOnNavigate = false;
+		}
+	}
+	// Opens a review of a commit or range named in card text, after Git confirms it.
+	async function followScope(next: ExplorerScope) {
+		try {
+			await request("review.files", { scope: next });
+		} catch (error) {
+			notice(errorText(error));
+			return;
+		}
+		await keepCard(() => selectScope(next));
+	}
+	async function followTarget(target: ExplorerRichTarget, side: ExplorerSide | null) {
+		if (target.kind === "url") {
+			await request("link.open", { url: target.url });
+			return;
+		}
+		if (target.kind === "commit") return followScope({ kind: "commit", commit: target.commit });
+		if (target.kind === "range") return followScope({ kind: "range", base: target.base, head: target.head });
+		const change = review?.files.some((item) => item.path === target.path);
+		const lines = target.kind === "lines" ? target : undefined;
+		const useDiff = !!change && (view === "changes" || side === "base");
+		await keepCard(() =>
+			navigate(
+				{ path: target.path, line: lines?.start, end: lines?.end, view: useDiff ? "changes" : "file" },
+				{ keepTab: true, side: useDiff && side ? side : "head" },
+			),
+		);
+	}
+	async function goNote(note: ExplorerNote, show = true, preferChanges = false) {
 		if (note.side === "base" && !review && root.kind === "git") await refreshReview();
 		const change = review?.files.some((item) => item.path === note.path);
-		const useDiff = !!change && (note.side === "base" || view === "changes");
+		const useDiff = !!change && (note.side === "base" || view === "changes" || preferChanges);
 		const side = note.side;
 		keepCardOnNavigate = !show;
 		try {
@@ -1608,6 +1647,7 @@
 			code.highlight(null);
 		}
 		if (show) reviewUI.thread([note], range);
+		return range;
 	}
 	function locateNote(note: ExplorerNote): ExplorerRange | null {
 		if (path !== note.path) return null;
