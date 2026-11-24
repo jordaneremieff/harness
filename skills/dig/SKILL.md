@@ -5,13 +5,16 @@ description: >
   multi-source investigation, and troubleshooting of failures whose cause is
   not yet known. Use when the operator wants a cited answer, a root cause, or
   an exact blocker, for example "dig into why this keeps failing", "find out
-  what really happened", "research X thoroughly and tell me", "figure out why
-  it behaves this way", or "compare these options with evidence". The agent
-  frames the question, finds the sources that own the answer, investigates
-  directly or with other agents as the question warrants, checks the evidence,
-  and synthesizes. Do not use for preparation-only orientation (prime), audits
-  of Pi session or harness activity (audit), a single lookup or a question
-  already answered, code review, or ordinary implementation with a known cause.
+  what really happened", "research X thoroughly and tell me", "what does the
+  community think of X", "figure out why it behaves this way", or "compare
+  these options with evidence", including when the evidence is on the public
+  web. The agent frames the question, finds the sources that own the answer,
+  investigates directly or with other agents as the question warrants, checks
+  the evidence, and synthesizes. Do not use for a request that says "scout" or
+  explicitly asks for a web search or web research (scout), preparation-only
+  orientation (prime), audits of Pi session or harness activity (audit), a
+  single lookup or a question already answered, code review, or ordinary
+  implementation with a known cause.
 compatibility: Requires Pi with agent delegation controls and automatic task-result delivery when other agents investigate facets, plus the discovery surfaces the environment exposes for tools, deferred tools, namespaces, resources, memory, handovers, session history, and agents.
 ---
 
