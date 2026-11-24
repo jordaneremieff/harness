@@ -2598,8 +2598,10 @@ yields to the event loop every 64 records. The result carries `nextCursor`,
 explicit coverage, and up to 16 omitted or unavailable source storages in
 storage ID order with a `sourcesOmitted` count. A storage whose host has not yet
 published hints, or whose record is unreadable, appears as an unavailable
-source; list it with `sessionId`. `coverage.complete` is true on the last page
-when no source is unavailable or omitted. Follow the cursor and repeat the same
+source; list it with `sessionId`. Every page repeats the coverage figures of the
+whole catalog (`visited`, `omitted`, `unavailable`): count them once per read.
+`coverage.complete` is true on the last page when no source is unavailable or
+omitted, and false on every earlier page. Follow the cursor and repeat the same
 query; a cursor from another query refuses. The cursor is the rank key of the
 last returned thread: a later page continues after it, so a thread that changes
 rank between two pages can appear on both or on neither. Use `sessionId` for a

@@ -413,7 +413,7 @@ export class ThreadsView {
 			if (!this.current(generation)) return;
 			if (!threadDiscovery(result)) throw new Error("the host returned an invalid thread list");
 			this.absorb(result, sessionId === undefined, found, sources);
-			this.cover(facts, result);
+			this.cover(facts, result, sessionId === undefined, page);
 			if (!result.nextCursor) return;
 			// A repeated cursor cannot advance; the read is partial and must say so.
 			if (result.nextCursor === cursor) {
@@ -425,12 +425,18 @@ export class ThreadsView {
 		}
 	}
 
-	/** Record what one discovery page covered and which of its sources it could not read. */
-	private cover(facts: DiscoveryRead, discovery: ThreadDiscovery): void {
-		facts.visited += discovery.coverage.visited;
-		facts.omitted += discovery.coverage.omitted;
-		facts.unavailable += discovery.coverage.unavailable ?? 0;
-		facts.complete &&= discovery.coverage.complete;
+	/**
+	 * Record what one page covered and which of its sources it could not read. Every page of a global
+	 * read repeats the figures of the whole catalog, so a later page adds none; a page of one storage
+	 * reports its own step. Only the last page of a read says whether the read was complete.
+	 */
+	private cover(facts: DiscoveryRead, discovery: ThreadDiscovery, global: boolean, page: number): void {
+		if (!global || page === 0) {
+			facts.visited += discovery.coverage.visited;
+			facts.omitted += discovery.coverage.omitted;
+			facts.unavailable += discovery.coverage.unavailable ?? 0;
+		}
+		if (!discovery.nextCursor) facts.complete &&= discovery.coverage.complete;
 		for (const source of discovery.sources ?? [])
 			if (source.unavailable) facts.sourcesUnavailable.add(source.sessionId);
 	}

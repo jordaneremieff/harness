@@ -237,6 +237,41 @@ it("selecting a thread shows posts with names and no routing metadata", async ()
 	assert.ok(f.calls.some((call) => call.action === "read" && call.threadId === "t1"));
 });
 
+it("a list read over several pages is complete when its last page is", async () => {
+	const f = setup(async (input) => ({
+		items: [],
+		nextCursor: input.cursor === undefined ? "b" : null,
+		coverage: { complete: input.cursor === "b", visited: 8, omitted: 0, unavailable: 0 },
+	}));
+	try {
+		await turn();
+		f.ui.openNamedAction("threads");
+		await settle();
+		assert.match(f.text(), /No threads yet\./);
+		assert.doesNotMatch(f.text(), /could not be read|partial/);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("a list read over several pages counts the catalog's unavailable records once", async () => {
+	const f = setup(async (input) => ({
+		items: [],
+		sources: [{ sessionId: "source-a", omitted: 0, unavailable: true }],
+		nextCursor: input.cursor === undefined ? "b" : input.cursor === "b" ? "c" : null,
+		coverage: { complete: false, visited: 8, omitted: 0, unavailable: 2 },
+	}));
+	try {
+		await turn();
+		f.ui.openNamedAction("threads");
+		await settle();
+		const text = f.text().replace(/[\s│]+/gu, " ");
+		assert.match(text, /1 source storage is unavailable, 2 records are unavailable;/);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
 it("thread rail rows paint only the selected title bold and keep dim members and age on its metadata row", async () => {
 	const f = setup(
 		async (input) =>
