@@ -284,7 +284,8 @@ export async function ordinarySession(t: TestContext, options: OrdinarySessionOp
 		try {
 			await session.abort();
 		} finally {
-			owners.managers.get(sessionsRoot)?.close();
+			// The earlier manager removes its endpoint before a reopened session publishes one.
+			await owners.managers.get(sessionsRoot)?.close();
 			owners.managers.delete(sessionsRoot);
 			session.dispose();
 		}

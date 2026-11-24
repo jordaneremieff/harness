@@ -94,7 +94,7 @@ async function guidanceFixture(t: TestContext, holdStartup = false) {
 			try {
 				await session?.abort();
 			} finally {
-				owners.managers.get(sessionsRoot)?.close();
+				await owners.managers.get(sessionsRoot)?.close();
 				owners.managers.delete(sessionsRoot);
 				session?.dispose();
 			}
@@ -218,7 +218,8 @@ async function guidanceFixture(t: TestContext, holdStartup = false) {
 			gate.resolve();
 			await session?.abort();
 			session?.dispose();
-			owners.managers.get(sessionsRoot)?.close();
+			// The earlier manager removes its endpoint before the reopened session publishes one.
+			await owners.managers.get(sessionsRoot)?.close();
 			owners.managers.delete(sessionsRoot);
 			sessionManager = SessionManager.open(path, sessionsRoot);
 			await loader.reload();
