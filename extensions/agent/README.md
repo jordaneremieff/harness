@@ -4237,8 +4237,12 @@ status and the ordinary manager overview keep their separate coverage meanings.
 An acquiring control first attempts one verified endpoint attachment. If no
 endpoint answers, it starts one runner contender; only the runner takes the
 writer lease. A peer's contract refusal does not start another host.
-A busy contender opens no runtime and reports a typed busy outcome. The caller
-then attempts one attachment to the expected endpoint. A failed endpoint remains
+A busy contender opens no runtime and reports a typed busy outcome. Dedicated
+runners of one storage first queue on a start gate beside the storage file
+(`<storage file>.starting`); the winner holds it until its endpoint listens, so a
+contender reports BUSY only once that endpoint can answer, and concurrent first
+uses of one storage all attach to the winner. A cold stop queues on the same
+gate. The caller then attempts one attachment to the expected endpoint. A failed endpoint remains
 unavailable; no poll, PID check or record age authorises replacement.
 
 An owned launch has one monotonic budget across readiness, connection and

@@ -241,6 +241,11 @@ export function writerLeasePaths(
 	return [hostPaths(metadata).claim, `${metadata.storagePath}.writer`];
 }
 
+/** Runners of one storage queue here until the winner's endpoint listens; the file beside the storage is never removed. */
+export function startGatePath(metadata: Pick<HostMetadata, "storagePath">): string {
+	return `${metadata.storagePath}.starting`;
+}
+
 export function formatHostReady(ready: HostReady): string {
 	return `${HOST_READY_PREFIX}${JSON.stringify({ pid: ready.pid, socketPath: ready.socketPath, writerId: ready.writerId, contract: ready.contract })}\n`;
 }

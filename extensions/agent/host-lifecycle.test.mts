@@ -144,6 +144,50 @@ it("preserves a malformed contract error without waiting for a live writer to di
 	assert.equal(fixture.count(), 0);
 });
 
+it("attaches every concurrent launcher of one storage to the single host that wins its lease", {
+	timeout: 60000,
+}, async (t) => {
+	const fixture = runtimeFixture(t);
+	const hostClient = new URL("./host-client.ts", import.meta.url).href;
+	const script = `const { acquireHost } = await import(${JSON.stringify(hostClient)});
+try {
+	const connection = await acquireHost(JSON.parse(process.env.LAUNCH_METADATA), { retryAttempts: 0 });
+	console.log(JSON.stringify({ pid: connection.pid }));
+	await connection.close();
+} catch (error) {
+	console.log(JSON.stringify({ error: String(error) }));
+}
+process.exit(0);`;
+	const launchers = Array.from({ length: 4 }, () =>
+		spawn(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], {
+			cwd: fixture.cwd,
+			env: {
+				...process.env,
+				...fixture.env("answer"),
+				PI_AGENT_SESSIONS_DIR: fixture.root,
+				LAUNCH_METADATA: JSON.stringify(fixture.metadata),
+			},
+			stdio: ["ignore", "pipe", "pipe"],
+		}),
+	);
+	const outcomes = await Promise.all(
+		launchers.map(async (child) => {
+			let output = "";
+			child.stdout.on("data", (chunk: Buffer) => {
+				output += chunk.toString();
+			});
+			await once(child, "exit");
+			return JSON.parse(output.trim().split("\n").at(-1) ?? "{}") as { pid?: number; error?: string };
+		}),
+	);
+	assert.deepEqual(
+		outcomes.filter((outcome) => outcome.error !== undefined),
+		[],
+		"no launcher fails while the winner of the lease starts",
+	);
+	assert.equal(new Set(outcomes.map((outcome) => outcome.pid)).size, 1, "one host serves the storage");
+});
+
 it("reports a bootstrap that ends without readiness and exits with failure", { timeout: 30000 }, async (t) => {
 	const fixture = runtimeFixture(t);
 	const unsettled = join(fixture.root, "unsettled-extension.ts");

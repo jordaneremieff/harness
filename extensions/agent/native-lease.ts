@@ -20,13 +20,31 @@ function checkFile(stat: Stats): void {
 
 /** One nonblocking attempt on a private local Darwin filesystem; release never removes its inode. */
 export function tryNativeWriterLease(path: string, signal?: AbortSignal): NativeLeaseAttempt {
+	return openLease(path, true, signal);
+}
+
+/**
+ * Block this thread until no other process holds the lease at `path`, then hold it. Only a dedicated runner process,
+ * which has no other work on its thread, may wait this way.
+ */
+export function waitNativeWriterLease(path: string): NativeWriterLease {
+	const attempt = openLease(path, false);
+	if (attempt.kind === "busy") throw new Error("A blocking native lease wait reported busy");
+	return attempt.lease;
+}
+
+function openLease(path: string, nonblocking: boolean, signal?: AbortSignal): NativeLeaseAttempt {
 	if (process.platform !== "darwin") throw new Error("Native writer leases require a private local Darwin filesystem");
 	signal?.throwIfAborted();
 	let descriptor: number;
 	try {
 		descriptor = openSync(
 			path,
-			constants.O_RDWR | constants.O_CREAT | DARWIN_O_EXLOCK | constants.O_NONBLOCK | constants.O_NOFOLLOW,
+			constants.O_RDWR |
+				constants.O_CREAT |
+				DARWIN_O_EXLOCK |
+				(nonblocking ? constants.O_NONBLOCK : 0) |
+				constants.O_NOFOLLOW,
 			0o600,
 		);
 	} catch (error) {

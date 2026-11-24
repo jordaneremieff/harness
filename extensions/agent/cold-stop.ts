@@ -3,8 +3,8 @@ import { fork } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { writerLeasePaths, type HostMetadata } from "./host-protocol.ts";
-import { tryNativeWriterLeases } from "./native-lease.ts";
+import { startGatePath, writerLeasePaths, type HostMetadata } from "./host-protocol.ts";
+import { tryNativeWriterLeases, waitNativeWriterLease } from "./native-lease.ts";
 import type { stopBeforeResume } from "./durable-host.ts";
 
 export type ColdStopResult = Awaited<ReturnType<typeof stopBeforeResume>>;
@@ -15,8 +15,11 @@ export async function withColdWriter(metadata: HostMetadata, stop: () => Promise
 	// The caller that reads these diagnostics can exit first. A closed pipe must not end the stop or hold its lease.
 	for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
 	const leases = writerLeasePaths(metadata);
-	for (const path of leases) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	for (const path of [...leases, startGatePath(metadata)]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	// A host that is still starting holds the start gate; its endpoint answers once the gate opens.
+	const gate = waitNativeWriterLease(startGatePath(metadata));
 	const writer = tryNativeWriterLeases(leases);
+	gate.release();
 	if (writer.kind === "busy") return { busy: true };
 	// Bound this one-shot writer, including configured setup and teardown. An incomplete stop has no success reply.
 	const lifetime = setTimeout(() => {

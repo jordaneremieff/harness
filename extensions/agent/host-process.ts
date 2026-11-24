@@ -15,7 +15,7 @@ import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { ChordError, PluginError, invalid, isChordError } from "@earendil-works/chord";
 import { createTransportServer, type TransportServer, type TransportRequest } from "../../transport/index.ts";
-import { tryNativeWriterLeases, type NativeWriterLease } from "./native-lease.ts";
+import { tryNativeWriterLeases, waitNativeWriterLease, type NativeWriterLease } from "./native-lease.ts";
 import { validNativeWriterId } from "./claims.ts";
 import {
 	formatHostReady,
@@ -23,6 +23,7 @@ import {
 	HOST_CONTRACT_MEMBER,
 	hostPaths,
 	parseHostMetadata,
+	startGatePath,
 	writerLeasePaths,
 	type HostMetadata,
 	type HostPaths,
@@ -945,10 +946,15 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	chmodSync(paths.directory, 0o700);
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
 	const record = claimRecord(paths.identity, randomUUID());
+	const exit = options.exit;
+	// Dedicated runners of one storage queue on its start gate. The winner holds the gate until its endpoint listens,
+	// so a contender that then finds the writer lease busy reports BUSY only once that endpoint can answer.
+	const gate = exit ? openStartGate(metadata) : undefined;
 	let claim: NativeWriterLease;
 	try {
 		claim = takeClaim(writerLeasePaths(metadata), record);
 	} catch (error) {
+		gate?.release();
 		if (error instanceof HostClaimRefusedError && error.observation === "busy") {
 			(options.announceBusy ?? ((target) => process.stdout.write(formatHostBusy(target))))({
 				storageId: metadata.storageId,
@@ -959,7 +965,6 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	}
 	// Without a complete runtime there is no safe close handle: keep the lease until process exit. A dedicated
 	// process whose bootstrap never finishes would hold it forever, so it ends at its bootstrap deadline.
-	const exit = options.exit;
 	const bootstrapMs = metadata.trust === undefined ? TRUST_BOOTSTRAP_DEADLINE_MS : BOOTSTRAP_DEADLINE_MS;
 	const cancelBootstrap = exit
 		? (options.scheduleBootstrapDeadline ?? unrefDeadline)(() => {
@@ -970,32 +975,36 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 				exit(1);
 			}, bootstrapMs)
 		: undefined;
-	let runtime: HostRuntime;
 	try {
-		runtime = await createRuntime();
-	} catch (error) {
-		cancelBootstrap?.();
-		throw error;
-	}
-	const host = new HostProcessServer(
-		runtime,
-		paths,
-		claim,
-		record,
-		idleMs,
-		options.scheduleIdleCheck,
-		options.observationClock,
-		options.exit,
-		options.writeEndRecord,
-		options.scheduleShutdownDeadline,
-	);
-	try {
-		await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
-		return host;
-	} catch (error) {
-		await host.close();
-		throw error;
+		const runtime = await createRuntime();
+		const host = new HostProcessServer(
+			runtime,
+			paths,
+			claim,
+			record,
+			idleMs,
+			options.scheduleIdleCheck,
+			options.observationClock,
+			options.exit,
+			options.writeEndRecord,
+			options.scheduleShutdownDeadline,
+		);
+		try {
+			await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
+			return host;
+		} catch (error) {
+			await host.close();
+			throw error;
+		}
 	} finally {
 		cancelBootstrap?.();
+		gate?.release();
 	}
+}
+
+/** The start gate sits beside the storage file; a dedicated runner may block its own thread on it. */
+function openStartGate(metadata: HostMetadata): NativeWriterLease {
+	const path = startGatePath(metadata);
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	return waitNativeWriterLease(path);
 }
