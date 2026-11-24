@@ -23,7 +23,7 @@ import {
 	type AgentCardContext,
 	type AgentCardLookup,
 } from "./tool-cards.ts";
-import { fixtures, fixtureResult, rows, targetId } from "./tool-card-fixture.mts";
+import { fixtures, fixtureResult, forkId, rows, targetId } from "./tool-card-fixture.mts";
 
 initTheme("dark", false);
 setFlagsFromString("--expose-gc");
@@ -299,4 +299,54 @@ it("keeps the lines of an expanded state note while its lookup returns a new emp
 	);
 	const lines = expanded.render(100);
 	for (let frame = 0; frame < 20; frame++) assert.equal(expanded.render(100), lines);
+});
+
+it("builds a mounted call card again only when a roster fact that it drew changed", () => {
+	let roster: readonly AgentConversationSummary[] = rows;
+	const card = createAgentToolCards(() => roster).agent_send;
+	const args = { sessionId: targetId, message: "Review the parser." };
+	const state: NonNullable<AgentCardContext["state"]> = {};
+	const call = card.renderCall(args, theme, context({ args, state }));
+	const first = state.grammarCall;
+	const lines = call.render(100);
+	assert.match(text(lines), /^agent_send Parser review/u);
+
+	const other = {
+		...rows[1],
+		id: "87654321-4321-4321-4321-cba987654321",
+		storageId: "87654321-4321-4321-4321-cba987654321",
+	};
+	roster = [...rows, { ...other, name: "Another agent" }];
+	assert.equal(call.render(100), lines, "a new agent that the card does not name builds no card");
+	roster = [rows[0], { ...rows[1], name: "Renamed fork" }, { ...other, name: "Another agent" }];
+	assert.equal(call.render(100), lines, "another agent's new name builds no card");
+	assert.equal(state.grammarCall, first);
+
+	roster = [...rows, { ...other, name: rows[0].name }];
+	assert.match(
+		text(call.render(100)),
+		new RegExp(`^agent_send Parser review \\[${targetId}\\]`, "u"),
+		"a second agent with the target's name builds the card with the identity",
+	);
+	assert.notEqual(state.grammarCall, first);
+	roster = [{ ...rows[0], model: { provider: "provider", modelId: "other-model", thinkingLevel: "low" } }, rows[1]];
+	assert.match(text(call.render(100)), /other-model/u, "the target's new model builds the card");
+});
+
+it("a mounted result card names its target with the roster of each frame", () => {
+	let roster: readonly AgentConversationSummary[] = [];
+	const cards = createAgentToolCards(() => roster);
+	const args = { sessionId: forkId, entryId: 7 };
+	const result = fixtureResult({ identity: `${targetId}:3`, conversationId: 3, source: forkId });
+	const options = { expanded: false, isPartial: false };
+	// Pi builds the cards of a resumed session before the first roster read.
+	const mounted = cards.agent_fork.renderResult(result, options, theme, context({ args, state: {} }));
+	const early = text(mounted.render(100));
+	roster = [...rows, { ...rows[1], id: `${targetId}:3`, name: "New branch" }];
+	const fresh = cards.agent_fork.renderResult(result, options, theme, context({ args, state: {} }));
+	assert.notEqual(text(fresh.render(100)), early, "the roster changes what a fresh card shows");
+	assert.equal(text(mounted.render(100)), text(fresh.render(100)));
+	const settled = mounted.render(100);
+	roster = roster.map((row) => ({ ...row, state: "working", cost: 2 }));
+	assert.equal(mounted.render(100), settled, "a roster read that changed only activity builds no card");
 });

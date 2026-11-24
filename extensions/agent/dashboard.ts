@@ -58,7 +58,7 @@ import {
 	titleOf,
 	unplacedText,
 } from "./dashboard-roster.ts";
-import { NO_AGENT_ROWS, type AgentCardLookup } from "./tool-cards.ts";
+import { NO_AGENT_ROWS, rosterCardFacts, type AgentCardLookup } from "./tool-cards.ts";
 import {
 	agentState,
 	dashboardSessionState,
@@ -335,6 +335,8 @@ export class AgentDashboard implements Component, Focusable {
 	private rosterAgain = false;
 	private sourceGeneration = 0;
 	private selectionRead = new AbortController();
+	/** The roster facts that the cards of the open conversation last drew. */
+	private cardFacts: string | undefined;
 	/** Newer operator intent: a selection, inspector or surface change outdates an answer asked for before it. */
 	private intent = 0;
 	private selectedMark = "";
@@ -625,12 +627,17 @@ export class AgentDashboard implements Component, Focusable {
 			const previousRows = this.page?.rows;
 			this.page = this.reuseRoster(pages.reduce((previous, page) => this.mergeRoster(previous, page)));
 			const rows = this.page.rows;
-			if (
+			// Tool cards draw identities, names, handles and models; a notice card also draws the state of an agent.
+			const cardFacts = rosterCardFacts(rows);
+			if (cardFacts !== this.cardFacts) {
+				this.cardFacts = cardFacts;
+				this.console?.conversation.refreshCards();
+			} else if (
 				!previousRows ||
 				rows.length !== previousRows.length ||
 				rows.some((row, index) => row !== previousRows[index])
 			)
-				this.console?.conversation.refreshCards();
+				this.console?.conversation.refreshNoticeCards();
 			this.loadMore = false;
 			this.rosterFailures = 0;
 			this.rosterNotice = undefined;

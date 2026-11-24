@@ -397,11 +397,15 @@ The synchronous lookup uses roster facts already observed by the primary footer;
 it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 A card draws its lines once for each width and expand key, and returns the same
-lines for every later frame. A call card is built again only when its row
-observes a result, when the identity, name, handle or model of a roster row
-changes, or when the local day ends; a roster read that changed only activity,
-cost or times builds no card. An expanded state note shows the state of each
-awaited agent, so it also follows roster activity. In the dashboard, a thread
+lines for every later frame. A call card and a result card are built again
+only when their row observes a result, when a roster fact that the card drew
+changes, or when the local day ends. The roster facts are the identity, name,
+handle and model of the targets that the card names, and whether another agent
+shares a target's name; a card that reads the whole roster follows those facts
+of every row. A new or renamed agent that a card does not name builds no card,
+and neither does a roster read that changed only activity, cost or times. An
+expanded state note shows the state of each awaited agent, so it also follows
+roster activity. In the dashboard, a thread
 title that the Threads view or the related threads learn builds the cards of
 the open conversation again, so a retitled thread shows its new title.
 No card keeps a reference to the card of an earlier display update, and a

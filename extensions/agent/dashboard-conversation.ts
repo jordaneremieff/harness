@@ -300,11 +300,19 @@ export class AgentConversation {
 	/** Observed roster facts changed: agent cards repaint through their renderers with the current lookup. */
 	refreshCards(): void {
 		for (const component of this.agentCards) component.invalidate();
+		this.refreshNoticeCards();
+	}
+	/**
+	 * A roster row changed in a fact that only a notice card draws, such as the state of an awaited agent.
+	 * Returns whether the conversation holds a notice card.
+	 */
+	refreshNoticeCards(): boolean {
 		for (const component of this.noticeCards) {
 			component.invalidate();
 			this.rendered.delete(component);
 			this.rows.delete(component);
 		}
+		return this.noticeCards.size > 0;
 	}
 	/** A global thinking change reaches every retained native assistant and clears its per-run choices. */
 	setShowThinking(show: boolean): void {

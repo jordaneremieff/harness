@@ -52,6 +52,13 @@ export type AgentCardLookup = (() => readonly AgentConversationSummary[]) & {
 	readonly nameFor?: (identity: string) => string | undefined;
 	/** The model of an agent or main session the view has observed, for identities beyond the roster rows. */
 	readonly modelFor?: (identity: string) => AgentConversationSummary["model"] | undefined;
+	/**
+	 * Set by a mounted card for its own build: the row that `identity` names, and whether another row shares the
+	 * name of `row`. The card records each answer and builds again only when a recorded answer changes. A direct
+	 * read of the rows makes the card depend on every row.
+	 */
+	readonly target?: (identity: string) => AgentConversationSummary | undefined;
+	readonly sharesName?: (row: AgentConversationSummary) => boolean;
 };
 
 /**
@@ -343,29 +350,41 @@ function modelCaption(model: AgentConversationSummary["model"]): string {
 }
 
 function targetConfiguration(identity: string, context: AgentCardContext): string {
-	return displayText(modelCaption(findTarget(identity, context.lookup?.() ?? [])?.model));
+	return displayText(modelCaption(contextTarget(identity, context)?.model));
 }
 
 function findTarget(identity: string, rows: readonly AgentConversationSummary[]): AgentConversationSummary | undefined {
 	return rows.find((item) => item.id === identity || (identity.startsWith("@") && item.profile?.handle === identity));
 }
 
-function targetLabel(identity: string, context: AgentCardContext): string {
-	if (!identity) return "";
-	const rows = context.lookup?.() ?? [];
-	const row = findTarget(identity, rows);
-	if (!row) return displayIdentity(identity);
-	const label = row.profile?.handle || row.name || row.id;
-	const duplicate =
+/** The roster row that `identity` names in the view of this card. */
+function contextTarget(identity: string, context: AgentCardContext): AgentConversationSummary | undefined {
+	const lookup = context.lookup;
+	return lookup?.target ? lookup.target(identity) : findTarget(identity, lookup?.() ?? []);
+}
+
+/** Another row without a handle has the same name and model, so the name alone does not identify `row`. */
+function sharesName(row: AgentConversationSummary, rows: readonly AgentConversationSummary[]): boolean {
+	return (
 		!row.profile?.handle &&
-		row.name &&
+		Boolean(row.name) &&
 		rows.some(
 			(other) =>
 				other.id !== row.id &&
 				other.name === row.name &&
 				!other.profile?.handle &&
 				modelCaption(other.model) === modelCaption(row.model),
-		);
+		)
+	);
+}
+
+function targetLabel(identity: string, context: AgentCardContext): string {
+	if (!identity) return "";
+	const row = contextTarget(identity, context);
+	if (!row) return displayIdentity(identity);
+	const label = row.profile?.handle || row.name || row.id;
+	const lookup = context.lookup;
+	const duplicate = lookup?.sharesName ? lookup.sharesName(row) : sharesName(row, lookup?.() ?? []);
 	return `${displayText(label)}${duplicate ? ` [${displayIdentity(row.id)}]` : ""}`;
 }
 
@@ -412,13 +431,11 @@ function callIdentity(context: AgentCardContext): string {
 
 function sameTarget(identity: string, context: AgentCardContext): boolean {
 	const requested = callIdentity(context);
-	return (
-		identity !== "" && (identity === requested || identity === findTarget(requested, context.lookup?.() ?? [])?.id)
-	);
+	return identity !== "" && (identity === requested || identity === contextTarget(requested, context)?.id);
 }
 
 function targetSuffix(identity: string, context: AgentCardContext): string {
-	const name = findTarget(identity, context.lookup?.() ?? [])?.name ?? "";
+	const name = contextTarget(identity, context)?.name ?? "";
 	return !context.expanded && (sameTarget(identity, context) || headerHasName(identity, name, context))
 		? ""
 		: ` · ${targetLabel(identity, context)}`;
@@ -431,8 +448,7 @@ function snapshotFacts(context: AgentCardContext, snapshot: Record<string, unkno
 	const agent = record(snapshot.agent);
 	const model = record(agent.model);
 	const lookup = context.lookup;
-	const previous = lookup?.() ?? [];
-	const known = previous.find((row) => row.id === identity);
+	const known = contextTarget(identity, context);
 	const row: AgentConversationSummary = {
 		id: identity,
 		storageId: identity.split(":")[0],
@@ -449,14 +465,27 @@ function snapshotFacts(context: AgentCardContext, snapshot: Record<string, unkno
 				? { provider: text(model.provider), modelId: text(model.modelId), thinkingLevel: text(agent.thinkingLevel) }
 				: known?.model,
 	};
-	const rows = [row, ...previous.filter((item) => item.id !== identity)];
 	// The observed target leads the rows; thread titles and names stay those of the view.
-	return { ...context, lookup: Object.assign(() => rows, { ...lookup }) };
+	let rows: AgentConversationSummary[] | undefined;
+	const observed = (): AgentConversationSummary[] => {
+		rows ??= [row, ...(lookup?.() ?? []).filter((item) => item.id !== identity)];
+		return rows;
+	};
+	return {
+		...context,
+		lookup: Object.assign(observed, {
+			...lookup,
+			target: (selector: string) => findTarget(selector, [row]) ?? contextTarget(selector, context),
+			// Every other row of the view shares or does not share the name of the observed target as before.
+			sharesName: (candidate: AgentConversationSummary) =>
+				candidate === row && lookup?.sharesName ? lookup.sharesName(row) : sharesName(candidate, observed()),
+		}),
+	};
 }
 
 function headerHasName(identity: string, name: string, context: AgentCardContext): boolean {
 	const args = record(context.args);
-	const observed = findTarget(callIdentity(context), context.lookup?.() ?? []);
+	const observed = contextTarget(callIdentity(context), context);
 	if (sameTarget(identity, context) && observed?.name === name) return true;
 	return !callIdentity(context) && name !== "" && (args.name === name || args.topic === name);
 }
@@ -469,7 +498,7 @@ function headerHasModel(
 	context: AgentCardContext,
 ): boolean {
 	if (!sameTarget(identity, context)) return false;
-	const observed = findTarget(callIdentity(context), context.lookup?.() ?? [])?.model;
+	const observed = contextTarget(callIdentity(context), context)?.model;
 	return observed?.provider === provider && observed.modelId === modelId && observed.thinkingLevel === thinking;
 }
 
@@ -549,7 +578,7 @@ function messageMetadata(args: Record<string, unknown>, context: AgentCardContex
 }
 
 function resolvedTargetFact(selector: string, context: AgentCardContext): string | undefined {
-	const identity = findTarget(selector, context.lookup?.() ?? [])?.id;
+	const identity = contextTarget(selector, context)?.id;
 	return identity && identity !== selector ? `  resolved target: ${identity}` : undefined;
 }
 
@@ -684,7 +713,7 @@ export function renderAgentCall(name: string, value: unknown, theme: Theme, cont
 		const model = take("model");
 		const level = take("thinkingLevel");
 		const observed = observedModel();
-		const configuration = findTarget(callIdentity({ ...context, args }), context.lookup?.() ?? [])?.model;
+		const configuration = contextTarget(callIdentity({ ...context, args }), context)?.model;
 		const requested = [
 			model === `${configuration?.provider}/${configuration?.modelId}` ? "" : model,
 			level === configuration?.thinkingLevel ? "" : level,
@@ -2927,6 +2956,25 @@ type RosterMark = (rows: readonly AgentConversationSummary[]) => object;
  * or times builds no card. The facts are joined once for each rows array; a card then compares two references
  * and keeps the mark, not the rows.
  */
+/** The facts of one row that a card draws; an absent row has none. */
+function targetFacts(row: AgentConversationSummary | undefined): string {
+	return row === undefined
+		? ""
+		: [
+				row.id,
+				row.name ?? "",
+				row.profile?.handle ?? "",
+				row.model?.provider ?? "",
+				row.model?.modelId ?? "",
+				row.model?.thinkingLevel ?? "",
+			].join("\u0000");
+}
+
+/** The facts that cards draw from a roster. Two rosters with equal facts give equal cards. */
+export function rosterCardFacts(rows: readonly AgentConversationSummary[]): string {
+	return rows.map(targetFacts).join("\u0001");
+}
+
 function rosterMarker(): RosterMark {
 	const marks = new WeakMap<readonly AgentConversationSummary[], object>();
 	const empty = {};
@@ -2936,18 +2984,7 @@ function rosterMarker(): RosterMark {
 		if (rows.length === 0) return empty;
 		const known = marks.get(rows);
 		if (known) return known;
-		const facts = rows
-			.map((row) =>
-				[
-					row.id,
-					row.name ?? "",
-					row.profile?.handle ?? "",
-					row.model?.provider ?? "",
-					row.model?.modelId ?? "",
-					row.model?.thinkingLevel ?? "",
-				].join("\u0000"),
-			)
-			.join("\u0001");
+		const facts = rosterCardFacts(rows);
 		if (last?.facts !== facts) last = { facts, mark: {} };
 		marks.set(rows, last.mark);
 		return last.mark;
@@ -2958,23 +2995,68 @@ function rosterMarker(): RosterMark {
 	};
 }
 
+/** What one build of a mounted card drew from the roster. */
+class RosterReads {
+	private readonly lookup: AgentCardLookup;
+	private readonly targets = new Map<string, string>();
+	private readonly shared: { row: AgentConversationSummary; shared: boolean }[] = [];
+	private every = false;
+	constructor(lookup: AgentCardLookup) {
+		this.lookup = lookup;
+	}
+	/** The lookup for one build. It records each target and shared-name answer; a read of the rows records all rows. */
+	recording(): AgentCardLookup {
+		this.targets.clear();
+		this.shared.length = 0;
+		this.every = false;
+		const lookup = this.lookup;
+		return Object.assign(
+			() => {
+				this.every = true;
+				return lookup();
+			},
+			{
+				...lookup,
+				target: (identity: string) => {
+					const row = findTarget(identity, lookup());
+					this.targets.set(identity, targetFacts(row));
+					return row;
+				},
+				sharesName: (row: AgentConversationSummary) => {
+					const shared = sharesName(row, lookup());
+					this.shared.push({ row, shared });
+					return shared;
+				},
+			},
+		);
+	}
+	/** True when the current rows give another answer than the one a build recorded. */
+	changed(): boolean {
+		if (this.every) return true;
+		const rows = this.lookup();
+		for (const [identity, facts] of this.targets) if (targetFacts(findTarget(identity, rows)) !== facts) return true;
+		return this.shared.some(({ row, shared }) => sharesName(row, rows) !== shared);
+	}
+}
+
 /**
- * A call card whose facts can change after Pi built it: the result renderer observes the target after the
- * call renderer ran, the roster changes without a display update, and a delivery time omits its date only on
- * the day it names. A frame builds the card again only when one of these three changed; an unchanged frame
- * returns the line array of the built card.
+ * A card whose facts can change after Pi built it: the result renderer observes the target after the call
+ * renderer ran, the roster changes without a display update, and a time omits its date only on the day it
+ * names. A frame builds the card again only when the observation, the day, or a roster fact that the last build
+ * drew changed; an unchanged frame returns the line array of the built card.
  */
-class ObservedCallCard implements Component {
-	private readonly build: (observation: Record<string, unknown> | undefined) => Component;
+class ObservedCard implements Component {
+	private readonly build: (lookup: AgentCardLookup, observation: Record<string, unknown> | undefined) => Component;
 	private readonly state: NonNullable<AgentCardContext["state"]>;
 	private readonly lookup: AgentCardLookup;
 	private readonly mark: RosterMark;
+	private readonly reads: RosterReads;
 	private observation: Record<string, unknown> | undefined;
 	private roster: object;
 	private day: string;
 	private component: Component | undefined;
 	constructor(
-		build: (observation: Record<string, unknown> | undefined) => Component,
+		build: (lookup: AgentCardLookup, observation: Record<string, unknown> | undefined) => Component,
 		state: NonNullable<AgentCardContext["state"]>,
 		lookup: AgentCardLookup,
 		mark: RosterMark,
@@ -2983,17 +3065,23 @@ class ObservedCallCard implements Component {
 		this.state = state;
 		this.lookup = lookup;
 		this.mark = mark;
+		this.reads = new RosterReads(lookup);
 		this.observation = state.observation;
 		this.roster = mark(lookup());
 		this.day = localDay();
-		this.component = build(this.observation);
+		this.component = build(this.reads.recording(), this.observation);
 	}
 	render(width: number): readonly string[] {
 		const observation = this.state.observation;
 		const roster = this.mark(this.lookup());
 		const day = localDay();
-		if (!this.component || observation !== this.observation || roster !== this.roster || day !== this.day)
-			this.component = this.build(observation);
+		if (
+			!this.component ||
+			observation !== this.observation ||
+			day !== this.day ||
+			(roster !== this.roster && this.reads.changed())
+		)
+			this.component = this.build(this.reads.recording(), observation);
 		this.observation = observation;
 		this.roster = roster;
 		this.day = day;
@@ -3012,9 +3100,9 @@ function observedCall(
 	lookup: AgentCardLookup,
 	mark: RosterMark,
 ): Component {
-	const build = (observation: Record<string, unknown> | undefined) =>
-		card.renderCall(args, theme, snapshotFacts(context, observation));
-	return context.state ? new ObservedCallCard(build, context.state, lookup, mark) : build(undefined);
+	const build = (rows: AgentCardLookup, observation: Record<string, unknown> | undefined) =>
+		card.renderCall(args, theme, snapshotFacts(cardContext(context, rows), observation));
+	return context.state ? new ObservedCard(build, context.state, lookup, mark) : build(lookup, undefined);
 }
 
 function observeResult(result: AgentToolResult<unknown>, context: AgentCardContext, name: string): AgentCardContext {
@@ -3411,8 +3499,12 @@ export function createAgentToolCards(lookup: AgentCardLookup = noRows): Readonly
 					theme: Theme,
 					context: AgentCardContext,
 				) {
-					const observed = observeResult(result, cardContext(context, lookup), name);
-					return card.renderResult(result, options, theme, observed);
+					// The retained context holds no earlier component, so a mounted card keeps no earlier card alive.
+					const scoped = cardContext(context, lookup);
+					const build = (rows: AgentCardLookup) =>
+						card.renderResult(result, options, theme, observeResult(result, cardContext(scoped, rows), name));
+					// A result names its target with the roster facts of each frame, as its call card does.
+					return scoped.state ? new ObservedCard(build, scoped.state, lookup, mark) : build(lookup);
 				},
 			},
 		]),

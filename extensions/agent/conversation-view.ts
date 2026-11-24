@@ -203,6 +203,10 @@ export class ConversationView {
 		this.transcript?.refreshCards();
 		this.viewport = undefined;
 	}
+	/** A roster row changed in a fact that only a notice card draws. */
+	refreshNoticeCards(): void {
+		if (this.transcript?.refreshNoticeCards()) this.viewport = undefined;
+	}
 	/**
 	 * A different lookup rebuilds the transcript at once, so no card keeps a renderer from a previous
 	 * source and the reading position and disclosure survive. Without retained content the next

@@ -1550,3 +1550,49 @@ it("a selection that moves on abandons the stored-message read of each agent it 
 	}
 	assert.equal(reads.at(-1)?.signal?.aborted, true, "closing the view abandons the last read");
 });
+
+it("a roster refresh builds the tool cards again only when a fact that cards draw changed", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let rows = [row("one", { name: "First", modifiedAt: 3 }), row("two", { name: "Second", modifiedAt: 2 })];
+	const observed = source();
+	observed.list = async () => page(rows);
+	let notify = () => {};
+	observed.subscribeRoster = (listener) => {
+		notify = listener;
+		return () => {};
+	};
+	const f = fixture(80, 24, observed);
+	try {
+		await turn();
+		const conversation = (
+			f.ui as unknown as { console: { conversation: { refreshCards(): void; refreshNoticeCards(): void } } }
+		).console.conversation;
+		let cards = 0;
+		let notices = 0;
+		const refreshCards = conversation.refreshCards.bind(conversation);
+		const refreshNoticeCards = conversation.refreshNoticeCards.bind(conversation);
+		conversation.refreshCards = () => {
+			cards++;
+			refreshCards();
+		};
+		conversation.refreshNoticeCards = () => {
+			notices++;
+			refreshNoticeCards();
+		};
+		const refresh = async () => {
+			notify();
+			t.mock.timers.tick(250);
+			await turn();
+		};
+		rows = rows.map((item) => ({ ...item, state: "working", cost: 4, modifiedAt: item.modifiedAt + 10 }));
+		await refresh();
+		assert.deepEqual([cards, notices], [0, 1], "activity, cost and time build no tool card");
+		rows = [{ ...rows[0], name: "Renamed" }, rows[1]];
+		await refresh();
+		assert.deepEqual([cards, notices], [1, 1], "a new name builds the cards again");
+		await refresh();
+		assert.deepEqual([cards, notices], [1, 1], "an unchanged roster builds nothing");
+	} finally {
+		f.ui.dispose();
+	}
+});
