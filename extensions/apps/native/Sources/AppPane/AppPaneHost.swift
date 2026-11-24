@@ -56,7 +56,7 @@ final class AppPaneHost {
         mirror.frame = overlay.content.bounds
         mirror.autoresizingMask = [.width, .height]
         mirror.onClick = { [weak self] in self?.giveKeyboard() }
-        mirror.onState = { [weak self] in self?.draw() }
+        mirror.onState = { [weak self] in self?.mirrorChanged() }
         overlay.content.addSubview(mirror)
         // The window server counts an opaque window as covering the windows behind it, and
         // Chromium-based applications stop drawing pages that are covered. A panel just short of
@@ -112,7 +112,6 @@ final class AppPaneHost {
             known = DockedWindow.windows(of: pid)
             window = docked
             shownTitle = docked.title
-            overlay.ready = true
             let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.tick() }
             }
@@ -166,6 +165,7 @@ final class AppPaneHost {
         default:
             window.park(primaryHeight: primaryHeight)
             mirror.stop()
+            mirrorChanged()
         }
         draw()
     }
@@ -199,12 +199,22 @@ final class AppPaneHost {
             replacing = nil
             lock = nil
             mirror.stop()
+            mirrorChanged()
             known = DockedWindow.windows(of: closed.pid)
             window = DockedWindow(pid: closed.pid, element: fresh, created: false)
             shownTitle = window?.title ?? ""
             return follow()
         }
         if Date() >= state.until { end(status: 0) }
+    }
+
+    /// The panel over the pane holds only the window's image, so it shows only while an image is live. Without one,
+    /// the pane's own text stays visible and says why, instead of an empty panel.
+    private func mirrorChanged() {
+        let live = mirror.live && window != nil
+        if overlay.ready != live { overlay.ready = live }
+        if !live, overlay.window.isVisible { overlay.window.orderOut(nil) }
+        draw()
     }
 
     private func giveKeyboard() {
@@ -239,8 +249,12 @@ final class AppPaneHost {
         } else {
             switch overlay.anchor.status {
             case .placed(let placement) where !placement.coveredEntirely:
-                status = "\(name) is in this pane. Click it to type there."
-                if let failure = mirror.failure { status += " The pane cannot show it while the terminal is in front: \(failure)" }
+                if mirror.live {
+                    status = "\(name) is in this pane. Click it to type there."
+                } else {
+                    status = "\(name) shows here while it is the active app. Press any key here to bring it back."
+                    if let failure = mirror.failure { status += " \(failure)" }
+                }
                 if let target = self.window?.target, let accepted = self.window?.accepted,
                    accepted.width > target.width + 1 || accepted.height > target.height + 1 {
                     status += " The window keeps a minimum size of \(Int(accepted.width))×\(Int(accepted.height)) points, larger than this pane."

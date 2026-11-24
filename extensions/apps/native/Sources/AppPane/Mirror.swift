@@ -18,7 +18,12 @@ let mirrorLog = Logger(subsystem: "local.harness.app-pane", category: "mirror")
 final class MirrorView: NSView {
     var onClick: (() -> Void)?
     private(set) var failure: String?
+    /** Whether the current capture delivered an image, so the view shows the window and not an empty area. */
+    private(set) var live = false
     var onState: (() -> Void)?
+    /** macOS shows its Screen Recording request once per process at most. */
+    private static var requested = false
+    static let permissionText = "Rex needs Screen Recording access to show it here while you use the terminal. Turn on Rex in System Settings, Privacy & Security, Screen & System Audio Recording, then quit and reopen Rex."
     private var stream: SCStream?
     private var streamWindow: CGWindowID?
     private var streamSize: CGSize = .zero
@@ -32,6 +37,15 @@ final class MirrorView: NSView {
     override init(frame: NSRect) {
         output = MirrorOutput(renderer: display.sampleBufferRenderer)
         super.init(frame: frame)
+        output.onFirstFrame = { [weak self] generation in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, generation == self.generation, !self.live else { return }
+                    self.live = true
+                    self.onState?()
+                }
+            }
+        }
         wantsLayer = true
         layer?.masksToBounds = true
         display.videoGravity = .resize
@@ -75,11 +89,25 @@ final class MirrorView: NSView {
         }
         guard !starting || streamWindow != window else { return }
         stop()
+        // Screen capture runs under the terminal's Screen Recording access. Without it the view stays empty, so
+        // the pane says what to turn on instead.
+        guard CGPreflightScreenCaptureAccess() else {
+            if !Self.requested {
+                Self.requested = true
+                CGRequestScreenCaptureAccess()
+            }
+            if failure != Self.permissionText {
+                failure = Self.permissionText
+                onState?()
+            }
+            return
+        }
         streamWindow = window
         streamSize = pixels
         starting = true
         generation += 1
         let current = generation
+        output.begin(generation: current)
         Task { @MainActor in
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
@@ -111,6 +139,7 @@ final class MirrorView: NSView {
     func stop() {
         generation += 1
         starting = false
+        live = false
         streamWindow = nil
         if let stream {
             self.stream = nil
@@ -139,6 +168,18 @@ struct MirrorError: Error {
 /// renderer at once.
 final class MirrorOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private let renderer: AVSampleBufferVideoRenderer
+    /// Called once per capture, with its generation, when the first complete image arrives.
+    var onFirstFrame: (@Sendable (Int) -> Void)?
+    private let state = NSLock()
+    private var generation = 0
+    private var delivered = true
+
+    func begin(generation: Int) {
+        state.withLock {
+            self.generation = generation
+            delivered = false
+        }
+    }
 
     init(renderer: AVSampleBufferVideoRenderer) {
         self.renderer = renderer
@@ -160,5 +201,11 @@ final class MirrorOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         }
         if renderer.status == .failed { renderer.flush() }
         renderer.enqueue(buffer)
+        let first: Int? = state.withLock {
+            guard !delivered else { return nil }
+            delivered = true
+            return generation
+        }
+        if let first { onFirstFrame?(first) }
     }
 }
