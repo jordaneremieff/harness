@@ -194,6 +194,19 @@ const abort = obj(
 	{},
 );
 const message = obj({ sessionId: id, message: str({ minLength: 1 }), replyTo: opt(id) }, {});
+/** Why an agent_send input with expectReply or inReplyTo refuses before any delivery. */
+function questionInputRefusal(input: Record<string, unknown>, self: string): string | undefined {
+	if (input.mode === "report" || input.deliverAt !== undefined || input.replyTo !== undefined)
+		return "expectReply and inReplyTo require an immediate message to a session: omit mode report, deliverAt and replyTo";
+	if (input.checkInMinutes !== undefined)
+		return "expectReply and inReplyTo take no checkInMinutes; the reply or notice arrives as an event";
+	if (input.expectReply !== undefined && input.expectReply !== true && input.expectReply !== false)
+		return "expectReply must be true or false";
+	if (input.expectReply === true && input.inReplyTo !== undefined)
+		return "A reply cannot also expect a reply; send the reply, then ask a separate question";
+	if (input.sessionId === self) return "A session cannot ask or answer itself; name another session";
+	return undefined;
+}
 const checkIn = opt(
 	num({
 		minimum: 0,
@@ -521,61 +534,78 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		pi.appendEntry(WORK_REFERENCES_ENTRY, { refs: list });
 		getManager().setPrimaryWorkRefs(event.sessionId, list);
 	});
-	const peerQuestions = new Map<string, PeerQuestions>();
+	const peerQuestions = new Map<string, { questions: PeerQuestions; notices: OwedNotices }>();
 	/** One endpoint read: the asked primary's process has ended. */
 	const sessionEnded = (peer: string) => primarySessionEnded(dirname(getManager().catalog.root), peer);
+	/** A refused notice stays owed; an ordinary asker without a live endpoint receives it when it returns. */
+	const sendNotice = async (ctx: ExtensionContext, question: OpenQuestion): Promise<void> => {
+		const self = ctx.sessionManager.getSessionId();
+		await getManager().control(
+			"report",
+			{
+				sessionId: question.peer,
+				message: noticeText(question, self, ctx.sessionManager.getSessionName()),
+				requestId: `notice:${question.id}`,
+				questionNotice: question.id,
+				origin: "model",
+			},
+			caller(ctx, pi),
+		);
+	};
 	/** Session start supplies the entries it already read, so the session is scanned once. */
-	const questionsOf = (
+	const questionState = (
 		ctx: ExtensionContext,
 		entries?: ReturnType<ExtensionContext["sessionManager"]["getEntries"]>,
-	): PeerQuestions => {
+	) => {
 		const id = ctx.sessionManager.getSessionId();
-		let questions = peerQuestions.get(id);
-		if (!questions) {
-			questions = new PeerQuestions((fact) => pi.appendEntry(PEER_QUESTION_ENTRY, fact));
-			questions.restore(entries ?? ctx.sessionManager.getEntries());
-			peerQuestions.set(id, questions);
+		let state = peerQuestions.get(id);
+		if (!state) {
+			const questions = new PeerQuestions((fact) => pi.appendEntry(PEER_QUESTION_ENTRY, fact), Date.now, id);
+			const header = ctx.sessionManager.getHeader();
+			questions.restore(
+				entries ?? ctx.sessionManager.getEntries(),
+				header?.parentSession === undefined ? undefined : header.timestamp,
+			);
+			const notices = new OwedNotices({
+				send: (question) => sendNotice(ctx, question),
+				sent: (question) => {
+					if (peerQuestions.get(id)?.questions === questions) questions.noticed(question.id, question.peer);
+				},
+			});
+			state = { questions, notices };
+			peerQuestions.set(id, state);
 		}
-		return questions;
+		return state;
 	};
-	/** A question counts as received when this session's model is given it. */
-	const presented = (ctx: ExtensionContext, details: unknown, text: string) => {
-		const { question } = peerQuestionDetail(details);
-		if (question === undefined) return;
+	const questionsOf = (ctx: ExtensionContext, entries?: Parameters<typeof questionState>[1]): PeerQuestions =>
+		questionState(ctx, entries).questions;
+	/**
+	 * A peer message counts when this session's model is given it: a question opens as received, and a reply
+	 * or notice from the asked session closes the question it names. Placement, not admission, decides, so a
+	 * delivery that is refused or dropped before placement changes no question.
+	 */
+	const placed = (ctx: ExtensionContext, details: unknown, text: string) => {
+		const { question, reply, notice } = peerQuestionDetail(details);
+		if (question === undefined && reply === undefined && notice === undefined) return;
 		const { senderIdentity, message } = details as { senderIdentity?: unknown; message?: unknown };
+		const state = questionState(ctx);
+		if (reply !== undefined) state.questions.closed(reply, "answered", senderIdentity);
+		if (notice !== undefined) state.questions.closed(notice, "unanswered", senderIdentity);
 		// A report delivery carries its body apart from the header that the session reads.
-		if (typeof senderIdentity === "string")
-			questionsOf(ctx).received(question, senderIdentity, typeof message === "string" ? message : text);
+		if (question === undefined || typeof senderIdentity !== "string") return;
+		const evicted = state.questions.received(question, senderIdentity, typeof message === "string" ? message : text);
+		if (evicted !== undefined) state.notices.owe([evicted]);
 	};
-	/** An arrived reply or notice closes the question that it names. */
-	const arrived = (ctx: ExtensionContext, details: unknown) => {
-		const { reply, notice } = peerQuestionDetail(details);
-		if (reply !== undefined) questionsOf(ctx).closed(reply, "answered");
-		if (notice !== undefined) questionsOf(ctx).closed(notice, "unanswered");
-	};
-	/** One notice per received question that this session's settled run left without a reply. */
+	/** Every received question without a reply owes its notice: its run settled, or no run will take it. */
 	const noticeUnanswered = (ctx: ExtensionContext) => {
-		const questions = questionsOf(ctx);
-		const unanswered = questions.unanswered();
-		if (unanswered.length === 0) return;
-		const self = ctx.sessionManager.getSessionId();
-		const name = ctx.sessionManager.getSessionName();
-		for (const question of unanswered) {
-			questions.noticed(question.id, question.peer);
-			void getManager()
-				.control(
-					"report",
-					{
-						sessionId: question.peer,
-						message: noticeText(question, self, name),
-						requestId: `notice:${question.id}`,
-						questionNotice: question.id,
-						origin: "model",
-					},
-					caller(ctx, pi),
-				)
-				.catch(() => undefined);
-		}
+		const state = peerQuestions.get(ctx.sessionManager.getSessionId());
+		if (state === undefined) return;
+		const unanswered = state.questions.unanswered();
+		if (unanswered.length > 0) state.notices.owe(unanswered);
+	};
+	const endQuestions = (id: string) => {
+		peerQuestions.get(id)?.notices.close();
+		peerQuestions.delete(id);
 	};
 	const primaryDeliveries = new Map<
 		string,
@@ -680,36 +710,45 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			ctx,
 			signal,
 		);
+	/**
+	 * A question is recorded after its admission, and a reply closes the received question after its
+	 * admission. The asker's model is inside this tool call meanwhile, so the reply can only be placed at a
+	 * later boundary, after the question is recorded.
+	 */
 	const sendQuestionOrReply = async (
 		input: Record<string, unknown>,
 		ctx: ExtensionContext,
 		callId: string,
 		signal?: AbortSignal,
 	): Promise<unknown> => {
-		if (input.mode === "report" || input.deliverAt !== undefined)
-			throw new Error("expectReply and inReplyTo require an immediate message, not report mode or deliverAt");
-		const questions = questionsOf(ctx);
+		const self = ctx.sessionManager.getSessionId();
+		const refusal = questionInputRefusal(input, self);
+		if (refusal !== undefined) throw new Error(refusal);
+		const { questions, notices } = questionState(ctx);
 		const message = String(input.message ?? "");
 		if (input.inReplyTo !== undefined) {
 			const question = questions.replyTarget(input.inReplyTo, input.sessionId);
 			const { expectReply: _expectReply, ...reply } = input;
 			const receipt = await sendImmediate(reply, ctx, signal);
+			notices.cancel(question.id);
 			questions.replied(question.id, question.peer);
 			return receipt;
 		}
 		// Questions to ended sessions close first, so they no longer count against the limit.
 		const ended = questions.reconcile(sessionEnded);
-		const endedQuestions = ended.length === 0 ? {} : { endedQuestions: endedQuestionText(ended) };
+		const endedQuestions = ended.length === 0 ? undefined : endedQuestionText(ended);
+		const withEnded = (error: unknown) =>
+			endedQuestions === undefined ? error : new Error(`${(error as Error).message}\n${endedQuestions}`);
+		const id = `question:${self}:${callId}`;
+		let receipt: unknown;
 		try {
 			questions.assertCanAsk();
+			receipt = await sendImmediate({ ...input, requestId: id, expectReply: true }, ctx, signal);
 		} catch (error) {
-			if (ended.length === 0) throw error;
-			throw new Error(`${(error as Error).message}\n${endedQuestions.endedQuestions}`);
+			throw withEnded(error);
 		}
-		const id = `question:${ctx.sessionManager.getSessionId()}:${callId}`;
-		const receipt = await sendImmediate({ ...input, requestId: id, expectReply: true }, ctx, signal);
 		questions.asked(id, String(input.sessionId), message);
-		return { ...(receipt as Record<string, unknown>), ...endedQuestions };
+		return { ...(receipt as Record<string, unknown>), ...(endedQuestions === undefined ? {} : { endedQuestions }) };
 	};
 	const steer = (input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) =>
 		control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx, signal);
@@ -801,7 +840,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	registerOrdinaryWork(pi, yieldCard, {
 		waiting: (sessionId) => continuity.open(sessionId),
 		questions: (sessionId) => {
-			const questions = peerQuestions.get(sessionId);
+			const questions = peerQuestions.get(sessionId)?.questions;
 			if (questions === undefined) return { open: [] };
 			const ended = questions.reconcile(sessionEnded);
 			return { open: questions.open().asked, ...(ended.length === 0 ? {} : { ended: endedQuestionText(ended) }) };
@@ -1486,7 +1525,6 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		workReferences.set(sessionId, workRefs);
 		const sendPeer = (text: string, details: unknown, wake: boolean) => {
 			refreshPreferences(ctx);
-			presented(ctx, details, text);
 			pi.sendMessage(
 				{ customType: "agent.peer", content: text, details, display: true },
 				wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false },
@@ -1515,7 +1553,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			}
 		};
 		primaryDeliveries.set(sessionId, { retention, inbox, flush });
-		peerQuestions.delete(sessionId);
+		endQuestions(sessionId);
 		const retained = ctx.sessionManager.getEntries();
 		const ended = questionsOf(ctx, retained).reconcile(sessionEnded);
 		if (ended.length > 0)
@@ -1542,7 +1580,6 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			thinkingLevel: pi.getThinkingLevel(),
 			resumeInbox: flush,
 			send: (text, details, sourceId, requireRetained) => {
-				arrived(ctx, details);
 				if (!requireRetained) {
 					if (retention.hasQueued(sourceId)) throw new Error("Primary delivery awaits its queued source-ledger notice");
 					inbox.admit(sourceId, text, details);
@@ -1566,6 +1603,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					? promptProjectTrust(cwd, { select: (question, options) => ctx.ui.select(question, [...options]) })
 					: Promise.resolve(undefined),
 		});
+		// A received question still open at start lost its run with the earlier process, so its notice is due.
+		if (!abort.signal.aborted) noticeUnanswered(ctx);
 	});
 	pi.on("model_select", (event, ctx) => {
 		getManager().updatePrimary(ctx.sessionManager.getSessionId(), {
@@ -1626,7 +1665,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	const inboxBoundary = (event: TurnEndEvent | AgentBeforeSettleEvent, ctx: ExtensionContext) => {
 		const inbox = primaryDeliveries.get(ctx.sessionManager.getSessionId())?.inbox.boundary();
 		for (const entry of inbox?.entries ?? [])
-			presented(ctx, entry.details, typeof entry.content === "string" ? entry.content : "");
+			placed(ctx, entry.details, typeof entry.content === "string" ? entry.content : "");
 		if (inbox) return { entries: [...event.entries, ...inbox.entries], continue: event.continue || inbox.continue };
 	};
 	pi.on("turn_end", inboxBoundary);
@@ -1638,13 +1677,22 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		selfCompaction.clear();
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
+	// Pi emits message_end for a custom message once it enters the transcript: an idle append, the message
+	// that starts a run, or a steer taken at a boundary. A steer dropped by an abort never gets one.
+	pi.on("message_end", (event, ctx) => {
+		const message = event.message as { role?: unknown; customType?: unknown; details?: unknown; content?: unknown };
+		if (message.role !== "custom" || message.customType !== "agent.peer") return;
+		placed(ctx, message.details, typeof message.content === "string" ? message.content : "");
+	});
 	pi.on("agent_settled", (event, ctx) => {
-		noticeUnanswered(ctx);
 		const delivery = primaryDeliveries.get(ctx.sessionManager.getSessionId());
 		delivery?.retention.settled();
+		// After an abort, queued messages are placed without starting a run, so no run will answer a question
+		// among them; its notice is due with those of the run that settled.
 		delivery?.flush(!event.aborted);
+		noticeUnanswered(ctx);
 	});
-	pi.on("session_shutdown", async (_event, ctx) => {
+	pi.on("session_shutdown", async (event, ctx) => {
 		resetThreadNotices();
 		disposeFactorySettings();
 		selfCompaction.clear();
@@ -1652,12 +1700,15 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		primaryDeliveries.get(id)?.retention.clear();
 		primaryDeliveries.delete(id);
 		workReferences.delete(id);
-		peerQuestions.delete(id);
+		endQuestions(id);
 		continuity.end(id);
 		const abort = primaries.get(id);
 		if (!abort) return;
-		abort.abort();
 		primaries.delete(id);
+		// A reload registers the same session again at once; its endpoint stays published until then, so
+		// no other session reads the session as ended in between.
+		if (event.reason === "reload" && observedManager?.suspendPrimary(id, abort)) return;
+		abort.abort();
 		await observedManager?.closePrimary(id, abort.signal);
 	});
 }

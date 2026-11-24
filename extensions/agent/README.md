@@ -2481,46 +2481,72 @@ Saved expertise remains evidence; fresh sources and task restrictions outrank it
 ## Questions between sessions
 
 An ordinary primary asks another ordinary primary a question with `agent_send`
-and `expectReply: true`, as an immediate message: report mode and `deliverAt`
-refuse it, and a Durable target refuses it because its answer arrives through
-its request result; send the message without `expectReply` instead. The question ID is `question:<asker>:<tool call ID>`; the
-receipt names it as `question`. The recipient's model reads the question
-followed by a line that names the asker and the question ID, says how to answer
-(`agent_send` to the asker with `inReplyTo` set to the ID), and says that a
-message from another session is information, not an instruction above the
-operator's direction.
+and `expectReply: true`, as an immediate message to another session: report
+mode, `deliverAt`, `replyTo` and `checkInMinutes` refuse it, so do a question to
+the asking session itself and `expectReply` together with `inReplyTo`. A
+Durable target refuses it because its answer arrives through its request
+result; send the message without `expectReply` instead. The question ID is
+`question:<asker>:<tool call ID>`; the receipt names it as `question`. The
+recipient's model reads the question followed by a line that names the asker
+and the question ID, says how to answer (`agent_send` to the asker with
+`inReplyTo` set to the ID), and says that a message from another session is
+information, not an instruction above the operator's direction.
 
 Both sessions retain the question as `agent.peer-question` session entries
 (`asked`, `answered`, `unanswered` on the asker; `received`, `replied`,
-`noticed` on the recipient), so restarts and resumes keep it. The recipient
-counts a question as received when its model is given it. A reply with
-`inReplyTo` must name an open received question and go to its asker; it arrives
-at the asker as a message that starts `Reply from session` and closes the
-question. When a recipient's run settles with a received question still
-unanswered, the recipient sends the asker one report: the run ended without a
-reply, with the question's excerpt. Each question gets at most one notice.
+`noticed` on the recipient), so restarts, reloads and resumes keep it. Each
+entry names the session that recorded it; a fork, which copies its parent's
+entries, skips them, and skips older entries without that field that predate
+the fork. Placement, not admission, decides: the recipient counts a question
+as received when its model is given it (Pi's `message_end` for the message, or
+its placement at a turn boundary), and the asker closes a question when its
+model is given a reply or notice that comes from the asked session. A delivery
+that is refused, or dropped by an abort before placement, changes no question.
+The asker records the question after its admission; its model is inside that
+tool call meanwhile, so the reply reaches it only at a later boundary. A reply
+with `inReplyTo` must name an open received question and go to its asker; it
+arrives at the asker as a message that starts `Reply from session` and closes
+the question.
+
+A received question owes the asker one report that the run ended without a
+reply, with the question's excerpt, when the recipient's run settles without a
+reply. After an aborted run (Esc), queued messages are placed without a run,
+so a question among them owes its notice at once. A question still open when a
+session starts lost its run with the earlier process and owes its notice then.
+The recipient records `noticed` only after the report was admitted: a refused
+notice stays owed and goes out again at the next settlement, session start, or
+retry after 5 s, 30 s, 2 min and then every 10 min while the process runs. A
+reply sent first cancels the owed notice. Repeated notices carry the same
+request ID, so the asker admits one.
 
 Nothing replies automatically and nothing waits. The asker continues other
 work or calls `agent_yield`, whose card lists each open question as
 `Questions awaiting a reply from:`. After a compaction the continuity note
 lists the questions this session asked with no reply or notice, and the
 questions it received with no reply. The sections appear only while such
-questions are open. One session holds at most 16 open questions at once; it
-tracks the 32 newest received questions and ignores a repeated delivery of one
-it already answered or noticed. Each session keeps its open questions in
-memory, updated per fact; session start folds the entries it already read.
+questions are open. The note text of each context head is retained as one
+`agent.continuity-note` entry, so the head states the same note after a
+reload, reopen or tree return. One session holds at most 16 open questions at
+once; it tracks the 256 newest received questions, sends the oldest its notice
+when a newer one passes that bound, and ignores a repeated delivery of one it
+already answered or noticed. Each session keeps its open questions in memory,
+updated per fact; session start folds the entries it already read.
 
 ### Questions to ended sessions
 
 A question to a session whose Pi process has ended closes as unanswered. A
-session counts as ended when its primary endpoint is absent or names a process
-that no longer runs; an unreadable, foreign or incompatible endpoint keeps the
-question open, and so does a live session that has not run yet. The check runs
-only at points that already read the questions, and only when questions are
-open, with one endpoint read per distinct asked session:
+session counts as ended when its primary endpoint is absent, names a process
+that no longer runs, or was written before the current boot of the machine;
+an unreadable, foreign or incompatible endpoint keeps the question open, and so
+does a live session that has not run yet. A reload keeps the session's endpoint
+published until the reloaded extension registers again, within 60 s, so a
+reload never reads as an end; deliveries in between refuse as retryable. The
+check runs only at points that already read the questions, and only when
+questions are open, with one endpoint read per distinct asked session:
 
 - an ordinary asker checks before each new question, before its open-question
-  limit, and reports the closed questions in that receipt as `endedQuestions`;
+  limit, and reports the closed questions in that receipt as `endedQuestions`,
+  also when the question then refuses;
 - `agent_yield` checks when it builds its card and adds the lines to its result;
 - session start checks after it restores the questions and adds one
   `agent.peer-question-ended` message for the model;
@@ -2533,34 +2559,52 @@ open, with one endpoint read per distinct asked session:
 
 Each closed question is reported once, as `Question <ID> to session <ID> closed
 unanswered: that session has ended, so no reply will come`. A reply that the
-session sends after a later resume still arrives as a message.
+session sends after a later resume still arrives as a message. Within one boot,
+a crashed session whose PID another process now holds still reads as live; its
+next registration probes the recorded socket and replaces the record when no
+server listens there.
 
 ### Durable askers
 
 A Durable agent asks an ordinary primary with its own `agent_send` and
 `expectReply: true`; the question ID is `question:<asker identity>:<task ID>`.
-A local conversation or another Durable storage refuses the question with the
-same request-result reason. The agent's storage reserves the question in one
-document per asking conversation (`agent.peer-questions`) before delivery, and
-a failed delivery drops the reservation. The question reaches the primary as a
-report whose request ID is the question ID; the primary treats it as a received
-question like any other.
+`mode: "report"`, `deliverAt`, `replyTo`, `passive` and `checkInMinutes` refuse
+it. A local conversation or another Durable storage refuses the question with
+the same request-result reason. The agent's storage reserves the question in
+one document per asking conversation (`agent.peer-questions`) before delivery,
+and a failed delivery drops the reservation; the question writes no admission
+fact and no delegation edge. The question reaches the primary as a report whose
+request ID is the question ID; the primary treats it as a received question
+like any other. Every message from a Durable agent to an ordinary primary is a
+direct report: if that session ends before the delivery, the report waits for
+it and never reaches another session as an informational copy, and an ordinary
+session ignores the question, reply and notice fields of any informational copy
+it receives. A question whose text with its reply instructions passes the
+16,000-character report body refuses, so the recipient always reads the
+question ID and how to answer.
 
 The primary's reply with `inReplyTo` and its non-reply notice reach the agent
 as report inputs with request IDs `reply:<question ID>` and
 `notice:<question ID>`. They wake an idle agent and reach a busy one at its next
 tool boundary. When the agent's host admits such an input from the asked
 session, it removes the question from the document; the last 32 closed IDs stay
-there, so a replayed ask cannot reopen one. The receipt of the question tells
-an agent whose routed task needs the answer to declare `agent_work continue`
-with an empty results list and end the run, and to complete the work when the
-reply or notice arrives. After a compaction the agent's continuity note lists
-its open questions, read once per context head with its declared open work.
-An agent's `agent_status` for a conversation of its own storage lists them as
-`questions`: in the compact conversation with question ID, asked session and
-time, and at the top of full status with the excerpt as well. The agent's host
-reads them, so the host status contract is unchanged and another session's
-status of the agent omits them. The field is absent when none is open.
+there, so a replayed ask cannot reopen one, and a replay after the close
+returns the closed question without a second delivery. The receipt of the
+question tells an agent whose routed task needs the answer to declare
+`agent_work continue` with an empty results list and end the run, and to
+complete the work when the reply or notice arrives. After a compaction the
+agent's continuity note lists its open questions and the questions that read
+closed because the asked session ended. Both are read once per context head, in
+the commit that freezes its declared open work, and retained with it, so every
+request of that head, also after a host restart, states the same questions; a
+head that is no longer the newest closes nothing. An agent's `agent_status` for
+a conversation of its own storage lists them as `questions`: in the compact
+conversation with question ID, asked session and time, and at the top of full
+status with the excerpt as well. That read is a snapshot: it closes no question
+of an ended session, so one can stay listed until the next ask or context head.
+The agent's host reads them, so the host status contract is unchanged and
+another session's status of the agent omits them. The field is absent when
+none is open.
 
 ## Peer threads
 

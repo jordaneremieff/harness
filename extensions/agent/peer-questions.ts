@@ -10,8 +10,8 @@ import { primaryEndpointOwnerState } from "./primary-channel.ts";
 export const PEER_QUESTION_ENTRY = "agent.peer-question";
 /** Open questions that one session asks at once; a further question refuses until one closes. */
 export const MAX_OPEN_QUESTIONS = 16;
-/** Received questions that one session tracks; the oldest is dropped without a notice. */
-const MAX_RECEIVED_QUESTIONS = 32;
+/** Received questions that one session tracks; beyond it the oldest is dropped, and the live session notices it first. */
+export const MAX_RECEIVED_QUESTIONS = 256;
 const EXCERPT = 160;
 const QUESTION_ID = /^question:[^\s]{1,400}$/u;
 
@@ -23,6 +23,8 @@ export interface PeerQuestionFact {
 	readonly peer: string;
 	readonly at: number;
 	readonly excerpt?: string;
+	/** The session that recorded the fact; a fork inherits its parent's facts and skips them by this field. */
+	readonly session?: string;
 }
 export interface OpenQuestion {
 	readonly id: string;
@@ -52,7 +54,8 @@ export function isPeerQuestionFact(value: unknown): value is PeerQuestionFact {
 		fact.peer.length > 0 &&
 		fact.peer.length <= 256 &&
 		Number.isSafeInteger(fact.at) &&
-		(fact.excerpt === undefined || (typeof fact.excerpt === "string" && fact.excerpt.length <= EXCERPT + 1))
+		(fact.excerpt === undefined || (typeof fact.excerpt === "string" && fact.excerpt.length <= EXCERPT + 1)) &&
+		(fact.session === undefined || (typeof fact.session === "string" && fact.session.length <= 256))
 	);
 }
 export function questionExcerpt(text: string): string {
@@ -71,6 +74,8 @@ class OpenQuestions {
 	readonly asked = new Map<string, OpenQuestion>();
 	readonly received = new Map<string, OpenQuestion>();
 	private readonly settled = new Set<string>();
+	/** The received question that the last fact pushed past the bound. */
+	evicted: OpenQuestion | undefined;
 	/** False when the fact changes nothing, so the caller retains no entry for it. */
 	apply(fact: PeerQuestionFact): boolean {
 		const open = { id: fact.id, peer: fact.peer, at: fact.at, excerpt: fact.excerpt ?? "" };
@@ -84,7 +89,12 @@ class OpenQuestions {
 			case "received":
 				if (this.received.has(fact.id) || this.settled.has(fact.id)) return false;
 				this.received.set(fact.id, open);
-				if (this.received.size > MAX_RECEIVED_QUESTIONS) this.received.delete(first(this.received.keys()));
+				this.evicted = undefined;
+				if (this.received.size > MAX_RECEIVED_QUESTIONS) {
+					const oldest = first(this.received.keys());
+					this.evicted = this.received.get(oldest);
+					this.received.delete(oldest);
+				}
 				return true;
 			default:
 				if (!this.received.delete(fact.id)) return false;
@@ -108,24 +118,55 @@ export function foldPeerQuestions(facts: Iterable<PeerQuestionFact>): {
 	return { asked: [...open.asked.values()], received: [...open.received.values()] };
 }
 
-/** One session's questions, kept in memory and updated per fact. `append` retains each fact as a session entry. */
+/** Facts of the asker side name the question that the session itself asked. */
+const ASKER_EVENTS = new Set<PeerQuestionEvent>(["asked", "answered", "unanswered"]);
+
+/**
+ * One session's questions, kept in memory and updated per fact. `append` retains each fact as a session entry.
+ * Each new fact names the session that recorded it, so a fork, which copies its parent's entries, skips them.
+ */
 export class PeerQuestions {
 	private state = new OpenQuestions();
 	private readonly append: (fact: PeerQuestionFact) => void;
 	private readonly now: () => number;
-	constructor(append: (fact: PeerQuestionFact) => void, now: () => number = Date.now) {
+	private readonly self: string | undefined;
+	constructor(append: (fact: PeerQuestionFact) => void, now: () => number = Date.now, self?: string) {
 		this.append = append;
 		this.now = now;
+		this.self = self;
 	}
-	/** One pass over entries that the caller already holds. */
-	restore(entries: readonly SessionEntry[]): void {
+	/**
+	 * One pass over entries that the caller already holds. A fork copies its parent's entries with their
+	 * timestamps: `forkedAt` is the fork's own creation time, and a fact without a recording session that is
+	 * older than it belongs to the parent.
+	 */
+	restore(entries: readonly SessionEntry[], forkedAt?: string): void {
 		this.state = new OpenQuestions();
 		for (const entry of entries)
-			if (entry.type === "custom" && entry.customType === PEER_QUESTION_ENTRY && isPeerQuestionFact(entry.data))
+			if (
+				entry.type === "custom" &&
+				entry.customType === PEER_QUESTION_ENTRY &&
+				isPeerQuestionFact(entry.data) &&
+				this.own(entry.data, entry.timestamp, forkedAt)
+			)
 				this.state.apply(entry.data);
+		this.state.evicted = undefined;
+	}
+	private own(fact: PeerQuestionFact, timestamp: string, forkedAt: string | undefined): boolean {
+		if (this.self === undefined) return true;
+		if (fact.session !== undefined) return fact.session === this.self;
+		if (ASKER_EVENTS.has(fact.event)) return fact.id.startsWith(`question:${this.self}:`);
+		return forkedAt === undefined || timestamp >= forkedAt;
 	}
 	private record(event: PeerQuestionEvent, id: string, peer: string, excerpt?: string): boolean {
-		const fact: PeerQuestionFact = { event, id, peer, at: this.now(), ...(excerpt === undefined ? {} : { excerpt }) };
+		const fact: PeerQuestionFact = {
+			event,
+			id,
+			peer,
+			at: this.now(),
+			...(excerpt === undefined ? {} : { excerpt }),
+			...(this.self === undefined ? {} : { session: this.self }),
+		};
 		if (!this.state.apply(fact)) return false;
 		this.append(fact);
 		return true;
@@ -136,6 +177,9 @@ export class PeerQuestions {
 	/** Received questions that still owe a reply; empty without allocation in the common case. */
 	unanswered(): readonly OpenQuestion[] {
 		return this.state.received.size === 0 ? [] : [...this.state.received.values()];
+	}
+	isReceived(id: string): boolean {
+		return this.state.received.has(id);
 	}
 	/**
 	 * Close each open question whose asked session has ended. `ended` runs at most once per distinct
@@ -165,9 +209,10 @@ export class PeerQuestions {
 	asked(id: string, recipient: string, message: string): void {
 		this.record("asked", id, recipient, questionExcerpt(message));
 	}
-	received(id: string, asker: string, message: string): void {
-		if (this.state.received.has(id)) return;
-		this.record("received", id, asker, questionExcerpt(askedText(message)));
+	/** Returns the oldest received question that this one pushed past the bound; it owes its notice now. */
+	received(id: string, asker: string, message: string): OpenQuestion | undefined {
+		if (this.state.received.has(id)) return undefined;
+		return this.record("received", id, asker, questionExcerpt(askedText(message))) ? this.state.evicted : undefined;
 	}
 	/** The received question that a reply names, checked against the reply's recipient. */
 	replyTarget(id: unknown, recipient: unknown): OpenQuestion {
@@ -187,10 +232,88 @@ export class PeerQuestions {
 	noticed(id: string, asker: string): void {
 		this.record("noticed", id, asker);
 	}
-	/** An arrived reply or notice closes the asker's question once; unknown IDs change nothing. */
-	closed(id: string, event: "answered" | "unanswered"): boolean {
+	/**
+	 * A reply or notice that the model was given closes the asker's question once, and only when it comes
+	 * from the asked session; unknown IDs and other senders change nothing.
+	 */
+	closed(id: string, event: "answered" | "unanswered", sender: unknown): boolean {
 		const question = this.state.asked.get(id);
-		return question !== undefined && this.record(event, id, question.peer);
+		return question !== undefined && question.peer === sender && this.record(event, id, question.peer);
+	}
+}
+
+/** Delays between attempts to send owed notices; the last one repeats while a notice is owed. */
+const NOTICE_RETRY_MS = [5_000, 30_000, 120_000, 600_000] as const;
+
+/**
+ * Non-reply notices that a recipient owes: one per received question whose run settled without a reply.
+ * A question closes as noticed only after its notice was sent, so a failed send keeps it owed and a
+ * later attempt, settlement or session start sends it again. The asker's request ID deduplicates repeats.
+ */
+export class OwedNotices {
+	private readonly owed = new Map<string, OpenQuestion>();
+	private readonly sending = new Set<string>();
+	private readonly send: (question: OpenQuestion) => Promise<void>;
+	private readonly sent: (question: OpenQuestion) => void;
+	private readonly delays: readonly number[];
+	private timer: ReturnType<typeof setTimeout> | undefined;
+	private attempt = 0;
+	private closed = false;
+	constructor(options: {
+		send: (question: OpenQuestion) => Promise<void>;
+		sent: (question: OpenQuestion) => void;
+		delays?: readonly number[];
+	}) {
+		this.send = options.send;
+		this.sent = options.sent;
+		this.delays = options.delays ?? NOTICE_RETRY_MS;
+	}
+	get size(): number {
+		return this.owed.size;
+	}
+	/** Mark questions due and send each notice that is not already on its way. */
+	owe(questions: readonly OpenQuestion[]): void {
+		if (this.closed) return;
+		for (const question of questions) this.owed.set(question.id, question);
+		this.flush();
+	}
+	/** A reply closes the question, so no notice is owed for it. */
+	cancel(id: string): void {
+		this.owed.delete(id);
+	}
+	flush(): void {
+		for (const question of this.owed.values()) {
+			if (this.sending.has(question.id)) continue;
+			this.sending.add(question.id);
+			void this.send(question).then(
+				() => {
+					this.sending.delete(question.id);
+					if (this.closed || !this.owed.delete(question.id)) return;
+					this.attempt = 0;
+					this.sent(question);
+				},
+				() => {
+					this.sending.delete(question.id);
+					this.retry();
+				},
+			);
+		}
+	}
+	private retry(): void {
+		if (this.closed || this.timer !== undefined || this.owed.size === 0) return;
+		const delay = this.delays[Math.min(this.attempt, this.delays.length - 1)];
+		this.attempt += 1;
+		this.timer = setTimeout(() => {
+			this.timer = undefined;
+			this.flush();
+		}, delay);
+		this.timer.unref?.();
+	}
+	close(): void {
+		this.closed = true;
+		if (this.timer !== undefined) clearTimeout(this.timer);
+		this.timer = undefined;
+		this.owed.clear();
 	}
 }
 
@@ -230,11 +353,13 @@ export function noticeText(question: OpenQuestion, recipient: string, name?: str
 }
 /**
  * A question is the message whose request ID is the question ID: a primary's message names it as
- * `question`, and a Durable agent's report delivery names it as `requestId`.
+ * `question`, and a Durable agent's report delivery names it as `requestId`. An informational fallback
+ * copy that reached another session is not addressed to it and carries no question, reply or notice.
  */
 export function peerQuestionDetail(details: unknown): { reply?: string; notice?: string; question?: string } {
 	if (details === null || typeof details !== "object") return {};
 	const value = details as Record<string, unknown>;
+	if (value.fallback === true) return {};
 	const question = validQuestionId(value.question)
 		? value.question
 		: value.kind === "report" && validQuestionId(value.requestId)

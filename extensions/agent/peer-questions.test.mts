@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -21,7 +21,9 @@ import {
 	durableTargetInput,
 	foldPeerQuestions,
 	MAX_OPEN_QUESTIONS,
+	MAX_RECEIVED_QUESTIONS,
 	noticeText,
+	OwedNotices,
 	PEER_QUESTION_ENDED,
 	PEER_QUESTION_ENTRY,
 	PeerQuestions,
@@ -31,6 +33,7 @@ import {
 	type PeerQuestionFact,
 } from "./peer-questions.ts";
 import type { AgentManager } from "./manager.ts";
+import { connectPrimaryChannel } from "./primary-channel.ts";
 import { machineConfig } from "./settings-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
@@ -51,9 +54,10 @@ it("opens a question when asked or received and closes it once by its reply, not
 	const { facts, questions } = recorder();
 	questions.asked("question:a:1", OTHER, "First?");
 	questions.asked("question:a:2", OTHER, "Second?");
-	assert.equal(questions.closed("question:a:1", "answered"), true);
-	assert.equal(questions.closed("question:a:1", "answered"), false, "a repeated reply changes nothing");
-	assert.equal(questions.closed("question:unknown:1", "unanswered"), false);
+	assert.equal(questions.closed("question:a:1", "answered", ASKER), false, "only the asked session closes it");
+	assert.equal(questions.closed("question:a:1", "answered", OTHER), true);
+	assert.equal(questions.closed("question:a:1", "answered", OTHER), false, "a repeated reply changes nothing");
+	assert.equal(questions.closed("question:unknown:1", "unanswered", OTHER), false);
 	questions.received("question:b:1", ASKER, questionText("Is it safe?", "question:b:1", ASKER));
 	questions.received("question:b:1", ASKER, "Is it safe?");
 	assert.deepEqual(
@@ -113,6 +117,97 @@ it("bounds open questions and keeps the asker's words in the excerpt", () => {
 	);
 });
 
+it("skips the facts that a fork inherited from its parent", () => {
+	const parent = "01a20c9b-0000-75a2-9fc7-000000000001";
+	const fork = "01a20c9b-0000-75a2-9fc7-000000000002";
+	const entry = (data: PeerQuestionFact, timestamp: string): SessionEntry =>
+		({ type: "custom", customType: PEER_QUESTION_ENTRY, data, id: data.id, parentId: null, timestamp }) as SessionEntry;
+	const entries = [
+		entry(
+			{ event: "asked", id: `question:${parent}:1`, peer: OTHER, at: 1, session: parent },
+			"2026-11-24T10:00:00.000Z",
+		),
+		entry({ event: "asked", id: `question:${parent}:2`, peer: OTHER, at: 2 }, "2026-11-24T10:00:01.000Z"),
+		entry({ event: "received", id: "question:x:1", peer: ASKER, at: 3, session: parent }, "2026-11-24T10:00:02.000Z"),
+		entry({ event: "received", id: "question:x:2", peer: ASKER, at: 4 }, "2026-11-24T10:00:03.000Z"),
+		entry({ event: "received", id: "question:x:3", peer: ASKER, at: 5 }, "2026-11-24T11:00:00.000Z"),
+		entry({ event: "asked", id: `question:${fork}:9`, peer: OTHER, at: 6, session: fork }, "2026-11-24T11:00:01.000Z"),
+	];
+	const questions = new PeerQuestions(() => {}, Date.now, fork);
+	questions.restore(entries, "2026-11-24T10:30:00.000Z");
+	assert.deepEqual(
+		questions.open().asked.map((item) => item.id),
+		[`question:${fork}:9`],
+	);
+	assert.deepEqual(
+		questions.open().received.map((item) => item.id),
+		["question:x:3"],
+		"a field-less received fact counts only after the fork's creation",
+	);
+	const original = new PeerQuestions(() => {}, Date.now, parent);
+	original.restore(entries);
+	assert.equal(original.open().asked.length, 2);
+	assert.equal(original.open().received.length, 3);
+	const facts: PeerQuestionFact[] = [];
+	new PeerQuestions(
+		(fact) => facts.push(fact),
+		() => 7,
+		fork,
+	).asked(`question:${fork}:10`, OTHER, "Why?");
+	assert.equal(facts[0].session, fork, "new facts name the session that recorded them");
+});
+
+it("sends the oldest received question its notice when a newer one passes the bound", () => {
+	const { questions } = recorder();
+	for (let index = 0; index < MAX_RECEIVED_QUESTIONS; index++)
+		assert.equal(questions.received(`question:b:${index}`, ASKER, "Why?"), undefined);
+	const evicted = questions.received("question:b:last", ASKER, "Why?");
+	assert.equal(evicted?.id, "question:b:0");
+	assert.equal(questions.open().received.length, MAX_RECEIVED_QUESTIONS);
+	assert.equal(questions.isReceived("question:b:0"), false);
+});
+
+it("keeps a notice owed until its send succeeds and drops it after a reply", async () => {
+	const attempts: string[] = [];
+	const sent: string[] = [];
+	let fail = true;
+	const waiters: Array<() => void> = [];
+	const notices = new OwedNotices({
+		send: async (question) => {
+			attempts.push(question.id);
+			for (const done of waiters.splice(0)) done();
+			if (fail) throw new Error("asker is reloading");
+		},
+		sent: (question) => sent.push(question.id),
+		delays: [1, 1],
+	});
+	const attempt = () => new Promise<void>((done) => waiters.push(done));
+	const question = (id: string) => ({ id, peer: ASKER, at: 1, excerpt: "Why?" });
+	let next = attempt();
+	notices.owe([question("question:b:1")]);
+	await next;
+	assert.equal(notices.size, 1, "a refused notice stays owed");
+	next = attempt();
+	await next;
+	assert.ok(attempts.length >= 2, "an owed notice goes out again after its delay");
+	fail = false;
+	next = attempt();
+	await next;
+	await new Promise((done) => setImmediate(done));
+	assert.deepEqual(sent, ["question:b:1"]);
+	assert.equal(notices.size, 0);
+	notices.owe([question("question:b:2")]);
+	notices.cancel("question:b:2");
+	await new Promise((done) => setImmediate(done));
+	assert.deepEqual(sent, ["question:b:1"], "a reply before the send's result records no notice");
+	notices.close();
+});
+
+it("ignores the question fields of an informational fallback copy", () => {
+	assert.deepEqual(peerQuestionDetail({ kind: "report", requestId: "question:agent:7", fallback: true }), {});
+	assert.deepEqual(peerQuestionDetail({ inReplyTo: "question:a:1", fallback: true }), {});
+});
+
 it("reads a Durable agent's question from its report delivery and turns a reply to it into a closing report", () => {
 	assert.deepEqual(peerQuestionDetail({ kind: "report", requestId: "question:agent:7" }), {
 		question: "question:agent:7",
@@ -160,14 +255,18 @@ it("derives question, reply and notice fields for one primary message", () => {
 	);
 });
 
-type Step = { tool: string; args: Record<string, unknown> } | { text: string } | { replyTo: string; message: string };
+type Step =
+	| { tool: string; args: Record<string, unknown> }
+	| { text: string }
+	| { replyTo: string; message: string }
+	| { hang: () => void };
 interface Scripted {
 	session: AgentSession;
 	manager: SessionManager;
 	steps: Step[];
 }
 
-function assistant(step: Exclude<Step, { replyTo: string }>): AssistantMessage {
+function assistant(step: { tool: string; args: Record<string, unknown> } | { text: string }): AssistantMessage {
 	const usage = {
 		input: 1,
 		output: 1,
@@ -245,8 +344,23 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 		}
 		const scripted = { steps: [] as Step[] } as Scripted;
 		const runtime = await createTestRuntime();
-		const stream = (_model: unknown, context: { messages: Message[] }) => {
+		const stream = (_model: unknown, context: { messages: Message[] }, options?: { signal?: AbortSignal }) => {
 			let step = scripted.steps.shift() ?? { text: "done" };
+			if ("hang" in step) {
+				// A response that streams until the run aborts, so the session stays busy.
+				const partial = assistant({ text: "" });
+				const events = createAssistantMessageEventStream();
+				events.push({ type: "start", partial });
+				const stop = () => {
+					const message = { ...partial, stopReason: "aborted" as const, errorMessage: "Aborted" };
+					events.push({ type: "error", reason: "aborted", error: message });
+					events.end(message);
+				};
+				if (options?.signal?.aborted) stop();
+				else options?.signal?.addEventListener("abort", stop, { once: true });
+				step.hang();
+				return events;
+			}
 			if ("replyTo" in step) {
 				const ids = [...JSON.stringify(context.messages).matchAll(/inReplyTo \\"(question:[^\\"]+)\\"/gu)];
 				step = {
@@ -434,4 +548,56 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 		[live.id, live.id],
 		"only the live recipient's questions stay open",
 	);
+
+	// A question queued while the recipient is busy, then placed without a run after an abort, owes its notice.
+	const busy = new Promise<void>((started) => b.steps.push({ hang: started }));
+	const aborted = b.session.prompt("Work on something long");
+	await busy;
+	await run(reopened, "Ask B while it works", [
+		{ tool: "agent_send", args: { sessionId: bId, message: "Still there?", expectReply: true } },
+		{ text: "Asked." },
+	]);
+	await until("B holds the question in its inbox", () => existsSync(`${b.manager.getSessionFile()}.agent-inbox`));
+	await b.session.abort();
+	await aborted.catch(() => undefined);
+	await until("A receives the notice for the question B never ran", () =>
+		peerTexts(reopened).some((text) => text.includes("without replying") && text.includes('"Still there?"')),
+	);
+	assert.ok(
+		peerTexts(b).some((text) => text.startsWith("Still there?")),
+		"B's transcript shows the question",
+	);
+	assert.equal(facts(b).at(-1), "noticed");
+
+	// A Durable question queued as a steer and dropped by Esc never reached the model: it opens nothing and
+	// owes no notice, and the host's retry places it as a received question.
+	const asker = `${randomUUID()}:2`;
+	const durableQuestion = {
+		sourceId: "report:question:durable:1",
+		requireRetained: true,
+		text: "Agent report: Which region?",
+		details: {
+			kind: "report",
+			requestId: `question:${asker}:1`,
+			senderIdentity: asker,
+			message: "Which region?",
+			wake: true,
+		},
+	};
+	const channel = await connectPrimaryChannel({ id: bId, sessionsRoot });
+	t.after(() => channel.close());
+	const working = new Promise<void>((started) => b.steps.push({ hang: started }));
+	const interrupted = b.session.prompt("Work on something else");
+	await working;
+	const before = facts(b).length;
+	await assert.rejects(channel.deliver(durableQuestion), /awaits a retained agent\.peer entry/u);
+	b.session.clearQueue();
+	await b.session.abort();
+	await interrupted.catch(() => undefined);
+	assert.equal(facts(b).length, before, "a dropped steer opens no question and owes no notice");
+	b.steps.push({ text: "Not sure." });
+	await channel.deliver(durableQuestion).catch(() => undefined);
+	await until("the retried question reaches B's model", () => facts(b).length > before);
+	assert.equal(facts(b)[before], "received");
+	assert.ok(peerTexts(b).includes("Agent report: Which region?"));
 });
