@@ -12,11 +12,11 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { hostname, tmpdir } from "node:os";
+import { hostname, tmpdir, uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { createServer, type Socket } from "node:net";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { eventLog } from "./host-fixture.mts";
 import { createTransportServer, unixSocketPath } from "../../transport/index.ts";
 import {
@@ -28,6 +28,7 @@ import {
 	primaryEndpointPath,
 	primaryEndpointStatus,
 	readPrimaryEndpointDescriptor,
+	removeDeadPrimaryEndpoint,
 	PrimaryChannelConflictError,
 	PrimaryChannelUnavailableError,
 	probePrimaryChannel,
@@ -353,6 +354,72 @@ it("refuses replacement while the recorded owner is an unreachable live process"
 	writeFileSync(path, record);
 	await assert.rejects(createPrimaryChannel(channelOptions(root, id)), /refusing replacement/u);
 	assert.equal(readFileSync(path, "utf8"), record);
+});
+
+it("replaces an endpoint whose live-looking PID no longer serves the recorded socket", async (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	// A killed owner leaves its socket file behind, and another process can now hold its PID.
+	const socketPath = join(root, "killed.sock");
+	const owner = spawn(process.execPath, [
+		"-e",
+		`require("node:net").createServer().listen(${JSON.stringify(socketPath)}, () => process.stdout.write("ready"))`,
+	]);
+	await new Promise<void>((done) => owner.stdout.once("data", () => done()));
+	const exited = new Promise((done) => owner.once("exit", done));
+	owner.kill("SIGKILL");
+	await exited;
+	assert.ok(existsSync(socketPath));
+	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { pid: process.pid, socketPath }));
+	const channel = await createPrimaryChannel(channelOptions(root, id));
+	t.after(() => void channel.close().catch(() => undefined));
+	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { socketPath: string };
+	assert.notEqual(record.socketPath, socketPath);
+});
+
+it("replaces its own process's record in one rename for a session that registers again", async (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	const first = await createPrimaryChannel(channelOptions(root, id));
+	const before = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { serverId: string };
+	await assert.rejects(createPrimaryChannel(channelOptions(root, id)), /refusing replacement/u);
+	const second = await createPrimaryChannel(channelOptions(root, id, { replaceOwn: true }));
+	t.after(() => void second.close().catch(() => undefined));
+	const replaced = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { serverId: string };
+	assert.notEqual(replaced.serverId, before.serverId);
+	await first.close();
+	assert.equal(
+		(JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { serverId: string }).serverId,
+		replaced.serverId,
+		"closing the replaced channel keeps the new record",
+	);
+	assert.equal(await probePrimaryChannel(root, id), true);
+});
+
+it("removes only a record whose owner is proven dead", (t) => {
+	const root = testRoot(t);
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const dead = uuidV7();
+	const live = uuidV7();
+	writeFileSync(primaryEndpointPath(root, dead), endpointRecord(root, dead, { pid: deadProcessId() }));
+	writeFileSync(primaryEndpointPath(root, live), endpointRecord(root, live));
+	assert.equal(removeDeadPrimaryEndpoint(root, live), false);
+	assert.equal(primaryEndpointStatus(root, live).state, "live");
+	assert.equal(removeDeadPrimaryEndpoint(root, dead), true);
+	assert.equal(primaryEndpointStatus(root, dead).state, "absent");
+	assert.equal(removeDeadPrimaryEndpoint(root, dead), false);
+});
+
+it("reads an endpoint written before the current boot as dead whatever holds its PID", (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const beforeBoot = new Date(Date.now() - uptime() * 1000 - 3_600_000).toISOString();
+	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { pid: process.pid, startedAt: beforeBoot }));
+	assert.equal(primaryEndpointStatus(root, id).state, "dead");
+	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { pid: process.pid }));
+	assert.equal(primaryEndpointStatus(root, id).state, "live");
 });
 
 it("replaces an endpoint whose recorded local process is dead", async (t) => {

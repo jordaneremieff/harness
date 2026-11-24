@@ -344,3 +344,44 @@ test("manager close contains a status exception and closes every owned endpoint"
 	assert.equal(readPrimaryEndpointDescriptor(root, first).state, "absent");
 	assert.equal(readPrimaryEndpointDescriptor(root, second).state, "absent");
 });
+
+test("a reloading session keeps its endpoint published until it registers again", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-reload-")));
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const id = randomUUID();
+	const first = new AbortController();
+	const delivered: string[] = [];
+	await manager.registerPrimary(id, { signal: first.signal, cwd: root, send: () => delivered.push("first") });
+	const before = readPrimaryEndpointDescriptor(root, id).info?.socketPath;
+	assert.equal(manager.suspendPrimary(id, first), true);
+	assert.equal(manager.suspendPrimary(id, first), false, "one suspension per registration");
+	assert.equal(readPrimaryEndpointDescriptor(root, id).state, "live", "the session does not read as ended");
+	const connection = await connectPrimaryChannel({ id, sessionsRoot: root });
+	await assert.rejects(
+		connection.deliver({ sourceId: "s1", text: "Hi", requireRetained: false }),
+		/reloading; the delivery stays unacknowledged/u,
+	);
+	await connection.close();
+	const second = new AbortController();
+	await manager.registerPrimary(id, { signal: second.signal, cwd: root, send: () => delivered.push("second") });
+	const after = readPrimaryEndpointDescriptor(root, id);
+	assert.equal(after.state, "live");
+	assert.notEqual(after.info?.socketPath, before, "the new registration replaced the record");
+	const again = await connectPrimaryChannel({ id, sessionsRoot: root });
+	await again.deliver({ sourceId: "s2", text: "Hi", requireRetained: false });
+	await again.close();
+	assert.deepEqual(delivered, ["second"]);
+
+	// Without a new registration within the grace period, the suspended registration ends.
+	const third = new AbortController();
+	const other = randomUUID();
+	await manager.registerPrimary(other, { signal: third.signal, cwd: root, send() {} });
+	assert.equal(manager.suspendPrimary(other, third, 10), true);
+	await new Promise<void>((done) => third.signal.addEventListener("abort", () => done(), { once: true }));
+	await manager.closePrimary(other, third.signal);
+	assert.equal(readPrimaryEndpointDescriptor(root, other).state, "absent");
+});

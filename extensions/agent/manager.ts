@@ -67,6 +67,7 @@ import {
 	primaryEndpointStatus,
 	readPrimaryEndpointDescriptor,
 	type PrimaryChannel,
+	type PrimaryChannelOptions,
 	type PrimaryInfo,
 	type PrimaryIntentClaim,
 	type PrimaryWorkReference,
@@ -225,6 +226,8 @@ interface ListCursor {
 }
 
 const DEFAULT_DELIVERED_LIMIT = 1024;
+/** How long a reloading session's channel stays published while its extension registers again. */
+const PRIMARY_RELOAD_GRACE_MS = 60_000;
 const DEFAULT_FAILURE_LIMIT = 256;
 const MAX_ERROR_TEXT = 512;
 const MAX_INVENTORY_PAGES = 16;
@@ -495,6 +498,13 @@ export class AgentManager {
 	private readonly primaries = new Map<string, PrimaryClient>();
 	private readonly primaryChannels = new Map<string, PrimaryChannel>();
 	private readonly closingPrimaries = new Map<string, Promise<void>>();
+	/** Registrations of sessions whose extension reloads; each keeps its channel published until it registers again. */
+	private readonly reloadingPrimaries = new Map<
+		string,
+		{ readonly primary: PrimaryClient; readonly timer: ReturnType<typeof setTimeout> }
+	>();
+	/** Registrations whose extension instance is gone, so their callbacks are not called again. */
+	private readonly reloadedSignals = new WeakSet<AbortSignal>();
 	private readonly primaryClosures = new WeakMap<AbortSignal, Map<string, Promise<void>>>();
 	private readonly registeringPrimaries = new WeakMap<AbortSignal, Map<string, Promise<void>>>();
 	private readonly subscriptions = new Map<string, () => void>();
@@ -1980,16 +1990,84 @@ export class AgentManager {
 		});
 	}
 
+	/**
+	 * Keep the channel of a session whose extension reloads published until the same session registers again,
+	 * so no other session reads it as ended in between. Deliveries to it refuse as retryable meanwhile. Without
+	 * a registration within the grace period, `owner` aborts and the registration ends. False when `owner` does
+	 * not hold the session's registration.
+	 */
+	suspendPrimary(ownerId: string, owner: AbortController, graceMs = PRIMARY_RELOAD_GRACE_MS): boolean {
+		const primary = this.primaries.get(ownerId);
+		if (primary === undefined || primary.signal !== owner.signal || this.reloadingPrimaries.has(ownerId)) return false;
+		const timer = setTimeout(() => {
+			if (this.reloadingPrimaries.get(ownerId)?.primary === primary) this.reloadingPrimaries.delete(ownerId);
+			owner.abort();
+		}, graceMs);
+		timer.unref?.();
+		this.reloadingPrimaries.set(ownerId, { primary, timer });
+		this.reloadedSignals.add(owner.signal);
+		try {
+			primary.status?.(undefined);
+		} catch (error) {
+			this.failures.set(`primary-status:${ownerId}`, errorText(error));
+		}
+		return true;
+	}
+
+	/** Delivery into one registration; a closed or reloading registration refuses, so the source retries. */
+	private primaryDelivery(ownerId: string, primary: PrimaryClient): PrimaryChannelOptions["deliver"] {
+		const deliveryScope = Symbol();
+		return (message) => {
+			if (this.stopping(primary) || this.primaries.get(ownerId) !== primary)
+				throw new Error("Primary session is closed");
+			if (this.reloadingPrimaries.get(ownerId)?.primary === primary)
+				throw new Error("Primary session is reloading; the delivery stays unacknowledged for a retry");
+			if (message.requireRetained === false) {
+				primary.send(message.text, message.details, message.sourceId, false);
+				return;
+			}
+			const key = `${ownerId}:retained:${message.sourceId}`;
+			if (this.delivered.get(key) === deliveryScope) {
+				primary.receiveRetainedReplay?.(message.details);
+				return;
+			}
+			primary.send(message.text, message.details, message.sourceId, true);
+			this.delivered.set(key, deliveryScope);
+		};
+	}
+
+	/**
+	 * End the session's earlier registration before a new one. A reloading registration stays until the new
+	 * channel replaced its record in one rename; it is returned for the caller to close then.
+	 */
+	private async previousRegistration(ownerId: string): Promise<PrimaryClient | undefined> {
+		const previous = this.primaries.get(ownerId);
+		const reloading = this.reloadingPrimaries.get(ownerId);
+		if (reloading !== undefined) {
+			clearTimeout(reloading.timer);
+			this.reloadingPrimaries.delete(ownerId);
+			if (reloading.primary === previous) return previous;
+		}
+		if (previous) await this.closePrimary(ownerId, previous.signal);
+		return undefined;
+	}
+
 	private async registerPrimaryChannel(ownerId: string, primary: PrimaryClient): Promise<void> {
 		if (this.stopping(primary)) return;
 		await this.closingPrimaries.get(ownerId);
-		const previous = this.primaries.get(ownerId);
-		if (previous) await this.closePrimary(ownerId, previous.signal);
-		if (this.stopping(primary)) return;
-		const location = await this.locations.resolve(primary.cwd ?? this.options.root);
-		if (this.stopping(primary)) return;
-		const deliveryScope = Symbol();
+		const replacing = await this.previousRegistration(ownerId);
+		const releasePrevious = async () => {
+			if (replacing !== undefined) await this.closePrimary(ownerId, replacing.signal);
+		};
+		const released = async (error: unknown): Promise<never> => {
+			await releasePrevious().catch(() => {});
+			throw error;
+		};
+		if (this.stopping(primary)) return releasePrevious();
+		const location = await this.locations.resolve(primary.cwd ?? this.options.root).catch(released);
+		if (this.stopping(primary)) return releasePrevious();
 		const channel = await (this.options.createPrimary ?? createPrimaryChannel)({
+			...(replacing === undefined ? {} : { replaceOwn: true }),
 			id: ownerId,
 			...location,
 			lastActivityAt: new Date().toISOString(),
@@ -2002,22 +2080,9 @@ export class AgentManager {
 			sessionsRoot: this.options.root,
 			signal: primary.signal,
 			promptTrust: (cwd) => primary.promptTrust?.(cwd) ?? Promise.resolve(undefined),
-			deliver: (message) => {
-				if (this.stopping(primary) || this.primaries.get(ownerId) !== primary)
-					throw new Error("Primary session is closed");
-				if (message.requireRetained === false) {
-					primary.send(message.text, message.details, message.sourceId, false);
-					return;
-				}
-				const key = `${ownerId}:retained:${message.sourceId}`;
-				if (this.delivered.get(key) === deliveryScope) {
-					primary.receiveRetainedReplay?.(message.details);
-					return;
-				}
-				primary.send(message.text, message.details, message.sourceId, true);
-				this.delivered.set(key, deliveryScope);
-			},
-		});
+			deliver: this.primaryDelivery(ownerId, primary),
+		}).catch(released);
+		await releasePrevious();
 		if (this.stopping(primary)) {
 			await channel.close();
 			return;
@@ -2190,7 +2255,7 @@ export class AgentManager {
 		this.closingPrimaries.set(ownerId, closing);
 		this.footerFigures.delete(ownerId);
 		try {
-			primary.status?.(undefined);
+			if (!this.reloadedSignals.has(signal)) primary.status?.(undefined);
 		} catch (error) {
 			this.failures.set(`primary-status:${ownerId}`, errorText(error));
 		}
@@ -2716,6 +2781,8 @@ export class AgentManager {
 		this.lifecycle.abort();
 		this.locations.clear();
 		this.rosterListeners.clear();
+		for (const { timer } of this.reloadingPrimaries.values()) clearTimeout(timer);
+		this.reloadingPrimaries.clear();
 		const primaries = [...this.primaries].map(([ownerId, primary]) => this.closePrimary(ownerId, primary.signal));
 		this.releaseClients();
 		const observations = this.releaseObservation();

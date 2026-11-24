@@ -87,7 +87,8 @@ function publish(
 			hostname: hostname(),
 			pid: process.pid,
 			socketPath: join(root, "missing.sock"),
-			startedAt: "2026-10-04T09:00:00Z",
+			// A record of the current boot; an earlier start would read as a dead process.
+			startedAt: new Date().toISOString(),
 			...(intentClaim === null ? {} : { intentClaim }),
 			...(observedPurpose === undefined ? {} : { observedPurpose }),
 			...extra,

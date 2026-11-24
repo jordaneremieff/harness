@@ -35,7 +35,8 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { opendir } from "node:fs/promises";
-import { hostname } from "node:os";
+import { connect } from "node:net";
+import { hostname, uptime } from "node:os";
 import { join, resolve } from "node:path";
 import { invalid } from "@earendil-works/chord";
 import type { JsonValue } from "@earendil-works/chord/json";
@@ -193,6 +194,11 @@ export interface PrimaryChannelOptions {
 	readonly observedPurpose?: PrimaryObservedPurpose;
 	readonly workRefs?: readonly PrimaryWorkReference[];
 	readonly sessionFile?: string;
+	/**
+	 * The session registers again in this process, as after an extension reload: a record that this process
+	 * published is replaced in one rename, so readers never find the session without an endpoint.
+	 */
+	readonly replaceOwn?: boolean;
 }
 
 export interface PrimaryChannel {
@@ -254,6 +260,41 @@ function processState(pid: number): "dead" | "live" | "unknown" {
 	} catch (error) {
 		return errnoCode(error) === "ESRCH" ? "dead" : "unknown";
 	}
+}
+
+/** Clock adjustment that a record's start time may carry relative to the boot time. */
+const BOOT_TOLERANCE_MS = 120_000;
+let bootStartedAt: number | undefined;
+/**
+ * State of the process that published a record. A record written before the current boot names a process
+ * of an earlier boot, whatever now holds its PID; within one boot only the PID is checked synchronously.
+ */
+function ownerState(record: { readonly pid: number; readonly startedAt: string }): "dead" | "live" | "unknown" {
+	bootStartedAt ??= Date.now() - uptime() * 1000;
+	const started = Date.parse(record.startedAt);
+	if (Number.isFinite(started) && started < bootStartedAt - BOOT_TOLERANCE_MS) return "dead";
+	return processState(record.pid);
+}
+
+/**
+ * Whether a socket accepts a connection. Only a refused connection proves that no server listens there, as
+ * after the owner was killed; a missing socket file, a slow or busy owner within the deadline, or any other
+ * error counts as listening.
+ */
+function socketListening(path: string, timeoutMs = 1000): Promise<boolean> {
+	return new Promise((done) => {
+		const socket = connect(path);
+		const finish = (listening: boolean) => {
+			clearTimeout(timer);
+			socket.destroy();
+			done(listening);
+		};
+		const timer = setTimeout(() => finish(true), timeoutMs);
+		socket.once("connect", () => finish(true));
+		socket.once("error", (error) => {
+			finish(errnoCode(error) !== "ECONNREFUSED");
+		});
+	});
 }
 
 function optionalString(record: Record<string, unknown>, key: string): string | undefined {
@@ -625,29 +666,56 @@ async function listPrimaryIds(directory: string): Promise<{ ids: string[]; compl
 }
 
 /**
- * Remove a stale record only when its owner is a proven dead local PID and the
- * file identity still matches the read, so a live or concurrently replaced
- * record is never removed.
+ * Remove a stale record only when its owner is proven dead and the file identity still matches the read,
+ * so a live or concurrently replaced record is never removed. A PID that looks live proves nothing after a
+ * crash, because another process can hold it; a socket that refuses connections proves the owner gone.
+ * With `replaceOwn`, a record of this process stays for an atomic replacement: the result is `replace`.
  */
-function removeDeadEndpoint(endpointPath: string, id: string): void {
+async function removeDeadEndpoint(endpointPath: string, id: string, replaceOwn = false): Promise<"absent" | "replace"> {
 	const file = readEndpointFile(endpointPath);
-	if (file === undefined) return;
+	if (file === undefined) return "absent";
 	if (file.endpoint.id !== id)
 		throw new PrimaryChannelConflictError(`primary channel ${id} has an invalid endpoint record`);
 	if (file.endpoint.hostname !== hostname())
 		throw new PrimaryChannelConflictError(
 			`primary channel ${id} is registered on another host (${file.endpoint.hostname}); refusing local replacement`,
 		);
-	if (processState(file.endpoint.pid) !== "dead")
+	if (replaceOwn && file.endpoint.pid === process.pid) return "replace";
+	const state = ownerState(file.endpoint);
+	if (state !== "dead" && !(state === "live" && !(await socketListening(file.endpoint.socketPath))))
 		throw new PrimaryChannelConflictError(
 			`primary channel ${id} is already registered by live PID ${file.endpoint.pid}; refusing replacement`,
 		);
 	const current = lstatSync(endpointPath, { throwIfNoEntry: false });
-	if (current === undefined) return;
+	if (current === undefined) return "absent";
 	if (current.dev !== file.dev || current.ino !== file.ino)
 		throw new PrimaryChannelConflictError(`primary channel ${id} changed during registration; retry`);
 	removeFile(endpointPath);
 	removeFile(file.endpoint.socketPath);
+	return "absent";
+}
+
+/**
+ * Remove one endpoint record whose owner is proven dead: its process no longer runs, or it was written before
+ * the current boot. A live, unknown, foreign, malformed or concurrently replaced record stays. A reader can call
+ * this for a record that it classified as dead, so dead records do not accumulate. True when it removed one.
+ */
+export function removeDeadPrimaryEndpoint(sessionsRoot: string, id: string): boolean {
+	if (!UUID_ANY.test(id)) return false;
+	const endpointPath = primaryEndpointPath(sessionsRoot, id);
+	let file: EndpointFile | undefined;
+	try {
+		file = readEndpointFile(endpointPath);
+	} catch {
+		return false;
+	}
+	if (file === undefined || file.endpoint.id !== id || file.endpoint.hostname !== hostname()) return false;
+	if (ownerState(file.endpoint) !== "dead") return false;
+	const current = lstatSync(endpointPath, { throwIfNoEntry: false });
+	if (current === undefined || current.dev !== file.dev || current.ino !== file.ino) return false;
+	removeFile(endpointPath);
+	removeFile(file.endpoint.socketPath);
+	return true;
 }
 
 /** The application endpoint for one primary channel. */
@@ -792,7 +860,7 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 	mkdirSync(directory, { recursive: true, mode: 0o700 });
 	chmodSync(directory, 0o700);
 	const endpointPath = join(directory, `${options.id}.json`);
-	removeDeadEndpoint(endpointPath, options.id);
+	const existing = await removeDeadEndpoint(endpointPath, options.id, options.replaceOwn);
 	const serverId = randomUUID();
 	const socketPath = unixSocketPath(serverId, directory);
 	const endpoint = endpointRecord(options, serverId, socketPath);
@@ -805,7 +873,8 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 		throw error;
 	}
 	try {
-		publishEndpoint(endpointPath, endpoint);
+		if (existing === "replace") rewriteEndpoint(endpointPath, endpoint);
+		else publishEndpoint(endpointPath, endpoint);
 	} catch (error) {
 		await server.close().catch(() => undefined);
 		removeFile(socketPath);
@@ -951,7 +1020,7 @@ export function primaryEndpointStatus(sessionsRoot: string, id: string): Primary
 function classifyEndpoint(record: RecordedPrimaryEndpoint, id: string): PrimaryEndpointStatus {
 	const version = endpointVersionLabel(record.version);
 	if (record.id !== id || record.hostname !== hostname()) return { state: "unknown", version };
-	const state = processState(record.pid);
+	const state = ownerState(record);
 	if (state !== "live") return { state, version };
 	return { state: record.version === PRIMARY_ENDPOINT_VERSION ? "live" : "incompatible", version };
 }
