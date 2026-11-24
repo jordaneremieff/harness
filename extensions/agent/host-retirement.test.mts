@@ -336,9 +336,27 @@ it("marks a failed live frame unavailable and releases its token without closing
 });
 
 it("leaves retirement disabled at zero even with passive clients", async (t) => {
-	const f = await fixture(t, { request: async () => ({}), isIdle: () => true, close: async () => {} }, 0);
+	let retireChecks = 0;
+	const f = await fixture(
+		t,
+		{
+			request: async () => ({}),
+			isIdle: () => {
+				retireChecks++;
+				return true;
+			},
+			close: async () => {},
+		},
+		0,
+	);
 	const client = await connectHost(f.metadata, { retryAttempts: 0 });
 	t.after(() => client.close());
 	await client.request("status");
-	assert.equal(f.checks.length, 0);
+	const scheduled = f.checks.length;
+	f.checks[f.checks.length - 1].fire();
+	await new Promise<void>(setImmediate);
+	assert.equal(retireChecks, 0, "a lease check never asks the runtime to retire");
+	assert.equal(f.checks.length, scheduled + 1, "the lease check schedules the next one");
+	assert.equal(f.host.pid, process.pid);
+	assert.deepEqual(await client.request("status"), {}, "the host still serves");
 });

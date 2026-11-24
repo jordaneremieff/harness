@@ -174,6 +174,8 @@ const OBSERVATION_INTERVAL_MS = 100;
 const RELEASE_RESPONSE_GRACE_MS = 100;
 /** A dedicated host process ends this long after any shutdown starts, even when a close step never settles. */
 export const SHUTDOWN_GRACE_MS = 20_000;
+/** With idle retirement off, an idle host checks its writer lease at this interval. */
+export const LEASE_CHECK_MS = 300_000;
 /**
  * A dedicated host process that has not announced readiness this long after it took the writer lease ends, which
  * releases the lease. The bound is longer than the launcher's own readiness wait, and longer again while a project
@@ -303,12 +305,8 @@ class HostProcessServer implements HostProcess {
 			onError: () => undefined,
 			clock: observationClock,
 		});
-		this.scheduleIdleCheck =
-			scheduleIdleCheck ??
-			((check, delayMs) => {
-				const timer = setTimeout(check, delayMs);
-				return () => clearTimeout(timer);
-			});
+		// The listening endpoint keeps a dedicated host alive; its idle timer never does.
+		this.scheduleIdleCheck = scheduleIdleCheck ?? unrefDeadline;
 		this.socketPath = paths.socket;
 		this.closeResponseReady = new Promise((resolve, reject) => {
 			this.resolveCloseResponse = resolve;
@@ -433,8 +431,7 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private async invoke(request: TransportRequest, state: AttachmentState): Promise<unknown> {
-		if (this.closing)
-			throw retiringRefusal("The durable host process is shutting down");
+		if (this.closing) throw retiringRefusal("The durable host process is shutting down");
 		const active = request.method !== HOST_CONTRACT_MEMBER && request.method !== "close";
 		if (active) this.beginActivity();
 		try {
@@ -581,10 +578,8 @@ class HostProcessServer implements HostProcess {
 			await Promise.race([this.shutdown(), this.closeResponseReady]);
 			return {};
 		}
-		if (this.closing)
-			throw retiringRefusal("The durable host process is shutting down");
-		if (!this.writerNamed())
-			throw retiringRefusal("The durable host lost its writer lease; no operation was admitted");
+		if (this.closing) throw retiringRefusal("The durable host process is shutting down");
+		if (!this.writerNamed()) throw retiringRefusal("The durable host lost its writer lease; no operation was admitted");
 		const token = this.prepareObservationToken(method, params, state);
 		try {
 			if (method === "observe-close" && token !== undefined) await state.closingTokens.get(token);
@@ -741,19 +736,24 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private scheduleRetirement(): void {
-		if (this.closing || this.idleMs === 0 || this.activeRequests > 0 || this.hasObservations()) return;
+		if (this.closing || this.activeRequests > 0 || this.hasObservations()) return;
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = this.scheduleIdleCheck(
 			() => {
 				void this.onIdleCheck();
 			},
-			Math.max(1, this.idleMs),
+			this.idleMs === 0 ? LEASE_CHECK_MS : Math.max(1, this.idleMs),
 		);
 	}
 
 	private async onIdleCheck(releasing = false): Promise<void> {
 		this.cancelIdleCheck = undefined;
 		if (!this.writerNamed()) return;
+		// With idle retirement off, the same timer still checks the writer lease of an idle host.
+		if (this.idleMs === 0 && !releasing) {
+			this.scheduleRetirement();
+			return;
+		}
 		if (this.closing || this.retirementChecking || this.activeRequests > 0 || (!releasing && this.hasObservations()))
 			return;
 		this.retirementChecking = true;
@@ -807,7 +807,7 @@ class HostProcessServer implements HostProcess {
 		this.observationPump.dispose();
 		writeSync(
 			2,
-			"Durable host: its writer lease file was removed or replaced; the process stops without further writes.\n",
+			"Durable host: its writer lease file was removed, replaced or changed; the process stops without further writes.\n",
 		);
 		try {
 			this.unpublishSocket();

@@ -22,6 +22,7 @@ import {
 import {
 	BOOTSTRAP_DEADLINE_MS,
 	HostClaimRefusedError,
+	LEASE_CHECK_MS,
 	resolveIdleMs,
 	runHost,
 	SHUTDOWN_GRACE_MS,
@@ -945,6 +946,33 @@ it("keeps one writer for a storage after its host directory is removed", async (
 	);
 	await assert.rejects(call(client, config, "timer-list"), /lost its writer lease; no operation was admitted/u);
 	assert.deepEqual(exits, [1], "the host whose lease file was removed stops at once");
+	await assert.rejects(host.done, /lost its writer lease/u);
+});
+
+it("stops a host without idle retirement once a lease file is removed", async (t) => {
+	const config = metadata(fixtureRoot(t));
+	const exits: number[] = [];
+	const checks: Array<{ check: () => void; delayMs: number }> = [];
+	const host = await runHost(echoRuntime, {
+		metadata: config,
+		idleMs: 0,
+		announceReady: noop,
+		scheduleIdleCheck: (check, delayMs) => {
+			checks.push({ check, delayMs });
+			return noop;
+		},
+		exit: ((status: 0 | 1) => {
+			exits.push(status);
+		}) as (status: 0 | 1) => never,
+	});
+	t.after(() => host.close().catch(noop));
+	assert.equal(checks.at(-1)?.delayMs, LEASE_CHECK_MS, "an idle host without retirement still schedules a lease check");
+	checks.at(-1)?.check();
+	assert.equal(checks.at(-1)?.delayMs, LEASE_CHECK_MS, "a named lease reschedules the check and never retires");
+	rmSync(writerLeasePaths(config)[1]);
+	checks.at(-1)?.check();
+	await new Promise<void>(setImmediate);
+	assert.deepEqual(exits, [1]);
 	await assert.rejects(host.done, /lost its writer lease/u);
 });
 
