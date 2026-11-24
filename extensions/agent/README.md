@@ -115,7 +115,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. A query puts an exact retained handle first, with or without `@`, then observes other catalogue candidates; `coverage.next` holds the exact continuation call. Reads start no host. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected read returns compact state with an exact full-detail call; `detail: true` with one explicit `sessionId` returns the full selected status and cannot be combined with `view`, `storageId`, `cursor`, or `limit`. The full status of a selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan; `storageId`, `cursor`, and `limit` apply to that view only, and a refusal of one of them elsewhere names the view and tells the caller to omit the field. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. The result view returns the answer in pages with separate continuations for answer text and for recipient references; see [result pages](#result-pages). |
-| `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 UTF-16 units and post details separately. If a `message` exceeds 8,000 UTF-16 units, write it to a file and post its path. Handler length errors include the remedy because Pi's pre-handler schema errors omit field descriptions. |
+| `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 UTF-16 units and post details separately. If a `message` exceeds 8,000 UTF-16 units, split it into consecutive posts chained with `replyTo`, or write it to a file under the working directory and post its path. Handler length errors include the remedy because Pi's pre-handler schema errors omit field descriptions. |
 
 ### Briefs
 
@@ -2473,18 +2473,35 @@ Saved expertise remains evidence; fresh sources and task restrictions outrank it
 
 ## Peer threads
 
-A thread keeps shared purpose and evidence in an existing participant's native
-Durable storage. It is not another agent, a transcript substitute, or a broker.
+A thread keeps shared purpose and evidence in a participant's native Durable
+storage. It is not another agent, a transcript substitute, or a broker.
+
+An ordinary primary has its own thread storage: one Durable storage per primary
+identity, created on its first `create` without `sessionId`, at an address
+derived from the catalog path and the primary identity. Its catalog record has
+the ordinary host metadata shape, owned by the primary and named `Threads of
+<session name>`, with project trust off, so every host and manager opens it.
+It holds threads and runs no agent work: controls other than thread mutation,
+observation, attach, abort and release refuse with the owner's identity, and
+agent rosters, `agent_list` and dashboard counts omit it. Its host starts on
+the first mutation, delivers thread notices like any participant storage, and
+retires when idle. Effort presence does not report it as a related effort.
 The primary seeds its purpose, authority and source, restrictions, acceptance,
 and integration owner. Peers choose their contributions, join or leave, share
 findings, and challenge decisions directly. No roster, rounds, roles, votes,
 or automatic replies are prescribed.
 
 Use `agent_collaborate` with `action: "list"` and an optional literal `query` to
-find purpose across storages. Global discovery reads published hints, not hosts.
-It visits a bounded catalog batch and returns `nextCursor`, explicit coverage,
-and omitted or unavailable source storages. Follow the cursor even after an
-empty page and repeat the same query. Use `sessionId` for a storage's retained
+find purpose across storages and repositories. Global discovery reads published
+hints, not hosts. One call reads a window of up to 1,024 catalog records in
+name order and ranks every match in it: active before closed, newest update
+first, thread ID as the tie break. A catalog that fits in one window is ranked
+as a whole; a larger one continues in later windows. The result carries
+`nextCursor`, explicit coverage, and up to 16 omitted or unavailable source
+storages with a `sourcesOmitted` count. A storage whose host has not yet
+published hints appears as an unavailable source; list it with `sessionId`.
+Follow the cursor and repeat the same query; a cursor from another query
+refuses. Use `sessionId` for a storage's retained
 thread list. For `read`, `join`, `leave`, `post`, `revise`, and `close`, supply only
 `threadId` as the storage address. These actions refuse `sessionId` even when
 it names the same storage. Catalog changes follow the filename continuation rules in
@@ -2511,10 +2528,20 @@ sequence continuation; member and pending-notice counts describe captured
 state, not live presence or delivery progress. Cold observation serves these reads
 without a live host.
 
+The per-run Active thread hints read the caller's contact threads, its own
+storage and thread storage, and the storages and thread storages of live
+related efforts first. These priority sources are related by contact or
+presence, so their active threads appear even when their storage lies outside
+the caller's project scope, for example in another repository.
+
 `create` needs `title`, `purpose`, `authority`, `source`, `restrictions`, and
-`acceptance`; `integrator` defaults to the caller. An ordinary primary also
-selects an existing participant with `sessionId`. Native agents default to
-their own storage. `create` and `join` accept `participation`, the member's
+`acceptance`; `integrator` defaults to the caller. Without `sessionId`, or with
+the caller's own identity, the thread goes to the caller's own storage: a
+native agent's storage, or an ordinary primary's thread storage. Creating a
+thread storage needs the primary's selected model as host metadata; the host
+never runs it. `sessionId` naming another participant storage places the
+thread there; naming another ordinary primary refuses, because that primary's
+threads live in its own thread storage. `create` and `join` accept `participation`, the member's
 self-chosen declaration of at most 256 UTF-16 units; another join revises it.
 Omission keeps the stored declaration and an empty string clears it. A join
 that changes nothing appends no event and creates no notice. `join` accepts no

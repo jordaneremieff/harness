@@ -1,4 +1,4 @@
-import { opendir } from "node:fs/promises";
+import { opendir, readdir } from "node:fs/promises";
 import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
 import {
 	validateCollaborationAction,
@@ -67,7 +67,8 @@ async function collectPriorityRecord(
 	try {
 		const record = catalog.read(name.slice(0, -5));
 		page.coverage.records += 1;
-		await collectRecentHints(page, record, scope);
+		// A priority source is related by contact or presence, so project scope does not filter it.
+		await collectRecentHints(page, record, scope && { prompt: scope.prompt, matches: async () => true });
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
 			page.coverage.records += 1;
@@ -160,31 +161,40 @@ export async function readRecentCollaboration(
 	return page;
 }
 
-type ThreadCursor = {
-	query: string;
-	catalog: string | null;
-	storage: string | null;
-	offset: number;
-	publication: string | null;
-};
-type DiscoverySource = { sessionId: string; omitted: number; unavailable: boolean };
-type DiscoveryState = {
-	items: CollaborationSummary[];
-	sources: DiscoverySource[];
-	visited: number;
-	unavailable: number;
-	omitted: number;
-};
+/** One call reads at most this many catalog records; larger catalogs continue in later windows. */
+export const THREAD_DISCOVERY_VISITS = 1024;
+const MAX_DISCOVERY_SOURCES = 16;
 
+type ThreadKey = { closed: boolean; updatedAt: number; id: string };
+type ThreadCursor = { query: string; window: string | null; after: ThreadKey | null };
+type DiscoverySource = { sessionId: string; omitted: number; unavailable: boolean };
+
+function compareThreads(left: ThreadKey, right: ThreadKey): number {
+	return (
+		Number(left.closed) - Number(right.closed) ||
+		right.updatedAt - left.updatedAt ||
+		(left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+	);
+}
 function readCursor(input: Record<string, unknown>, query: string): ThreadCursor {
-	if (input.cursor === undefined) return { query, catalog: null, storage: null, offset: 0, publication: null };
-	if (typeof input.cursor !== "string" || input.cursor.length > 2048)
-		throw new Error("Invalid thread discovery cursor");
-	const cursor = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as ThreadCursor;
-	if (cursor?.query !== query || !Number.isInteger(cursor.offset) || cursor.offset < 0 || cursor.offset > 8)
-		throw new Error("Invalid thread discovery cursor; repeat the same query");
-	for (const field of [cursor.catalog, cursor.storage, cursor.publication])
-		if (field !== null && typeof field !== "string") throw new Error("Invalid thread discovery cursor");
+	if (input.cursor === undefined) return { query, window: null, after: null };
+	const invalid = "Invalid thread discovery cursor; repeat the same query without cursor";
+	if (typeof input.cursor !== "string" || input.cursor.length > 2048) throw new Error(invalid);
+	let cursor: ThreadCursor;
+	try {
+		cursor = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as ThreadCursor;
+	} catch {
+		throw new Error(invalid);
+	}
+	if (
+		cursor?.query !== query ||
+		(cursor.window !== null && (typeof cursor.window !== "string" || !CATALOG_RECORD_NAME.test(cursor.window))) ||
+		(cursor.after !== null &&
+			(typeof cursor.after?.id !== "string" ||
+				typeof cursor.after.closed !== "boolean" ||
+				!Number.isFinite(cursor.after.updatedAt)))
+	)
+		throw new Error(invalid);
 	return cursor;
 }
 function pageLimit(input: Record<string, unknown>): number {
@@ -193,87 +203,100 @@ function pageLimit(input: Record<string, unknown>): number {
 		throw new Error("Thread list limit must be 1..20");
 	return limit;
 }
-async function nextRecord(
-	catalog: AgentCatalog,
-	cursor: ThreadCursor,
-	state: DiscoveryState,
-): Promise<CatalogRecord | undefined> {
-	if (cursor.storage !== null) {
-		const record = catalog.read(cursor.storage);
-		if ((record.threads?.updatedAt ?? null) !== cursor.publication)
-			throw new Error("Thread discovery changed; restart the query");
-		return record;
-	}
-	const page = await catalog.page({ limit: 1, ...(cursor.catalog === null ? {} : { cursor: cursor.catalog }) });
-	state.unavailable += page.coverage.skipped;
-	cursor.catalog = page.nextCursor;
-	const record = page.records[0];
-	if (record === undefined) return undefined;
-	cursor.storage = record.storageId;
-	cursor.offset = 0;
-	cursor.publication = record.threads?.updatedAt ?? null;
-	return record;
-}
-function collect(
-	record: CatalogRecord,
-	cursor: ThreadCursor,
-	state: DiscoveryState,
-	query: string,
-	limit: number,
-): void {
-	const projection = record.threads;
-	if (projection === undefined || projection.omitted > 0)
-		state.sources.push({
-			sessionId: record.storageId,
-			omitted: projection?.omitted ?? 0,
-			unavailable: projection === undefined,
-		});
-	if (projection === undefined) state.unavailable += 1;
-	state.omitted += projection?.omitted ?? 0;
-	const rows = projection?.items ?? [];
-	for (; cursor.offset < rows.length && state.items.length < limit; cursor.offset++) {
-		const row = rows[cursor.offset];
-		if (!query || [row.id, row.title, row.purpose].some((value) => value.toLocaleLowerCase().includes(query)))
-			state.items.push(row);
-	}
-	if (cursor.offset === rows.length) {
-		cursor.storage = null;
-		cursor.offset = 0;
-		cursor.publication = null;
-	}
+function encode(cursor: ThreadCursor): string {
+	return Buffer.from(JSON.stringify(cursor)).toString("base64url");
 }
 
-/** Read only bounded published hints. Missing hints remain explicit unknown coverage. */
+type WindowScan = {
+	rows: CollaborationSummary[];
+	sources: DiscoverySource[];
+	sourcesOmitted: number;
+	unavailable: number;
+	omitted: number;
+};
+
+async function catalogWindow(catalog: AgentCatalog, start: string | null): Promise<{ names: string[]; more: boolean }> {
+	let names: string[];
+	try {
+		names = (await readdir(catalog.root)).filter((name) => CATALOG_RECORD_NAME.test(name)).sort();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		return { names: [], more: false };
+	}
+	const first = start === null ? 0 : names.findIndex((name) => name > start);
+	if (first === -1) return { names: [], more: false };
+	const window = names.slice(first, first + THREAD_DISCOVERY_VISITS);
+	return { names: window, more: first + window.length < names.length };
+}
+function matches(row: CollaborationSummary, needle: string): boolean {
+	return !needle || [row.id, row.title, row.purpose].some((value) => value.toLocaleLowerCase().includes(needle));
+}
+function scanRecord(scan: WindowScan, record: CatalogRecord, needle: string): void {
+	const projection = record.threads;
+	if (projection === undefined) scan.unavailable += 1;
+	scan.omitted += projection?.omitted ?? 0;
+	if (projection === undefined || projection.omitted > 0) {
+		if (scan.sources.length < MAX_DISCOVERY_SOURCES)
+			scan.sources.push({
+				sessionId: record.storageId,
+				omitted: projection?.omitted ?? 0,
+				unavailable: projection === undefined,
+			});
+		else scan.sourcesOmitted += 1;
+	}
+	for (const row of projection?.items ?? []) if (matches(row, needle)) scan.rows.push(row);
+}
+function scanWindow(catalog: AgentCatalog, names: readonly string[], needle: string): WindowScan {
+	const scan: WindowScan = { rows: [], sources: [], sourcesOmitted: 0, unavailable: 0, omitted: 0 };
+	for (const name of names) {
+		let record: CatalogRecord;
+		try {
+			record = catalog.read(name.slice(0, -5));
+		} catch {
+			scan.unavailable += 1;
+			continue;
+		}
+		scanRecord(scan, record, needle);
+	}
+	scan.rows.sort(compareThreads);
+	return scan;
+}
+
+/**
+ * Read published hints from one window of catalog records in name order, then rank every match in
+ * that window: active before closed, newest update first, thread ID as the tie break. A catalog that
+ * fits in one window is ranked as a whole. Missing hints remain explicit unknown coverage.
+ */
 export async function discoverCollaboration(
 	catalog: AgentCatalog,
 	input: Record<string, unknown>,
-): Promise<CollaborationList & { sources: DiscoverySource[] }> {
+): Promise<CollaborationList & { sources: DiscoverySource[]; sourcesOmitted: number }> {
 	if (input.action !== undefined && input.action !== "list") throw new Error("Thread discovery requires action list");
 	validateCollaborationAction({ ...input, action: "list" });
 	const query = typeof input.query === "string" ? input.query : "";
 	if (query.length > 256) throw new Error("Thread query exceeds its bound");
 	const limit = pageLimit(input);
 	const cursor = readCursor(input, query);
-	const state: DiscoveryState = { items: [], sources: [], visited: 0, unavailable: 0, omitted: 0 };
-	let exhausted = false;
-	while (state.visited < 8 && state.items.length < limit) {
-		const record = await nextRecord(catalog, cursor, state);
-		state.visited += 1;
-		if (record) collect(record, cursor, state, query.toLocaleLowerCase(), limit);
-		if (cursor.storage === null && cursor.catalog === null) {
-			exhausted = true;
-			break;
-		}
-	}
+	const window = await catalogWindow(catalog, cursor.window);
+	const scan = scanWindow(catalog, window.names, query.toLocaleLowerCase());
+	const after = cursor.after;
+	const remaining = after === null ? scan.rows : scan.rows.filter((row) => compareThreads(row, after) > 0);
+	const items = remaining.slice(0, limit);
+	const last = items.at(-1);
+	let next: ThreadCursor | null = null;
+	if (remaining.length > limit && last)
+		next = { query, window: cursor.window, after: { closed: last.closed, updatedAt: last.updatedAt, id: last.id } };
+	else if (window.more) next = { query, window: window.names.at(-1) ?? null, after: null };
 	return {
-		items: state.items,
-		sources: state.sources,
-		nextCursor: exhausted ? null : Buffer.from(JSON.stringify(cursor)).toString("base64url"),
+		items,
+		sources: scan.sources,
+		sourcesOmitted: scan.sourcesOmitted,
+		nextCursor: next === null ? null : encode(next),
 		coverage: {
-			complete: exhausted && state.unavailable === 0 && state.omitted === 0,
-			visited: state.visited,
-			omitted: state.omitted,
-			unavailable: state.unavailable,
+			complete: next === null && cursor.window === null && scan.unavailable === 0 && scan.omitted === 0,
+			visited: window.names.length,
+			omitted: scan.omitted,
+			unavailable: scan.unavailable,
 		},
 	};
 }

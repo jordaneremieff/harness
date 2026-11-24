@@ -29,6 +29,23 @@ export function handleStorageId(handle: string, catalogRoot: string): string {
 		.digest("hex");
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
+/**
+ * One thread storage per owner identity in the selected catalog. The address alone marks it: the
+ * catalog record keeps the ordinary host metadata shape, so every host and manager can open it.
+ */
+export function threadStorageId(ownerId: string, catalogRoot: string): string {
+	let root = resolve(catalogRoot);
+	try {
+		root = realpathSync(root);
+	} catch {
+		// A catalog that does not exist yet holds no storage; creation resolves the real path first.
+	}
+	const hex = createHash("sha256").update(`pi.agent.threads\u0000${root}\u0000${ownerId}`).digest("hex");
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+export function isThreadStorage(record: { storageId: string; ownerId?: string }, catalogRoot: string): boolean {
+	return record.ownerId !== undefined && record.storageId === threadStorageId(record.ownerId, catalogRoot);
+}
 /** Explicit handles never fall through to fuzzy names or primary endpoints. */
 export function targetIdentity(selector: string, catalogRoot?: string): string {
 	if (!selector.startsWith("@")) return selector;

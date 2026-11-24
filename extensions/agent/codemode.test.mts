@@ -3,9 +3,9 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 
-test("thread-hosting recipe creates the thread in the new agent's storage and keeps its result reference", async () => {
+test("thread recipe creates the thread in the caller's own storage before the agent and keeps its result reference", async () => {
 	const recipes = readFileSync(new URL("./codemode.md", import.meta.url), "utf8");
-	const source = recipes.match(/## Thread hosted by a new agent\n[\s\S]*?```js\n([\s\S]*?)\n```/)?.[1];
+	const source = recipes.match(/## Thread for delegated work\n[\s\S]*?```js\n([\s\S]*?)\n```/)?.[1];
 	assert.ok(source);
 	for (const identified of [true, false]) {
 		const calls: string[] = [];
@@ -17,10 +17,10 @@ test("thread-hosting recipe creates the thread in the new agent's storage and ke
 					assert.equal(args.prompt, undefined);
 					return identified ? { sessionId: "host" } : {};
 				},
-				agent_collaborate: async (args: { action: string; sessionId: string; title: string }) => {
+				agent_collaborate: async (args: { action: string; sessionId?: string; title: string }) => {
 					calls.push("create");
 					assert.equal(args.action, "create");
-					assert.equal(args.sessionId, "host");
+					assert.equal(args.sessionId, undefined);
 					assert.ok(args.title.length > 0);
 					return JSON.stringify({ threadId: "thread-42" });
 				},
@@ -36,12 +36,12 @@ test("thread-hosting recipe creates the thread in the new agent's storage and ke
 			load: (key: string) => values.get(key),
 		});
 		if (identified) {
-			assert.deepEqual(calls, ["spawn", "create", "send"]);
+			assert.deepEqual(calls, ["create", "spawn", "send"]);
 			assert.equal(JSON.stringify(values.get("refs")), JSON.stringify([{ sessionId: "host", submissionId: 1 }]));
 			assert.equal(result.threadId, "thread-42");
 		} else {
 			assert.equal(result.stop, "spawn receipt names no identity");
-			assert.deepEqual(calls, ["spawn"]);
+			assert.deepEqual(calls, ["create", "spawn"]);
 			assert.equal(values.has("refs"), false);
 		}
 	}

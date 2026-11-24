@@ -23,7 +23,7 @@ import { CLAIM_BYTES, observeClaim, observeClaimAsync, type ClaimObservation } f
 import { isThinkingLevel } from "./configuration.ts";
 import { type HostMetadata, hostPaths, parseHostMetadata } from "./host-protocol.ts";
 
-import { handleSlug, handleStorageId } from "./identity.ts";
+import { handleSlug, handleStorageId, threadStorageId } from "./identity.ts";
 import { profileText } from "./profile-schema.ts";
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
@@ -451,6 +451,32 @@ export class AgentCatalog {
 				profileSeed: { handle, role },
 			},
 		};
+		const prepared = join(this.root, `.${storageId}.${randomUUID()}.claim`);
+		writeFileSync(prepared, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 });
+		try {
+			try {
+				linkSync(prepared, this.path(storageId));
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+				return { record: this.read(storageId), created: false };
+			}
+		} finally {
+			unlinkSync(prepared);
+		}
+		forgetValidatedRecord(this.path(storageId));
+		publishCatalogChange(this.root, storageId);
+		return { record, created: true };
+	}
+
+	/** Publish the owner's thread storage record, or return the one a concurrent creator published. */
+	createThreadStorage(
+		input: Omit<HostMetadata, "storageId" | "storagePath"> & { ownerId: string },
+	): CatalogCreateResult {
+		mkdirSync(this.root, { recursive: true, mode: 0o700 });
+		const storageId = threadStorageId(input.ownerId, this.root);
+		const metadata = parseHostMetadata({ ...input, storageId, storagePath: join(this.root, `${storageId}.sqlite`) });
+		if (!isThinkingLevel(metadata.thinkingLevel)) throw new Error("Unknown reasoning level");
+		const record: CatalogRecord = { ...metadata, createdAt: new Date().toISOString() };
 		const prepared = join(this.root, `.${storageId}.${randomUUID()}.claim`);
 		writeFileSync(prepared, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 });
 		try {

@@ -180,10 +180,10 @@ and its conditions, and one answer that accepts or corrects it. Avoid repeated
 acknowledgments; send another message only for a changed condition or a handoff
 the agreement requires.
 
-When a participant storage exists, put an agreement that others must see in one
-peer thread for the real overlap. Record the governing frame and the order of
-shared mutations there. Ordinary primaries alone have no thread storage; use
-direct agreement rather than start an unnecessary agent just to hold a thread.
+Put an agreement that others must see in one peer thread for the real overlap.
+Record the governing frame and the order of shared mutations there. An ordinary
+primary creates the thread in its own thread storage; no agent is needed to
+hold it.
 A contact-thread claim links the effort to that retained exchange. Use the shared
 frame for the governing purpose and each member's `participation` declaration
 for its current hold, release, or continuing condition. Rejoin with a new

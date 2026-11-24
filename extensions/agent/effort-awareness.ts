@@ -3,6 +3,7 @@ import { textPrefix } from "./text-prefix.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
 import { readRecentCollaboration, type RecentCollaborationPage } from "./collaboration-discovery.ts";
+import { threadStorageId } from "./identity.ts";
 import type { EffortReadResources } from "./effort-presence.ts";
 import {
 	observedPurposeFallback,
@@ -100,10 +101,13 @@ export async function readEffortAwareness(
 		self.intentClaim?.contactThread,
 		...presence.efforts.map((effort) => effort.intentClaim?.contactThread ?? effort.contactThreadClaim),
 	];
+	const live = presence.efforts.filter((effort) => effort.liveness === "live").map((effort) => effort.id);
 	const priorities = [
 		...contacts.filter((thread): thread is string => thread !== undefined).map((thread) => thread.split("/")[0]),
 		self.id,
-		...presence.efforts.filter((effort) => effort.liveness === "live").map((effort) => effort.id),
+		threadStorageId(self.id, resources.catalog.root),
+		...live,
+		...live.map((id) => threadStorageId(id, resources.catalog.root)),
 	];
 	const threads = await readRecentCollaboration(resources.catalog, priorities, scope);
 	return { self: projection, presence, threads };

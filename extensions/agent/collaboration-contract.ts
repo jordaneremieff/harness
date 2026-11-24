@@ -30,7 +30,7 @@ const participation = opt(
 const message = str({
 	minLength: 1,
 	description:
-		"Post and close require message; leave accepts it optionally. At most 8,000 UTF-16 units. Write longer content to a file and post its path. The handler enforces this cap with that remedy.",
+		"Post and close require message; leave accepts it optionally. At most 8,000 UTF-16 units. Split longer content into consecutive posts chained with replyTo, or write it to a file under the working directory and post its path.",
 });
 const threadId = textSchema(128);
 const limit = opt(int({ minimum: 1, maximum: 20 }));
@@ -348,7 +348,9 @@ export function collaborationText(input: Record<string, unknown>, key: string, m
 				`participation exceeds ${max} UTF-16 units; use a short declaration, then post the details with action: post`,
 			);
 		if (key === "message")
-			throw new Error(`message exceeds ${max} UTF-16 units; write the full content to a file and post its path`);
+			throw new Error(
+				`message is ${(input[key] as string).length} UTF-16 units; the limit is ${max}. Split it into consecutive posts of at most ${max} units, each with replyTo set to the sequence the previous post returned. For one long document, write it to a file under the working directory (not a system temporary directory, which can be blocked) and post a short summary with the file's path`,
+			);
 		throw new Error(
 			`${key} exceeds the maximum length of ${max} characters${key === "title" ? "; shorten title to at most 160 characters and repeat the call" : ""}`,
 		);

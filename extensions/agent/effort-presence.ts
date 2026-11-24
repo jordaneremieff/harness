@@ -5,6 +5,7 @@ import { readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 import type { PrimaryInfo, PrimaryObservedPurpose, PrimaryRepositoryState } from "./primary-channel.ts";
 import type { Dirent } from "node:fs";
 import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
+import { isThreadStorage } from "./identity.ts";
 import type { PrimaryLocationResolver } from "./effort-location.ts";
 import { hostPaths } from "./host-protocol.ts";
 import { observeClaim, type ClaimObservation } from "./claims.ts";
@@ -333,6 +334,10 @@ async function visitNativeRecord(
 	} catch {
 		page.coverage.unreadable++;
 		markPartial(page, "native-record-unreadable");
+		return;
+	}
+	if (isThreadStorage(record, catalog.root)) {
+		page.coverage.unrelated++;
 		return;
 	}
 	const claimRows = record.view?.intentClaims;

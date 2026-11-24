@@ -471,10 +471,10 @@ it("delivers actionable length errors after Pi argument validation without relax
 	] as const) {
 		const full = "🧭".repeat(limit / 2);
 		const args = { action, threadId: created.threadId, [key]: `${full}x` };
-		const remedy =
+		const expected =
 			key === "participation"
-				? "use a short declaration, then post the details with action: post"
-				: "write the full content to a file and post its path";
+				? `${key} exceeds ${limit} UTF-16 units; use a short declaration, then post the details with action: post`
+				: `${key} is ${limit + 1} UTF-16 units; the limit is ${limit}. Split it into consecutive posts of at most ${limit} units, each with replyTo set to the sequence the previous post returned. For one long document, write it to a file under the working directory (not a system temporary directory, which can be blocked) and post a short summary with the file's path`;
 		const checked = validateToolArguments(
 			{ name: "agent_collaborate", description: "Thread", parameters: CollaborationParams },
 			{ type: "toolCall", id: "length-check", name: "agent_collaborate", arguments: args },
@@ -483,7 +483,7 @@ it("delivers actionable length errors after Pi argument validation without relax
 		await assert.rejects(
 			mutateCollaboration(f.host.harness, f.storageId, mutation(action, `oversized-${key}`, checked), context),
 			{
-				message: `${key} exceeds ${limit} UTF-16 units; ${remedy}`,
+				message: expected,
 			},
 		);
 		for (const call of [
@@ -497,7 +497,7 @@ it("delivers actionable length errors after Pi argument validation without relax
 			() => readCollaboration(f.host.harness, { threadId: created.threadId, [key]: "x".repeat(limit + 1) }, context),
 			() => listCollaboration(f.host.harness, { [key]: "x".repeat(limit + 1) }, context),
 		])
-			await assert.rejects(call(), { message: `${key} exceeds ${limit} UTF-16 units; ${remedy}` });
+			await assert.rejects(call(), { message: expected });
 		await mutateCollaboration(
 			f.host.harness,
 			f.storageId,

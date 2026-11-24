@@ -19,10 +19,7 @@ it("gives ordinary coordination tools completion and low-message guidance", asyn
 	assert.match(descriptions.get("agent_intent") ?? "", /update or clear intent when integration completes/u);
 	assert.match(descriptions.get("agent_send") ?? "", /one concise proposal containing its conditions and one answer/u);
 	assert.match(descriptions.get("agent_send") ?? "", /not repeated acknowledgments/u);
-	assert.match(
-		descriptions.get("agent_send") ?? "",
-		/agreements that others must see in a thread when a participant storage exists/u,
-	);
+	assert.match(descriptions.get("agent_send") ?? "", /agreements that others must see in a thread\./u);
 	assert.match(
 		descriptions.get("agent_send") ?? "",
 		/Task check-ins run only when checkInMinutes or agent\.checkInMinutes sets a nonzero interval/u,

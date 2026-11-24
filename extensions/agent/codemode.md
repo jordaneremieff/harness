@@ -13,17 +13,18 @@ for result references and thread positions.
 
 ## Contents
 
-- Thread hosted by a new agent
+- Thread for delegated work
 - Parallel dispatch
 - Fleet sweep
 - Thread digest
 - Save a result digest to a file
 
-## Thread hosted by a new agent
+## Thread for delegated work
 
-An ordinary primary has no thread storage of its own. When a thread is useful,
-spawn an agent the work needs anyway, create the thread in its storage, and
-send its task, in one call.
+Any session creates a thread without an agent: `create` without `sessionId`
+places it in the caller's own storage. An ordinary primary's own storage is its
+thread storage, which holds threads and runs no agent work. Create the thread,
+then give its ID to the agents that share the work, in one call.
 
 ```js
 const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
@@ -37,23 +38,25 @@ const frame = {
 };
 const task = "<task message; {{THREAD_ID}} marks where the thread ID goes>";
 
-const receipt = asObject(await tools.agent_spawn({ name: "<label>", preset: "worker" }));
-const host = receipt.result?.sessionId ?? receipt.sessionId ?? receipt.identity;
-if (!host) return { stop: "spawn receipt names no identity", receipt };
-
-const thread = asObject(await tools.agent_collaborate({ ...frame, action: "create", sessionId: host }));
+const thread = asObject(await tools.agent_collaborate({ ...frame, action: "create" }));
 const threadId = thread.threadId ?? thread.id;
-const sent = asObject(await tools.agent_send({ sessionId: host, message: task.split("{{THREAD_ID}}").join(threadId), checkInMinutes: 30 }));
+if (!threadId) return { stop: "create receipt names no thread", thread };
+
+const receipt = asObject(await tools.agent_spawn({ name: "<label>", preset: "worker" }));
+const agent = receipt.result?.sessionId ?? receipt.sessionId ?? receipt.identity;
+if (!agent) return { stop: "spawn receipt names no identity", threadId, receipt };
+
+const sent = asObject(await tools.agent_send({ sessionId: agent, message: task.split("{{THREAD_ID}}").join(threadId), checkInMinutes: 30 }));
 
 const refs = [...(load("refs") ?? []), sent.result];
 store("refs", refs);
-return { host, threadId, ref: sent.result };
+return { agent, threadId, ref: sent.result };
 ```
 
 Notes:
 
-- `sessionId` on `create` places the thread in the new agent's storage. A
-  native Durable session omits it to create the thread in its own storage.
+- Other sessions find the thread with `agent_collaborate` `list`, or through
+  the Active thread hints of related sessions.
 - The agent joins the thread itself as the first act of its task.
 - Choose the preset and check-in interval using current delegation preferences
   and the public tool definition. The values in the examples are illustrative.

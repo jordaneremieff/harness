@@ -42,6 +42,7 @@ import { HOST_CONTRACT, contractRefusal, type RuntimeContract } from "./version-
 import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
 import type { ContinuityFact } from "./continuity-facts.ts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
+import { isThreadStorage, threadStorageId } from "./identity.ts";
 import { PLACE_FILE_MAX_BYTES } from "./places.ts";
 import { dispatchFacts } from "./result-reference.ts";
 import type { ExecutionSelection } from "./agent-preferences.ts";
@@ -3222,31 +3223,61 @@ it("preserves the resolved identity and supplied handle on configure refusals", 
 	);
 });
 
-it("names a Durable target recovery when collaboration targets an ordinary primary", async (t) => {
+it("creates an ordinary primary's thread in its own thread storage without an agent", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root));
 	t.after(() => manager.close());
-	const id = randomUUID();
-	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send() {} });
-	await assert.rejects(
-		manager.collaborate(
-			{
-				action: "create",
-				sessionId: id,
-				title: "Review",
-				purpose: "Test",
-				authority: "Task",
-				source: "Test",
-				restrictions: "Local",
-				acceptance: "Verified",
-			},
-			{ id: randomUUID(), cwd: root },
-		),
-		{
-			message:
-				"A registered primary accepts messages, not Durable session controls; call agent_list, then repeat agent_collaborate with sessionId set to a discovered Durable agent identity, not this primary",
-		},
+	const primary = randomUUID();
+	const other = randomUUID();
+	await manager.registerPrimary(other, { signal: new AbortController().signal, cwd: root, send() {} });
+	const frame = {
+		action: "create",
+		title: "Review",
+		purpose: "Test",
+		authority: "Task",
+		source: "Test",
+		restrictions: "Local",
+		acceptance: "Verified",
+	};
+	const controls: Array<{ method: string; input: Record<string, unknown> }> = [];
+	const control = manager.control.bind(manager);
+	manager.control = async (method, input, caller, options) => {
+		if (method === "collaboration-mutate" && input.sessionId === threadStorageId(primary, manager.catalog.root)) {
+			controls.push({ method, input });
+			return { threadId: `${String(input.sessionId)}/${"0".repeat(32)}`, sequence: 1, deduped: false };
+		}
+		return control(method, input, caller, options);
+	};
+	const caller = { id: primary, cwd: root, name: "Docs review", model: { provider: "acme", modelId: "model-x" } };
+	await assert.rejects(manager.collaborate(frame, { id: primary, cwd: root }), {
+		message: "Creating a thread storage needs this session's selected model; select a model and repeat create",
+	});
+	await manager.collaborate(frame, caller);
+	await manager.collaborate({ ...frame, sessionId: primary }, caller);
+	const storageId = threadStorageId(primary, manager.catalog.root);
+	assert.deepEqual(
+		controls.map((call) => [call.input.sessionId, call.input.senderIdentity]),
+		[
+			[storageId, primary],
+			[storageId, primary],
+		],
+		"omitted sessionId and the caller's own identity both select its thread storage",
 	);
+	const record = manager.catalog.read(storageId);
+	assert.equal(record.ownerId, primary);
+	assert.equal(record.name, "Threads of Docs review");
+	assert.equal(record.trust, false);
+	assert.equal(isThreadStorage(record, manager.catalog.root), true);
+	await assert.rejects(manager.collaborate({ ...frame, sessionId: other }, caller), {
+		message:
+			"Threads of an ordinary primary live in that primary's own thread storage; repeat agent_collaborate create without sessionId to create the thread in your own thread storage",
+	});
+	await assert.rejects(manager.control("task-submit", { sessionId: storageId, message: "work" }, caller), {
+		message: `${storageId} is a thread storage of ${primary}; it holds threads and runs no agent work. Use agent_collaborate with a threadId it holds, or message its owner ${primary}`,
+	});
+	manager.catalog.create({ ...hostMetadata(record), ownerId: primary, name: "Agent" });
+	const page = (await manager.list({})) as { coverage: { catalog: { storages: number } } };
+	assert.equal(page.coverage.catalog.storages, 1, "agent views count the agent and omit the thread storage");
 });
 
 it("returns a compact status snapshot from a mutation instead of the full status", async (t) => {

@@ -10,7 +10,14 @@ import {
 } from "./independent-launch.ts";
 import { REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
 import { readFleetStatus, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
-import { assertHandleCwd, canonicalAgentCwd, handleSlug, handleStorageId } from "./identity.ts";
+import {
+	assertHandleCwd,
+	canonicalAgentCwd,
+	handleSlug,
+	handleStorageId,
+	isThreadStorage,
+	threadStorageId,
+} from "./identity.ts";
 import { profileText, type AgentProfile } from "./profile-schema.ts";
 import { NativeListOutputSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
 import {
@@ -36,6 +43,7 @@ import {
 	projectCatalogPriority,
 	hostMetadata,
 	storageIdOf,
+	type CatalogFact,
 	type CatalogInventory,
 	type CatalogRecord,
 } from "./catalog.ts";
@@ -112,6 +120,18 @@ function loadResultReference(): Promise<typeof import("./result-reference.ts")> 
 	return resultReferencePromise;
 }
 
+/** Controls a thread storage serves; every other control would start agent work in it. */
+const THREAD_STORAGE_METHODS = new Set([
+	"collaboration-mutate",
+	"inspect",
+	"status",
+	"snapshot",
+	"dashboard",
+	"profile-read",
+	"attach",
+	"abort",
+	"release",
+]);
 let collaborationPromise: Promise<typeof import("./collaboration.ts")> | undefined;
 function loadCollaboration(): Promise<typeof import("./collaboration.ts")> {
 	collaborationPromise ??= import("./collaboration.ts");
@@ -1091,6 +1111,10 @@ export class AgentManager {
 				throw new Error("The exact native target is not retained and no ordinary primary is registered");
 			return this.primaryControl(method, input, sessionId, caller);
 		}
+		if (isThreadStorage(record, this.catalog.root) && !THREAD_STORAGE_METHODS.has(method))
+			throw new Error(
+				`${sessionId} is a thread storage of ${record.ownerId}; it holds threads and runs no agent work. Use agent_collaborate with a threadId it holds, or message its owner ${record.ownerId}`,
+			);
 		const params = this.nativeControlParams(method, input, sessionId, caller.id);
 		if (["inspect", "status", "snapshot", "dashboard", "profile-read"].includes(method))
 			return this.observe(record, method, params, undefined, options?.signal);
@@ -1323,7 +1347,7 @@ export class AgentManager {
 			return this.observePrimary(sessionId, method === "status" ? { view: "status" } : input);
 		if (method === "collaboration-mutate")
 			throw new Error(
-				"A registered primary accepts messages, not Durable session controls; call agent_list, then repeat agent_collaborate with sessionId set to a discovered Durable agent identity, not this primary",
+				"Threads of an ordinary primary live in that primary's own thread storage; repeat agent_collaborate create without sessionId to create the thread in your own thread storage",
 			);
 		return this.primaryMessage(method, input, sessionId, caller);
 	}
@@ -1542,7 +1566,7 @@ export class AgentManager {
 		const rows: unknown[] = [];
 		const unavailable: Array<{ storageId: string; reason: string }> = [];
 		// One inventory reading orders the whole call; observations can rewrite catalog records.
-		const inventory = await this.inventory.read();
+		const inventory = this.withoutThreadStorages(await this.inventory.read());
 		const plan = planListScan(inventory.facts, cursor.query, cursor.cwd, cursor.since);
 		const progress = { steps: 0, visits: 0, finished: new Set<string>() };
 		let open = await this.observeListSteps(
@@ -1603,12 +1627,20 @@ export class AgentManager {
 		return this.priorityPage(input, {});
 	}
 
+	/** Agent views omit thread storages; recovery and thread discovery still read them. */
+	private withoutThreadStorages(inventory: CatalogInventory): CatalogInventory {
+		const facts = new Map<string, CatalogFact | null>();
+		for (const [storageId, fact] of inventory.facts)
+			if (!fact || !isThreadStorage(fact.record, this.catalog.root)) facts.set(storageId, fact);
+		return facts.size === inventory.facts.size ? inventory : { ...inventory, facts };
+	}
+
 	private async priorityPage(
 		input: { cursor?: string; ownerId?: string },
 		read: { reconcileAfterMs?: number },
 	): Promise<AgentPriorityPage> {
 		const rows: AgentPrioritySummary[] = [];
-		const inventory = await this.inventory.read(read);
+		const inventory = this.withoutThreadStorages(await this.inventory.read(read));
 		const activeStorageIds = [...new Set([...this.launchRows.keys(), ...this.opening.keys(), ...this.recovering])];
 		const page = projectCatalogPriority(inventory, {
 			cursor: input.cursor,
@@ -1778,14 +1810,9 @@ export class AgentManager {
 		input = await this.collaborationTargets(input);
 		const action = String(input.action ?? "");
 		const threadId = typeof input.threadId === "string" ? input.threadId : undefined;
-		const sessionId =
-			threadId !== undefined
-				? collaborationStorage(threadId)
-				: typeof input.sessionId === "string"
-					? input.sessionId
-					: undefined;
+		const sessionId = this.collaborationAddress(input, action, threadId, caller);
 		if (action === "list" && !sessionId) return discoverCollaboration(this.catalog, input);
-		if (!sessionId) throw new Error("Create requires an agent sessionId; discover an agent or create one first.");
+		if (!sessionId) throw new Error("This action requires threadId");
 		if (action === "list" || action === "read")
 			return this.observe(
 				this.nativeTarget(sessionId),
@@ -1803,6 +1830,59 @@ export class AgentManager {
 			},
 			caller,
 		);
+	}
+
+	/** Create without a storage, or with the caller's own identity, uses the caller's own storage. */
+	private collaborationAddress(
+		input: Record<string, unknown>,
+		action: string,
+		threadId: string | undefined,
+		caller: AgentCaller,
+	): string | undefined {
+		if (threadId !== undefined) return collaborationStorage(threadId);
+		const sessionId = typeof input.sessionId === "string" ? input.sessionId : undefined;
+		if (action !== "create" || (sessionId !== undefined && sessionId !== caller.id)) return sessionId;
+		if (this.retainedNative(caller.id)) return sessionId ?? storageIdOf(caller.id);
+		return this.ownThreadStorage(caller);
+	}
+
+	private retainedNative(identity: string): boolean {
+		try {
+			this.catalog.read(storageIdOf(identity));
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * The caller's thread storage: an ordinary Durable record that holds threads and never runs
+	 * agent work. Its host starts on the first mutation, like any participant storage.
+	 */
+	private ownThreadStorage(caller: AgentCaller): string {
+		const storageId = threadStorageId(caller.id, this.catalog.root);
+		try {
+			this.catalog.read(storageId);
+			return storageId;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		if (!caller.model)
+			throw new Error(
+				"Creating a thread storage needs this session's selected model; select a model and repeat create",
+			);
+		const name = `Threads of ${caller.name?.trim() || caller.id}`;
+		this.catalog.createThreadStorage({
+			cwd: canonicalAgentCwd(caller.cwd),
+			model: caller.model,
+			thinkingLevel: "off",
+			name: name.length > 120 ? `${name.slice(0, 119)}…` : name,
+			trust: false,
+			ownerId: caller.id,
+			agentDir: this.options.agentDir,
+			packageDir: this.options.packageDir,
+		});
+		return storageId;
 	}
 
 	private async selectedStatus(selector: string): Promise<unknown> {

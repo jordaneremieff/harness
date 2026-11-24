@@ -14,6 +14,7 @@ import {
 	discoverCollaboration,
 	readRecentCollaboration,
 	RECENT_COLLABORATION_LIMITS,
+	THREAD_DISCOVERY_VISITS,
 } from "./collaboration-discovery.ts";
 
 function fixture(t: { after(fn: () => void): void }) {
@@ -256,7 +257,7 @@ it("keeps old active threads ahead of newer closed hints with activity and stabl
 	assert.equal(first.coverage.visited, 1);
 });
 
-it("retains the existing paged discovery cursor and closed-thread behavior", async (t) => {
+it("pages closed threads after active ones with a stable cursor", async (t) => {
 	const { catalog, input } = fixture(t);
 	publish(catalog, input, [1, 2, 3], 0, true);
 	const first = await discoverCollaboration(catalog, { limit: 1 });
@@ -266,4 +267,52 @@ it("retains the existing paged discovery cursor and closed-thread behavior", asy
 	assert.equal(next.items.length, 2);
 	assert.equal(next.nextCursor, null);
 	assert.equal(next.coverage.complete, true);
+	await assert.rejects(discoverCollaboration(catalog, { query: "other", cursor: first.nextCursor }), {
+		message: "Invalid thread discovery cursor; repeat the same query without cursor",
+	});
+});
+
+it("ranks matching threads across every storage in one window, active and newest first", async (t) => {
+	const { catalog, input } = fixture(t);
+	const published: CollaborationSummary[] = [];
+	for (let index = 0; index < 40; index++)
+		published.push(...publish(catalog, input, [index * 10], 0, index % 3 === 0, index % 2 ? "docs review" : "other"));
+	const matches = published
+		.filter((row) => row.title === "docs review")
+		.sort((a, b) => Number(a.closed) - Number(b.closed) || b.updatedAt - a.updatedAt);
+	const first = await discoverCollaboration(catalog, { query: "Docs", limit: 5 });
+	assert.equal(first.coverage.visited, 40, "one call reads every record of a catalog within the window");
+	assert.deepEqual(first.items, matches.slice(0, 5));
+	const rest = await discoverCollaboration(catalog, { query: "Docs", limit: 20, cursor: first.nextCursor });
+	assert.deepEqual(rest.items, matches.slice(5));
+	assert.equal(rest.nextCursor, null);
+});
+
+it("continues a catalog larger than one window in later windows", { timeout: 60000 }, async (t) => {
+	const { catalog, input } = fixture(t);
+	for (let index = 0; index <= THREAD_DISCOVERY_VISITS; index++) publish(catalog, input, [index]);
+	const seen = new Set<string>();
+	let cursor: string | null | undefined;
+	let calls = 0;
+	do {
+		const page = await discoverCollaboration(catalog, { limit: 20, ...(cursor ? { cursor } : {}) });
+		for (const item of page.items) seen.add(item.id);
+		cursor = page.nextCursor;
+		calls++;
+	} while (cursor);
+	assert.equal(seen.size, THREAD_DISCOVERY_VISITS + 1);
+	assert.equal(calls, Math.ceil(THREAD_DISCOVERY_VISITS / 20) + 1);
+});
+
+it("shows a priority source's threads in prompt mode even outside project scope", async (t) => {
+	const { catalog, input } = fixture(t);
+	const [related] = publish(catalog, input, [5], 0, false, "related");
+	publish(catalog, input, [9], 0, false, "unrelated");
+	const scope = { prompt: true, matches: async () => false };
+	const page = await readRecentCollaboration(catalog, [related.id.split("/")[0]], scope);
+	assert.deepEqual(
+		page.items.map((item) => item.title),
+		["related"],
+	);
+	assert.equal(page.coverage.outOfScope, 1);
 });
