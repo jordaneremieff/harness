@@ -1256,16 +1256,26 @@ samples; connected primaries and failures also have bounded samples.
 `summary.sessions.summarizedUnavailable` and `summarizedQuiet` count each group's
 rows absent from the response, including byte exclusions.
 
-All rows remain subject to the overview byte limit. The tool first excludes any
-session row too large to fit alone even without descriptions. It then removes
-inactive rows without faults, followed by older terminal faults without open
-work or unplaced inputs. This applies even to live or caller-owned records. Next
-it reduces primary and failure samples and effort awareness. Before excluding
-more rows, it can omit message previews, owner labels and current tool arguments.
-It keeps session names and models if those cuts suffice. Otherwise, it also
-omits names and models. Tool names, coordination state and fault evidence
-remain. These cuts do not count as row exclusions. Declared open work
-is last to go. Within each session tier, eviction starts at the end of the
+All rows remain subject to the overview byte limit. The rows that the caller
+created and that work now are listed first, and each reduction below reaches
+them last. The tool first excludes any session row too large to fit alone even
+without descriptions. It then reduces in this order, one row or one sample at a
+time, until the overview fits:
+
+1. inactive rows without faults outside the live and caller-owned records;
+2. message previews, owner labels and current tool arguments, from the row of
+   the lowest rank upward;
+3. the other inactive rows without faults, then older terminal faults without
+   open work or unplaced inputs, also in live or caller-owned records;
+4. primary and failure samples and effort awareness;
+5. the previews of the caller's own working rows;
+6. session names and models, from the row of the lowest rank upward;
+7. rows without declared open work, then the remaining rows;
+8. the names and models of the caller's own working rows, then those rows.
+
+Tool names, coordination state and fault evidence remain on every retained row.
+Omitted descriptions do not count as row exclusions. Within each step,
+reduction starts at the end of the
 catalogue display order. The collapsed card reports supplied-page totals, not
 sampled-row totals or costs.
 

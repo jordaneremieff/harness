@@ -141,13 +141,7 @@ const DESCRIPTION_OMISSION = "Session descriptions omitted for byte limit.";
 
 /** Remove previews without changing identity, tool name, coordination state, or fault evidence. */
 function withoutPreviews(row: ToolOverviewRow): ToolOverviewRow {
-	if (
-		row.firstMessage === undefined &&
-		row.latestReply === undefined &&
-		row.ownerLabel === undefined &&
-		row.currentTool?.argument === undefined
-	)
-		return row;
+	if (!hasPreviews(row)) return row;
 	const { firstMessage: _firstMessage, latestReply: _latestReply, ownerLabel: _ownerLabel, ...reduced } = row;
 	if (row.currentTool?.argument !== undefined) reduced.currentTool = { name: row.currentTool.name };
 	return reduced;
@@ -201,14 +195,21 @@ function byIdentity(a: string, b: string): number {
 	return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** A row that the caller created and that works now: the first rows of the overview and the last to lose anything. */
+function ownWorking(row: AgentConversationSummary, callerId: string | undefined): boolean {
+	return callerId !== undefined && row.creatingOwnerId === callerId && group(row) === "working";
+}
+
 function initialOverview(
 	page: AgentPriorityPage,
 	primaries: readonly StatusOverviewPrimary[],
 	failures: readonly StatusOverviewFailure[],
 	awareness?: EffortAwareness,
+	callerId?: string,
 ) {
 	const ordered = [...page.rows].sort(
 		(a, b) =>
+			Number(ownWorking(b, callerId)) - Number(ownWorking(a, callerId)) ||
 			Number(b.rosterOrder.priority) - Number(a.rosterOrder.priority) ||
 			b.rosterOrder.modifiedAt - a.rosterOrder.modifiedAt ||
 			byIdentity(a.id, b.id),
@@ -343,36 +344,134 @@ function excludeSession(
 	value.coverage.omitted++;
 }
 
-function excludeLowerPriority(
-	value: MutableOverview,
-	dropped: ByteOmissions,
-	priorityIds: ReadonlySet<string>,
-	observedAt: number,
-): boolean {
+/** What the reduction of one overview reads and counts. */
+interface OverviewReduction {
+	readonly value: MutableOverview;
+	readonly dropped: ByteOmissions;
+	readonly priorityIds: ReadonlySet<string>;
+	/** Rows that the caller created and that work now. */
+	readonly ownWorkingIds: ReadonlySet<string>;
+	readonly observedAt: number;
+	/** Retained rows that lost previews, names or model selections. */
+	readonly reducedRows: Set<ToolOverviewRow>;
+	/** The first step that can still reduce; a step that found nothing finds nothing later either. */
+	step: number;
+}
+
+type RowTest = (row: ToolOverviewRow) => boolean;
+
+function hasPreviews(row: ToolOverviewRow): boolean {
+	return (
+		row.firstMessage !== undefined ||
+		row.latestReply !== undefined ||
+		row.ownerLabel !== undefined ||
+		row.currentTool?.argument !== undefined
+	);
+}
+
+function hasLabels(row: ToolOverviewRow): boolean {
+	return row.name !== undefined || row.model !== undefined;
+}
+
+/** The last row that passes `test`, among the caller's own working rows (`own`) or among all other rows. */
+function lowestRow(reduction: OverviewReduction, own: boolean, test: RowTest = () => true): number {
+	const { value, ownWorkingIds } = reduction;
+	return value.sessions.findLastIndex((row) => ownWorkingIds.has(row.id) === own && test(row));
+}
+
+/** Exclude one row and return the bytes that its exclusion frees. */
+function excludeRow(reduction: OverviewReduction, index: number): number {
+	if (index < 0) return 0;
+	const bytes = measure(reduction.value.sessions[index]) + 1;
+	excludeSession(reduction.value, index, reduction.dropped, reduction.priorityIds);
+	reduction.dropped.rows++;
+	return bytes;
+}
+
+/** Replace one row by its reduced form and return the bytes that the reduction frees. */
+function reduceRow(
+	reduction: OverviewReduction,
+	index: number,
+	reduce: (row: ToolOverviewRow) => ToolOverviewRow,
+): number {
+	if (index < 0) return 0;
+	const row = reduction.value.sessions[index];
+	const reduced = reduce(row);
+	reduction.value.sessions[index] = reduced;
+	reduction.reducedRows.delete(row);
+	reduction.reducedRows.add(reduced);
+	return Math.max(1, measure(row) - measure(reduced));
+}
+
+/** Remove one sample row of primaries or failures, then one part of the awareness. */
+function excludeSample(reduction: OverviewReduction): number {
+	const { value, dropped } = reduction;
+	if (value.primaries.length > 0) {
+		const bytes = measure(value.primaries.pop()) + 1;
+		value.summary.primaries.summarized++;
+		value.coverage.omittedPrimaries++;
+		dropped.rows++;
+		return bytes;
+	}
+	if (value.failures.length > 0) {
+		const bytes = measure(value.failures.pop()) + 1;
+		value.summary.failures.summarized++;
+		value.coverage.omittedFailures++;
+		dropped.rows++;
+		return bytes;
+	}
+	const before = value.awareness === undefined ? 0 : measure(value.awareness);
+	if (!excludeAwareness(value.awareness)) return 0;
+	return Math.max(1, before - measure(value.awareness));
+}
+
+/**
+ * One step of the reduction, in the order of what the caller loses last. Among the rows that are not the caller's
+ * own working rows: inactive rows outside the live and caller-owned set; previews, row by row from the lowest rank;
+ * the other inactive rows; older terminal rows. Then sample rows and awareness, then the previews of the caller's
+ * own working rows. Then, among the other rows again: names and model selections, row by row; rows without declared
+ * open work; the remaining rows. The caller's own working rows lose names and are excluded last. Returns the bytes
+ * that the step frees, or 0 when nothing is left to reduce.
+ */
+function reduceOverview(reduction: OverviewReduction): number {
+	const { priorityIds, observedAt } = reduction;
+	const inactive: RowTest = (row) => !hasCoordinationWork(row) && row.state !== "failed" && group(row) !== "attention";
+	const historical: RowTest = (row) => !hasCoordinationWork(row) && oldTerminal(row, observedAt);
+	const withoutOpenWork: RowTest = (row) => !hasOpenWork(row);
+	const steps: (() => number)[] = [
+		() =>
+			excludeRow(
+				reduction,
+				lowestRow(reduction, false, (row) => !priorityIds.has(row.id) && inactive(row)),
+			),
+		() => reduceRow(reduction, lowestRow(reduction, false, hasPreviews), withoutPreviews),
+		() => excludeRow(reduction, lowestRow(reduction, false, inactive)),
+		() => excludeRow(reduction, lowestRow(reduction, false, historical)),
+		() => excludeSample(reduction),
+		() => reduceRow(reduction, lowestRow(reduction, true, hasPreviews), withoutPreviews),
+		() => reduceRow(reduction, lowestRow(reduction, false, hasLabels), withoutLabels),
+		() => excludeRow(reduction, lowestRow(reduction, false, withoutOpenWork)),
+		() => excludeRow(reduction, lowestRow(reduction, false)),
+		() => reduceRow(reduction, lowestRow(reduction, true, hasLabels), withoutLabels),
+		() => excludeRow(reduction, lowestRow(reduction, true, withoutOpenWork)),
+		() => excludeRow(reduction, lowestRow(reduction, true)),
+	];
+	for (; reduction.step < steps.length; reduction.step++) {
+		const bytes = steps[reduction.step]();
+		if (bytes > 0) return bytes;
+	}
+	return 0;
+}
+
+/** Exclude the first row that exceeds the space for rows in every reduced form; such a row can never be retained. */
+function excludeOversized(reduction: OverviewReduction): boolean {
+	const { value } = reduction;
 	const rowBudget =
 		STATUS_OVERVIEW_BYTE_LIMIT - measure({ ...value, sessions: [], primaries: [], failures: [], awareness: undefined });
 	const oversized = value.sessions.findIndex(
 		(row) => measure(row) > rowBudget && measure(withoutLabels(withoutPreviews(row))) > rowBudget,
 	);
-	// Evict by urgency first. Reverse catalogue order breaks ties without changing display order.
-	const inactive = value.sessions.findLastIndex(
-		(row) => !hasCoordinationWork(row) && row.state !== "failed" && group(row) !== "attention",
-	);
-	const historical = value.sessions.findLastIndex((row) => !hasCoordinationWork(row) && oldTerminal(row, observedAt));
-	const first = oversized >= 0 ? oversized : inactive >= 0 ? inactive : historical;
-	if (first >= 0) {
-		excludeSession(value, first, dropped, priorityIds);
-	} else if (value.primaries.length > 0) {
-		value.primaries.pop();
-		value.summary.primaries.summarized++;
-		value.coverage.omittedPrimaries++;
-	} else if (value.failures.length > 0) {
-		value.failures.pop();
-		value.summary.failures.summarized++;
-		value.coverage.omittedFailures++;
-	} else return excludeAwareness(value.awareness);
-	dropped.rows++;
-	return true;
+	return excludeRow(reduction, oversized) > 0;
 }
 
 function applyOverviewCoverage(
@@ -382,11 +481,11 @@ function applyOverviewCoverage(
 	priorityIds: ReadonlySet<string>,
 	source: readonly string[],
 	samples: readonly string[],
-	reducedRows: ReadonlySet<ToolOverviewRow> | undefined,
+	reducedRows: ReadonlySet<ToolOverviewRow>,
 ): void {
 	const { coverage } = value;
 	coverage.reasons = [...source];
-	if (value.sessions.some((row) => reducedRows?.has(row))) coverage.reasons.push(DESCRIPTION_OMISSION);
+	if (value.sessions.some((row) => reducedRows.has(row))) coverage.reasons.push(DESCRIPTION_OMISSION);
 	coverage.omittedPriorityRows = dropped.priority;
 	coverage.omittedOpenWorkRows = dropped.openWork;
 	const retained = new Set(value.sessions.map((row) => row.id));
@@ -418,30 +517,15 @@ function applyOverviewCoverage(
 	coverage.reasons.push(...samples);
 }
 
-function reduceOverviewDescriptions(value: MutableOverview): Set<ToolOverviewRow> {
-	const candidate = {
-		...value,
-		sessions: value.sessions.map(withoutPreviews),
-		coverage: { ...value.coverage, reasons: [...value.coverage.reasons, DESCRIPTION_OMISSION] },
-	};
-	// Keep names and model selections if the previews alone release enough space.
-	if (fixedPointBytes(candidate) > STATUS_OVERVIEW_BYTE_LIMIT)
-		candidate.sessions = candidate.sessions.map(withoutLabels);
-	// The cut must save bytes even after its notice.
-	if (fixedPointBytes(candidate) >= fixedPointBytes(value)) return new Set();
-	const reducedRows = new Set(candidate.sessions.filter((row, index) => row !== value.sessions[index]));
-	value.sessions = candidate.sessions;
-	return reducedRows;
-}
-
 /** Keep coordination and recent fault evidence; sample older terminal faults and inactive history. */
 export function buildStatusOverview(
 	page: AgentPriorityPage,
 	primaries: readonly StatusOverviewPrimary[],
 	failures: readonly StatusOverviewFailure[],
 	awareness?: EffortAwareness,
+	callerId?: string,
 ): StatusOverview {
-	const value = initialOverview(page, primaries, failures, awareness);
+	const value = initialOverview(page, primaries, failures, awareness, callerId);
 	const reasons = sourceReasons(page);
 	const dropped: ByteOmissions = {
 		working: 0,
@@ -462,21 +546,29 @@ export function buildStatusOverview(
 					`${summarizedAttention} older terminal attention rows were intentionally summarised; the recent attention window is 24 hours. Discover their identities with agent_list({}), then repeat coverage.next; use agent_status({sessionId:<identity>,detail:true}) for full status.`,
 				]
 			: [];
-	let reducedRows: Set<ToolOverviewRow> | undefined;
+	const reduction: OverviewReduction = {
+		value,
+		dropped,
+		priorityIds,
+		ownWorkingIds: new Set(page.rows.filter((row) => ownWorking(row, callerId)).map((row) => row.id)),
+		observedAt,
+		reducedRows: new Set(),
+		step: 0,
+	};
 	for (;;) {
-		applyOverviewCoverage(value, page, dropped, priorityIds, reasons, samplingReasons, reducedRows);
-		if (fixedPointBytes(value) <= STATUS_OVERVIEW_BYTE_LIMIT) return value;
+		applyOverviewCoverage(value, page, dropped, priorityIds, reasons, samplingReasons, reduction.reducedRows);
+		const bytes = fixedPointBytes(value);
+		if (bytes <= STATUS_OVERVIEW_BYTE_LIMIT) return value;
 		value.coverage.byteLimitReached = true;
-		if (excludeLowerPriority(value, dropped, priorityIds, observedAt)) continue;
-		if (reducedRows === undefined) {
-			reducedRows = reduceOverviewDescriptions(value);
-			if (reducedRows.size > 0) continue;
+		if (excludeOversized(reduction)) continue;
+		// Each step reports the bytes it frees, so one pass removes the measured excess without another
+		// serialization of the whole overview. The next pass measures the notices that the steps added.
+		for (let excess = bytes - STATUS_OVERVIEW_BYTE_LIMIT; excess > 0; ) {
+			const freed = reduceOverview(reduction);
+			if (freed === 0)
+				throw new Error("Status overview metadata exceeds the byte limit after every row was summarized or omitted.");
+			excess -= freed;
 		}
-		if (value.sessions.length === 0)
-			throw new Error("Status overview metadata exceeds the byte limit after every row was summarized or omitted.");
-		const withoutOpenWork = value.sessions.findLastIndex((row) => !hasOpenWork(row));
-		excludeSession(value, withoutOpenWork >= 0 ? withoutOpenWork : value.sessions.length - 1, dropped, priorityIds);
-		dropped.rows++;
 	}
 }
 

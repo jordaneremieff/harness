@@ -2141,7 +2141,7 @@ export class AgentManager {
 		const failures = [[...this.failures.entries].map(([storageId, error]) => ({ storageId, error }))].flat();
 		const awareness = caller ? await this.awareness(caller.id, caller.cwd) : undefined;
 		return buildStatusOverview(
-			{ ...page, rows: page.rows.map(({ profile: _profile, creatingOwnerId: _creatingOwnerId, ...row }) => row) },
+			{ ...page, rows: page.rows.map(({ profile: _profile, ...row }) => row) },
 			[...this.primaries].map(([sessionId, primary]) => ({
 				sessionId,
 				cwd: primary.cwd ?? "",
@@ -2151,6 +2151,7 @@ export class AgentManager {
 			})),
 			failures,
 			awareness,
+			caller?.id,
 		);
 	}
 

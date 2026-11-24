@@ -455,11 +455,18 @@ it("preserves coordination identities under preview pressure after lower-priorit
 	assert.equal(result.coverage.omittedPriorityRows, 0);
 	assert.equal(result.coverage.omittedPriorityRecords, 0);
 	assert.equal(result.coverage.omittedOpenWorkRows, 0);
-	assert.equal(result.coverage.omittedPrimaries, 1);
-	assert.equal(result.coverage.omittedFailures, 1);
+	assert.equal(result.coverage.omittedPrimaries, 0, "previews go before a sample row");
+	assert.equal(result.coverage.omittedFailures, 0);
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
 		work.map((row) => row.id).reverse(),
+	);
+	const described = result.sessions.filter((row) => row.firstMessage !== undefined);
+	assert.ok(described.length > 0 && described.length < result.sessions.length);
+	assert.deepEqual(
+		result.sessions.slice(0, described.length),
+		described,
+		"the rows of the highest rank keep their previews",
 	);
 	for (const row of result.sessions) {
 		const original = work.find((item) => item.id === row.id);
@@ -467,13 +474,90 @@ it("preserves coordination identities under preview pressure after lower-priorit
 		assert.deepEqual(row.model, original?.model);
 		assert.equal(row.openWorkCount, original?.openWorkCount);
 		assert.equal(row.unplaced, original?.unplaced);
+		if (described.includes(row)) continue;
 		assert.deepEqual(row.currentTool, { name: "read" });
-		assert.equal(row.firstMessage, undefined);
 		assert.equal(row.latestReply, undefined);
 		assert.equal(row.ownerLabel, undefined);
 	}
 	assert.match(result.coverage.reasons.join(" "), /descriptions/u);
 	assert.equal(work[0]?.currentTool?.argument, preview, "the compact overlay does not change the source rows");
+});
+
+it("removes previews before it drops a live or caller-owned row at rest", () => {
+	const preview = "p".repeat(160);
+	const rest = Array.from({ length: 40 }, (_, index) =>
+		summary(index + 1, {
+			state: "done",
+			rosterOrder: { priority: true, modifiedAt: index },
+			name: `Finished ${index}`,
+			firstMessage: preview,
+			latestReply: preview,
+		}),
+	);
+	const result = buildStatusOverview(page(rest), [], []);
+	check(result);
+	assert.equal(result.coverage.byteLimitReached, true);
+	assert.equal(result.coverage.omittedPriorityRows, 0, "previews release the space, so no row goes");
+	assert.deepEqual(
+		result.sessions.map((row) => [row.id, row.name]),
+		rest.map((row) => [row.id, row.name]).reverse(),
+	);
+	assert.ok(result.sessions[0]?.firstMessage !== undefined, "the most recent row keeps its previews");
+	assert.equal(result.sessions.at(-1)?.firstMessage, undefined);
+});
+
+it("lists the caller's own working rows first and drops them last", () => {
+	const mine = Array.from({ length: 12 }, (_, index) =>
+		summary(index + 1, {
+			state: "working",
+			creatingOwnerId: "caller",
+			rosterOrder: { priority: true, modifiedAt: index },
+			name: `Mine ${index}`,
+		}),
+	);
+	// Live agents of other sessions, all more recent than the caller's own.
+	const others = Array.from({ length: 80 }, (_, index) =>
+		summary(index + 100, {
+			state: "working",
+			creatingOwnerId: "another-session",
+			rosterOrder: { priority: true, modifiedAt: index + 1000 },
+			name: `Other ${index}`,
+			cwd: `/${"w".repeat(300)}`,
+		}),
+	);
+	const result = buildStatusOverview(page([...others, ...mine]), [], [], undefined, "caller");
+	check(result);
+	assert.equal(result.coverage.byteLimitReached, true);
+	assert.ok(result.coverage.omittedPriorityRows > 0, "the bound excludes some rows of other sessions");
+	assert.deepEqual(
+		result.sessions.slice(0, mine.length).map((row) => [row.id, row.name]),
+		mine.map((row) => [row.id, row.name]).reverse(),
+	);
+	assert.ok(result.sessions.length > mine.length, "rows of other sessions follow");
+
+	const unowned = buildStatusOverview(page([...others, ...mine]), [], []);
+	assert.equal(unowned.sessions[0]?.id, others.at(-1)?.id, "without a caller the order is live rank and recency");
+});
+
+it("reduces a large page in a few passes", () => {
+	const rows = Array.from({ length: 2000 }, (_, index) =>
+		summary(index + 1, {
+			state: "working",
+			rosterOrder: { priority: true, modifiedAt: index },
+			name: `Worker ${index}`,
+			model: { provider: "fixture", modelId: "worker", thinkingLevel: "high" },
+			firstMessage: "f".repeat(160),
+			latestReply: "r".repeat(160),
+			cwd: `/work/${"d".repeat(120)}/${index}`,
+		}),
+	);
+	const started = performance.now();
+	const result = buildStatusOverview(page(rows), [], []);
+	const elapsed = performance.now() - started;
+	check(result);
+	assert.ok(result.sessions.length > 0);
+	// One pass for each row that goes takes seconds for this page; the bound leaves room for a loaded machine.
+	assert.ok(elapsed < 1000, `the reduction took ${Math.round(elapsed)} ms`);
 });
 
 it("recovers an individually oversized live row without reporting a row omission", () => {
