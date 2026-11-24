@@ -67,11 +67,11 @@ function isolated(t: TestContext) {
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	process.env.PI_AGENT_SESSIONS_DIR = sessionsRoot;
 	process.env.PI_HARNESS_FILE = harnessFile;
-	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, { close(): void }> }>)[
+	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, { close(): Promise<void> }> }>)[
 		Symbol.for("pi.extension.agent.owners")
 	];
-	t.after(() => {
-		owners?.managers.get(sessionsRoot)?.close();
+	t.after(async () => {
+		await owners?.managers.get(sessionsRoot)?.close();
 		owners?.managers.delete(sessionsRoot);
 		for (const [key, value] of saved) {
 			if (value === undefined) delete process.env[key];

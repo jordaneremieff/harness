@@ -104,7 +104,7 @@ async function ordinaryFixture(t: TestContext) {
 	t.after(async () => {
 		try {
 			session?.dispose();
-			owners.managers.get(sessionsRoot)?.close();
+			await owners.managers.get(sessionsRoot)?.close();
 			owners.managers.delete(sessionsRoot);
 		} finally {
 			for (const [key, value] of saved) {

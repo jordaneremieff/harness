@@ -81,7 +81,7 @@ async function primaryFixture(t: TestContext) {
 			try {
 				await session?.abort();
 			} finally {
-				owners.managers.get(sessionsRoot)?.close();
+				await owners.managers.get(sessionsRoot)?.close();
 				owners.managers.delete(sessionsRoot);
 				session?.dispose();
 			}

@@ -291,8 +291,8 @@ test("session start restores sent-work figures in a fresh manager and admissions
 	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[
 		Symbol.for("pi.extension.agent.owners")
 	];
-	t.after(() => {
-		owners.managers.get(root)?.close();
+	t.after(async () => {
+		await owners.managers.get(root)?.close();
 		owners.managers.delete(root);
 		for (const [key, value] of saved) {
 			if (value === undefined) delete process.env[key];

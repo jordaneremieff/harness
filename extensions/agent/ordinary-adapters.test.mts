@@ -45,11 +45,11 @@ function fixture(t: TestContext) {
 		},
 		modelRegistry: { find: () => undefined, getAll: () => [] },
 	} as unknown as ExtensionContext;
-	t.after(() => {
+	t.after(async () => {
 		const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[
 			Symbol.for("pi.extension.agent.owners")
 		];
-		owners.managers.get(root)?.close();
+		await owners.managers.get(root)?.close();
 		owners.managers.delete(root);
 		for (const [key, value] of saved) {
 			if (value === undefined) delete process.env[key];
