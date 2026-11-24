@@ -111,6 +111,32 @@ export function validateWorkReference(value: unknown): PrimaryWorkReference {
 	return { kind: record.kind, id: record.id, ...(record.title === undefined ? {} : { title: record.title }) };
 }
 
+/** Serialized bytes the `workRefs` field may hold in an endpoint record. */
+export const PRIMARY_WORK_REFERENCE_BYTES = 3 * 1024;
+
+/**
+ * Fit the work references into their own share and into the bytes the rest of the record leaves:
+ * as many of the newest references as fit by kind and identity, then their titles, newest first.
+ * A claim, a purpose or a name never fails to publish because of work references.
+ */
+function fitWorkRefs(endpoint: PrimaryEndpoint): PrimaryEndpoint {
+	const { workRefs, ...rest } = endpoint;
+	if (!workRefs?.length) return endpoint;
+	// The field adds `,"workRefs":` and its value to the serialized rest.
+	const room = Math.min(PRIMARY_WORK_REFERENCE_BYTES, ENDPOINT_BYTES - Buffer.byteLength(JSON.stringify(rest)) - 12);
+	const fits = (refs: readonly PrimaryWorkReference[]) => Buffer.byteLength(JSON.stringify(refs)) <= room;
+	if (fits(workRefs)) return endpoint;
+	let refs: PrimaryWorkReference[] = workRefs.map(({ kind, id }) => ({ kind, id }));
+	while (refs.length > 0 && !fits(refs)) refs.pop();
+	for (let index = 0; index < refs.length; index++) {
+		const title = workRefs[index].title;
+		if (title === undefined) continue;
+		const titled = refs.with(index, { ...refs[index], title });
+		if (fits(titled)) refs = titled;
+	}
+	return refs.length === 0 ? rest : { ...rest, workRefs: refs };
+}
+
 function validateWorkReferences(value: unknown): PrimaryWorkReference[] {
 	if (!Array.isArray(value) || value.length > PRIMARY_WORK_REFERENCE_LIMIT)
 		throw new TypeError(`workRefs requires at most ${PRIMARY_WORK_REFERENCE_LIMIT} references`);
@@ -723,11 +749,14 @@ class PrimaryChannelHost {
 	private readonly options: PrimaryChannelOptions;
 	private endpoint: PrimaryEndpoint;
 	private readonly endpointPath: string;
+	/** The session's whole list; the record holds the part that fits beside the other fields. */
+	private workRefs: readonly PrimaryWorkReference[];
 
 	constructor(options: PrimaryChannelOptions, endpoint: PrimaryEndpoint, endpointPath: string) {
 		this.options = options;
 		this.endpoint = endpoint;
 		this.endpointPath = endpointPath;
+		this.workRefs = options.workRefs === undefined ? [] : validateWorkReferences([...options.workRefs]);
 	}
 
 	info(): PrimaryInfo {
@@ -769,12 +798,15 @@ class PrimaryChannelHost {
 	}
 
 	setWorkRefs(value: readonly PrimaryWorkReference[]): void {
-		const { workRefs: _refs, ...retained } = this.endpoint;
 		const workRefs = validateWorkReferences([...value]);
-		this.replace({ ...retained, ...(workRefs.length === 0 ? {} : { workRefs }) });
+		this.replace(this.endpoint, workRefs);
+		this.workRefs = workRefs;
 	}
 
-	private replace(endpoint: PrimaryEndpoint): void {
+	/** Every rewrite fits the whole list again, so references regain bytes that another field gives up. */
+	private replace(next: PrimaryEndpoint, workRefs = this.workRefs): void {
+		const { workRefs: _published, ...fields } = next;
+		const endpoint = fitWorkRefs(workRefs.length === 0 ? fields : { ...fields, workRefs: [...workRefs] });
 		rewriteEndpoint(this.endpointPath, endpoint);
 		this.endpoint = endpoint;
 	}
@@ -825,7 +857,7 @@ class PrimaryChannelHost {
 
 /** Build one endpoint record for this process. */
 function endpointRecord(options: PrimaryChannelOptions, serverId: string, socketPath: string): PrimaryEndpoint {
-	return {
+	return fitWorkRefs({
 		version: PRIMARY_ENDPOINT_VERSION,
 		id: options.id,
 		serverId,
@@ -850,7 +882,7 @@ function endpointRecord(options: PrimaryChannelOptions, serverId: string, socket
 		pid: process.pid,
 		socketPath,
 		startedAt: new Date().toISOString(),
-	};
+	});
 }
 
 /** Register one live primary channel. Rejects while another owner is registered. */

@@ -23,6 +23,7 @@ import {
 	connectPrimaryChannel,
 	createPrimaryChannel,
 	PRIMARY_ENDPOINT_VERSION,
+	PRIMARY_WORK_REFERENCE_BYTES,
 	PRIMARY_WORK_REFERENCE_LIMIT,
 	primaryEndpointOwnerState,
 	primaryEndpointPath,
@@ -862,6 +863,47 @@ it("publishes bounded work references that descriptor reads return and refuse wh
 	const stored = JSON.parse(readFileSync(path, "utf8"));
 	writeFileSync(path, JSON.stringify({ ...stored, workRefs: [{ kind: "document", id: "" }] }));
 	assert.equal(readPrimaryEndpointDescriptor(root, channel.id).unreadable, true);
+});
+
+it("fits work references into their share so a large claim still publishes", async (t) => {
+	const root = testRoot(t);
+	const refs = Array.from({ length: PRIMARY_WORK_REFERENCE_LIMIT }, (_, index) => ({
+		kind: "document",
+		id: `md-${index.toString(16)}-${"i".repeat(50)}`,
+		title: `Title ${index} ${"t".repeat(190)}`,
+	}));
+	const channel = await createPrimaryChannel(channelOptions(root, randomUUID(), { workRefs: refs }));
+	t.after(async () => {
+		await channel.close();
+	});
+	const path = primaryEndpointPath(root, channel.id);
+	const stored = () => JSON.parse(readFileSync(path, "utf8")) as { workRefs?: typeof refs; intentClaim?: unknown };
+	const published = stored().workRefs ?? [];
+	assert.ok(Buffer.byteLength(JSON.stringify(published)) <= PRIMARY_WORK_REFERENCE_BYTES);
+	assert.deepEqual(
+		published.map(({ kind, id }) => ({ kind, id })),
+		refs.map(({ kind, id }) => ({ kind, id })),
+		"every identity fits before any title",
+	);
+	assert.equal(published[0]?.title, refs[0].title, "the newest reference keeps its title");
+	assert.equal(published.at(-1)?.title, undefined, "older references lose their titles first");
+	const claim = {
+		purpose: "p".repeat(1024),
+		integration: "i".repeat(2048),
+		authority: "a".repeat(2048),
+		scope: { paths: Array.from({ length: 17 }, (_, index) => `${index}${"x".repeat(500)}`), branches: [] },
+		updatedAt: "2026-11-24T08:00:00Z",
+	};
+	channel.publishIntent(claim);
+	assert.deepEqual(stored().intentClaim, claim, "references never starve the claim");
+	assert.ok(Buffer.byteLength(readFileSync(path)) <= 16 * 1024);
+	channel.setWorkRefs(refs);
+	assert.deepEqual(stored().intentClaim, claim);
+	const kept = stored().workRefs ?? [];
+	const size = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+	assert.ok(kept.length > 0 && size(kept) < size(published), "references take only the bytes the claim leaves");
+	channel.publishIntent(undefined);
+	assert.deepEqual(stored().workRefs, published, "a cleared claim returns the bytes");
 });
 
 function countEndpointParses(

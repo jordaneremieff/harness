@@ -3022,7 +3022,11 @@ Each ordinary primary keeps its 16 most recently used distinct references,
 newest first, in its own `agent.work-references` session entries and in the
 optional `workRefs` field of its endpoint record. A repeated use reorders the
 list in memory; only a new item or a changed title rewrites the record and
-appends an entry. Resume restores the newest retained copy on the current
+appends an entry. The record holds as many of the newest references as fit in
+3 KiB and in the bytes the other fields leave under the record's 16 KiB bound,
+identities first and then titles, newest first. A claim, purpose or name never
+fails to publish because of references, and references regain bytes when
+another field shrinks; the session entries keep the whole list. Resume restores the newest retained copy on the current
 branch, however far back it lies. Tree navigation replaces the list and the
 endpoint field with the copy on the new branch, so items used only on the branch
 the session left stop linking it to other sessions. Native conversations report
