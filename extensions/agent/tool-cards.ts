@@ -2890,6 +2890,69 @@ function bindCall(name: string): AgentToolCard["renderCall"] {
 	return (args, theme, context) => renderAgentCall(name, args, theme, context);
 }
 
+/**
+ * The context a card of this factory receives. Pi's context refers to the component of the previous display
+ * update; no card here reuses that component, and a card that kept the reference would keep every earlier
+ * card of the tool alive.
+ */
+function cardContext(context: AgentCardContext, lookup: AgentCardLookup): AgentCardContext {
+	return { ...context, lookup, lastComponent: undefined };
+}
+
+function sameRows(left: readonly AgentConversationSummary[], right: readonly AgentConversationSummary[]): boolean {
+	return left === right || (left.length === right.length && left.every((row, index) => row === right[index]));
+}
+
+/**
+ * A call card whose target facts can change after Pi built it: the result renderer observes the target after
+ * the call renderer ran, and the roster changes without a display update. A frame builds the card again only
+ * when one of these two observed values changed; an unchanged frame returns the line array of the built card.
+ */
+class ObservedCallCard implements Component {
+	private readonly build: (observation: Record<string, unknown> | undefined) => Component;
+	private readonly state: NonNullable<AgentCardContext["state"]>;
+	private readonly lookup: AgentCardLookup;
+	private observation: Record<string, unknown> | undefined;
+	private rows: readonly AgentConversationSummary[];
+	private component: Component | undefined;
+	constructor(
+		build: (observation: Record<string, unknown> | undefined) => Component,
+		state: NonNullable<AgentCardContext["state"]>,
+		lookup: AgentCardLookup,
+	) {
+		this.build = build;
+		this.state = state;
+		this.lookup = lookup;
+		this.observation = state.observation;
+		this.rows = lookup();
+		this.component = build(this.observation);
+	}
+	render(width: number): readonly string[] {
+		const observation = this.state.observation;
+		const rows = this.lookup();
+		if (!this.component || observation !== this.observation || !sameRows(rows, this.rows))
+			this.component = this.build(observation);
+		this.observation = observation;
+		this.rows = rows;
+		return this.component.render(width);
+	}
+	invalidate(): void {
+		this.component = undefined;
+	}
+}
+
+function observedCall(
+	card: AgentToolCard,
+	args: unknown,
+	theme: Theme,
+	context: AgentCardContext,
+	lookup: AgentCardLookup,
+): Component {
+	const build = (observation: Record<string, unknown> | undefined) =>
+		card.renderCall(args, theme, snapshotFacts(context, observation));
+	return context.state ? new ObservedCallCard(build, context.state, lookup) : build(undefined);
+}
+
 function observeResult(result: AgentToolResult<unknown>, context: AgentCardContext, name: string): AgentCardContext {
 	const details = resultDetails(result);
 	const snapshot = name === "agent_intent" ? intentObservation(details) : snapshotStatus(details);
@@ -3242,22 +3305,7 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 			name,
 			{
 				renderCall(args: unknown, theme: Theme, context: AgentCardContext) {
-					const observed = { ...context, lookup };
-					let component = card.renderCall(args, theme, snapshotFacts(observed, context.state?.observation));
-					if (!context.state) return component;
-					return {
-						render(width: number) {
-							component = card.renderCall(
-								args,
-								theme,
-								snapshotFacts({ ...observed, lastComponent: component }, context.state?.observation),
-							);
-							return component.render(width);
-						},
-						invalidate() {
-							component.invalidate();
-						},
-					};
+					return observedCall(card, args, theme, cardContext(context, lookup), lookup);
 				},
 				renderResult(
 					result: AgentToolResult<unknown>,
@@ -3265,7 +3313,7 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 					theme: Theme,
 					context: AgentCardContext,
 				) {
-					const observed = observeResult(result, { ...context, lookup }, name);
+					const observed = observeResult(result, cardContext(context, lookup), name);
 					return card.renderResult(result, options, theme, observed);
 				},
 			},

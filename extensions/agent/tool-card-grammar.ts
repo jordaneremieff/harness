@@ -89,15 +89,11 @@ function preview(lines: string[], keep: "start" | "end" = "start") {
 	return { shown, hidden };
 }
 
-function hint(
-	theme: Theme,
-	context: ToolCardGrammarContext,
-	disclosure: Disclosure,
-	width: number,
-	clickable: boolean,
-): string[] {
+type Keys = Pick<ToolCardGrammarContext, "keyText" | "keyHint">;
+
+function hint(theme: Theme, keys: Keys, disclosure: Disclosure, width: number, clickable: boolean): string[] {
 	if (!disclosure.extra && !disclosure.lines) return [];
-	const key = context.keyText("app.tools.expand");
+	const key = keys.keyText("app.tools.expand");
 	if (!key && !clickable) return [];
 	const n = disclosure.lines;
 	const prefix = `... (${n ? `${n} more line${n === 1 ? "" : "s"}, ` : ""}`;
@@ -106,7 +102,7 @@ function hint(
 	return [
 		theme.fg("muted", prefix) +
 			(key
-				? (context.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
+				? (keys.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
 				: theme.fg("muted", action)) +
 			theme.fg("muted", ")"),
 	];
@@ -131,11 +127,17 @@ function argumentsText(args: Readonly<Record<string, unknown>>): string {
 		.join("\n");
 }
 
-function component(draw: (width: number) => string[]): Component {
-	let cached: { width: number; lines: string[] } | undefined;
+/**
+ * A card that draws once per width and per value of the state that the other card of its tool shares with it.
+ * An unchanged frame returns the same line array, so Pi's containers keep their own lines too.
+ */
+function component(draw: (width: number) => string[], shared: () => unknown): Component {
+	let cached: { width: number; shared: unknown; lines: string[] } | undefined;
 	return {
 		render(width) {
-			if (cached?.width !== width) cached = { width, lines: width > 0 ? draw(width) : draw(1).map(() => "") };
+			const current = shared();
+			if (cached?.width !== width || cached.shared !== current)
+				cached = { width, shared: current, lines: width > 0 ? draw(width) : draw(1).map(() => "") };
 			return cached.lines;
 		},
 		invalidate() {
@@ -160,15 +162,26 @@ function limitRows(theme: Theme, width: number, expanded: boolean, bounds: (stri
 }
 
 export function toolCallCard(call: ToolCallPresentation, theme: Theme, context: ToolCardGrammarContext): Component {
+	// The card keeps these fields and not the context: Pi's context refers to the component of the previous
+	// display update, so a retained context would keep every earlier card of the tool alive.
+	const { expanded, state } = context;
+	const keys: Keys = { keyText: context.keyText, keyHint: context.keyHint };
 	const name = oneLine(call.name);
 	const subject = oneLine(call.subject ?? "");
 	const facts = call.facts?.map(oneLine).filter(Boolean).join(" · ") ?? "";
 	const body = bounded(call.body ? argumentText(call.args[call.body.key] ?? call.body.text) : "");
-	const args = bounded(argumentsText(call.args));
+	// Only the expanded card shows the labelled arguments, so a collapsed card never serialises them.
+	let labelled: ReturnType<typeof bounded> | undefined;
+	const args = () => (labelled ??= bounded(argumentsText(call.args)));
 	const extra = bounded(call.expanded ?? "");
 	const shown = new Set(call.shownArgs);
 	if (call.body) shown.add(call.body.key);
 	const hiddenArgs = Object.entries(call.args).some(([key, value]) => value !== undefined && !shown.has(key));
+	let wrapped: { width: number; rows: string[] } | undefined;
+	const bodyRows = (width: number): string[] => {
+		if (wrapped?.width !== width) wrapped = { width, rows: rows(body.text, width) };
+		return wrapped.rows;
+	};
 	const disclosure = (width: number): Disclosure => ({
 		extra:
 			hiddenArgs ||
@@ -176,35 +189,26 @@ export function toolCallCard(call: ToolCallPresentation, theme: Theme, context: 
 			extra.text !== "" ||
 			visibleWidth(name + (subject ? ` ${subject}` : "")) > width ||
 			visibleWidth(facts) > width,
-		lines: body.limit ? 0 : preview(rows(body.text, width)).hidden,
+		lines: body.limit ? 0 : preview(bodyRows(width)).hidden,
 		limit:
-			[context.expanded ? args.limit : body.limit, context.expanded ? extra.limit : undefined]
-				.filter(Boolean)
-				.join("; ") || undefined,
+			[expanded ? args().limit : body.limit, expanded ? extra.limit : undefined].filter(Boolean).join("; ") ||
+			undefined,
 	});
-	if (context.state) context.state.grammarCall = disclosure;
-	return {
-		render(width): string[] {
-			if (width <= 0) return this.render(1).map(() => "");
-			const expanded = context.expanded;
-			const lines = heading(name, subject, width, theme, expanded);
-			lines.push(...paint(theme, "muted", facts, width, expanded));
-			// Pi constructs the call first, then the result (if present), and only then measures the card.
-			const owned = !context.state?.grammarHasResult;
-			if (expanded)
-				lines.push(...paint(theme, "muted", args.text, width, true), ...paint(theme, "muted", extra.text, width, true));
-			else {
-				const view = preview(rows(body.text, width));
-				lines.push(...view.shown.map((row) => theme.fg("toolOutput", row)));
-			}
-			if (!owned) return lines;
-			const hidden = disclosure(width);
-			lines.push(...limitRows(theme, width, expanded, [hidden.limit]));
-			if (!expanded) lines.push(...hint(theme, context, hidden, width, false));
-			return lines;
-		},
-		invalidate() {},
-	};
+	if (state) state.grammarCall = disclosure;
+	// Pi constructs the call first, then the result (if present), and only then measures the card.
+	const owned = () => !state?.grammarHasResult;
+	return component((width) => {
+		const lines = heading(name, subject, width, theme, expanded);
+		lines.push(...paint(theme, "muted", facts, width, expanded));
+		if (expanded)
+			lines.push(...paint(theme, "muted", args().text, width, true), ...paint(theme, "muted", extra.text, width, true));
+		else lines.push(...preview(bodyRows(width)).shown.map((row) => theme.fg("toolOutput", row)));
+		if (!owned()) return lines;
+		const hidden = disclosure(width);
+		lines.push(...limitRows(theme, width, expanded, [hidden.limit]));
+		if (!expanded) lines.push(...hint(theme, keys, hidden, width, false));
+		return lines;
+	}, owned);
 }
 
 function resultDisclosure(
@@ -238,7 +242,12 @@ export function toolResultCard(
 	context: ToolCardGrammarContext,
 	presentation: ToolResultPresentation,
 ): Component {
-	if (context.state) context.state.grammarHasResult = true;
+	// As for the call card, the result card keeps fields and not the context, the options or the presentation.
+	const { state } = context;
+	const keys: Keys = { keyText: context.keyText, keyHint: context.keyHint };
+	const { expanded } = options;
+	const { keep, limit } = presentation;
+	if (state) state.grammarHasResult = true;
 	const content = result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 	const fallback = safe(content).split("\n").map(oneLine).find(Boolean);
 	const error = context.isError === true;
@@ -253,18 +262,19 @@ export function toolResultCard(
 	const extraText = extra.text !== outcome.text && extra.text.trim() !== body.text.trim() ? extra.text : "";
 	const showSource = !["", body.text, extraText].some((part) => part.trim() === remainder.trim());
 	const sourceRole = error ? "error" : "toolOutput";
+	// The call card can be built again after this card; its disclosure then replaces the earlier one.
+	const callDisclosure = () => state?.grammarCall;
 	return component((width) => {
-		const expanded = options.expanded;
 		const lines = [
 			"",
 			...paint(theme, error ? "error" : partial ? "muted" : "toolOutput", outcome.text, width, expanded),
 		];
 		const bodyRows = rows(body.text, width);
-		const view = preview(bodyRows, presentation.keep);
-		const call = context.state?.grammarCall?.(width);
+		const view = preview(bodyRows, keep);
+		const call = callDisclosure()?.(width);
 		const bounds = limitRows(theme, width, expanded, [
 			call?.limit,
-			presentation.limit,
+			limit,
 			outcome.limit,
 			body.limit,
 			extra.limit,
@@ -288,7 +298,7 @@ export function toolResultCard(
 			...lines,
 			...view.shown.map((line) => theme.fg(sourceRole, line)),
 			...bounds,
-			...hint(theme, context, disclosure, width, true),
+			...hint(theme, keys, disclosure, width, true),
 		];
-	});
+	}, callDisclosure);
 }
