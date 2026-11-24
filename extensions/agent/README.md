@@ -4194,7 +4194,13 @@ An owned launch has one monotonic budget across readiness, connection and
 contract negotiation. Parse failure, wrong socket, timeout or caller cancellation
 ends only that observation. The child remains independent, its pipes stay
 drained, and its uncertain launch record remains until an actual exit. An
-explicit attachment can verify its endpoint later. Concurrent callers reuse the
+explicit attachment can verify its endpoint later. The runner bounds itself: one
+that has not announced readiness 90 s after it took the writer lease (7 minutes
+while a trust decision can be pending) writes the cause to stderr and exits,
+which releases the lease, and a bootstrap that waits on nothing exits at once
+with status 1 and says so. Every shutdown of a dedicated host process (idle
+retirement, release, a close request or a signal) ends the process 20 s after it
+starts when a close step never settles. Concurrent callers reuse the
 same attempt rather than start another uncertain writer. The attempt belongs to
 one socket path; a copied agent directory has its own launch and exit evidence.
 

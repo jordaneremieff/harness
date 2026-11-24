@@ -18,7 +18,16 @@ import {
 	type HostMetadata,
 	type HostReady,
 } from "./host-protocol.ts";
-import { HostClaimRefusedError, resolveIdleMs, runHost, type HostProcess, type HostRuntime } from "./host-process.ts";
+import {
+	BOOTSTRAP_DEADLINE_MS,
+	HostClaimRefusedError,
+	resolveIdleMs,
+	runHost,
+	SHUTDOWN_GRACE_MS,
+	TRUST_BOOTSTRAP_DEADLINE_MS,
+	type HostProcess,
+	type HostRuntime,
+} from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { eventLog } from "./host-fixture.mts";
 import { manualClock } from "./observation-clock-fixture.mts";
@@ -814,6 +823,103 @@ it("retains exclusion when native close fails", async (t) => {
 	assert.equal(JSON.parse(readFileSync(hostPaths(config).claim, "utf8")).endedAt, undefined);
 	await assert.rejects(runHost(echoRuntime, { metadata: config, idleMs: 0 }), HostClaimRefusedError);
 	assert.equal(writerAvailable(config), false);
+});
+
+it("ends a dedicated process at its deadline when an idle retirement close never settles", async (t) => {
+	const root = fixtureRoot(t),
+		config = metadata(root);
+	const checks: Array<() => void> = [];
+	const exits: number[] = [];
+	const deadlines: Array<{ expire: () => void; delayMs: number; cancelled: boolean }> = [];
+	let settleClose: () => void = noop;
+	const closing = new Promise<undefined>((resolve) => {
+		settleClose = () => resolve(undefined);
+	});
+	const runtime = { ...echoRuntime(), close: () => closing };
+	const host = await runHost(() => runtime, {
+		metadata: config,
+		idleMs: 1000,
+		announceReady: noop,
+		scheduleIdleCheck: (check) => {
+			checks.push(check);
+			return noop;
+		},
+		exit: ((status: 0 | 1) => {
+			exits.push(status);
+		}) as (status: 0 | 1) => never,
+		scheduleShutdownDeadline: (expire, delayMs) => {
+			const deadline = { expire, delayMs, cancelled: false };
+			deadlines.push(deadline);
+			return () => {
+				deadline.cancelled = true;
+			};
+		},
+	});
+	t.after(async () => {
+		settleClose();
+		await host.done.catch(noop);
+	});
+	assert.equal(deadlines.length, 0, "a serving host arms no deadline");
+	checks.at(-1)?.();
+	await new Promise<void>(setImmediate);
+	assert.equal(deadlines.length, 1, "idle retirement arms the shutdown deadline");
+	assert.equal(deadlines[0].delayMs, SHUTDOWN_GRACE_MS);
+	assert.equal(deadlines[0].cancelled, false);
+	deadlines[0].expire();
+	assert.deepEqual(exits, [1]);
+});
+
+it("cancels the shutdown deadline after a clean close", async (t) => {
+	const root = fixtureRoot(t),
+		config = metadata(root);
+	const deadlines: Array<{ cancelled: boolean }> = [];
+	const host = await runHost(echoRuntime, {
+		metadata: config,
+		idleMs: 0,
+		announceReady: noop,
+		exit: (() => {
+			throw new Error("a clean close needs no process exit");
+		}) as (status: 0 | 1) => never,
+		scheduleShutdownDeadline: () => {
+			const deadline = { cancelled: false };
+			deadlines.push(deadline);
+			return () => {
+				deadline.cancelled = true;
+			};
+		},
+	});
+	await host.close();
+	assert.deepEqual(deadlines, [{ cancelled: true }]);
+});
+
+it("ends a dedicated process at its bootstrap deadline and cancels it after readiness", async (t) => {
+	const scheduled: Array<{ expire: () => void; delayMs: number; cancelled: boolean }> = [];
+	const exits: number[] = [];
+	const options = {
+		idleMs: 0,
+		announceReady: noop,
+		exit: ((status: 0 | 1) => {
+			exits.push(status);
+		}) as (status: 0 | 1) => never,
+		scheduleBootstrapDeadline: (expire: () => void, delayMs: number) => {
+			const deadline = { expire, delayMs, cancelled: false };
+			scheduled.push(deadline);
+			return () => {
+				deadline.cancelled = true;
+			};
+		},
+	};
+	const trusted = parseHostMetadata({ ...metadata(fixtureRoot(t)), trust: true });
+	void runHost(() => new Promise<HostRuntime>(noop), { ...options, metadata: trusted });
+	assert.equal(scheduled.length, 1, "a dedicated runner arms its bootstrap deadline with the writer lease");
+	assert.equal(scheduled[0].delayMs, BOOTSTRAP_DEADLINE_MS);
+	scheduled[0].expire();
+	assert.deepEqual(exits, [1]);
+	void runHost(() => new Promise<HostRuntime>(noop), { ...options, metadata: metadata(fixtureRoot(t)) });
+	assert.equal(scheduled[1].delayMs, TRUST_BOOTSTRAP_DEADLINE_MS, "a pending trust decision gets the longer bound");
+	const host = await runHost(echoRuntime, { ...options, metadata: metadata(fixtureRoot(t)) });
+	t.after(() => host.close());
+	assert.equal(scheduled[2].cancelled, true, "readiness cancels the bootstrap deadline");
 });
 
 it("parses the idle window with the configured bounds", (t) => {

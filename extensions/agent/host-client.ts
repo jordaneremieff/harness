@@ -390,7 +390,7 @@ export class HostLaunchDemandEnded extends HostError {
 export class HostReadinessUnavailableError extends HostError {
 	constructor(cause: unknown) {
 		super(
-			"An owned runner remains unconfirmed. Use agent_attach after its endpoint is available; no replacement was started.",
+			"An owned runner remains unconfirmed; no replacement was started. A runner that cannot finish bootstrap exits within 90 s; then retry, or use agent_attach.",
 			"unavailable",
 			{ cause },
 		);

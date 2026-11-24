@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
@@ -142,6 +142,41 @@ it("preserves a malformed contract error without waiting for a live writer to di
 	await assert.rejects(acquireHost(fixture.metadata), /runtime contract is missing or malformed/u);
 	await fixture.released;
 	assert.equal(fixture.count(), 0);
+});
+
+it("reports a bootstrap that ends without readiness and exits with failure", { timeout: 30000 }, async (t) => {
+	const fixture = runtimeFixture(t);
+	const unsettled = join(fixture.root, "unsettled-extension.ts");
+	writeFileSync(unsettled, "export default async function () {\n\tawait new Promise(() => {});\n}\n");
+	const settingsPath = join(fixture.metadata.agentDir, "settings.json");
+	const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as { extensions: string[] };
+	writeFileSync(settingsPath, JSON.stringify({ ...settings, extensions: [...settings.extensions, unsettled] }));
+	const child = spawn(
+		process.execPath,
+		[fileURLToPath(new URL("./durable-runner.ts", import.meta.url)), JSON.stringify(fixture.metadata)],
+		{
+			cwd: fixture.cwd,
+			env: { ...process.env, ...fixture.env("answer"), PI_AGENT_SESSIONS_DIR: fixture.root },
+			stdio: ["ignore", "pipe", "pipe"],
+		},
+	);
+	const exited = once(child, "exit");
+	t.after(async () => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		await exited;
+	});
+	let stdout = "";
+	let stderr = "";
+	child.stdout.on("data", (chunk: Buffer) => {
+		stdout += chunk.toString();
+	});
+	child.stderr.on("data", (chunk: Buffer) => {
+		stderr = `${stderr}${chunk.toString()}`.slice(-8192);
+	});
+	const [code] = await exited;
+	assert.equal(stdout.includes(HOST_READY_PREFIX), false);
+	assert.equal(code, 1);
+	assert.match(stderr, /bootstrap ended without readiness/u);
 });
 
 it("a wire close exits the durable process and releases its writer claim", { timeout: 15000 }, async (t) => {

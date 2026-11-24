@@ -101,6 +101,10 @@ export interface RunHostOptions {
 	readonly observationClock?: ObservationClock;
 	/** Write a clean end record through the held descriptor; failure retains exclusion. */
 	readonly writeEndRecord?: (descriptor: number, bytes: Buffer) => void;
+	/** Schedule the dedicated process's shutdown deadline and return its cancellation. Defaults to a wall-clock timer. */
+	readonly scheduleShutdownDeadline?: (expire: () => void, delayMs: number) => () => void;
+	/** Schedule the dedicated process's bootstrap deadline and return its cancellation. Defaults to a wall-clock timer. */
+	readonly scheduleBootstrapDeadline?: (expire: () => void, delayMs: number) => () => void;
 }
 
 /** Owner of one storage for the process lifetime. */
@@ -158,6 +162,27 @@ const IDLE_MINUTES_MAX = 35791;
 const OBSERVATION_INTERVAL_MS = 100;
 /** Bound the response grace when the transport exposes no per-response flush signal. */
 const RELEASE_RESPONSE_GRACE_MS = 100;
+/** A dedicated host process ends this long after any shutdown starts, even when a close step never settles. */
+export const SHUTDOWN_GRACE_MS = 20_000;
+/**
+ * A dedicated host process that has not announced readiness this long after it took the writer lease ends, which
+ * releases the lease. The bound is longer than the launcher's own readiness wait, and longer again while a project
+ * trust decision can be pending.
+ */
+export const BOOTSTRAP_DEADLINE_MS = 90_000;
+export const TRUST_BOOTSTRAP_DEADLINE_MS = 420_000;
+
+function wallClockDeadline(expire: () => void, delayMs: number): () => void {
+	const timer = setTimeout(expire, delayMs);
+	return () => clearTimeout(timer);
+}
+
+/** The bootstrap deadline does not keep the process alive: a bootstrap that waits on nothing ends at once. */
+function unrefDeadline(expire: () => void, delayMs: number): () => void {
+	const timer = setTimeout(expire, delayMs);
+	timer.unref();
+	return () => clearTimeout(timer);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -236,6 +261,8 @@ class HostProcessServer implements HostProcess {
 	private readonly writerId: string;
 	private readonly record: ClaimRecord;
 	private readonly writeEndRecord: NonNullable<RunHostOptions["writeEndRecord"]>;
+	private readonly scheduleShutdownDeadline: NonNullable<RunHostOptions["scheduleShutdownDeadline"]>;
+	private cancelShutdownDeadline: (() => void) | undefined;
 
 	constructor(
 		runtime: HostRuntime,
@@ -247,8 +274,10 @@ class HostProcessServer implements HostProcess {
 		observationClock?: ObservationClock,
 		exit?: RunHostOptions["exit"],
 		writeEndRecord = writeEndClaim,
+		scheduleShutdownDeadline?: RunHostOptions["scheduleShutdownDeadline"],
 	) {
 		this.exit = exit;
+		this.scheduleShutdownDeadline = scheduleShutdownDeadline ?? wallClockDeadline;
 		this.record = record;
 		this.writerId = record.token;
 		this.writeEndRecord = writeEndRecord;
@@ -752,8 +781,28 @@ class HostProcessServer implements HostProcess {
 	private shutdown(): Promise<void> {
 		if (this.closePromise) return this.closePromise;
 		this.closing = true;
-		this.closePromise = this.performShutdown();
+		this.armShutdownDeadline();
+		this.closePromise = this.performShutdown().finally(() => {
+			this.cancelShutdownDeadline?.();
+			this.cancelShutdownDeadline = undefined;
+		});
 		return this.closePromise;
+	}
+
+	/**
+	 * Idle retirement, release, a close request and a signal share one deadline. Process exit ends a close step that
+	 * never settles and releases the writer lease; an embedded host has no process to end.
+	 */
+	private armShutdownDeadline(): void {
+		const exit = this.exit;
+		if (!exit || this.cancelShutdownDeadline) return;
+		this.cancelShutdownDeadline = this.scheduleShutdownDeadline(() => {
+			writeSync(
+				2,
+				`Durable host: shutdown did not finish within ${SHUTDOWN_GRACE_MS / 1000} s; the process exits and releases its writer lease.\n`,
+			);
+			exit(1);
+		}, SHUTDOWN_GRACE_MS);
 	}
 
 	/** Remove only our published endpoint before another writer receives the claim. */
@@ -864,8 +913,26 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 		}
 		throw error;
 	}
-	// Without a complete runtime there is no safe close handle: keep the lease until process exit.
-	const runtime = await createRuntime();
+	// Without a complete runtime there is no safe close handle: keep the lease until process exit. A dedicated
+	// process whose bootstrap never finishes would hold it forever, so it ends at its bootstrap deadline.
+	const exit = options.exit;
+	const bootstrapMs = metadata.trust === undefined ? TRUST_BOOTSTRAP_DEADLINE_MS : BOOTSTRAP_DEADLINE_MS;
+	const cancelBootstrap = exit
+		? (options.scheduleBootstrapDeadline ?? unrefDeadline)(() => {
+				writeSync(
+					2,
+					`Durable host: bootstrap did not announce readiness within ${bootstrapMs / 1000} s; the process exits and releases its writer lease. A configured extension that never finishes loading can cause this.\n`,
+				);
+				exit(1);
+			}, bootstrapMs)
+		: undefined;
+	let runtime: HostRuntime;
+	try {
+		runtime = await createRuntime();
+	} catch (error) {
+		cancelBootstrap?.();
+		throw error;
+	}
 	const host = new HostProcessServer(
 		runtime,
 		paths,
@@ -876,6 +943,7 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 		options.observationClock,
 		options.exit,
 		options.writeEndRecord,
+		options.scheduleShutdownDeadline,
 	);
 	try {
 		await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
@@ -883,5 +951,7 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	} catch (error) {
 		await host.close();
 		throw error;
+	} finally {
+		cancelBootstrap?.();
 	}
 }

@@ -1,4 +1,3 @@
-import { writeSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { enableCompileCache } from "node:module";
 import { isAbsolute } from "node:path";
@@ -54,20 +53,26 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 		else process.exit(0);
 		return;
 	}
+	// A bootstrap step that waits on nothing lets the event loop empty before readiness; say so instead of a silent exit 0.
+	const unsettled = () => {
+		process.stderr.write(
+			"Durable host: bootstrap ended without readiness; a configured extension or a host step left a promise that can never settle.\n",
+		);
+		process.exitCode = 1;
+	};
+	process.once("beforeExit", unsettled);
 	const host = await runHost(() => createDurableRuntime(metadata), {
 		metadata,
 		exit: (status) => process.exit(status),
-	}).catch((error: unknown) => {
-		if (!(error instanceof HostClaimRefusedError) || error.observation !== "busy") throw error;
-		return undefined;
-	});
+	})
+		.catch((error: unknown) => {
+			if (!(error instanceof HostClaimRefusedError) || error.observation !== "busy") throw error;
+			return undefined;
+		})
+		.finally(() => process.off("beforeExit", unsettled));
 	if (!host) return;
-	let grace: NodeJS.Timeout | undefined;
+	// The host arms its own shutdown deadline for every shutdown path, signals included.
 	const stop = () => {
-		grace ??= setTimeout(() => {
-			writeSync(2, "Durable host: shutdown grace expired; the process will release its writer lease.\n");
-			process.exit(1);
-		}, 20_000);
 		void host.close().catch((error: unknown) => {
 			process.stderr.write(`${String(error)}\n`);
 			process.exit(1);
@@ -78,7 +83,6 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 	try {
 		await host.done;
 	} finally {
-		clearTimeout(grace);
 		process.off("SIGTERM", stop);
 		process.off("SIGINT", stop);
 	}
