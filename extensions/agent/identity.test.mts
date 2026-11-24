@@ -7,7 +7,14 @@ import { it } from "node:test";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { acquireHost, type HostConnection } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState } from "./host-fixture.mts";
-import { handleStorageId, isThreadStorage, targetIdentity, threadStorageId, threadStorageServes } from "./identity.ts";
+import {
+	GenerationMemo,
+	handleStorageId,
+	isThreadStorage,
+	targetIdentity,
+	threadStorageId,
+	threadStorageServes,
+} from "./identity.ts";
 import { AgentManager } from "./manager.ts";
 
 it("isolates the same handle across stores sharing cwd and agent directory", { timeout: 30000 }, async (t) => {
@@ -80,6 +87,24 @@ it("derives a thread storage address from the real catalog root and keeps that r
 	rmSync(root, { recursive: true, force: true });
 	assert.equal(threadStorageId("owner", catalog.root), address, "a resolved root needs no later filesystem call");
 	assert.equal(typeof unresolved, "string");
+});
+
+it("computes a memo key once while it is live and never drops every key at once", () => {
+	const memo = new GenerationMemo<string>(4);
+	let computed = 0;
+	const read = (key: string) =>
+		memo.get(key, () => {
+			computed++;
+			return `value:${key}`;
+		});
+	for (let pass = 0; pass < 3; pass++) for (const key of ["a", "b", "c", "d"]) assert.equal(read(key), `value:${key}`);
+	assert.equal(computed, 4, "repeated scans within one generation compute each key once");
+	read("e");
+	for (const key of ["a", "b", "c"]) assert.equal(read(key), `value:${key}`);
+	assert.equal(computed, 5, "a full generation keeps its keys: a live key moves on without a computation");
+	read("f");
+	assert.equal(read("d"), "value:d");
+	assert.equal(computed, 7, "only a key that stayed unread through a whole generation is computed again");
 });
 
 it("serves threads, observation, delivery state and stops in a thread storage, and nothing that admits work", () => {

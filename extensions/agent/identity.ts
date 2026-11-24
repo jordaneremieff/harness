@@ -3,9 +3,40 @@ import { createHash } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 
 const REAL_ROOT_LIMIT = 64;
-const THREAD_ID_LIMIT = 4096;
+/**
+ * Owners of one generation of the thread address memo. A scan over a catalog with at most this many
+ * distinct owners hashes none of them again; a root keeps at most twice this number of addresses
+ * (about 130 bytes each), and only a process that saw that many owners holds them.
+ */
+export const THREAD_ID_GENERATION = 65_536;
 const realRoots = new Map<string, string>();
-const threadIds = new Map<string, string>();
+
+/**
+ * A bounded memo that never empties at once: a full generation becomes the previous one, and a key
+ * found there moves to the current one without a computation. Only a key in neither is computed.
+ * A hit in the current generation is one map read.
+ */
+export class GenerationMemo<V> {
+	private current = new Map<string, V>();
+	private previous = new Map<string, V>();
+	private readonly generation: number;
+	constructor(generation: number) {
+		this.generation = generation;
+	}
+	get(key: string, compute: () => V): V {
+		const known = this.current.get(key);
+		if (known !== undefined) return known;
+		const value = this.previous.get(key) ?? compute();
+		if (this.current.size >= this.generation) {
+			this.previous = this.current;
+			this.current = new Map();
+		}
+		this.current.set(key, value);
+		return value;
+	}
+}
+/** Thread storage addresses by owner, per catalog root path. */
+const threadIds = new Map<string, GenerationMemo<string>>();
 /**
  * The real path of a catalog root. A process keeps the first resolution of an absolute root, so an
  * identity check costs no filesystem call after it. A root that does not exist rejects and is not kept.
@@ -57,19 +88,22 @@ export function threadStorageId(ownerId: string, catalogRoot: string): string {
 	try {
 		root = realCatalogRoot(catalogRoot);
 	} catch {
-		// A catalog that does not exist yet holds no storage; creation resolves the real path first.
+		// A catalog that does not exist yet holds no storage; an address that names a record comes from
+		// the catalog after it made the directory.
 		root = resolve(catalogRoot);
 	}
-	const key = `${root}\u0000${ownerId}`;
-	const known = threadIds.get(key);
-	if (known !== undefined) return known;
-	const hex = createHash("sha256").update(`pi.agent.threads\u0000${key}`).digest("hex");
-	const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
-	if (threadIds.size >= THREAD_ID_LIMIT) threadIds.clear();
-	threadIds.set(key, id);
-	return id;
+	let memo = threadIds.get(root);
+	if (memo === undefined) {
+		if (threadIds.size >= REAL_ROOT_LIMIT) threadIds.clear();
+		memo = new GenerationMemo(THREAD_ID_GENERATION);
+		threadIds.set(root, memo);
+	}
+	return memo.get(ownerId, () => {
+		const hex = createHash("sha256").update(`pi.agent.threads\u0000${root}\u0000${ownerId}`).digest("hex");
+		return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+	});
 }
-/** A scan over a whole catalog calls this once per record: after the first call per owner it reads two maps. */
+/** A scan over a whole catalog calls this once per record: after the first call per owner it reads three maps. */
 export function isThreadStorage(record: { storageId: string; ownerId?: string }, catalogRoot: string): boolean {
 	return record.ownerId !== undefined && record.storageId === threadStorageId(record.ownerId, catalogRoot);
 }
