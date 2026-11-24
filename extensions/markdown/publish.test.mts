@@ -1534,3 +1534,19 @@ test("publish with show leaves a pane that already reported the saved revision a
 		assert.equal(outcome.shown, undefined);
 		assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /It reported the saved revision\./u);
 	}));
+
+test("an unreadable source file names its path and cause", () =>
+	fixture(async (root, store) => {
+		const unreadable = async (file: string) => {
+			const outcome = await publish({ title: "Unreadable", file }, { cwd: root, store });
+			error(outcome, "file-unreadable");
+			return outcome.ok ? "" : outcome.error.message;
+		};
+		assert.ok(
+			(await unreadable("absent.md")).startsWith(`No file exists at ${join(root, "absent.md")}. Write the file first`),
+		);
+		await writeFile(join(root, "latin1.md"), Buffer.from([0x63, 0x61, 0x66, 0xe9]));
+		assert.match(await unreadable("latin1.md"), /latin1\.md is not valid UTF-8\./u);
+		await mkdir(join(root, "folder.md"));
+		assert.match(await unreadable("folder.md"), /folder\.md is not a regular file\./u);
+	}));

@@ -311,6 +311,18 @@ export function invocationDigest(params: PublishInput, cwd: string): string {
 		}),
 	);
 }
+/** The failure names the resolved path and its cause, so the caller can fix the path or the file. */
+function unreadableReason(path: string, cwd: string, error: unknown): string {
+	if (!path || /[\p{Cc}\ud800-\udfff]/u.test(path)) return "The source path is empty or has control characters.";
+	const at = resolve(cwd, path);
+	const code = (error as { code?: unknown } | undefined)?.code;
+	if (code === "ENOENT" || code === "ENOTDIR")
+		return `No file exists at ${at}. Write the file first or correct the path.`;
+	if (code === "EACCES" || code === "EPERM") return `The file at ${at} is not readable.`;
+	if (error instanceof TypeError) return `The file at ${at} is not valid UTF-8.`;
+	if (error instanceof StoreError) return `The source at ${at} is not a regular file.`;
+	return `The file at ${at} is unavailable.`;
+}
 async function readFileSource(path: string, cwd: string): Promise<{ resolved: string; source: string }> {
 	let resolved: string;
 	let source: string;
@@ -322,7 +334,7 @@ async function readFileSource(path: string, cwd: string): Promise<{ resolved: st
 		);
 	} catch (error) {
 		if (error instanceof StoreError && error.code === "too-large") throw error;
-		throw new StoreError("file-unreadable", "Source file is unavailable, nonregular or not UTF-8.");
+		throw new StoreError("file-unreadable", unreadableReason(path, cwd, error));
 	}
 	return { resolved, source };
 }
