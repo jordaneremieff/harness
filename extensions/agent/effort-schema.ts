@@ -36,7 +36,11 @@ const intentFields = {
 	contactThread: opt(str({ minLength: 1, maxLength: 256 })),
 };
 export const IntentParams = obj({
-	action: StringEnum(["read", "publish", "clear"]),
+	action: {
+		...StringEnum(["read", "publish", "clear"]),
+		description:
+			"read and clear take no other field. publish requires purpose, integration, authority and scope with paths and branches; empty arrays declare no shared path or branch.",
+	},
 	purpose: opt(intentFields.purpose),
 	integration: opt(intentFields.integration),
 	authority: opt(intentFields.authority),
@@ -46,16 +50,29 @@ export const IntentParams = obj({
 const publishIntent = obj({ action: lit("publish"), ...intentFields });
 const actionOnly = obj({ action: StringEnum(["read", "clear"]) });
 
+/** The publish fields that a publish input omits, with the scope arrays named separately. */
+function missingPublishFields(fields: Record<string, unknown>): string[] {
+	const missing = ["purpose", "integration", "authority", "scope"].filter((key) => fields[key] === undefined);
+	const scope = fields.scope as { paths?: unknown; branches?: unknown } | null | undefined;
+	if (scope === undefined) return missing;
+	if (!Array.isArray(scope?.paths)) missing.push("scope.paths");
+	if (!Array.isArray(scope?.branches)) missing.push("scope.branches");
+	return missing;
+}
+
 export function validateIntentInput(input: unknown): void {
+	const fields = (input !== null && typeof input === "object" ? input : {}) as Record<string, unknown>;
+	if (fields.action === "publish") {
+		if (matchesSchema(publishIntent, input)) return;
+		const missing = missingPublishFields(fields);
+		throw new Error(
+			`Publish intent requires purpose, integration, authority, and scope with paths and branches${missing.length ? `; missing: ${missing.join(", ")}` : ""}. Use empty paths and branches arrays when no path or branch is shared.`,
+		);
+	}
 	if (!matchesSchema(IntentParams, input))
 		throw new Error("Intent requires action read, publish or clear and valid publish fields");
-	const { action } = input as { action: string };
-	if (action !== "publish") {
-		if (!matchesSchema(actionOnly, input))
-			throw new Error(`${action === "read" ? "Read" : "Clear"} intent takes only action; omit all publish fields`);
-	} else if (!matchesSchema(publishIntent, input)) {
-		throw new Error("Publish intent requires purpose, integration, authority, and scope with paths and branches");
-	}
+	if (!matchesSchema(actionOnly, input))
+		throw new Error(`${fields.action === "read" ? "Read" : "Clear"} intent takes only action; omit all publish fields`);
 }
 export const IntentClaimSchema = obj({ ...intentFields, updatedAt: text });
 export const NativeIntentMetadataSchema = obj({
