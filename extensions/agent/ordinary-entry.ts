@@ -836,10 +836,15 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		return sendImmediate(fields, ctx, signal);
 	};
 	register("agent_brief", BRIEF_DESCRIPTION, brief, async (input, ctx, callId, _admissionCaller, signal) => {
-		input = await withoutRecipientCwd(input, ctx.cwd, async () => {
-			const manager = getManager();
-			return briefTargetDirectory(await manager.resolveTarget(String(input.sessionId), signal), manager.catalog);
-		});
+		input = await withoutRecipientCwd(
+			input,
+			ctx.cwd,
+			async () => {
+				const manager = getManager();
+				return briefTargetDirectory(await manager.resolveTarget(String(input.sessionId), signal), manager.catalog);
+			},
+			signal,
+		);
 		const inputProblems = briefInputProblems(input, creationKeys);
 		if (input.preview !== true && inputProblems.length) throw new Error(briefRefusal(inputProblems, []));
 		const sourceProblems = await checkBriefSources(input, async () => {

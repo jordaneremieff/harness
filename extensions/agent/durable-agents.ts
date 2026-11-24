@@ -2209,7 +2209,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		parameters: presetParams(BriefParams),
 		replay: "safe",
 		execute: async (input: Static<typeof BriefParams>, api, context) => {
-			const args = await withoutRecipientCwd(input, host.cwd, () => briefDirectory(input, api, context));
+			const args = await withoutRecipientCwd(
+				input,
+				host.cwd,
+				() => briefDirectory(input, api, context),
+				context.abortSignal,
+			);
 			const inputProblems = briefInputProblems(args, spawnCreationKeys);
 			if (args.preview !== true && inputProblems.length) return errorResult(briefRefusal(inputProblems, []));
 			const sourceProblems =

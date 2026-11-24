@@ -232,17 +232,20 @@ export function briefCreationDirectory(
 
 /**
  * A cwd that names the recipient's own directory changes nothing, so it is dropped and only a different
- * cwd refuses as a creation field. An unresolvable cwd or recipient keeps the field for that refusal.
+ * cwd refuses as a creation field. A blank cwd names no directory, and an unresolvable cwd or recipient
+ * keeps the field for that refusal. Cancellation propagates.
  */
 export async function withoutRecipientCwd<T extends Record<string, unknown>>(
 	input: T,
 	callerCwd: string,
 	directory: () => string | Promise<string>,
+	signal?: AbortSignal,
 ): Promise<T> {
-	if (input.sessionId === undefined || typeof input.cwd !== "string") return input;
+	if (input.sessionId === undefined || typeof input.cwd !== "string" || input.cwd.trim() === "") return input;
 	try {
 		if (canonicalAgentCwd(callerCwd, input.cwd) !== canonicalAgentCwd(await directory())) return input;
-	} catch {
+	} catch (error) {
+		if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
 		return input;
 	}
 	const { cwd: _cwd, ...rest } = input;

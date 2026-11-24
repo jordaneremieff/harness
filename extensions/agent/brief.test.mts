@@ -270,4 +270,19 @@ test("drops a cwd that names the recipient's own directory and keeps a different
 	assert.deepEqual(briefInputProblems(unresolved, ["cwd"]), [
 		"sessionId cannot be combined with creation fields: cwd.",
 	]);
+	assert.equal((await withoutRecipientCwd({ ...input, cwd: " " }, root, () => root)).cwd, " ", "a blank cwd stays");
+	const controller = new AbortController();
+	controller.abort();
+	await assert.rejects(
+		withoutRecipientCwd(
+			input,
+			root,
+			() => {
+				throw new DOMException("The operation was aborted", "AbortError");
+			},
+			controller.signal,
+		),
+		{ name: "AbortError" },
+		"cancellation is not a refusal of the cwd field",
+	);
 });
