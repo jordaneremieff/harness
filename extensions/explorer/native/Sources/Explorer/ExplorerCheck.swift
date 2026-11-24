@@ -11,17 +11,19 @@ enum ExplorerCheck {
         override var occlusionState: NSWindow.OcclusionState { isVisible ? [.visible] : super.occlusionState }
     }
     static func export(_ argv: [String], resources: URL) throws {
-        let raw = try options(argv, allowed: ["out", "width", "height", "appearance", "root", "path", "line", "script", "ignored", "zoom"])
+        let raw = try options(argv, allowed: ["out", "width", "height", "appearance", "root", "path", "line", "script", "ignored", "zoom", "store"])
         let zoom = raw["zoom"].map { Int($0).map { Double($0) / 100 } ?? 0 }
         guard let out = raw["out"], let width = raw["width"].flatMap(Int.init), let height = raw["height"].flatMap(Int.init),
               (320...4096).contains(width), (240...4096).contains(height), (raw["appearance"].map { ["dark", "light"].contains($0) } ?? true),
-              zoom.map(ExplorerZoom.range.contains) ?? true else {
-            throw ExplorerError("arguments", "Use --export-image --out <png> --width <n> --height <n> --root <dir> [--appearance dark|light] [--path <path>] [--line <n>] [--script <file>] [--ignored show|hide] [--zoom <percent>].")
+              zoom.map(ExplorerZoom.range.contains) ?? true, raw["store"].map({ $0.hasPrefix("/") }) ?? true else {
+            throw ExplorerError("arguments", "Use --export-image --out <png> --width <n> --height <n> --root <dir> [--appearance dark|light] [--path <path>] [--line <n>] [--script <file>] [--ignored show|hide] [--zoom <percent>] [--store <dir>].")
         }
         let target = try Launch(arguments: ["root", "path", "line"].flatMap { key in raw[key].map { ["--\(key)", $0] } ?? [] })
         let scratch = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
-        try execute(target: target, resources: resources, store: scratch, width: width, height: height, appearance: raw["appearance"], zoom: zoom,
+        // A named store shows its notes and walkthroughs; the snapshot can write page state into it.
+        let store = raw["store"].map { URL(fileURLWithPath: $0) } ?? scratch
+        try execute(target: target, resources: resources, store: store, width: width, height: height, appearance: raw["appearance"], zoom: zoom,
                     showIgnored: try ignoredOption(raw["ignored"])) { host, _ in
             if let file = raw["script"] {
                 let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: file))
