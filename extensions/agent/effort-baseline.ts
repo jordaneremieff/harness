@@ -105,12 +105,20 @@ export interface OrdinaryEffortRun {
 	};
 }
 
+/** Section text of a run whose awareness read failed on a branch without a baseline; it is never a baseline. */
+export const EFFORT_AWARENESS_UNAVAILABLE =
+	"Current effort and active thread awareness is unavailable. Use agent_intent read for a new bounded observation.";
+
 /**
  * One run start. A branch without a baseline, a change too large for one update, or updates past
  * the budget replace the section; otherwise the section keeps its bytes and the rows that changed
- * become one update.
+ * become one update. A failed read (`prompt` undefined) keeps the current section and records nothing.
  */
-export function ordinaryEffortRun(current: BranchAwareness | undefined, prompt: EffortPrompt): OrdinaryEffortRun {
+export function ordinaryEffortRun(
+	current: BranchAwareness | undefined,
+	prompt: EffortPrompt | undefined,
+): OrdinaryEffortRun {
+	if (prompt === undefined) return { section: current?.text ?? EFFORT_AWARENESS_UNAVAILABLE };
 	const rebaseline = (): OrdinaryEffortRun => {
 		const baseline: BaselineData = { version: 1, text: prompt.text, seen: seenOf(prompt.rows) };
 		return { section: prompt.text, baseline };

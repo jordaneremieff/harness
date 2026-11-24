@@ -3,6 +3,7 @@ import { it } from "node:test";
 import {
 	type BranchAwareness,
 	branchAwareness,
+	EFFORT_AWARENESS_UNAVAILABLE,
 	EFFORT_BASELINE_ENTRY,
 	EFFORT_UPDATE_MESSAGE,
 	ordinaryEffortRun,
@@ -113,6 +114,16 @@ it("drops the changes of updates that a compaction summarized away", () => {
 	const state = branchAwareness(branch(entries));
 	assert.deepEqual(state?.seen, seenOf([effort("a"), effort("c"), effort("d")]), "b left the context");
 	assert.equal(state?.bytes, 200);
+});
+
+it("keeps the current section after a failed read and never makes the failed text a baseline", () => {
+	const rows = [effort("a")];
+	const current: BranchAwareness = { text: section(rows), seen: seenOf(rows), bytes: 0 };
+	assert.deepEqual(ordinaryEffortRun(current, undefined), { section: current.text });
+	const failed = ordinaryEffortRun(undefined, undefined);
+	assert.equal(failed.section, EFFORT_AWARENESS_UNAVAILABLE);
+	assert.equal(failed.baseline, undefined, "the next working read makes the baseline");
+	assert.ok(ordinaryEffortRun(undefined, { text: section(rows), rows }).baseline);
 });
 
 it("keeps the section between baseline points and replaces it only past the update budget", () => {

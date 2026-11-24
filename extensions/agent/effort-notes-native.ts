@@ -90,6 +90,17 @@ function anchorIndexes(messages: readonly Message[], notes: readonly Note[]): nu
 	});
 }
 
+/**
+ * A new host or an evicted conversation keeps the section the transcript already holds, unless it
+ * is the text of a failed read, which the first working read replaces.
+ */
+function adoptShown(shown: Readonly<Record<string, string>>, unavailable: string): Conversation | undefined {
+	const text = shownText(shown);
+	return text === undefined || text === unavailable
+		? undefined
+		: { baseline: text, baseSeen: seenInSection(text), notes: [] };
+}
+
 function noteMessage(note: Note): Message {
 	return { role: "user", content: [{ type: "text", text: note.text }], timestamp: note.anchor.timestamp };
 }
@@ -134,11 +145,7 @@ export class NativeEffortNotes {
 			this.keep(id, state);
 			return state.baseline;
 		}
-		if (state === undefined) {
-			// A new host or an evicted conversation keeps the section the transcript already holds.
-			const shown = shownText(input.shown);
-			if (shown !== undefined) state = { baseline: shown, baseSeen: seenInSection(shown), notes: [] };
-		}
+		state ??= adoptShown(input.shown, unavailable);
 		const prompt = await read();
 		if (prompt === undefined) {
 			if (state === undefined) return unavailable;

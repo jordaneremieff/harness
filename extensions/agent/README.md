@@ -3188,8 +3188,9 @@ that a compaction summarized away is reported again. A branch without a
 baseline, a change larger than one update, or more than 16 KiB of updates since
 the baseline makes a new baseline: the section is replaced once. The session's
 own claim row changes only at a baseline; the session already holds its own
-publication. Old code ignores both entry kinds and keeps writing the whole
-section each run.
+publication. A failed awareness read keeps the current section and records
+nothing, so the next working read makes the baseline. Old code ignores both
+entry kinds and keeps writing the whole section each run.
 
 A native conversation follows the same contract with Durable's own surfaces.
 The section function reads awareness once per run, at the run's first request
@@ -3206,7 +3207,8 @@ host, a restart or an evicted conversation keeps the section Durable shows,
 reads its rows from that text, and computes the next change against it, so the
 section and its cached prefix survive; the notes of earlier runs are gone. The
 same budget rules replace the section at the next run. A failed read keeps the
-current section.
+current section; a section that holds a failed read's text is not adopted, so the
+next working read replaces it, also on a new host.
 The `agent-efforts` section names live efforts and active thread hints
 in the same Git repository (including linked worktrees), or the same working
 directory outside Git. It also names live sessions elsewhere on this machine

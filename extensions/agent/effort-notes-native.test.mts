@@ -106,3 +106,26 @@ it("replaces the section after the update budget and restores a shown section af
 	assert.equal(await fixture.section(`run-${++run}`, shown), replaced, "an evicted conversation keeps the shown text");
 	assert.equal(fixture.reads(), reads + 1);
 });
+
+it("replaces the text of a failed read at the first working read, also on a new host", async () => {
+	const unavailable = "Current effort awareness is unavailable.";
+	const shown = { "agent-efforts": `<agent-efforts>\n${unavailable}\n</agent-efforts>` };
+	const working = prompt(row("a"));
+	const read = (result: EffortPrompt | undefined) => async () => result;
+	const first = new NativeEffortNotes();
+	assert.equal(
+		await first.section({ conversationId: conversation, shown: {}, run: "run-1" }, read(undefined), unavailable),
+		unavailable,
+	);
+	assert.equal(
+		await first.section({ conversationId: conversation, shown, run: "run-2" }, read(working), unavailable),
+		working.text,
+		"the next run replaces the failed text",
+	);
+	const restarted = new NativeEffortNotes();
+	assert.equal(
+		await restarted.section({ conversationId: conversation, shown, run: "run-3" }, read(working), unavailable),
+		working.text,
+		"a new host does not adopt the failed text as its section",
+	);
+});

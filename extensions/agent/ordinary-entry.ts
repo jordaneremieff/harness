@@ -1681,10 +1681,13 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	pi.on("before_agent_start", async (event, ctx) => {
 		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
 		// The section keeps its bytes between baseline points; changed rows arrive as one hidden update.
-		const efforts = ordinaryEffortRun(
-			branchAwareness(ctx.sessionManager),
-			effortPrompt(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd, "prompt")),
-		);
+		let prompt: ReturnType<typeof effortPrompt> | undefined;
+		try {
+			prompt = effortPrompt(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd, "prompt"));
+		} catch {
+			prompt = undefined;
+		}
+		const efforts = ordinaryEffortRun(branchAwareness(ctx.sessionManager), prompt);
 		event.systemPromptOptions.sections["agent-efforts"] = efforts.section;
 		if (efforts.baseline) pi.appendEntry(EFFORT_BASELINE_ENTRY, efforts.baseline);
 		const blocks = renderProviderBlockSection(providerBlocks, Date.now());
