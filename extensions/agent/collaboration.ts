@@ -182,7 +182,7 @@ function joinThread(thread: CollaborationThread, input: Record<string, unknown>,
 	else {
 		if (thread.members.length >= MAX_MEMBERS)
 			throw new Error(
-				`The thread reached its participant bound; call agent_collaborate with action: read and threadId: ${thread.id}, then action: create with sessionId set to a discovered Durable agent and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`,
+				`The thread reached its participant bound; call agent_collaborate with action: read and threadId: ${thread.id}, then action: create without sessionId, with title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`,
 			);
 		thread.members.push({ identity: actor, contribution, joinedAt: now });
 	}

@@ -580,7 +580,7 @@ it("recovers from full and closed threads by reading their frame and creating an
 			await f.host.request("collaboration-mutate", mutation("close", "close", { threadId, message: "Done" }), context);
 		const message = closed
 			? `This thread is closed; call agent_collaborate with action: read and threadId: ${threadId}, then action: create with sessionId: ${f.storageId} and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`
-			: `The thread reached its participant bound; call agent_collaborate with action: read and threadId: ${threadId}, then action: create with sessionId set to a discovered Durable agent and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`;
+			: `The thread reached its participant bound; call agent_collaborate with action: read and threadId: ${threadId}, then action: create without sessionId, with title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`;
 		await assert.rejects(
 			f.host.request(
 				"collaboration-mutate",

@@ -603,7 +603,7 @@ rows. There is no held-read mode. Neither form acknowledges or withdraws a
 normal delivery. Source: `extensions/agent/durable-host.ts` (`resultOutcome`,
 `selectedReceipt`, `receiptsRequest`).
 
-A `done` result returns its answer in pages. `offset` is a nonnegative count of UTF-16 code units, default 0; an offset beyond the retained answer is refused. A page holds at most 16,384 UTF-16 code units and does not split a surrogate pair. The page fields are `answer`, `offset`, `nextOffset:number|null`, `truncated`, and, when text remains, `answerContinuation:{tool:"agent_inspect",view:"result",sessionId,submissionId,requestId?,offset}`.
+A `done` result returns its answer in pages. `offset` is a nonnegative count of UTF-16 code units, default 0; an offset beyond the retained answer is refused. A page holds at most 32,768 UTF-16 code units, within the 64 KiB response limit, and does not split a surrogate pair. The page fields are `answer`, `offset`, `nextOffset:number|null`, `truncated`, and, when text remains, `answerContinuation:{tool:"agent_inspect",view:"result",sessionId,submissionId,requestId?,offset}`.
 
 A settled input with a retained receipt also returns `receiptGroup:{recipient,results,complete,next}`. `results` holds at most 16 `{sessionId,submissionId,requestId?}` references for the recipient of the selected receipt. `next` is null or `{tool:"agent_inspect",view:"result",sessionId,submissionId,requestId?,receiptCursor}`. A request with `receiptCursor` returns the result identity and the next reference page without the answer body. An unanswered input has one reference, `complete:true`, and accepts no cursor.
 
