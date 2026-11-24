@@ -1,5 +1,6 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { ResultReference } from "./result-schema.ts";
+import { foldPeerQuestions, isPeerQuestionFact, PEER_QUESTION_ENTRY, type PeerQuestionFact } from "./peer-questions.ts";
 
 export const CONTINUITY_ENTRY = "agent.continuity";
 export const ORDINARY_CONTINUITY_ENTRY = "agent.admitted-request";
@@ -139,7 +140,12 @@ function listed(label: string, lines: readonly string[]): string {
 }
 
 /** Inputs are already cut at the exact context boundary. No clock or live status enters this text. */
-export function continuityText(ownerId: string, headId: string | number, facts: readonly ContinuityFact[]): string {
+export function continuityText(
+	ownerId: string,
+	headId: string | number,
+	facts: readonly ContinuityFact[],
+	questions?: ReturnType<typeof foldPeerQuestions>,
+): string {
 	if (
 		!validIdentity(ownerId) ||
 		(typeof headId !== "string" && !positiveInteger(headId)) ||
@@ -170,7 +176,19 @@ export function continuityText(ownerId: string, headId: string | number, facts: 
 			scheduled.map((fact) => JSON.stringify({ sessionId: fact.sessionId, timerId: fact.timerId })),
 		),
 		`Routed elsewhere: ${pending.length - local.length}.`,
-		"Not covered: messages sent to an ordinary primary; requests that another session routed here.",
+		...(questions === undefined
+			? []
+			: [
+					listed(
+						"Questions this session asked other sessions, with no reply or non-reply notice here",
+						questions.asked.map((item) => JSON.stringify({ sessionId: item.peer, question: item.id })),
+					),
+					listed(
+						"Questions other sessions asked here, with no reply from this session; answer with agent_send inReplyTo",
+						questions.received.map((item) => JSON.stringify({ sessionId: item.peer, question: item.id })),
+					),
+				]),
+		`Not covered: messages sent to an ordinary primary${questions === undefined ? "" : " without expectReply"}; requests that another session routed here.`,
 		"Creation records are provenance, not ownership.",
 	].join("\n");
 }
@@ -219,6 +237,7 @@ export function nativeContinuityText(
 /** Pi supplies the current compaction entry ID through buildContextEntries()[0]. */
 export function ordinaryContinuityText(ownerId: string, headId: string, entries: readonly SessionEntry[]): string {
 	const facts: ContinuityFact[] = [];
+	const questions: PeerQuestionFact[] = [];
 	let found = false;
 	for (const entry of entries) {
 		if (entry.id === headId) {
@@ -229,7 +248,9 @@ export function ordinaryContinuityText(ownerId: string, headId: string, entries:
 			validateContinuityFact(entry.data);
 			facts.push(entry.data);
 		}
+		if (entry.type === "custom" && entry.customType === PEER_QUESTION_ENTRY && isPeerQuestionFact(entry.data))
+			questions.push(entry.data);
 	}
 	if (!found) throw new TypeError("Continuity head is absent from the retained ordinary entries");
-	return continuityText(ownerId, headId, facts);
+	return continuityText(ownerId, headId, facts, foldPeerQuestions(questions));
 }

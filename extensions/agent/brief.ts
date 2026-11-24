@@ -230,6 +230,25 @@ export function briefCreationDirectory(
 	return cwd;
 }
 
+/**
+ * A cwd that names the recipient's own directory changes nothing, so it is dropped and only a different
+ * cwd refuses as a creation field. An unresolvable cwd or recipient keeps the field for that refusal.
+ */
+export async function withoutRecipientCwd<T extends Record<string, unknown>>(
+	input: T,
+	callerCwd: string,
+	directory: () => string | Promise<string>,
+): Promise<T> {
+	if (input.sessionId === undefined || typeof input.cwd !== "string") return input;
+	try {
+		if (canonicalAgentCwd(callerCwd, input.cwd) !== canonicalAgentCwd(await directory())) return input;
+	} catch {
+		return input;
+	}
+	const { cwd: _cwd, ...rest } = input;
+	return rest as T;
+}
+
 export async function briefTargetDirectory(sessionId: string, catalog?: AgentCatalog): Promise<string> {
 	if (!catalog) throw new Error("Target directory lookup requires the host catalog namespace");
 	try {

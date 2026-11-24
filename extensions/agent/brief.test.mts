@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -11,6 +11,7 @@ import {
 	briefSourceProblems,
 	briefSourceToken,
 	renderBrief,
+	withoutRecipientCwd,
 } from "./brief.ts";
 
 const required = {
@@ -252,4 +253,21 @@ test("returns exact aggregate problems and a copyable preview without a repair i
 		problems: [...fields, ...sources],
 	});
 	assert.equal(briefPreviewText(preview), [rendered.text, "\nNothing was sent.", ...fields, ...sources].join("\n"));
+});
+
+test("drops a cwd that names the recipient's own directory and keeps a different one for the refusal", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "brief-cwd-")));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	mkdirSync(join(root, "other"));
+	const input = { sessionId: "agent", cwd: ".", objective: "o", endCondition: "e", result: "r" };
+	const same = await withoutRecipientCwd(input, root, () => root);
+	assert.equal("cwd" in same, false);
+	assert.deepEqual(briefInputProblems(same, ["cwd"]), []);
+	assert.equal((await withoutRecipientCwd({ ...input, cwd: "other" }, root, () => root)).cwd, "other");
+	const unresolved = await withoutRecipientCwd(input, root, () => {
+		throw new Error("No directory is retained for agent");
+	});
+	assert.deepEqual(briefInputProblems(unresolved, ["cwd"]), [
+		"sessionId cannot be combined with creation fields: cwd.",
+	]);
 });

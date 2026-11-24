@@ -2993,9 +2993,21 @@ type NoteCardFacts = {
 };
 
 function noteRequestGroups(waiting: NoteCardFacts["waiting"]) {
-	const groups = { due: [] as typeof waiting, scheduled: [] as typeof waiting, unconfirmed: [] as typeof waiting };
+	const groups = {
+		due: [] as typeof waiting,
+		scheduled: [] as typeof waiting,
+		questions: [] as typeof waiting,
+		unconfirmed: [] as typeof waiting,
+	};
 	for (const row of waiting) {
-		const key = row.state === "admitted" ? "due" : row.state === "scheduled" ? "scheduled" : "unconfirmed";
+		const key =
+			row.state === "admitted"
+				? "due"
+				: row.state === "scheduled"
+					? "scheduled"
+					: row.state === "question"
+						? "questions"
+						: "unconfirmed";
 		groups[key].push(row);
 	}
 	return groups;
@@ -3033,6 +3045,7 @@ class StateNoteCard implements Component {
 				: [
 						groups.due.length ? `${cardinal(groups.due.length, "agent result")} due` : "",
 						groups.scheduled.length ? cardinal(groups.scheduled.length, "scheduled input") : "",
+						groups.questions.length ? cardinal(groups.questions.length, "open question") : "",
 						groups.unconfirmed.length ? cardinal(groups.unconfirmed.length, "unconfirmed request") : "",
 					];
 		return [...counts, at === undefined ? "" : dashboardClock(at)].filter(Boolean).join(" · ");
@@ -3054,6 +3067,7 @@ class StateNoteCard implements Component {
 		for (const [heading, items] of [
 			["Results due from:", groups.due],
 			["Scheduled inputs for:", groups.scheduled],
+			["Questions awaiting a reply from:", groups.questions],
 			["Admission not confirmed for:", groups.unconfirmed],
 		] as const) {
 			if (!items.length) continue;

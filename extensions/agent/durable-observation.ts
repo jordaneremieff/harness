@@ -102,7 +102,7 @@ import { TASK_HOOK_REPORT_KIND } from "./task-hook-reports.ts";
 export const ENTRY_PREVIEW_UNITS = 1200;
 export const ENTRY_PAGE_UNITS = 12000;
 /** Answer and final report pages also fit the byte limit for the complete serialized result. */
-export const RESULT_PAGE_UNITS = 16_384;
+export const RESULT_PAGE_UNITS = 32_768;
 export const RESULT_PAGE_BYTES = 64 * 1024;
 export const HISTORY_LIMIT_DEFAULT = 12;
 export const HISTORY_LIMIT_MAX = 50;

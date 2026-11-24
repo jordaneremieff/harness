@@ -18,6 +18,7 @@ import {
 	isThreadStorage,
 	threadStorageId,
 } from "./identity.ts";
+import { assertNoPeerQuestion, peerMessageText, peerQuestionFields, questionReceipt } from "./peer-questions.ts";
 import { profileText, type AgentProfile } from "./profile-schema.ts";
 import { NativeListOutputSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
 import {
@@ -1114,6 +1115,7 @@ export class AgentManager {
 				throw new Error("The exact native target is not retained and no ordinary primary is registered");
 			return this.primaryControl(method, input, sessionId, caller);
 		}
+		assertNoPeerQuestion(input);
 		if (isThreadStorage(record, this.catalog.root) && !THREAD_STORAGE_METHODS.has(method))
 			throw new Error(
 				`${sessionId} is a thread storage of ${record.ownerId}; it holds threads and runs no agent work. Use agent_collaborate with a threadId it holds, or message its owner ${record.ownerId}`,
@@ -1370,11 +1372,14 @@ export class AgentManager {
 			const sender = this.primaryChannels.get(caller.id)?.info();
 			const name = "name" in caller ? caller.name : sender?.name;
 			const observedPurpose = caller.observedPurpose ?? sender?.observedPurpose;
+			const question = peerQuestionFields(input, method, sourceId);
+			const text = peerMessageText(String(input.message ?? ""), question, caller.id, name);
 			await channel.deliver({
 				sourceId,
 				requireRetained: false,
-				text: String(input.message ?? ""),
+				text,
 				details: {
+					...question,
 					kind: method === "report" ? "report" : "message",
 					senderKind: "session",
 					senderIdentity: caller.id,
@@ -1394,6 +1399,7 @@ export class AgentManager {
 				sessionId,
 				admitted: true,
 				sourceId,
+				...questionReceipt(question),
 				boundary:
 					"The recipient retained the message for delivery. Admission does not prove placement, action, or task acceptance.",
 			};

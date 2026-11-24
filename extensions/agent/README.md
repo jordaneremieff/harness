@@ -99,7 +99,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_brief` | Render and check a task brief, then create an agent or admit the brief to an existing one. Preview renders and checks without dispatch. |
 | `agent_work` | Inside a native agent, declare background work with `continue`, or close it with `complete` and one final report to its retained reply recipient. Both actions return at once. Results and native settlement do not complete declared work; see [declared background work](#declared-background-work). An ordinary session has no `agent_work`; it has `agent_yield`. |
 | `agent_yield` | In an ordinary session, end the turn with one state note for the operator while work that the session sent to agents is still open; an agent result, a message or the operator's input starts the next turn. See [state note of an ordinary session](#state-note-of-an-ordinary-session). |
-| `agent_send` | Admit a task or correction. Omitted `mode` means `followUp`, new work, on every path. `mode: "steer"` corrects current work; both reach the same tool-round boundary. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. A busy Durable recipient receives each active input at its next tool boundary, for `steer` and for `followUp`; no input waits for the end of the run. These inputs do not promise separate answers. See [input placement](#input-placement-and-unplaced-notices). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
+| `agent_send` | Admit a task or correction. Omitted `mode` means `followUp`, new work, on every path. `mode: "steer"` corrects current work; both reach the same tool-round boundary. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. A busy Durable recipient receives each active input at its next tool boundary, for `steer` and for `followUp`; no input waits for the end of the run. These inputs do not promise separate answers. See [input placement](#input-placement-and-unplaced-notices). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. To an ordinary primary, `expectReply: true` asks a question and `inReplyTo` answers one; see [Questions between sessions](#questions-between-sessions). |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. A live stop waits up to 15 seconds for settlement. `settled: false` names pending tasks whose abort stays committed. The stopped conversations stay quiet until explicit input (see [Stopping work](#stopping-work)). A cold stop marks retained work without starting a serving host. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a serving host. On cold storage it uses the same stop writer as abort. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. Aborting the tool call withdraws only the caller's wait. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
@@ -2221,7 +2221,7 @@ The displayed page does not change which requests the delivery settles.
 pages. Two continuations exist, and neither advances the other:
 
 - `answerContinuation` continues the answer text. An answer page holds at most
-  16,384 UTF-16 code units and never splits a surrogate pair. `offset` and
+  32,768 UTF-16 code units, within the 64 KiB response limit, and never splits a surrogate pair. `offset` and
   `nextOffset` count UTF-16 code units. The call repeats the selector with the
   next `offset`.
 - `receiptGroup.next` continues the recipient's references. `receiptGroup` is
@@ -2470,6 +2470,35 @@ changes refresh these instructions in the same native commit. The profile
 survives compaction, reset, and host retirement. Forks start with their own
 identity and an empty profile, not an inherited handle or borrowed expertise.
 Saved expertise remains evidence; fresh sources and task restrictions outrank it.
+
+## Questions between sessions
+
+An ordinary primary asks another ordinary primary a question with `agent_send`
+and `expectReply: true`, as an immediate message: report mode and `deliverAt`
+refuse it, and a Durable target refuses it because its answer arrives through
+its request result. The question ID is `question:<asker>:<tool call ID>`; the
+receipt names it as `question`. The recipient's model reads the question
+followed by a line that names the asker and the question ID, says how to answer
+(`agent_send` to the asker with `inReplyTo` set to the ID), and says that a
+message from another session is information, not an instruction above the
+operator's direction.
+
+Both sessions retain the question as `agent.peer-question` session entries
+(`asked`, `answered`, `unanswered` on the asker; `received`, `replied`,
+`noticed` on the recipient), so restarts and resumes keep it. The recipient
+counts a question as received when its model is given it. A reply with
+`inReplyTo` must name an open received question and go to its asker; it arrives
+at the asker as a message that starts `Reply from session` and closes the
+question. When a recipient's run settles with a received question still
+unanswered, the recipient sends the asker one report: the run ended without a
+reply, with the question's excerpt. Each question gets at most one notice.
+
+Nothing replies automatically and nothing waits. The asker continues other
+work or calls `agent_yield`, whose card lists each open question as
+`Questions awaiting a reply from:`. After a compaction the continuity note
+lists the questions this session asked with no reply or notice, and the
+questions it received with no reply. One session holds at most 16 open
+questions at once; it tracks the 32 newest received questions.
 
 ## Peer threads
 

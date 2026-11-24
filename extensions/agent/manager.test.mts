@@ -3281,6 +3281,67 @@ it("creates an ordinary primary's thread in its own thread storage without an ag
 	assert.equal(page.coverage.catalog.storages, 1, "agent views count the agent and omit the thread storage");
 });
 
+it("refuses a reply expectation for a Durable target, whose answer arrives through its request result", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	const record = manager.catalog.create({
+		cwd: root,
+		agentDir: root,
+		packageDir: root,
+		model: { provider: "acme", modelId: "model-x" },
+		thinkingLevel: "off",
+	});
+	for (const field of [{ expectReply: true }, { inReplyTo: "question:a:1" }])
+		await assert.rejects(
+			manager.control(
+				"submit",
+				{ sessionId: record.storageId, message: "Ready?", ...field },
+				{ id: "caller", cwd: root },
+			),
+			{
+				message:
+					"expectReply and inReplyTo apply to ordinary primary sessions; a Durable agent's answer arrives through its request result, so omit them",
+			},
+		);
+});
+
+it("delivers a question to an ordinary primary with how to answer it, and names it in the receipt", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	const recipient = randomUUID();
+	const asker = randomUUID();
+	const delivered: Array<{ text: string; details: Record<string, unknown> }> = [];
+	await manager.registerPrimary(recipient, {
+		signal: new AbortController().signal,
+		cwd: root,
+		send(text: string, details: unknown) {
+			delivered.push({ text, details: details as Record<string, unknown> });
+		},
+	});
+	const id = `question:${asker}:call-1`;
+	const receipt = (await manager.control(
+		"submit",
+		{ sessionId: recipient, message: "Ready?", expectReply: true, requestId: id, origin: "model" },
+		{ id: asker, cwd: root, name: "Docs" },
+	)) as Record<string, unknown>;
+	assert.equal(receipt.question, id);
+	assert.match(String(receipt.reply), /Do not wait or poll/u);
+	await manager.control(
+		"submit",
+		{ sessionId: recipient, message: "Yes.", inReplyTo: id, origin: "model" },
+		{ id: asker, cwd: root },
+	);
+	assert.equal(delivered[0].details.question, id);
+	assert.match(delivered[0].text, new RegExp(`^Ready\\?\\n\\nReply expected\\. Session ${asker} \\("Docs"\\)`, "u"));
+	assert.equal(delivered[1].details.inReplyTo, id);
+	assert.match(
+		delivered[1].text,
+		new RegExp(`^Reply from session ${asker} to the question you asked \\(${id}\\):\\n\\nYes\\.$`, "u"),
+	);
+});
+
 it("returns a compact status snapshot from a mutation instead of the full status", async (t) => {
 	const root = fixtureRoot(t);
 	const fullStatus = {

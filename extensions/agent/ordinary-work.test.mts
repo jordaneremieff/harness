@@ -293,16 +293,21 @@ it("records when the turn ended and the open requests of the session for the car
 			asked.push(sessionId);
 			return open;
 		},
+		questions: (sessionId) => {
+			asked.push(sessionId);
+			return [{ peer: "primary-b" }];
+		},
 	});
-	const result = await f.run({ note: "Three requests are open." });
-	assert.deepEqual(asked, ["primary-session"], "the open requests of the calling session");
+	const result = await f.run({ note: "Three requests and a question are open." });
+	assert.deepEqual(asked, ["primary-session", "primary-session"], "the open requests of the calling session");
 	assert.deepEqual(result.details, {
-		note: "Three requests are open.",
+		note: "Three requests and a question are open.",
 		at: 7,
 		waiting: [
 			{ sessionId: "worker-a", state: "admitted" },
 			{ sessionId: "worker-b", state: "unconfirmed" },
 			{ sessionId: "worker-c", state: "scheduled" },
+			{ sessionId: "primary-b", state: "question" },
 		],
 	});
 

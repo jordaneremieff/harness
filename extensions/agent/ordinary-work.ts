@@ -42,7 +42,7 @@ export const ORDINARY_WAITING_ROWS = 16;
 
 const WaitingRowSchema = obj({
 	sessionId: str(),
-	state: StringEnum(["admitted", "unconfirmed", "scheduled"]),
+	state: StringEnum(["admitted", "unconfirmed", "scheduled", "question"]),
 });
 
 /**
@@ -62,6 +62,8 @@ export type OrdinaryWaitingRow = Static<typeof WaitingRowSchema>;
 export interface OrdinaryWorkOptions {
 	/** The open requests of one session, as the continuity facts of this session hold them. */
 	readonly waiting?: (sessionId: string) => readonly ContinuityFact[];
+	/** The questions this session asked other ordinary sessions with no reply or non-reply notice yet. */
+	readonly questions?: (sessionId: string) => readonly { readonly peer: string }[];
 	readonly now?: () => number;
 }
 
@@ -70,6 +72,16 @@ function waitingRow(fact: ContinuityFact): OrdinaryWaitingRow {
 		sessionId: fact.sessionId,
 		state: fact.timerId !== undefined ? "scheduled" : fact.phase === "admitted" ? "admitted" : "unconfirmed",
 	};
+}
+
+/** Reads the session ID only when a provider needs it. */
+function waitingRows(options: OrdinaryWorkOptions, session: () => string): OrdinaryWaitingRow[] {
+	if (!options.waiting && !options.questions) return [];
+	const sessionId = session();
+	return [
+		...(options.waiting?.(sessionId).map(waitingRow) ?? []),
+		...(options.questions?.(sessionId).map((item) => ({ sessionId: item.peer, state: "question" as const })) ?? []),
+	];
 }
 
 export const ORDINARY_CONTINUE_TEXT =
@@ -211,7 +223,7 @@ export function registerOrdinaryWork(
 				}
 				return { content: [{ type: "text", text: ORDINARY_TEXT_ANSWER }], details, structuredContent: details };
 			}
-			const open = options.waiting?.(ctx.sessionManager.getSessionId()).map(waitingRow) ?? [];
+			const open = waitingRows(options, () => ctx.sessionManager.getSessionId());
 			const shown: OrdinaryWorkDetails = {
 				...details,
 				at: (options.now ?? Date.now)(),

@@ -74,6 +74,7 @@ import {
 	briefCreationDirectory,
 	briefCreationInput,
 	briefInputProblems,
+	withoutRecipientCwd,
 	briefParameters,
 	briefPreview,
 	briefPreviewText,
@@ -2110,7 +2111,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		description: BRIEF_DESCRIPTION,
 		parameters: presetParams(BriefParams),
 		replay: "safe",
-		execute: async (args: Static<typeof BriefParams>, api, context) => {
+		execute: async (input: Static<typeof BriefParams>, api, context) => {
+			const args = await withoutRecipientCwd(input, host.cwd, () => briefDirectory(input, api, context));
 			const inputProblems = briefInputProblems(args, spawnCreationKeys);
 			if (args.preview !== true && inputProblems.length) return errorResult(briefRefusal(inputProblems, []));
 			const sourceProblems =

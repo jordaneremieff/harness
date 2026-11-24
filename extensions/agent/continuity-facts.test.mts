@@ -139,6 +139,30 @@ it("reads ordinary records before the exact compaction entry, beyond a fixed tai
 		ordinaryContinuityText("owner", head.id, entries.slice(0, -1)),
 	);
 	assert.throws(() => ordinaryContinuityText("owner", "missing", entries), /absent/u);
+	const question = (id: string, data: Record<string, unknown>): SessionEntry => ({
+		type: "custom",
+		customType: "agent.peer-question",
+		id,
+		parentId: null,
+		timestamp: "2026-01-01T00:00:00Z",
+		data,
+	});
+	const asked = [
+		question("q1", { event: "asked", id: "question:owner:1", peer: "primary-b", at: 1, excerpt: "Safe?" }),
+		question("q2", { event: "received", id: "question:primary-c:1", peer: "primary-c", at: 2, excerpt: "Ready?" }),
+		question("q3", { event: "asked", id: "question:owner:2", peer: "primary-b", at: 3, excerpt: "Done?" }),
+		question("q4", { event: "answered", id: "question:owner:2", peer: "primary-b", at: 4 }),
+		head,
+		question("q5", { event: "answered", id: "question:owner:1", peer: "primary-b", at: 5 }),
+	];
+	const note = ordinaryContinuityText("owner", head.id, asked);
+	assert.match(
+		note,
+		/Questions this session asked other sessions, with no reply or non-reply notice here: \n\{"sessionId":"primary-b","question":"question:owner:1"\}/u,
+	);
+	assert.match(note, /Questions other sessions asked here[\s\S]*?"question":"question:primary-c:1"/u);
+	assert.doesNotMatch(note, /question:owner:2/u, "an answered question before the head is closed");
+	assert.match(note, /messages sent to an ordinary primary without expectReply/u);
 });
 
 it("lists declared open work by identifiers only and names a head whose work was not read", () => {

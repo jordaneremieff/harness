@@ -181,6 +181,10 @@ and its conditions, and one answer that accepts or corrects it. Avoid repeated
 acknowledgments; send another message only for a changed condition or a handoff
 the agreement requires.
 
+To ask another ordinary session for an answer, send the question with
+`expectReply: true`. Its reply, or one notice that the recipient's run ended
+without a reply, arrives as an event; the asker does not wait or poll.
+
 Put an agreement that others must see in one peer thread for the real overlap.
 Record the governing frame and the order of shared mutations there. An ordinary
 primary creates the thread in its own thread storage; no agent is needed to

@@ -90,6 +90,7 @@ import { ORDINARY_CONTINUITY_ENTRY } from "./continuity-facts.ts";
 import { OrdinaryContinuity, PLANNING_BUDGET_NOTICE, deliveredResults } from "./ordinary-continuity.ts";
 import { formatPrimaryObservation } from "./primary-observation.ts";
 import { PrimaryInbox } from "./primary-inbox.ts";
+import { noticeText, PEER_QUESTION_ENTRY, PeerQuestions, peerQuestionDetail } from "./peer-questions.ts";
 import { PrimaryRetention } from "./primary-retention.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { HandleSchema, ProfileOutputSchema, ProfileParams } from "./profile-schema.ts";
@@ -100,6 +101,7 @@ import {
 	briefCreationDirectory,
 	briefCreationInput,
 	briefInputProblems,
+	withoutRecipientCwd,
 	briefParameters,
 	briefPreview,
 	briefPreviewText,
@@ -197,6 +199,19 @@ const send = obj(
 		),
 		mode: opt(StringEnum(["followUp", "steer", "report"])),
 		checkInMinutes: checkIn,
+		expectReply: opt(
+			bool({
+				description:
+					"Ordinary primary target only: ask a question that expects a reply. The recipient sees how to answer; the reply, or one notice when its run ends without one, arrives here as an event.",
+			}),
+		),
+		inReplyTo: opt(
+			str({
+				minLength: 1,
+				maxLength: 512,
+				description: "Answer a question that another session asked here: its question ID. sessionId names the asker.",
+			}),
+		),
 	},
 	{},
 );
@@ -490,6 +505,51 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		pi.appendEntry(WORK_REFERENCES_ENTRY, { refs: list });
 		getManager().setPrimaryWorkRefs(event.sessionId, list);
 	});
+	const peerQuestions = new Map<string, PeerQuestions>();
+	const questionsOf = (ctx: ExtensionContext): PeerQuestions => {
+		const id = ctx.sessionManager.getSessionId();
+		let questions = peerQuestions.get(id);
+		if (!questions) {
+			questions = new PeerQuestions((fact) => pi.appendEntry(PEER_QUESTION_ENTRY, fact));
+			questions.restore(ctx.sessionManager.getEntries());
+			peerQuestions.set(id, questions);
+		}
+		return questions;
+	};
+	/** A question counts as received when this session's model is given it. */
+	const presented = (ctx: ExtensionContext, details: unknown, text: string) => {
+		const { question } = peerQuestionDetail(details);
+		const asker = (details as { senderIdentity?: unknown } | null)?.senderIdentity;
+		if (question !== undefined && typeof asker === "string") questionsOf(ctx).received(question, asker, text);
+	};
+	/** An arrived reply or notice closes the question that it names. */
+	const arrived = (ctx: ExtensionContext, details: unknown) => {
+		const { reply, notice } = peerQuestionDetail(details);
+		if (reply !== undefined) questionsOf(ctx).closed(reply, "answered");
+		if (notice !== undefined) questionsOf(ctx).closed(notice, "unanswered");
+	};
+	/** One notice per received question that this session's settled run left without a reply. */
+	const noticeUnanswered = (ctx: ExtensionContext) => {
+		const questions = questionsOf(ctx);
+		const self = ctx.sessionManager.getSessionId();
+		const name = ctx.sessionManager.getSessionName();
+		for (const question of questions.open().received) {
+			questions.noticed(question.id, question.peer);
+			void getManager()
+				.control(
+					"report",
+					{
+						sessionId: question.peer,
+						message: noticeText(question, self, name),
+						requestId: `notice:${question.id}`,
+						questionNotice: question.id,
+						origin: "model",
+					},
+					caller(ctx, pi),
+				)
+				.catch(() => undefined);
+		}
+	};
 	const primaryDeliveries = new Map<
 		string,
 		{ retention: PrimaryRetention; inbox: PrimaryInbox; flush(wake?: boolean): void }
@@ -586,6 +646,29 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			ctx,
 			signal,
 		);
+	const sendQuestionOrReply = async (
+		input: Record<string, unknown>,
+		ctx: ExtensionContext,
+		callId: string,
+		signal?: AbortSignal,
+	): Promise<unknown> => {
+		if (input.mode === "report" || input.deliverAt !== undefined)
+			throw new Error("expectReply and inReplyTo require an immediate message, not report mode or deliverAt");
+		const questions = questionsOf(ctx);
+		const message = String(input.message ?? "");
+		if (input.inReplyTo !== undefined) {
+			const question = questions.replyTarget(input.inReplyTo, input.sessionId);
+			const { expectReply: _expectReply, ...reply } = input;
+			const receipt = await sendImmediate(reply, ctx, signal);
+			questions.replied(question.id, question.peer);
+			return receipt;
+		}
+		questions.assertCanAsk();
+		const id = `question:${ctx.sessionManager.getSessionId()}:${callId}`;
+		const receipt = await sendImmediate({ ...input, requestId: id, expectReply: true }, ctx, signal);
+		questions.asked(id, String(input.sessionId), message);
+		return receipt;
+	};
 	const steer = (input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) =>
 		control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx, signal);
 	const register = (
@@ -673,7 +756,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				caller(ctx, pi),
 			),
 	);
-	registerOrdinaryWork(pi, yieldCard, { waiting: (sessionId) => continuity.open(sessionId) });
+	registerOrdinaryWork(pi, yieldCard, {
+		waiting: (sessionId) => continuity.open(sessionId),
+		questions: (sessionId) => peerQuestions.get(sessionId)?.open().asked ?? [],
+	});
 	register(
 		"agent_profile",
 		"Read or revision-check an agent's durable role and sourced expertise. Saved expertise is evidence, not fresh authority. Profile edits start no model turn.",
@@ -711,6 +797,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		return sendImmediate(fields, ctx, signal);
 	};
 	register("agent_brief", BRIEF_DESCRIPTION, brief, async (input, ctx, callId, _admissionCaller, signal) => {
+		input = await withoutRecipientCwd(input, ctx.cwd, async () => {
+			const manager = getManager();
+			return briefTargetDirectory(await manager.resolveTarget(String(input.sessionId), signal), manager.catalog);
+		});
 		const inputProblems = briefInputProblems(input, creationKeys);
 		if (input.preview !== true && inputProblems.length) throw new Error(briefRefusal(inputProblems, []));
 		const sourceProblems = await checkBriefSources(input, async () => {
@@ -801,6 +891,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		`Admit a task, report, or correction to an agent or a live effort primary from agent_status. A primary accepts immediate messages, not Durable controls or schedules. Coordinate with one concise proposal containing its conditions and one answer, not repeated acknowledgments. Put agreements that others must see in a thread. Idle agents start; a busy agent reads each input at its next tool boundary. mode names the class of the input, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Model-origin messages to ordinary primaries use steer. Task check-ins run only when checkInMinutes or agent.checkInMinutes sets a nonzero interval. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.`,
 		send,
 		(input, ctx, callId, _admissionCaller, signal) => {
+			if (input.expectReply === true || input.inReplyTo !== undefined)
+				return sendQuestionOrReply(input, ctx, callId, signal);
+			const { expectReply: _expectReply, inReplyTo: _inReplyTo, ...fields } = input;
+			input = fields;
 			if (input.mode === "report") {
 				if (input.deliverAt !== undefined || input.replyTo !== undefined || input.checkInMinutes !== undefined)
 					throw new Error("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
@@ -1340,6 +1434,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		workReferences.set(sessionId, workRefs);
 		const sendPeer = (text: string, details: unknown, wake: boolean) => {
 			refreshPreferences(ctx);
+			presented(ctx, details, text);
 			pi.sendMessage(
 				{ customType: "agent.peer", content: text, details, display: true },
 				wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false },
@@ -1368,6 +1463,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			}
 		};
 		primaryDeliveries.set(sessionId, { retention, inbox, flush });
+		peerQuestions.delete(sessionId);
+		questionsOf(ctx);
 		const retained = ctx.sessionManager.getEntries();
 		continuity.start(sessionId, retained);
 		await getManager().registerPrimary(sessionId, {
@@ -1388,6 +1485,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			thinkingLevel: pi.getThinkingLevel(),
 			resumeInbox: flush,
 			send: (text, details, sourceId, requireRetained) => {
+				arrived(ctx, details);
 				if (!requireRetained) {
 					if (retention.hasQueued(sourceId)) throw new Error("Primary delivery awaits its queued source-ledger notice");
 					inbox.admit(sourceId, text, details);
@@ -1458,6 +1556,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	pi.on("turn_end", (event, ctx) => continuity.turnEnd(event, ctx, selfCompaction.requested));
 	const inboxBoundary = (event: TurnEndEvent | AgentBeforeSettleEvent, ctx: ExtensionContext) => {
 		const inbox = primaryDeliveries.get(ctx.sessionManager.getSessionId())?.inbox.boundary();
+		for (const entry of inbox?.entries ?? [])
+			presented(ctx, entry.details, typeof entry.content === "string" ? entry.content : "");
 		if (inbox) return { entries: [...event.entries, ...inbox.entries], continue: event.continue || inbox.continue };
 	};
 	pi.on("turn_end", inboxBoundary);
@@ -1470,6 +1570,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
 	pi.on("agent_settled", (event, ctx) => {
+		noticeUnanswered(ctx);
 		const delivery = primaryDeliveries.get(ctx.sessionManager.getSessionId());
 		delivery?.retention.settled();
 		delivery?.flush(!event.aborted);
@@ -1482,6 +1583,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		primaryDeliveries.get(id)?.retention.clear();
 		primaryDeliveries.delete(id);
 		workReferences.delete(id);
+		peerQuestions.delete(id);
 		continuity.end(id);
 		const abort = primaries.get(id);
 		if (!abort) return;
