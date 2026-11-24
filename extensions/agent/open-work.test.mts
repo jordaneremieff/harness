@@ -1479,3 +1479,21 @@ it("reads the final report of an input without an answer after acknowledgement, 
 		undefined,
 	);
 });
+
+it("names the routed inputs of the run when declared work names a request without a placed route", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	await harness.commit((tx) => placed(tx, conversation.id, route()), context);
+	const host = { harness, storageId: STORAGE, conversationId: conversation.id, now: 10 };
+	const refused = await executeAgentWork(
+		{ action: "continue", request: "spawn:earlier", results: [dependency()], note: "wait" },
+		host,
+		context,
+	);
+	assert.equal(refused.isError, true);
+	const text = refused.output?.map((part) => (part.type === "text" ? part.text : "")).join("") ?? "";
+	assert.match(text, /Request spawn:earlier is not a placed input/u);
+	assert.match(
+		text,
+		/Routed inputs of the current run: \["task-a"\]\. Name one of them, or omit request when the run has one/u,
+	);
+});

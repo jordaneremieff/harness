@@ -186,6 +186,8 @@ export type ContinueWork = {
 	/** External identity of the declaring conversation. */
 	readonly self: string;
 	readonly now: number;
+	/** Request IDs of the routed inputs placed in the current run, named when the requested route is absent. */
+	readonly placed?: readonly string[];
 };
 export type ContinueOutcome = {
 	readonly items: OpenWorkItem[];
@@ -227,7 +229,7 @@ export function continueWork(items: readonly OpenWorkItem[], input: ContinueWork
 	}
 	if (input.route === undefined)
 		return {
-			error: `Request ${input.requestId} is not a placed input of this conversation with a retained route; declared work needs the route of the request it serves`,
+			error: `Request ${input.requestId} is not a placed input of this conversation with a retained route; declared work needs the route of the request it serves. Routed inputs of the current run: ${JSON.stringify(input.placed ?? [])}. Name one of them, or omit request when the run has one`,
 		};
 	if (items.filter(isOpen).length >= OPEN_WORK_LIMIT)
 		return { error: `The conversation already has ${OPEN_WORK_LIMIT} open work items; complete one first` };
@@ -820,7 +822,7 @@ export async function declareOpenWork(
 	}
 	const outcome = continueWork(items, {
 		requestId,
-		...(route === undefined ? {} : { route }),
+		...(route === undefined ? { placed: await placedRequests(tx, conversationId, routes) } : { route }),
 		results: input.results,
 		note: input.note,
 		self: canonicalIdentity(storageId, conversationId),
