@@ -7,6 +7,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	symlinkSync,
 	unlinkSync,
@@ -764,5 +765,59 @@ it("notices that a directory with a stray HEAD above a cached cwd became a bare 
 	const expected = await discoverPrimaryLocation(cwd);
 	assert.equal(expected.repositoryState, "git");
 	assert.deepEqual(await resolver.resolve(cwd), expected);
+	assert.deepEqual((await resolver.resolveMany([cwd])).locations.get(cwd), expected);
+});
+
+it("asks Git for a config that includes another file, which Git reads and this reader does not", async (t) => {
+	const { root, calls } = workspace(t, { asksGit: false });
+	const resolver = createPrimaryLocationResolver();
+	for (const [name, section] of [
+		["include", "[include]"],
+		["conditional", '[includeIf "gitdir:/"]'],
+	]) {
+		const directory = join(root, name);
+		mkdirSync(directory);
+		git(directory, "init", "-q");
+		writeFileSync(join(directory, ".git", "broken.cfg"), "[core\nbroken");
+		writeFileSync(
+			join(directory, ".git", "config"),
+			`[core]\n\trepositoryformatversion = 0\n${section}\n\tpath = broken.cfg\n`,
+		);
+		const before = calls();
+		const answer = await resolver.resolve(directory);
+		assert.ok(calls() > before, `${name} asks Git`);
+		assert.deepEqual(answer, await discoverPrimaryLocation(directory), name);
+		assert.equal(answer.repositoryState, "unknown", "Git refuses the broken included file");
+	}
+});
+
+it("reports a Git directory with the name it has on disk", async (t) => {
+	const { root } = workspace(t, { asksGit: false });
+	const repository = join(root, "spelled");
+	mkdirSync(repository);
+	git(repository, "init", "-q");
+	renameSync(join(repository, ".git"), join(repository, ".Git"));
+	const resolver = createPrimaryLocationResolver();
+	const expected = await discoverPrimaryLocation(repository);
+	assert.deepEqual(await resolver.resolve(repository), expected);
+	assert.deepEqual((await resolver.resolveMany([repository])).locations.get(repository), expected);
+	// On a filesystem that ignores letter case Git finds the directory and names it as stored.
+	if (existsSync(join(repository, ".git"))) assert.equal(expected.repository, join(repository, ".Git"));
+});
+
+it("follows a directory whose ancestor was moved and replaced by a symbolic link", async (t) => {
+	const { root } = workspace(t, { asksGit: false });
+	const project = join(root, "x", "proj");
+	const cwd = join(project, "sub");
+	mkdirSync(cwd, { recursive: true });
+	git(project, "init", "-q");
+	const resolver = createPrimaryLocationResolver();
+	assert.equal((await resolver.resolveMany([cwd])).locations.get(cwd)?.repository, realpathSync(join(project, ".git")));
+	// The leaf keeps its identity, so only the ancestors show that its canonical path changed.
+	mkdirSync(join(root, "y"));
+	renameSync(project, join(root, "y", "proj"));
+	symlinkSync(join(root, "y", "proj"), project);
+	const expected = await discoverPrimaryLocation(cwd);
+	assert.equal(expected.cwd, join(root, "y", "proj", "sub"));
 	assert.deepEqual((await resolver.resolveMany([cwd])).locations.get(cwd), expected);
 });

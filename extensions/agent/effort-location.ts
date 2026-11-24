@@ -73,8 +73,9 @@ const BATCH_YIELD = 128;
 export const UNCACHED_LOCATION_MS = 60_000;
 /**
  * How long a batch reuses a directory's canonical path while the path still names the same
- * directory. Only a change of letter case in a component keeps the directory and changes the
- * spelling, so that change shows within this time.
+ * directory and every component of the canonical path is still a directory, not a symbolic link.
+ * Only a change of letter case in a component keeps both and changes the spelling, so that change
+ * shows within this time.
  */
 const CANONICAL_PATH_MS = 60_000;
 const MARKER_BYTES = 4096;
@@ -237,9 +238,9 @@ function configLine(raw: string): ConfigLine | null | undefined {
 }
 
 /**
- * Whether Git accepts a repository's config without question: it parses, its format version is 0
- * or absent, and it names only extensions that version 0 accepts. Anything else, including a
- * construct this reader does not model, asks Git.
+ * Whether Git accepts a repository's config without question: it parses, includes no other file,
+ * its format version is 0 or absent, and it names only extensions that version 0 accepts. Anything
+ * else, including a construct this reader does not model, asks Git.
  */
 function plainRepositoryFormat(text: string): boolean {
 	let header: { readonly section: string; readonly subsection: boolean } | undefined;
@@ -258,8 +259,12 @@ function plainRepositoryFormat(text: string): boolean {
 	return version === undefined || version === "0";
 }
 
-/** An entry outside `extensions`, or an extension that version 0 accepts. */
+/**
+ * An entry outside `extensions` and the include sections, or an extension that version 0 accepts.
+ * Git reads an included file, and a broken one makes it refuse the repository; this reader does not.
+ */
 function acceptedEntry(header: { readonly section: string; readonly subsection: boolean }, key: string): boolean {
+	if (header.section === "include" || header.section === "includeif") return false;
 	return header.section !== "extensions" || (!header.subsection && VERSION_0_EXTENSIONS.has(key));
 }
 
@@ -317,6 +322,7 @@ class Probe {
 	private readonly walks = new Map<string, Walk>();
 	private readonly repositories = new Map<string, string | undefined>();
 	private readonly formats = new Map<string, boolean>();
+	private readonly realDirectories = new Map<string, boolean>();
 	private readonly identities = new Map<string, string | undefined>();
 	readonly markers = new Map<string, MarkerStamp | undefined>();
 	readonly validities = new Map<string, string | undefined>();
@@ -357,6 +363,16 @@ class Probe {
 	/** Record a canonical path that the caller already resolved. */
 	known(path: string, canonical: string): void {
 		this.canonicals.set(path, canonical);
+	}
+
+	/** Whether every component of a canonical path is still a directory, not a symbolic link. */
+	realDirectory(path: string): boolean {
+		const known = this.realDirectories.get(path);
+		if (known !== undefined) return known;
+		const parent = dirname(path);
+		const value = this.lstat(path)?.kind === "directory" && (parent === path || this.realDirectory(parent));
+		this.realDirectories.set(path, value);
+		return value;
 	}
 
 	/** Canonical path through the canonical parent: null when absent, undefined when it cannot be resolved. */
@@ -477,7 +493,8 @@ class Probe {
 	/** The canonical Git directory itself, or the canonical directory that its `commondir` file names. */
 	private commonDirectory(gitDirectory: string): string | undefined {
 		const pointer = this.lstat(join(gitDirectory, "commondir"));
-		if (pointer === null) return gitDirectory;
+		// The name on disk, which a filesystem that ignores letter case may spell `.Git`.
+		if (pointer === null) return nativeRealpath(gitDirectory);
 		const named =
 			pointer?.kind === "file" ? readMarker(join(gitDirectory, "commondir"))?.replace(/[\r\n]+$/u, "") : undefined;
 		return named ? pointerTarget(gitDirectory, named) : undefined;
@@ -875,7 +892,10 @@ class RepositoryLocationResolver implements PrimaryLocationResolver {
 		const entry = this.canonicalPaths.get(key);
 		if (entry === undefined || now - entry.at >= CANONICAL_PATH_MS) return undefined;
 		const info = entry.canonical === key ? probe.lstat(key) : statNode(key);
-		return info && info.dev === entry.dev && info.ino === entry.ino ? entry.canonical : undefined;
+		if (!info || info.dev !== entry.dev || info.ino !== entry.ino) return undefined;
+		// An ancestor replaced by a symbolic link keeps the leaf and changes the canonical path.
+		const leaf = probe.lstat(entry.canonical);
+		return leaf?.kind === "directory" && probe.realDirectory(dirname(entry.canonical)) ? entry.canonical : undefined;
 	}
 
 	private rememberCanonical(probe: Probe, key: string, canonical: string, now: number): void {

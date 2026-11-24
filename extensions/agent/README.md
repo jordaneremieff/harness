@@ -3186,21 +3186,25 @@ the resolver reads the entries that Git reads during discovery, in Git's order,
 and starts no Git process: at each directory from the cwd up, a `.git` directory
 or `gitdir:` file whose Git directory has a valid HEAD (`ref:` followed by
 spaces, tabs or line ends and `refs/`, or an object name) and searchable
-`objects` and `refs` (through an optional `commondir`), with a config that parses
-at format version 0 and names only the extensions that version accepts, owned by
+`objects` and `refs` (through an optional `commondir`), with a config that parses,
+includes no other file, is at format version 0 and names only the extensions that
+version accepts, owned by
 the current user, found before a filesystem boundary; or no `.git` and no Git
 directory up to that boundary. Pointer paths in `gitdir:` and `commondir` files
 resolve as the filesystem resolves them, a symbolic link before a following `..`.
 That covers plain repositories, linked worktrees, submodules and directories
 outside Git, with the common directory that `git rev-parse --git-common-dir`
-names. Anything else (a bare repository, a HEAD file along the way, a newer
-format version or another extension, a config this reader does not parse,
+names, spelled as the Git directory's name on disk. Anything else (a bare
+repository, a HEAD file along the way, a newer format version or another
+extension, an `include` or `includeIf` section, a config this reader does not
+parse,
 another owner, a privileged process, `GIT_CEILING_DIRECTORIES` or
 `GIT_DISCOVERY_ACROSS_FILESYSTEM`, an entry that cannot be read) asks Git.
 A batch canonicalises each directory through the same filesystem call as a single
 lookup, so letter case and symbolic links name one directory one way, and later
 batches reuse that path for up to a minute while it still names the same
-directory. It reads each filesystem entry once, so directories that share
+directory and each of its components is still a directory, not a symbolic link;
+a change of letter case alone shows within that minute. It reads each filesystem entry once, so directories that share
 ancestors or a repository share the reads, and it yields to the event loop every
 128 directories. It starts at most 16 Git processes, 4 at a time, for the
 directories asked longest ago, never-asked ones first; the directories past that
