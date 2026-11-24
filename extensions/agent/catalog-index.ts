@@ -11,6 +11,17 @@ export interface CatalogIndexEntry<T> {
 const INDEX_BATCH = 64;
 const INDEX_ROOTS = 4;
 /**
+ * A directory modified less than this long before its stat may change again within the same
+ * timestamp tick (about 1 µs on APFS, 1 s on HFS+, a coarse kernel tick on Linux), so its stamp
+ * cannot prove a later read unchanged. The margin also covers clock skew.
+ */
+export const CATALOG_INDEX_STAMP_MARGIN_MS = 2000;
+/** The catalog directory's identity and modification time, or undefined when it cannot be read. */
+export interface CatalogDirectoryStamp {
+	readonly stamp: string;
+	readonly modifiedMs: number;
+}
+/**
  * One derived value per catalog record, kept in this process by record file stamp. A read lists the
  * catalog directory and stats each record; it reads and validates only the records whose file changed
  * since the previous read, through `AgentCatalog.derive`. Values are shared between reads: `project`
@@ -18,7 +29,9 @@ const INDEX_ROOTS = 4;
  *
  * The catalog writes, replaces and removes a record only by link, rename or unlink in its directory,
  * so an unchanged directory stamp (identity and modification time, taken before the listing) proves
- * that no record changed: such a read returns the previous entries after one stat.
+ * that no record changed: such a read returns the previous entries after one stat. As in Git's
+ * racy-clean rule, only a stamp whose modification time was older than the margin when it was
+ * taken is kept for that proof; a recently modified directory is listed again at every read.
  */
 export class CatalogIndex<T> {
 	private readonly project: (record: CatalogRecord) => T;
@@ -30,13 +43,31 @@ export class CatalogIndex<T> {
 			entries: readonly CatalogIndexEntry<T>[];
 		}
 	>();
-	constructor(project: (record: CatalogRecord) => T) {
+	private readonly now: () => number;
+	private readonly directoryStamp: (root: string) => Promise<CatalogDirectoryStamp | undefined>;
+	constructor(
+		project: (record: CatalogRecord) => T,
+		options: {
+			now?: () => number;
+			directoryStamp?: (root: string) => Promise<CatalogDirectoryStamp | undefined>;
+		} = {},
+	) {
 		this.project = project;
+		this.now = options.now ?? Date.now;
+		this.directoryStamp = options.directoryStamp ?? readDirectoryStamp;
+	}
+
+	/** The directory stamp when it is old enough to prove a later read unchanged, otherwise undefined. */
+	private async provingStamp(root: string): Promise<string | undefined> {
+		const stamped = await this.directoryStamp(root);
+		return stamped !== undefined && this.now() - stamped.modifiedMs >= CATALOG_INDEX_STAMP_MARGIN_MS
+			? stamped.stamp
+			: undefined;
 	}
 
 	/** Every record of the catalog in storage ID order. */
 	async read(catalog: AgentCatalog): Promise<CatalogIndexEntry<T>[]> {
-		const directory = await directoryStamp(catalog.root);
+		const directory = await this.provingStamp(catalog.root);
 		const previous = this.roots.get(catalog.root);
 		if (directory !== undefined && previous?.directory === directory) return [...previous.entries];
 		const identities = await catalog.identities();
@@ -67,11 +98,10 @@ export class CatalogIndex<T> {
 	}
 }
 
-/** The directory's identity and modification time, or undefined when it cannot be read. */
-async function directoryStamp(root: string): Promise<string | undefined> {
+async function readDirectoryStamp(root: string): Promise<CatalogDirectoryStamp | undefined> {
 	try {
 		const info = await stat(root, { bigint: true });
-		return `${info.dev}:${info.ino}:${info.mtimeNs}`;
+		return { stamp: `${info.dev}:${info.ino}:${info.mtimeNs}`, modifiedMs: Number(info.mtimeNs / 1_000_000n) };
 	} catch {
 		return undefined;
 	}
