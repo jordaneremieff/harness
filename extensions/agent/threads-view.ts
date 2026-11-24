@@ -292,6 +292,15 @@ export class ThreadsView {
 		return this.threads.get(id)?.title ?? this.reads.get(id)?.page.thread.title;
 	}
 
+	/** Every title that `title` can return. A holder that drew a title elsewhere compares two marks. */
+	titleMark(): string {
+		let mark = "";
+		for (const [id, thread] of this.threads) mark += `${id}\u0000${thread.title}\u0001`;
+		for (const [id, read] of this.reads)
+			if (!this.threads.has(id)) mark += `${id}\u0000${read.page.thread.title}\u0001`;
+		return mark;
+	}
+
 	/** Show the view: read every thread, and open one thread when asked. */
 	open(threadId?: string): void {
 		this.direct = Boolean(threadId);

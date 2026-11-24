@@ -520,3 +520,85 @@ it("a completed read leaves retained facts usable, and a later failure is stated
 	assert.equal(index.view().failed, false, "recovery clears the failure");
 	index.dispose();
 });
+
+const cardUsage = {
+	input: 1,
+	output: 1,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 2,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+for (const via of ["the related threads", "the Threads view"] as const)
+	it(`a retitled thread reaches a mounted agent_collaborate card through ${via}`, async (t) => {
+		t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
+		let current = thread();
+		const observed = source(rows());
+		let rosterChanged = () => {};
+		observed.subscribeRoster = (listener) => {
+			rosterChanged = listener;
+			return () => {};
+		};
+		observed.snapshot = async () => ({
+			entries: [
+				{ id: "1", kind: "pi.user", model: [{ role: "user", content: "Check the task", timestamp: 0 }] },
+				{
+					id: "2",
+					kind: "pi.assistant",
+					model: [
+						{
+							role: "assistant",
+							content: [
+								{
+									type: "toolCall",
+									id: "collaborate",
+									name: "agent_collaborate",
+									arguments: { action: "read", threadId: current.thread.id },
+								},
+							],
+							api: "openai-responses",
+							provider: "test",
+							model: "test",
+							timestamp: 1,
+							stopReason: "toolUse",
+							usage: cardUsage,
+						},
+					],
+				},
+			],
+			partial: false,
+			revision: "1",
+			nextBefore: null,
+		});
+		const f = fixture(
+			140,
+			45,
+			observed,
+			{ collaborate: async (input) => (input.action === "list" ? discovery([current]) : current) },
+			undefined,
+			theme,
+			ordinary,
+		);
+		const settle = async () => {
+			for (let attempt = 0; attempt < 12; attempt++) await turn();
+		};
+		try {
+			await settle();
+			assert.match(shown(f), /agent_collaborate Review current work/u);
+			current = { ...current, thread: { ...current.thread, title: "Renamed work", updatedAt: 21, revision: 2 } };
+			if (via === "the related threads") {
+				rosterChanged();
+				t.mock.timers.tick(250);
+				await settle();
+			} else {
+				f.ui.openNamedAction("threads");
+				await settle();
+				f.ui.handleInput("\x1b");
+				await settle();
+			}
+			assert.match(shown(f), /agent_collaborate Renamed work/u);
+			assert.doesNotMatch(shown(f), /agent_collaborate Review current work/u);
+		} finally {
+			f.ui.dispose();
+		}
+	});

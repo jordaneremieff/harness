@@ -392,7 +392,9 @@ lines for every later frame. A call card is built again only when its row
 observes a result, when the identity, name, handle or model of a roster row
 changes, or when the local day ends; a roster read that changed only activity,
 cost or times builds no card. An expanded state note shows the state of each
-awaited agent, so it also follows roster activity.
+awaited agent, so it also follows roster activity. In the dashboard, a thread
+title that the Threads view or the related threads learn builds the cards of
+the open conversation again, so a retitled thread shows its new title.
 No card keeps a reference to the card of an earlier display update, and a
 collapsed call card does not serialise its arguments, so the memory of a
 transcript does not grow with the frames it draws.

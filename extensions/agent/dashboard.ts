@@ -376,6 +376,10 @@ export class AgentDashboard implements Component, Focusable {
 	private primaryNames = new Map<string, string>();
 	/** Thread titles read for the threads that conversations name by identity; undefined marks a read in flight or failed. */
 	private readonly threadTitles = new Map<string, string | undefined>();
+	/** Titles of the related threads at the last relations change. */
+	private relationTitles = new Map<string, string>();
+	/** The titles of the Threads view that mounted cards drew last. */
+	private threadsViewTitles = "";
 	/** Observed display facts for agent cards and notices: roster rows, thread titles and participant names. */
 	private readonly cardLookup: AgentCardLookup;
 	private geometry = {
@@ -444,6 +448,7 @@ export class AgentDashboard implements Component, Focusable {
 			() => {
 				if (this.closed) return;
 				this.reconcile();
+				this.keepRelationTitles();
 				this.redraw();
 			},
 			operations.readLineage,
@@ -549,14 +554,32 @@ export class AgentDashboard implements Component, Focusable {
 		this.redraw();
 	}
 
-	/** A thread title from the threads this view has read. */
+	/**
+	 * A thread title from the threads this view has read: the Threads view and the related threads follow a
+	 * retitle, so they precede the title of a single read.
+	 */
 	private threadTitle(id: string): string | undefined {
-		const known =
-			this.threads?.title(id) ??
-			this.threadTitles.get(id) ??
-			this.relations.view().threads.find((thread) => thread.id === id)?.title;
+		const known = this.threads?.title(id) ?? this.relationTitles.get(id) ?? this.threadTitles.get(id);
 		if (known === undefined) void this.readThreadTitle(id);
 		return known;
+	}
+
+	/** Keep the titles of the related threads. A mounted card keeps the title it was built with. */
+	private keepRelationTitles(): void {
+		const titles = new Map(this.relations.view().threads.map((thread) => [thread.id, thread.title]));
+		const changed =
+			titles.size !== this.relationTitles.size ||
+			[...titles].some(([id, title]) => this.relationTitles.get(id) !== title);
+		this.relationTitles = titles;
+		if (changed) this.console?.conversation.refreshCards();
+	}
+
+	/** Build the cards again when a title of the Threads view appeared, changed or went away. */
+	private keepThreadsViewTitles(): void {
+		const titles = this.threads?.titleMark() ?? "";
+		if (titles === this.threadsViewTitles) return;
+		this.threadsViewTitles = titles;
+		this.console?.conversation.refreshCards();
 	}
 
 	private redraw(): void {
@@ -1636,7 +1659,10 @@ export class AgentDashboard implements Component, Focusable {
 			nameFor: (id) => this.knownName(id) ?? id,
 			modelFor: (id) => this.knownModel(id),
 			openParticipant: (id) => this.openParticipant(id),
-			redraw: () => this.redraw(),
+			redraw: () => {
+				this.keepThreadsViewTitles();
+				this.redraw();
+			},
 			onExit: () => this.leaveThreads(),
 		});
 		this.threads.open(contactThread);
