@@ -3092,6 +3092,29 @@ current-effort section in their model context at natural run boundaries. Durable
 renders sections before every model request, so a native conversation reads
 awareness at the first request of a run and keeps those bytes for that run's
 later tool rounds; peers that start or stop mid-run appear at the next run.
+
+Pi stores prompt sections as system entries in the transcript and sends a
+changed section again as a system patch. A model that accepts system messages
+mid-conversation keeps its cached prefix but receives the whole section again;
+any other model gets a new leading system prompt, which is a full prompt-cache
+miss. So the `agent-efforts` section keeps its bytes between baseline points,
+and a run whose rows changed since then receives the change as one
+`<agent-efforts-update>` message instead: rows added or replaced by id, and ids
+removed, at most 4 KiB. An ordinary session appends the section's text and rows
+as an `agent.effort-baseline` entry at each baseline point and returns each
+update from `before_agent_start` as a hidden persistent `agent.effort-update`
+message whose details hold the change, so the update sits after the run's
+starting message and later requests extend the same prefix. Updates never start
+a run and are not shown in the transcript; the Related efforts view stays the
+live view. What the model has seen comes from the current branch: the newest
+baseline entry plus the update messages that the context still holds, so tree
+navigation, fork, resume and reload keep the section and its cache, and a change
+that a compaction summarized away is reported again. A branch without a
+baseline, a change larger than one update, or more than 16 KiB of updates since
+the baseline makes a new baseline: the section is replaced once. The session's
+own claim row changes only at a baseline; the session already holds its own
+publication. Old code ignores both entry kinds and keeps writing the whole
+section each run.
 The `agent-efforts` section names live efforts and active thread hints
 in the same Git repository (including linked worktrees), or the same working
 directory outside Git. It also names live sessions elsewhere on this machine

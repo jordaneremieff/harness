@@ -1,4 +1,5 @@
 import { matchesSchema } from "./schema-check.ts";
+import { EFFORT_UPDATE_TAG, effortRowKey, type EffortPromptRow } from "./effort-update.ts";
 import { textPrefix } from "./text-prefix.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
@@ -222,44 +223,68 @@ function promptEffortRow(effort: RelatedEffort) {
 	};
 }
 
+/** Prompt rows in identity order: live project efforts, live linked efforts elsewhere, and active thread hints. */
+export function effortPromptRows(view: EffortAwareness): EffortPromptRow[] {
+	const efforts = view.presence.efforts
+		.filter(
+			(effort) =>
+				effort.liveness === "live" &&
+				(effort.relationship !== "machine" || effort.sharedWork?.length || effort.sharedTopics?.length),
+		)
+		.sort((a, b) => a.id.localeCompare(b.id))
+		.map((effort) => {
+			const value = JSON.parse(JSON.stringify(promptEffortRow(effort))) as EffortPromptRow["value"];
+			return { key: effortRowKey("Related effort", effort.id), label: "Related effort" as const, value };
+		});
+	const threads = [...view.threads.items]
+		.sort((a, b) => a.id.localeCompare(b.id))
+		.map(({ id, title, purpose }) => ({
+			key: effortRowKey("Active thread", id),
+			label: "Active thread" as const,
+			value: { id, title, purpose },
+		}));
+	return [...efforts, ...threads];
+}
+
+export interface EffortPrompt {
+	/** The `agent-efforts` section text. */
+	readonly text: string;
+	/** Every row the read produced, including rows the section shortened or left out for bytes. */
+	readonly rows: readonly EffortPromptRow[];
+}
+
 /** The input is the project-scoped read. Scan evidence and active membership stay in explicit observations. */
-function formatEffortSection(view: EffortAwareness): string {
+export function effortPrompt(view: EffortAwareness): EffortPrompt {
 	const pointer = "Use agent_intent read for current coverage, out-of-scope counts, and omitted sources.";
-	const efforts = view.presence.efforts.filter(
-		(effort) =>
-			effort.liveness === "live" &&
-			(effort.relationship !== "machine" || effort.sharedWork?.length || effort.sharedTopics?.length),
-	);
-	if (efforts.length === 0 && view.threads.items.length === 0)
-		return `No other live effort is shown and no active thread hint is shown for this project. ${pointer}`;
+	const rows = effortPromptRows(view);
+	if (rows.length === 0)
+		return {
+			text: `No other live effort is shown and no active thread hint is shown for this project. Later ${EFFORT_UPDATE_TAG} messages report changes. ${pointer}`,
+			rows,
+		};
 	const lines = [
 		"Live efforts in this repository or working directory, live sessions elsewhere on this machine that used the same documents or handovers as this session (sharedWork) or whose stated purpose uses the same distinctive words (sharedTopics, a weaker signal), and active collaboration thread hints, ordered by identity.",
-		"Declared intent is a claim, not a lock or a grant of authority. request is an excerpt of the session's first operator request, not current intent. Use agent_collaborate read for the current thread frame.",
+		`Declared intent is a claim, not a lock or a grant of authority. request is an excerpt of the session's first operator request, not current intent. Use agent_collaborate read for the current thread frame. Later ${EFFORT_UPDATE_TAG} messages replace or remove these rows by id.`,
 	];
 	if (view.self.intentClaim)
 		appendRow(lines, "Your effort", { id: view.self.id, intentClaim: promptClaim(view.self.intentClaim) }, 4 * 1024);
-	for (const effort of efforts.sort((a, b) => a.id.localeCompare(b.id))) {
-		const row = promptEffortRow(effort);
-		if (
-			!appendRow(lines, "Related effort", row, 7 * 1024) &&
-			!appendRow(
-				lines,
-				"Related effort",
-				{ id: row.id, intentOmitted: true, sharedWork: row.sharedWork, sharedTopics: row.sharedTopics },
-				7 * 1024,
-			) &&
-			!appendRow(lines, "Related effort", { id: row.id, intentOmitted: true }, 7 * 1024)
-		)
-			break;
+	let efforts = true;
+	let threads = true;
+	for (const { label, value } of rows) {
+		if (label === "Related effort") {
+			if (!efforts) continue;
+			const { id, sharedWork, sharedTopics } = value as { id: string; sharedWork?: unknown; sharedTopics?: unknown };
+			efforts =
+				appendRow(lines, label, value, 7 * 1024) ||
+				appendRow(lines, label, { id, intentOmitted: true, sharedWork, sharedTopics }, 7 * 1024) ||
+				appendRow(lines, label, { id, intentOmitted: true }, 7 * 1024);
+		} else if (threads) threads = appendRow(lines, label, value, EFFORT_AWARENESS_PROMPT_BYTES - 256);
 	}
-	for (const { id, title, purpose } of [...view.threads.items].sort((a, b) => a.id.localeCompare(b.id))) {
-		if (!appendRow(lines, "Active thread", { id, title, purpose }, EFFORT_AWARENESS_PROMPT_BYTES - 256)) break;
-	}
-	return [...lines, pointer].join("\n");
+	return { text: [...lines, pointer].join("\n"), rows };
 }
 
 export function formatEffortAwareness(view: EffortAwareness, mode: "observation" | "prompt" = "observation"): string {
-	if (mode === "prompt") return formatEffortSection(view);
+	if (mode === "prompt") return effortPrompt(view).text;
 	if (!view.presence.efforts.some((effort) => effort.liveness === "live")) return quietAwareness(view);
 	const lines = [
 		"Current efforts and recent active collaboration threads from host presence and published hints. Effort means a session's intent-driven work and its agents.",

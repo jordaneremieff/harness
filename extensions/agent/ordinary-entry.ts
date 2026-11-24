@@ -64,7 +64,8 @@ import {
 	scheduleAgentInput,
 } from "./durable-reset-timers.ts";
 import { actionErrorCause, agentDisplayName, configureOutcome, type ActionOutcome } from "./action-outcome.ts";
-import { formatEffortAwareness } from "./effort-awareness.ts";
+import { effortPrompt } from "./effort-awareness.ts";
+import { branchAwareness, EFFORT_BASELINE_ENTRY, ordinaryEffortRun } from "./effort-baseline.ts";
 import { EFFORT_PURPOSE_ENTRY, purposeExcerpt, retainedPurpose } from "./effort-purpose.ts";
 import {
 	addWorkReference,
@@ -1589,12 +1590,16 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	pi.on("before_agent_start", async (event, ctx) => {
 		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
-		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(
-			await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd, "prompt"),
-			"prompt",
+		// The section keeps its bytes between baseline points; changed rows arrive as one hidden update.
+		const efforts = ordinaryEffortRun(
+			branchAwareness(ctx.sessionManager),
+			effortPrompt(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd, "prompt")),
 		);
+		event.systemPromptOptions.sections["agent-efforts"] = efforts.section;
+		if (efforts.baseline) pi.appendEntry(EFFORT_BASELINE_ENTRY, efforts.baseline);
 		const blocks = renderProviderBlockSection(providerBlocks, Date.now());
 		if (blocks !== undefined) event.systemPromptOptions.sections["agent-provider-blocks"] = blocks;
+		return efforts.update ? { message: efforts.update } : undefined;
 	});
 	pi.on("input", (event, ctx) => {
 		const id = ctx.sessionManager.getSessionId();
