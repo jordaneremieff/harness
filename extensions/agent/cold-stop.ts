@@ -3,8 +3,8 @@ import { fork } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hostPaths, type HostMetadata } from "./host-protocol.ts";
-import { tryNativeWriterLease } from "./native-lease.ts";
+import { writerLeasePaths, type HostMetadata } from "./host-protocol.ts";
+import { tryNativeWriterLeases } from "./native-lease.ts";
 import type { stopBeforeResume } from "./durable-host.ts";
 
 export type ColdStopResult = Awaited<ReturnType<typeof stopBeforeResume>>;
@@ -14,9 +14,9 @@ type Reply = { busy: true } | { result: ColdStopResult };
 export async function withColdWriter(metadata: HostMetadata, stop: () => Promise<ColdStopResult>): Promise<Reply> {
 	// The caller that reads these diagnostics can exit first. A closed pipe must not end the stop or hold its lease.
 	for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
-	const { claim } = hostPaths(metadata);
-	mkdirSync(dirname(claim), { recursive: true, mode: 0o700 });
-	const writer = tryNativeWriterLease(claim);
+	const leases = writerLeasePaths(metadata);
+	for (const path of leases) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	const writer = tryNativeWriterLeases(leases);
 	if (writer.kind === "busy") return { busy: true };
 	// Bound this one-shot writer, including configured setup and teardown. An incomplete stop has no success reply.
 	const lifetime = setTimeout(() => {

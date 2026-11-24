@@ -15,7 +15,7 @@ import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { ChordError, PluginError, invalid, isChordError } from "@earendil-works/chord";
 import { createTransportServer, type TransportServer, type TransportRequest } from "../../transport/index.ts";
-import { tryNativeWriterLease, type NativeWriterLease } from "./native-lease.ts";
+import { tryNativeWriterLeases, type NativeWriterLease } from "./native-lease.ts";
 import { validNativeWriterId } from "./claims.ts";
 import {
 	formatHostReady,
@@ -23,6 +23,7 @@ import {
 	HOST_CONTRACT_MEMBER,
 	hostPaths,
 	parseHostMetadata,
+	writerLeasePaths,
 	type HostMetadata,
 	type HostPaths,
 	type HostReady,
@@ -202,9 +203,9 @@ export function resolveIdleMs(
 	return readSettings({ agentDir, env }).values.idleMinutes * 60_000;
 }
 
-function takeClaim(path: string, record: ClaimRecord): NativeWriterLease {
-	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-	const attempt = tryNativeWriterLease(path);
+function takeClaim(paths: readonly string[], record: ClaimRecord): NativeWriterLease {
+	for (const path of paths) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	const attempt = tryNativeWriterLeases(paths);
 	if (attempt.kind === "busy")
 		throw new HostClaimRefusedError("Durable host writer lease is busy; no native runtime was opened", "busy");
 	const lease = attempt.lease;
@@ -263,6 +264,7 @@ class HostProcessServer implements HostProcess {
 	private readonly writeEndRecord: NonNullable<RunHostOptions["writeEndRecord"]>;
 	private readonly scheduleShutdownDeadline: NonNullable<RunHostOptions["scheduleShutdownDeadline"]>;
 	private cancelShutdownDeadline: (() => void) | undefined;
+	private writerLost = false;
 
 	constructor(
 		runtime: HostRuntime,
@@ -357,6 +359,7 @@ class HostProcessServer implements HostProcess {
 		});
 		const subscribeActivity = this.runtime.onActivity ?? this.runtime.onChange;
 		this.unsubscribeActivity = subscribeActivity?.call(this.runtime, () => {
+			if (!this.writerNamed()) return;
 			this.shutdownIfRequired();
 			this.activityGeneration++;
 			this.cancelIdleCheck?.();
@@ -572,6 +575,11 @@ class HostProcessServer implements HostProcess {
 		}
 		if (this.closing)
 			throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
+		if (!this.writerNamed())
+			throw new ChordError({
+				code: "unavailable",
+				message: "The durable host lost its writer lease; no operation was admitted",
+			});
 		const token = this.prepareObservationToken(method, params, state);
 		try {
 			if (method === "observe-close" && token !== undefined) await state.closingTokens.get(token);
@@ -740,6 +748,7 @@ class HostProcessServer implements HostProcess {
 
 	private async onIdleCheck(releasing = false): Promise<void> {
 		this.cancelIdleCheck = undefined;
+		if (!this.writerNamed()) return;
 		if (this.closing || this.retirementChecking || this.activeRequests > 0 || (!releasing && this.hasObservations()))
 			return;
 		this.retirementChecking = true;
@@ -772,6 +781,41 @@ class HostProcessServer implements HostProcess {
 			if (!this.releasePending) this.scheduleRetirement();
 			else if (!releasing) this.scheduleRelease();
 		}
+	}
+
+	/**
+	 * Both lease files must still name the descriptors this host holds. A removed or replaced file lets another
+	 * process take a new lease for the same storage, so this host stops at once: it unpublishes its own endpoint and
+	 * the dedicated process exits without closing the runtime, which would write again.
+	 */
+	private writerNamed(): boolean {
+		if (this.writerLost) return false;
+		try {
+			this.claim.assertNamed();
+			return true;
+		} catch {
+			this.writerLost = true;
+		}
+		this.closing = true;
+		this.cancelIdleCheck?.();
+		this.cancelIdleCheck = undefined;
+		this.observationPump.dispose();
+		writeSync(
+			2,
+			"Durable host: its writer lease file was removed or replaced; the process stops without further writes.\n",
+		);
+		try {
+			this.unpublishSocket();
+		} catch {
+			/* Another endpoint at this path is not ours to remove. */
+		}
+		// Let the refusal reach its caller before the process ends or the transport closes.
+		setImmediate(() => {
+			if (this.exit) this.exit(1);
+			this.rejectDone(new Error("The durable host lost its writer lease"));
+			void this.server?.close().catch(() => undefined);
+		});
+		return false;
 	}
 
 	close(): Promise<void> {
@@ -903,7 +947,7 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	const record = claimRecord(paths.identity, randomUUID());
 	let claim: NativeWriterLease;
 	try {
-		claim = takeClaim(paths.claim, record);
+		claim = takeClaim(writerLeasePaths(metadata), record);
 	} catch (error) {
 		if (error instanceof HostClaimRefusedError && error.observation === "busy") {
 			(options.announceBusy ?? ((target) => process.stdout.write(formatHostBusy(target))))({

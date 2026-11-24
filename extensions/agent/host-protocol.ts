@@ -231,6 +231,16 @@ export function hostPaths(metadata: Pick<HostMetadata, "agentDir" | "storageId" 
 	};
 }
 
+/**
+ * Every writer of one storage holds both leases, in this order: the lease under the host directory, which earlier
+ * hosts also take, and the lease beside the storage file, which a removal of the host directory leaves in place.
+ */
+export function writerLeasePaths(
+	metadata: Pick<HostMetadata, "agentDir" | "storageId" | "cwd" | "storagePath">,
+): string[] {
+	return [hostPaths(metadata).claim, `${metadata.storagePath}.writer`];
+}
+
 export function formatHostReady(ready: HostReady): string {
 	return `${HOST_READY_PREFIX}${JSON.stringify({ pid: ready.pid, socketPath: ready.socketPath, writerId: ready.writerId, contract: ready.contract })}\n`;
 }

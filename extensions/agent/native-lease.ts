@@ -70,3 +70,43 @@ export function tryNativeWriterLease(path: string, signal?: AbortSignal): Native
 		throw error;
 	}
 }
+
+/**
+ * Take the lease at each path in order, without blocking. A busy path releases the leases already taken. The held
+ * lease asserts and releases every path; its descriptor and identity are the first path's.
+ */
+export function tryNativeWriterLeases(paths: readonly string[], signal?: AbortSignal): NativeLeaseAttempt {
+	const held: NativeWriterLease[] = [];
+	const releaseHeld = () => {
+		for (const lease of held.splice(0)) lease.release();
+	};
+	try {
+		for (const path of paths) {
+			const attempt = tryNativeWriterLease(path, signal);
+			if (attempt.kind === "busy") {
+				releaseHeld();
+				return { kind: "busy" };
+			}
+			held.push(attempt.lease);
+		}
+	} catch (error) {
+		releaseHeld();
+		throw error;
+	}
+	const [first] = held;
+	if (first === undefined) throw new Error("Native writer leases require at least one path");
+	return {
+		kind: "held",
+		lease: {
+			dev: first.dev,
+			ino: first.ino,
+			descriptor: first.descriptor,
+			assertNamed() {
+				for (const lease of held) lease.assertNamed();
+			},
+			release() {
+				for (const lease of held) lease.release();
+			},
+		},
+	};
+}

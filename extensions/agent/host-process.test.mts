@@ -15,6 +15,7 @@ import {
 	hostPaths,
 	parseHostHello,
 	parseHostMetadata,
+	writerLeasePaths,
 	type HostMetadata,
 	type HostReady,
 } from "./host-protocol.ts";
@@ -920,6 +921,50 @@ it("ends a dedicated process at its bootstrap deadline and cancels it after read
 	const host = await runHost(echoRuntime, { ...options, metadata: metadata(fixtureRoot(t)) });
 	t.after(() => host.close());
 	assert.equal(scheduled[2].cancelled, true, "readiness cancels the bootstrap deadline");
+});
+
+it("keeps one writer for a storage after its host directory is removed", async (t) => {
+	const config = metadata(fixtureRoot(t));
+	const exits: number[] = [];
+	const host = await runHost(echoRuntime, {
+		metadata: config,
+		idleMs: 0,
+		announceReady: noop,
+		exit: ((status: 0 | 1) => {
+			exits.push(status);
+		}) as (status: 0 | 1) => never,
+	});
+	t.after(() => host.close().catch(noop));
+	const client = await connectClient(config);
+	t.after(() => client.dispose());
+	rmSync(join(config.agentDir, "durable-hosts"), { recursive: true, force: true });
+	await assert.rejects(
+		runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop }),
+		(error: unknown) => error instanceof HostClaimRefusedError && error.observation === "busy",
+		"the lease beside the storage file still excludes a second writer",
+	);
+	await assert.rejects(call(client, config, "timer-list"), /lost its writer lease; no operation was admitted/u);
+	assert.deepEqual(exits, [1], "the host whose lease file was removed stops at once");
+	await assert.rejects(host.done, /lost its writer lease/u);
+});
+
+it("excludes a new host while either writer lease is held elsewhere", async (t) => {
+	const config = metadata(fixtureRoot(t));
+	const [hostLease, storageLease] = writerLeasePaths(config);
+	mkdirSync(dirname(hostLease), { recursive: true, mode: 0o700 });
+	for (const path of [hostLease, storageLease]) {
+		const held = tryNativeWriterLease(path);
+		assert.equal(held.kind, "held");
+		await assert.rejects(
+			runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop }),
+			(error: unknown) => error instanceof HostClaimRefusedError && error.observation === "busy",
+		);
+		if (held.kind === "held") held.lease.release();
+	}
+	const host = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
+	assert.equal(tryNativeWriterLease(storageLease).kind, "busy", "a serving host holds the storage lease");
+	await host.close();
+	assert.equal(writerAvailable(config), true);
 });
 
 it("parses the idle window with the configured bounds", (t) => {

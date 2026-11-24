@@ -3725,7 +3725,14 @@ a token request after close.
   supply a peer package exits before it takes the writer claim.
 - Each storage has one descriptor-held writer lease on a permanent inode. The
   runner takes one nonblocking Darwin lock before it opens SQLite or resumes the
-  Durable scheduler. A busy lease prevents a second runtime from opening. Normal
+  Durable scheduler. A busy lease prevents a second runtime from opening. Every
+  writer (serving host, cold stop, delivery-page adoption) holds two lease files:
+  the one under `durable-hosts` and `<storage file>.writer` beside the storage,
+  so removing the `durable-hosts` directory does not admit a second writer, and
+  an older host that takes only the first file still excludes a newer one. A host
+  checks that both pathnames still name its descriptors before each request, at
+  each idle check and on native activity; when one does not, it unpublishes its
+  endpoint and the process exits at once without closing the runtime. Normal
   release closes the runtime, removes the owned socket and verifies that the
   claim pathname still names the held inode. It then writes the holder's complete
   diagnostic record with canonical `endedAt` through the held descriptor at byte
@@ -4408,8 +4415,9 @@ otherwise `agent-sessions` under `PI_AGENT_DIR` or Pi's agent directory; the
 records sit in its `durable` directory. `--agent-dir` selects the catalogue
 only. Each record names its storage file and its agent directory by absolute
 path, and those are the targets that the command changes: the storage file,
-and the writer lease file under `durable-hosts` in the record's agent
-directory, which may lie outside the catalogue. The catalogue refuses a record
+the writer lease file under `durable-hosts` in the record's agent
+directory, which may lie outside the catalogue, and the lease file beside the
+storage file. The catalogue refuses a record
 whose storage file is not in its own directory, so a copied catalogue with
 unchanged records stops the command before it reads or changes any storage. To
 try the command on a copy, rewrite `storagePath` and `agentDir` in each copied
@@ -4417,7 +4425,7 @@ record; with `storagePath` alone, the lease file goes to the original agent
 directory. The command never rewrites a record.
 
 `--storage` selects one catalogued storage. For each storage it takes the
-host's native writer lease (creating the lease file as a host does), so it never
+host's native writer leases (creating the lease files as a host does), so it never
 reads or writes a storage beside a running host. It prints no message content.
 The first line names the catalogue directory: `dry run of catalogue <dir>` or
 `apply to catalogue <dir>`. Then one line names the storage file and agent

@@ -19,8 +19,8 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AgentCatalog, type CatalogRecord } from "./catalog.ts";
 import { adoptDeliveryPages } from "./delivery-store.ts";
-import { hostPaths } from "./host-protocol.ts";
-import { tryNativeWriterLease, type NativeWriterLease } from "./native-lease.ts";
+import { writerLeasePaths } from "./host-protocol.ts";
+import { tryNativeWriterLeases, type NativeWriterLease } from "./native-lease.ts";
 
 export const STORAGE_STATES = [
 	"version 2 only",
@@ -102,9 +102,9 @@ async function visitStorage(
 	apply: boolean,
 	context: Context,
 ): Promise<Classification & { adopted?: number }> {
-	const claim = hostPaths(record).claim;
-	mkdirSync(dirname(claim), { recursive: true, mode: 0o700 });
-	const attempt = tryNativeWriterLease(claim);
+	const leases = writerLeasePaths(record);
+	for (const path of leases) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	const attempt = tryNativeWriterLeases(leases);
 	if (attempt.kind === "busy") return { state: "writer busy" };
 	const lease: NativeWriterLease = attempt.lease;
 	try {
