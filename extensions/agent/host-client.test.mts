@@ -42,7 +42,12 @@ function launch(extra: Partial<HostLaunchOptions> = {}): HostLaunchOptions {
 
 const fixtureRoots = new Set<string>();
 after(() => {
-	for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
+	for (const root of fixtureRoots) {
+		// A host killed on purpose leaves its endpoint, which can sit outside the root in the shared socket directory.
+		const socket = hostPaths(fixtureMetadata(root)).socket;
+		if (lstatSync(socket, { throwIfNoEntry: false })?.isSocket()) rmSync(socket, { force: true });
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 function fixtureRoot(_t: { after(fn: () => void): void }): string {
@@ -53,12 +58,16 @@ function fixtureRoot(_t: { after(fn: () => void): void }): string {
 
 function track(t: { after(fn: () => void | Promise<void>): void }, pid: number): void {
 	t.after(async () => {
-		try {
-			process.kill(pid, "SIGKILL");
-		} catch {
-			// The host already exited.
+		// A clean stop removes the host's endpoint; a kill is the fallback for a host that does not stop.
+		for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+			try {
+				process.kill(pid, signal);
+			} catch {
+				// The host already exited.
+			}
+			if (await waitForProcessGone(pid)) return;
 		}
-		assert.equal(await waitForProcessGone(pid), true, "the owned host exited before fixture root removal");
+		assert.fail("the owned host exited before fixture root removal");
 	});
 }
 

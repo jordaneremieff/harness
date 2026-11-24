@@ -305,6 +305,10 @@ async function main(): Promise<void> {
 		}),
 		{ metadata },
 	);
+	// A clean stop removes the endpoint; a killed fixture would leave it in the shared socket directory.
+	process.once("SIGTERM", () => {
+		void host.close().finally(() => process.exit(0));
+	});
 	await host.done;
 }
 
