@@ -12,7 +12,7 @@ import { deferred, fixture, keys, row, source, theme, turn } from "./dashboard-t
 import { dashboardTime } from "./dashboard-time.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { EffortPresencePage } from "./effort-presence.ts";
-import { EffortView } from "./effort-view.ts";
+import { EffortView, RowBlocks } from "./effort-view.ts";
 
 function efforts(): EffortPresencePage {
 	return {
@@ -2157,4 +2157,24 @@ it("a clicked hint whose key has no terminal form warns and sends nothing", asyn
 	} finally {
 		view.dispose();
 	}
+});
+
+it("row blocks stay bounded while a view meets new identities and keep unchanged rows", () => {
+	const blocks = new RowBlocks(8);
+	const first = blocks.lines("effort:a", "key", () => ["a"]);
+	assert.equal(
+		blocks.lines("effort:a", "key", () => ["rebuilt"]),
+		first,
+		"an unchanged row keeps its lines",
+	);
+	assert.deepEqual(
+		blocks.lines("effort:a", "changed", () => ["a2"]),
+		["a2"],
+	);
+	for (let index = 0; index < 1000; index++) {
+		blocks.lines(`effort:${index}`, "key", () => [String(index)]);
+		assert.ok(blocks.size <= 8);
+	}
+	const shown = blocks.lines("effort:999", "key", () => ["rebuilt"]);
+	assert.deepEqual(shown, ["999"], "the row built last is still cached");
 });

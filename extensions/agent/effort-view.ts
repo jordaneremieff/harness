@@ -62,6 +62,36 @@ interface EffortViewOptions {
 /** The four arrow and page actions the footer's `select` and `read` hints stand for. */
 const STEP_ACTIONS = new Set(["previous", "next", "read-up", "read-down"]);
 
+/** Far more row blocks than one screen shows. */
+const ROW_BLOCKS = 256;
+
+/**
+ * One cached row block per effort or thread identity, keyed by content, width and selection. An open view
+ * meets new identities for as long as it stays open, so a full cache starts again; the rows on screen are
+ * then built once more.
+ */
+export class RowBlocks {
+	private readonly blocks = new Map<string, { key: string; lines: string[] }>();
+	private readonly limit: number;
+	constructor(limit: number) {
+		this.limit = limit;
+	}
+	get size(): number {
+		return this.blocks.size;
+	}
+	lines(id: string, key: string, build: () => string[]): string[] {
+		const cached = this.blocks.get(id);
+		if (cached?.key === key) return cached.lines;
+		const lines = build();
+		if (!cached && this.blocks.size >= this.limit) this.blocks.clear();
+		this.blocks.set(id, { key, lines });
+		return lines;
+	}
+	clear(): void {
+		this.blocks.clear();
+	}
+}
+
 /** Presence and thread hints follow pane entry and roster notices, never an age timer. */
 export class EffortView {
 	private readonly mouse = new DashboardMouse();
@@ -103,8 +133,7 @@ export class EffortView {
 	/** Derived detail lines, keyed by width, disclosure state, content revision and the minute. */
 	private detailVersion = 0;
 	private detailCache?: { key: string; lines: string[] };
-	/** One cached row block per effort or thread, keyed by content, width and selection. */
-	private readonly rowCache = new Map<string, { key: string; lines: string[] }>();
+	private readonly rowCache = new RowBlocks(ROW_BLOCKS);
 	private readonly options: EffortViewOptions;
 	constructor(options: EffortViewOptions) {
 		this.options = options;
@@ -872,12 +901,7 @@ export class EffortView {
 		);
 	}
 	private rowLines(kind: "effort" | "thread", id: string, key: string, build: () => string[]): string[] {
-		const cacheKey = `${kind}:${id}`;
-		const cached = this.rowCache.get(cacheKey);
-		if (cached?.key === key) return cached.lines;
-		const lines = build();
-		this.rowCache.set(cacheKey, { key, lines });
-		return lines;
+		return this.rowCache.lines(`${kind}:${id}`, key, build);
 	}
 	/** Two lines and a gap per effort, with the window that keeps the selection visible. */
 	private effortRows(efforts: readonly RelatedEffort[], width: number, baseY: number, shown: number): string[] {
