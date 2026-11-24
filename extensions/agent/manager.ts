@@ -65,6 +65,7 @@ import {
 	type PrimaryChannel,
 	type PrimaryInfo,
 	type PrimaryIntentClaim,
+	type PrimaryWorkReference,
 } from "./primary-channel.ts";
 import { readPrimaryObservation, type OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { readRelatedEfforts, type EffortPresencePage, type EffortReadResources } from "./effort-presence.ts";
@@ -208,6 +209,8 @@ interface PrimaryClient {
 	observedInput?: string;
 	observedInputComplete?: boolean;
 	observedInputCanCapture?: boolean;
+	/** Work items this session used, newest first; read at registration. */
+	readonly workRefs?: PrimaryWorkReference[];
 	model?: { provider: string; modelId: string };
 	thinkingLevel?: string;
 	promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined>;
@@ -1958,6 +1961,7 @@ export class AgentManager {
 			...location,
 			lastActivityAt: new Date().toISOString(),
 			observedPurpose: this.observedPurpose(primary),
+			...(primary.workRefs?.length ? { workRefs: primary.workRefs } : {}),
 			sessionFile: primary.sessionFile,
 			name: primary.name,
 			model: primary.model,
@@ -1988,6 +1992,15 @@ export class AgentManager {
 		this.primaryClosures.get(primary.signal)?.delete(ownerId);
 		this.primaryChannels.set(ownerId, channel);
 		this.primaries.set(ownerId, primary);
+		// References reported while the channel was opening reach the record now.
+		const workRefs = primary.workRefs ?? [];
+		if (JSON.stringify(workRefs) !== JSON.stringify(channel.info().workRefs ?? [])) {
+			try {
+				channel.setWorkRefs(workRefs);
+			} catch (error) {
+				this.failures.set(`primary:${ownerId}`, errorText(error));
+			}
+		}
 		this.retainColdObservations();
 		primary.signal.addEventListener(
 			"abort",
@@ -2196,13 +2209,25 @@ export class AgentManager {
 		return { published: channel.info(), awareness: await this.awareness(ownerId) };
 	}
 
+	/** The operator's first request states the work better than a generated session name, which stays in `name`. */
 	private observedPurpose(primary: PrimaryClient): PrimaryInfo["observedPurpose"] {
+		if (primary.observedInput) return { source: "interactive-input", text: purposeExcerpt(primary.observedInput) };
 		const name = purposeExcerpt(primary.name ?? "");
-		return name
-			? { source: "session-name", text: name }
-			: primary.observedInput
-				? { source: "interactive-input", text: purposeExcerpt(primary.observedInput) }
-				: undefined;
+		return name ? { source: "session-name", text: name } : undefined;
+	}
+
+	/**
+	 * Publish the work items this session used; the caller owns the list and its retention. Before
+	 * registration completes, registration itself publishes the caller's current list.
+	 */
+	setPrimaryWorkRefs(ownerId: string, workRefs: PrimaryWorkReference[]): void {
+		if (!this.primaries.has(ownerId)) return;
+		try {
+			this.primaryChannels.get(ownerId)?.setWorkRefs(workRefs);
+		} catch (error) {
+			this.failures.set(`primary:${ownerId}`, errorText(error));
+		}
+		this.rosterChanged();
 	}
 
 	/** Only interactive input supplies an observed fallback; extension-generated text never does. */

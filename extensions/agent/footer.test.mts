@@ -377,6 +377,7 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 			publishIntent: () => {},
 			touch: () => {},
 			setObservedPurpose: () => {},
+			setWorkRefs: () => {},
 			close: async () => {},
 		}),
 		acquire: async () => {

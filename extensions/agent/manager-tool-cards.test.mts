@@ -48,6 +48,7 @@ it("serves only roster facts already observed by a footer refresh without lookup
 			publishIntent: () => {},
 			touch: () => {},
 			setObservedPurpose: () => {},
+			setWorkRefs: () => {},
 			close: async () => {},
 		}),
 	});

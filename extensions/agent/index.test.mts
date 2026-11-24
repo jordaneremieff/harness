@@ -60,6 +60,7 @@ test("ordinary shutdown preserves primary and roster owners and awaits final col
 			publishIntent() {},
 			touch() {},
 			setObservedPurpose() {},
+			setWorkRefs() {},
 			close: async () => {},
 		}),
 	});
@@ -319,6 +320,7 @@ test("session start restores sent-work figures in a fresh manager and admissions
 				publishIntent() {},
 				touch() {},
 				setObservedPurpose() {},
+				setWorkRefs() {},
 				close: async () => {},
 			}),
 			observe: async () => {

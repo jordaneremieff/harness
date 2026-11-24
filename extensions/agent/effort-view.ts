@@ -581,10 +581,19 @@ export class EffortView {
 		return `Untitled session in ${folderLabel(row.cwd)}`;
 	}
 	private relationOf(row: RelatedEffort): string {
+		if (row.relationship === "machine" && row.sharedWork?.length) return "shared work on this machine";
 		return (
 			{ cwd: "same folder", repository: "same repository", machine: "this machine" }[row.relationship as string] ??
 			row.relationship
 		);
+	}
+	/** Shared items with their producer titles, newest first for the other session. */
+	private sharedWorkText(row: RelatedEffort): string | undefined {
+		return row.sharedWork?.length
+			? row.sharedWork
+					.map(({ kind, id, title }) => `${plain(kind)} ${plain(id)}${title ? ` (${plain(title)})` : ""}`)
+					.join(", ")
+			: undefined;
 	}
 	private lastUpdate(row: RelatedEffort): string | number {
 		return (
@@ -637,18 +646,24 @@ export class EffortView {
 	 * sentence is the title), the integration plan with its age, then the contact thread. Identity and
 	 * provenance stay in Details.
 	 */
-	private defaultGroups(row: RelatedEffort, includeIntegration: boolean, titleCut = false): Array<[string, string]> {
-		const groups: Array<[string, string]> = [];
+	/** The declared purpose after its title, or the labelled first input when nothing is declared. */
+	private purposeGroups(row: RelatedEffort, titleCut: boolean): Array<[string, string]> {
 		const purpose = this.declaredPurpose(row);
 		if (purpose) {
 			const rest = titleCut ? plain(purpose) : this.purposeRest(row, purpose);
-			if (rest) groups.push([rest === plain(purpose) ? "Purpose" : "", rest]);
-		} else if (row.observedPurpose?.text.trim())
-			groups.push(["First input (observed, not a declared purpose)", plain(row.observedPurpose.text)]);
-		else groups.push(["", "This session declares no purpose or integration plan."]);
+			return rest ? [[rest === plain(purpose) ? "Purpose" : "", rest]] : [];
+		}
+		if (row.observedPurpose?.source === "interactive-input" && row.observedPurpose.text.trim())
+			return [["First input (observed, not a declared purpose)", plain(row.observedPurpose.text)]];
+		return [["", "This session declares no purpose or integration plan."]];
+	}
+	private defaultGroups(row: RelatedEffort, includeIntegration: boolean, titleCut = false): Array<[string, string]> {
+		const groups = this.purposeGroups(row, titleCut);
 		const claim = row.relationship === "machine" ? undefined : row.intentClaim;
 		if (includeIntegration && claim?.integration)
 			groups.push([`Integration · next shared acts, declared ${this.time(claim.updatedAt)}`, plain(claim.integration)]);
+		const shared = this.sharedWorkText(row);
+		if (shared) groups.push(["Shared work · items both sessions used", shared]);
 		if (this.contactId()) groups.push(["Contact thread", this.contactSummary()]);
 		return groups;
 	}
@@ -680,7 +695,11 @@ export class EffortView {
 					: []),
 				[
 					"Purpose-only view",
-					row.relationship === "machine" ? "No shared repository or cwd" : "No stated integration plan",
+					row.relationship === "machine"
+						? row.sharedWork?.length
+							? "Shared work in another repository or folder"
+							: "No shared repository or cwd"
+						: "No stated integration plan",
 				],
 			];
 		}
@@ -700,6 +719,7 @@ export class EffortView {
 			["Identity", row.id],
 			...(row.name?.trim() ? ([["Session name", plain(row.name)]] as Array<[string, string]>) : []),
 			["Shared substrates", row.sharedSubstrates?.map(plain).join(", ") || "none declared"],
+			...(this.sharedWorkText(row) ? ([["Shared work", this.sharedWorkText(row)]] as Array<[string, string]>) : []),
 			["Directory", plain(row.cwd)],
 			["Started", this.time(row.startedAt)],
 			...(row.lastActivityAt

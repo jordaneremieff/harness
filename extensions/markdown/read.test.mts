@@ -549,6 +549,24 @@ test("a read lists retained and unavailable images on its first page", () =>
 		assert.deepEqual(result.structuredContent, result.details);
 	}));
 
+test("the ordinary tool reports a read document for its session and nothing for a find", () =>
+	fixture(async (_root, store) => {
+		const saved = await store.create({
+			title: "Shared design",
+			source: "# Design\n",
+			contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() },
+		});
+		const reports: unknown[] = [];
+		const tool = createReadTool({ store, workReference: (sessionId, document) => reports.push([sessionId, document]) });
+		const context = { sessionManager: { getSessionId: () => "session-a" } } as never;
+		await tool.execute("call", { query: "Shared" }, undefined, undefined, context);
+		assert.deepEqual(reports, []);
+		await tool.execute("call", { document: "md-00000000000000000000" }, undefined, undefined, context);
+		assert.deepEqual(reports, [], "a failed read reports nothing");
+		await tool.execute("call", { document: saved.document.id }, undefined, undefined, context);
+		assert.deepEqual(reports, [["session-a", { id: saved.document.id, title: "Shared design" }]]);
+	}));
+
 test("the ordinary tool pipeline retains long lines and paged source exactly", () =>
 	fixture(async (_root, store) => {
 		const source = `${"x".repeat(60000)}\n${"y\n".repeat(5000)}🦘end`;

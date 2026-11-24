@@ -44,7 +44,7 @@ import {
 } from "./budget.ts";
 import { prepareDistillSource } from "./distill.ts";
 import { stashDurableContribution } from "./durable.ts";
-import { resumeCommand, stateLabel } from "./format.ts";
+import { parseFrontmatter, resumeCommand, stateLabel } from "./format.ts";
 import {
 	STASH_COMPLETE_DESCRIPTION,
 	STASH_COMPLETE_GUIDANCE,
@@ -108,7 +108,31 @@ import {
 import { boundedOutput, sanitizeTerminalText } from "./text.ts";
 
 type StashExecutionApi = Pick<ExtensionAPI, "exec">;
-type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
+type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage"> & Partial<Pick<ExtensionAPI, "events">>;
+
+/**
+ * Tell other extensions that this session used a handover, as docs/conventions/work-references.md
+ * defines. No consumer is required, and a failed listener never affects the stash operation.
+ */
+function reportHandover(
+	events: Pick<ExtensionAPI, "events">["events"] | undefined,
+	sessionId: string | undefined,
+	id: string,
+	title: string | undefined,
+): void {
+	if (!events || !sessionId) return;
+	try {
+		events.emit("harness:work-reference", {
+			version: 1,
+			sessionId,
+			kind: "handover",
+			id,
+			...(title?.trim() ? { title: title.trim() } : {}),
+		});
+	} catch {
+		// Reporting is advisory; the handover operation already succeeded.
+	}
+}
 type StashExtensionApi = Pick<
 	ExtensionAPI,
 	| "events"
@@ -405,6 +429,7 @@ async function deliverPickup(
 			pi.sendUserMessage(message, { deliverAs: "followUp" });
 			if (ctx.hasUI) ctx.ui.notify(`Queued stash ${activated.id} for pickup after the current turn.`, "info");
 		}
+		reportHandover(pi.events, currentSessionId(ctx), activated.id, activated.meta.title);
 	} catch (error) {
 		fail(
 			`Stash ${activated.id} is active, but pickup delivery failed: ${safeLine(error instanceof Error ? error.message : String(error))}`,
@@ -657,6 +682,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 						details: { id: collectionId(record.id, "checkpoints"), path, checkpoint: true, redactions },
 					};
 				}
+				reportHandover(pi.events, sessionId, record.id, record.title);
 				const text =
 					[
 						`Stashed "${safeLine(record.title)}" as ${record.id}`,
@@ -741,12 +767,21 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		parameters: ReadParams,
 		renderCall: renderReadCall,
 		renderResult: renderReadResult,
-		async execute(_toolCallId, params: Static<typeof ReadParams>, signal) {
+		async execute(_toolCallId, params: Static<typeof ReadParams>, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("stash_read cancelled");
 			const id = artifactId(params.id, params.collection);
 			const directory = await collectionDirectory(getAgentDir(), params.collection);
 			const result = await readStash(directory, id, signal);
 			if ("error" in result) throw readFailure(result);
+			if (params.collection !== "checkpoints") {
+				let title: string | undefined;
+				try {
+					title = parseFrontmatter(result.content).meta.title;
+				} catch {
+					title = undefined;
+				}
+				reportHandover(pi.events, currentSessionId(ctx), result.id, title);
+			}
 			return readStashResult(result, params.collection);
 		},
 	});

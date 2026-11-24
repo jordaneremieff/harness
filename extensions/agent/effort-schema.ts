@@ -68,6 +68,7 @@ export const NativeIntentMetadataSchema = obj({
 	taskId: int({ minimum: 1 }),
 });
 export const ObservedPurposeSchema = obj({ source: union([lit("session-name"), lit("interactive-input")]), text });
+const WorkReferenceSchema = obj({ kind: text, id: text, title: opt(text) });
 export const RelatedEffortSchema = obj({
 	id: text,
 	cwd: text,
@@ -85,6 +86,7 @@ export const RelatedEffortSchema = obj({
 	intentUpdatedAt: opt(text),
 	sharedSubstrates: opt(arr(union([lit("repository"), lit("cwd"), lit("machine-gates")]))),
 	overlap: opt(obj({ basis: lit("intentClaim"), paths: arr(text), branches: arr(text) })),
+	sharedWork: opt(arr(WorkReferenceSchema)),
 });
 export const EffortSelfSchema = obj({
 	id: text,
@@ -93,6 +95,7 @@ export const EffortSelfSchema = obj({
 	repositoryState: opt(repositoryState),
 	observedPurpose: opt(ObservedPurposeSchema),
 	intentClaim: opt(IntentClaimSchema),
+	workRefs: opt(arr(WorkReferenceSchema)),
 	omitted: opt(bool()),
 });
 export const RecentCollaborationSchema = obj({

@@ -587,6 +587,22 @@ test("explicit file reuse returns the original receipt after file and asset chan
 		await rm(path);
 		assert.equal(success(await publish(params, { cwd: root, store })).digest, first.digest);
 	}));
+test("ordinary tool reports a saved document for its session and nothing for a refused publication", () =>
+	fixture(async (root, store) => {
+		const reports: unknown[] = [];
+		const tool = createPublishTool({
+			store,
+			cwd: root,
+			workReference: (sessionId, document) => reports.push([sessionId, document]),
+		});
+		const context = { cwd: root, sessionManager: { getSessionId: () => "session-a" } } as never;
+		await tool.execute("call", { title: "Missing source" } as never, undefined, undefined, context);
+		assert.deepEqual(reports, []);
+		const result = await tool.execute("call", { title: "Shared plan", text: "# plan" }, undefined, undefined, context);
+		const outcome = result.structuredContent as Extract<PublishOutcome, { ok: true }>;
+		assert.deepEqual(reports, [["session-a", { id: outcome.documentId, title: "Shared plan" }]]);
+	}));
+
 test("ordinary tool supplies the same structured outcome and never opens a window", () =>
 	fixture(async (root, store) => {
 		const tool = createPublishTool({ store, cwd: root });

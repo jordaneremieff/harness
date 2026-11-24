@@ -23,6 +23,7 @@ import {
 	connectPrimaryChannel,
 	createPrimaryChannel,
 	PRIMARY_ENDPOINT_VERSION,
+	PRIMARY_WORK_REFERENCE_LIMIT,
 	primaryEndpointOwnerState,
 	primaryEndpointPath,
 	primaryEndpointStatus,
@@ -765,6 +766,35 @@ it("publishes and clears observed purpose without erasing host facts or intent",
 	channel.setObservedPurpose(undefined);
 	assert.equal("observedPurpose" in JSON.parse(readFileSync(primaryEndpointPath(root, channel.id), "utf8")), false);
 	assert.equal(channel.info().repository, "/work/common");
+});
+
+it("publishes bounded work references that descriptor reads return and refuse when malformed", async (t) => {
+	const root = testRoot(t);
+	const refs = [{ kind: "document", id: "md-0123", title: "Design" }];
+	const channel = await createPrimaryChannel(channelOptions(root, randomUUID(), { workRefs: refs }));
+	t.after(async () => {
+		await channel.close();
+	});
+	const path = primaryEndpointPath(root, channel.id);
+	assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).workRefs, refs);
+	assert.deepEqual(readPrimaryEndpointDescriptor(root, channel.id).info?.workRefs, refs);
+	const next = [{ kind: "handover", id: "20261124T000000Z-plan" }, ...refs];
+	channel.setWorkRefs(next);
+	channel.touch("2026-11-24T08:00:00Z");
+	assert.deepEqual(channel.info().workRefs, next);
+	assert.deepEqual(readPrimaryEndpointDescriptor(root, channel.id).info?.workRefs, next);
+	assert.throws(() => channel.setWorkRefs([{ kind: "Document", id: "x" }]), /lowercase token/u);
+	const many = Array.from({ length: PRIMARY_WORK_REFERENCE_LIMIT + 1 }, (_, i) => ({
+		kind: "document",
+		id: `md-${i}`,
+	}));
+	assert.throws(() => channel.setWorkRefs(many), /at most 16/u);
+	assert.deepEqual(channel.info().workRefs, next);
+	channel.setWorkRefs([]);
+	assert.equal("workRefs" in JSON.parse(readFileSync(path, "utf8")), false);
+	const stored = JSON.parse(readFileSync(path, "utf8"));
+	writeFileSync(path, JSON.stringify({ ...stored, workRefs: [{ kind: "document", id: "" }] }));
+	assert.equal(readPrimaryEndpointDescriptor(root, channel.id).unreadable, true);
 });
 
 function countEndpointParses(

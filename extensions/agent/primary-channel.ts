@@ -83,6 +83,39 @@ export interface PrimaryObservedPurpose {
 	readonly text: string;
 }
 
+/** A stored work item that this session used, as reported by its producing extension. */
+export interface PrimaryWorkReference {
+	readonly kind: string;
+	readonly id: string;
+	readonly title?: string;
+}
+
+export const PRIMARY_WORK_REFERENCE_LIMIT = 16;
+const WORK_REFERENCE_KIND = /^[a-z][a-z0-9-]{0,31}$/u;
+
+/** Validate one reference; `kind` and `id` are opaque to the agent extension. */
+export function validateWorkReference(value: unknown): PrimaryWorkReference {
+	if (value === null || typeof value !== "object" || Array.isArray(value))
+		throw new TypeError("work reference must be an object");
+	const record = value as Record<string, unknown>;
+	if (typeof record.kind !== "string" || !WORK_REFERENCE_KIND.test(record.kind))
+		throw new TypeError("work reference kind must be a lowercase token of 1-32 characters");
+	if (typeof record.id !== "string" || record.id.length === 0 || record.id.length > 256)
+		throw new TypeError("work reference id must contain 1-256 characters");
+	if (
+		record.title !== undefined &&
+		(typeof record.title !== "string" || record.title.length === 0 || record.title.length > 200)
+	)
+		throw new TypeError("work reference title must contain 1-200 characters");
+	return { kind: record.kind, id: record.id, ...(record.title === undefined ? {} : { title: record.title }) };
+}
+
+function validateWorkReferences(value: unknown): PrimaryWorkReference[] {
+	if (!Array.isArray(value) || value.length > PRIMARY_WORK_REFERENCE_LIMIT)
+		throw new TypeError(`workRefs requires at most ${PRIMARY_WORK_REFERENCE_LIMIT} references`);
+	return value.map(validateWorkReference);
+}
+
 /** Read-only live information about one registered primary. */
 export interface PrimaryInfo {
 	readonly id: string;
@@ -101,6 +134,8 @@ export interface PrimaryInfo {
 	/** Session-written declaration, not verified host state. */
 	readonly intentClaim?: PrimaryIntentClaim;
 	readonly observedPurpose?: PrimaryObservedPurpose;
+	/** Work items this session used most recently, newest first; reported by producers, not verified. */
+	readonly workRefs?: readonly PrimaryWorkReference[];
 	/** Public Pi retained session file; it does not identify the live selected leaf. */
 	readonly sessionFile?: string;
 }
@@ -156,6 +191,7 @@ export interface PrimaryChannelOptions {
 	readonly lastActivityAt?: string;
 	readonly intentClaim?: PrimaryIntentClaim;
 	readonly observedPurpose?: PrimaryObservedPurpose;
+	readonly workRefs?: readonly PrimaryWorkReference[];
 	readonly sessionFile?: string;
 }
 
@@ -172,6 +208,7 @@ export interface PrimaryChannel {
 	publishIntent(intentClaim: PrimaryIntentClaim | undefined): void;
 	touch(at: string): void;
 	setObservedPurpose(value: PrimaryObservedPurpose | undefined): void;
+	setWorkRefs(value: readonly PrimaryWorkReference[]): void;
 	close(): Promise<void>;
 }
 
@@ -322,8 +359,23 @@ function endpointPid(record: Record<string, unknown>): number {
 
 type EndpointDescriptor = Pick<
 	PrimaryInfo,
-	"repository" | "repositoryState" | "lastActivityAt" | "intentClaim" | "observedPurpose" | "sessionFile"
+	"repository" | "repositoryState" | "lastActivityAt" | "intentClaim" | "observedPurpose" | "workRefs" | "sessionFile"
 >;
+
+/** Session-written and observed descriptor fields; each validates its own bounds. */
+function sessionDescriptor(
+	record: Record<string, unknown>,
+): Pick<EndpointDescriptor, "intentClaim" | "observedPurpose" | "workRefs"> {
+	const intentClaim = record.intentClaim === undefined ? undefined : validatePrimaryIntentClaim(record.intentClaim);
+	const observedPurpose =
+		record.observedPurpose === undefined ? undefined : validateObservedPurpose(record.observedPurpose);
+	const workRefs = record.workRefs === undefined ? [] : validateWorkReferences(record.workRefs);
+	return {
+		...(observedPurpose === undefined ? {} : { observedPurpose }),
+		...(workRefs.length === 0 ? {} : { workRefs }),
+		...(intentClaim === undefined ? {} : { intentClaim }),
+	};
+}
 
 function endpointDescriptor(record: Record<string, unknown>): EndpointDescriptor {
 	const repository = optionalString(record, "repository");
@@ -340,16 +392,12 @@ function endpointDescriptor(record: Record<string, unknown>): EndpointDescriptor
 		throw new TypeError("outside-git repository identity is invalid");
 	const sessionFile = optionalString(record, "sessionFile");
 	const lastActivityAt = optionalString(record, "lastActivityAt");
-	const intentClaim = record.intentClaim === undefined ? undefined : validatePrimaryIntentClaim(record.intentClaim);
-	const observedPurpose =
-		record.observedPurpose === undefined ? undefined : validateObservedPurpose(record.observedPurpose);
 	return {
 		...(sessionFile === undefined ? {} : { sessionFile }),
-		...(observedPurpose === undefined ? {} : { observedPurpose }),
 		...(repositoryState === undefined ? {} : { repositoryState }),
 		...(repository === undefined ? {} : { repository }),
 		...(lastActivityAt === undefined ? {} : { lastActivityAt }),
-		...(intentClaim === undefined ? {} : { intentClaim }),
+		...sessionDescriptor(record),
 	};
 }
 
@@ -652,6 +700,12 @@ class PrimaryChannelHost {
 		this.replace({ ...retained, ...(value === undefined ? {} : { observedPurpose: validateObservedPurpose(value) }) });
 	}
 
+	setWorkRefs(value: readonly PrimaryWorkReference[]): void {
+		const { workRefs: _refs, ...retained } = this.endpoint;
+		const workRefs = validateWorkReferences([...value]);
+		this.replace({ ...retained, ...(workRefs.length === 0 ? {} : { workRefs }) });
+	}
+
 	private replace(endpoint: PrimaryEndpoint): void {
 		rewriteEndpoint(this.endpointPath, endpoint);
 		this.endpoint = endpoint;
@@ -712,6 +766,9 @@ function endpointRecord(options: PrimaryChannelOptions, serverId: string, socket
 		...(options.observedPurpose === undefined
 			? {}
 			: { observedPurpose: validateObservedPurpose(options.observedPurpose) }),
+		...(options.workRefs === undefined || options.workRefs.length === 0
+			? {}
+			: { workRefs: validateWorkReferences([...options.workRefs]) }),
 		...(options.repository === undefined ? {} : { repository: options.repository }),
 		...(options.repositoryState === undefined ? {} : { repositoryState: options.repositoryState }),
 		...(options.lastActivityAt === undefined ? {} : { lastActivityAt: options.lastActivityAt }),
@@ -788,6 +845,7 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 		publishIntent: (claim) => host.publishIntent(claim),
 		touch: (at) => host.touch(at),
 		setObservedPurpose: (value) => host.setObservedPurpose(value),
+		setWorkRefs: (value) => host.setWorkRefs(value),
 		close,
 	};
 }

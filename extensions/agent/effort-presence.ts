@@ -2,7 +2,13 @@ import { opendir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
 import { readPrimaryEndpointDescriptor } from "./primary-channel.ts";
-import type { PrimaryInfo, PrimaryObservedPurpose, PrimaryRepositoryState } from "./primary-channel.ts";
+import type {
+	PrimaryInfo,
+	PrimaryObservedPurpose,
+	PrimaryRepositoryState,
+	PrimaryWorkReference,
+} from "./primary-channel.ts";
+import { sharedWorkReferences } from "./work-references.ts";
 import type { Dirent } from "node:fs";
 import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
 import { isThreadStorage } from "./identity.ts";
@@ -22,6 +28,7 @@ type EffortFacts = Pick<
 	| "lastActivityAt"
 	| "intentClaim"
 	| "observedPurpose"
+	| "workRefs"
 	| "hostname"
 >;
 
@@ -37,7 +44,7 @@ export type PrimaryIntentClaim = {
 
 export type EffortPresenceSelf = Pick<
 	PrimaryInfo,
-	"id" | "cwd" | "repository" | "repositoryState" | "intentClaim" | "observedPurpose"
+	"id" | "cwd" | "repository" | "repositoryState" | "intentClaim" | "observedPurpose" | "workRefs"
 >;
 export interface RelatedEffort {
 	readonly id: string;
@@ -56,7 +63,11 @@ export interface RelatedEffort {
 	readonly intentUpdatedAt?: string;
 	readonly sharedSubstrates?: ("repository" | "cwd" | "machine-gates")[];
 	readonly overlap?: { readonly basis: "intentClaim"; readonly paths: string[]; readonly branches: string[] };
+	/** Work items that both sessions reported using, newest first for the other session. */
+	readonly sharedWork?: PrimaryWorkReference[];
 }
+/** Shared work items shown per related effort. */
+const SHARED_WORK_SHOWN = 8;
 export interface EffortPresenceCoverage {
 	/** Producers or document rows without native intent support are not omitted claims. */
 	unsupported?: number;
@@ -167,6 +178,7 @@ function effortRow(
 ): RelatedEffort {
 	const { id, cwd, name, repository, repositoryState, startedAt, lastActivityAt, intentClaim, observedPurpose } = info;
 	const overlap = relationship === "machine" ? undefined : claimOverlap(self.intentClaim, intentClaim);
+	const sharedWork = sharedWorkReferences(self.workRefs, info.workRefs).slice(0, SHARED_WORK_SHOWN);
 	return {
 		id,
 		cwd,
@@ -181,6 +193,7 @@ function effortRow(
 		sharedSubstrates: sharedSubstrates(self, info),
 		...observedPurposeFallback({ intentClaim, observedPurpose }),
 		...(overlap === undefined ? {} : { overlap }),
+		...(sharedWork.length === 0 ? {} : { sharedWork }),
 	};
 }
 
@@ -204,6 +217,19 @@ function appendEffort(page: EffortPresencePage, row: RelatedEffort, prompt: bool
 	} else page.efforts.push(row);
 }
 
+/**
+ * A prompt names project efforts and, outside the project, only live sessions that reported using
+ * the same work items; null leaves the effort out of the prompt.
+ */
+function promptRelation(
+	self: EffortPresenceSelf,
+	info: EffortFacts,
+	matches: boolean,
+): RelatedEffort["relationship"] | null {
+	if (matches) return self.repository === undefined ? "cwd" : "repository";
+	return sharedWorkReferences(self.workRefs, info.workRefs).length > 0 ? "machine" : null;
+}
+
 async function collectEffort(
 	page: EffortPresencePage,
 	self: EffortPresenceSelf,
@@ -214,8 +240,8 @@ async function collectEffort(
 	if (scope?.prompt && liveness !== "live") return;
 	const matches = scope === undefined || (await scope.matches(info));
 	if (!matches && liveness === "live") page.coverage.outOfScope = (page.coverage.outOfScope ?? 0) + 1;
-	if (!matches && scope?.prompt) return;
-	const relationship = scope?.prompt ? (self.repository === undefined ? "cwd" : "repository") : relation(self, info);
+	const relationship = scope?.prompt ? promptRelation(self, info, matches) : relation(self, info);
+	if (relationship === null) return;
 	if (!relationship) {
 		page.coverage.unrelated++;
 		return;

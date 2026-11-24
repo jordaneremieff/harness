@@ -45,6 +45,7 @@ const observerChannel: typeof createPrimaryChannel = async (options) => ({
 	publishIntent: () => {},
 	touch: () => {},
 	setObservedPurpose: () => {},
+	setWorkRefs: () => {},
 	close: async () => {},
 });
 

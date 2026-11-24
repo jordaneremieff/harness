@@ -66,6 +66,14 @@ import {
 import { actionErrorCause, agentDisplayName, configureOutcome, type ActionOutcome } from "./action-outcome.ts";
 import { formatEffortAwareness } from "./effort-awareness.ts";
 import { EFFORT_PURPOSE_ENTRY, purposeExcerpt, retainedPurpose } from "./effort-purpose.ts";
+import {
+	addWorkReference,
+	parseWorkReferenceEvent,
+	retainedWorkReferences,
+	WORK_REFERENCE_EVENT,
+	WORK_REFERENCES_ENTRY,
+} from "./work-references.ts";
+import type { PrimaryWorkReference } from "./primary-channel.ts";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
 import { validateFleetSelection } from "./fleet-status.ts";
 import { createIdCommand } from "./id-command.ts";
@@ -471,6 +479,17 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		Object.entries(cards).map(([name, presentation]) => ({ name, ...presentation })),
 	);
 	const primaries = new Map<string, AbortController>();
+	/** Newest-first work items of each live session, retained by this extension and published on its endpoint. */
+	const workReferences = new Map<string, PrimaryWorkReference[]>();
+	pi.events.on(WORK_REFERENCE_EVENT, (value) => {
+		const event = parseWorkReferenceEvent(value);
+		if (!event || !primaries.has(event.sessionId)) return;
+		const { list, changed } = addWorkReference(workReferences.get(event.sessionId) ?? [], event.reference);
+		workReferences.set(event.sessionId, list);
+		if (!changed) return;
+		pi.appendEntry(WORK_REFERENCES_ENTRY, { refs: list });
+		getManager().setPrimaryWorkRefs(event.sessionId, list);
+	});
 	const primaryDeliveries = new Map<
 		string,
 		{ retention: PrimaryRetention; inbox: PrimaryInbox; flush(wake?: boolean): void }
@@ -1317,6 +1336,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const abort = new AbortController();
 		primaries.set(sessionId, abort);
 		const purpose = retainedPurpose(ctx.sessionManager, _event.reason);
+		const workRefs = retainedWorkReferences(ctx.sessionManager);
+		workReferences.set(sessionId, workRefs);
 		const sendPeer = (text: string, details: unknown, wake: boolean) => {
 			refreshPreferences(ctx);
 			pi.sendMessage(
@@ -1360,6 +1381,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			observedInput: purpose.text,
 			observedInputComplete: purpose.complete,
 			observedInputCanCapture: purpose.canCapture,
+			get workRefs() {
+				return workReferences.get(sessionId) ?? workRefs;
+			},
 			model: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
 			thinkingLevel: pi.getThinkingLevel(),
 			resumeInbox: flush,
@@ -1457,6 +1481,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const id = ctx.sessionManager.getSessionId();
 		primaryDeliveries.get(id)?.retention.clear();
 		primaryDeliveries.delete(id);
+		workReferences.delete(id);
 		continuity.end(id);
 		const abort = primaries.get(id);
 		if (!abort) return;

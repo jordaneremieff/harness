@@ -2848,9 +2848,38 @@ remain explicit. Discovery never removes primary endpoint records.
 
 Declared intent leads presence and awareness. When it exists, those views omit
 the observed-purpose fallback rather than show a competing description. Without
-intent, the fallback is the Pi session name, otherwise an excerpt of the first
-proven interactive input. Its origin stays labeled `session-name` or
-`interactive-input`; it is not a declaration.
+intent, the fallback is an excerpt of the first proven interactive input,
+otherwise the Pi session name. A generated session name can name a file rather
+than the work, so the operator's first request leads and the name stays in its
+own field. Its origin stays labeled `interactive-input` or `session-name`; it is
+not a declaration.
+
+### Shared work across repositories
+
+Sessions that work on the same stored items often run in different
+repositories or folders, for example a session started from another session's
+handover, or several sessions reviewing the same published document. Producing
+extensions report such use through the
+[work references convention](../../docs/conventions/work-references.md): an
+event names the session, an opaque `kind` and `id`, and an optional display
+title. Today the Markdown extension reports documents that a session publishes
+or reads, and the Stash extension reports handovers that a session writes,
+reads or picks up. This extension never recognises those tools or reads their
+stores; it compares `kind` and `id` only.
+
+Each ordinary primary keeps its 16 most recently used distinct references,
+newest first, in its own `agent.work-references` session entries and in the
+optional `workRefs` field of its endpoint record. A repeated use reorders the
+list in memory; only a new item or a changed title rewrites the record and
+appends an entry. Resume restores the newest retained copy found within 4,096
+ancestry entries. Native conversations report no references. Old readers ignore
+the added endpoint field.
+
+Two live sessions share work when both lists contain an equal `kind` and `id`.
+Presence rows then carry `sharedWork`, at most eight shared items in the other
+session's order, and the caller's own `workRefs` appear in its awareness. A
+reference is the producer's report of use, not verified access, a lock or
+authority over the item or the other session.
 
 The extension retains its own attributed first-input projection in the session.
 Resume discovery follows a bounded parent chain from the public leaf ID, without
@@ -2927,13 +2956,18 @@ current-effort section in their model context at natural run boundaries. Durable
 renders sections before every model request, so a native conversation reads
 awareness at the first request of a run and keeps those bytes for that run's
 later tool rounds; peers that start or stop mid-run appear at the next run.
-The `agent-efforts` section names only live efforts and active thread hints
+The `agent-efforts` section names live efforts and active thread hints
 in the same Git repository (including linked worktrees), or the same working
-directory outside Git. A thread uses its owning storage's working directory;
-a contact link alone does not establish a match. Relative scope paths describe
-work within their declared location and cannot match across repositories.
-Prompt rows use identity order and omit activity, timestamps, member counts,
-and scan coverage. Out-of-scope counts belong to the explicit observation, not
+directory outside Git. It also names live sessions elsewhere on this machine
+that share work with the caller, with their purpose-level claim, contact thread,
+session name, first-request excerpt (`request`, at most 200 characters, only
+without a claim) and up to four shared items as `sharedWork`. A session that
+shares no item and no location stays out of the section, so the section grows
+with related work rather than with every open session. A thread uses its owning
+storage's working directory; a contact link alone does not establish a match.
+Relative scope paths describe work within their declared location and cannot
+match across repositories. Prompt rows use identity order and omit activity,
+timestamps, member counts, and scan coverage. Out-of-scope counts belong to the explicit observation, not
 the system section. The section points to `agent_intent` read for current coverage
 and omitted sources. Awareness is available only
 through this per-run context, explicit tool reads, and the Related efforts view.

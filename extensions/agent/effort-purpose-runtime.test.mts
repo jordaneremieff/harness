@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -13,6 +13,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import register from "./index.ts";
 import { EFFORT_PURPOSE_ENTRY } from "./effort-purpose.ts";
+import { primaryEndpointPath } from "./primary-channel.ts";
+import { WORK_REFERENCE_EVENT, WORK_REFERENCES_ENTRY } from "./work-references.ts";
 import { machineConfig } from "./settings-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
@@ -103,6 +105,7 @@ async function primaryFixture(t: TestContext) {
 	});
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	const nameChanges: Array<string | undefined> = [];
+	let emit: (channel: string, data: unknown) => void = () => {};
 	const loader = new DefaultResourceLoader({
 		cwd,
 		agentDir,
@@ -115,6 +118,7 @@ async function primaryFixture(t: TestContext) {
 		extensionFactories: [
 			async (pi) => {
 				await register(pi);
+				emit = (channel, data) => pi.events.emit(channel, data);
 				pi.on("session_info_changed", (event) => {
 					nameChanges.push(event.name);
 				});
@@ -148,6 +152,18 @@ async function primaryFixture(t: TestContext) {
 			sessionManager
 				.getEntries()
 				.flatMap((entry) => (entry.type === "custom" && entry.customType === EFFORT_PURPOSE_ENTRY ? [entry.data] : [])),
+		workEntries: () =>
+			sessionManager
+				.getEntries()
+				.flatMap((entry) =>
+					entry.type === "custom" && entry.customType === WORK_REFERENCES_ENTRY ? [entry.data] : [],
+				),
+		emit: (data: unknown) => emit(WORK_REFERENCE_EVENT, data),
+		endpoint: () =>
+			JSON.parse(readFileSync(primaryEndpointPath(sessionsRoot, sessionManager.getSessionId()), "utf8")) as {
+				workRefs?: unknown;
+				observedPurpose?: unknown;
+			},
 		async prompt(text: string, options?: { source?: "interactive" | "rpc" | "extension" }) {
 			await opened.prompt(text, options);
 			await opened.waitForIdle();
@@ -167,4 +183,24 @@ it("records only the first interactive input as observed purpose and leaves the 
 	assert.deepEqual(fixture.purposeEntries(), [{ source: "interactive", text: "Real task input" }]);
 	assert.equal(fixture.sessionManager.getSessionName(), undefined, "input never names the session");
 	assert.deepEqual(fixture.nameChanges, []);
+});
+
+it("retains and publishes the work items that producers report for this session only", {
+	timeout: 20000,
+}, async (t) => {
+	const fixture = await primaryFixture(t);
+	const sessionId = fixture.sessionManager.getSessionId();
+	fixture.emit({ version: 1, sessionId, kind: "document", id: "md-a", title: "Design" });
+	fixture.emit({ version: 1, sessionId: "another-session", kind: "document", id: "md-b" });
+	fixture.emit({ version: 2, sessionId, kind: "document", id: "md-c" });
+	fixture.emit({ version: 1, sessionId, kind: "handover", id: "plan" });
+	fixture.emit({ version: 1, sessionId, kind: "document", id: "md-a" });
+	const refs = [
+		{ kind: "handover", id: "plan" },
+		{ kind: "document", id: "md-a", title: "Design" },
+	];
+	assert.deepEqual(fixture.workEntries(), [{ refs: [{ kind: "document", id: "md-a", title: "Design" }] }, { refs }]);
+	assert.deepEqual(fixture.endpoint().workRefs, refs);
+	await fixture.prompt("Review the design");
+	assert.deepEqual(fixture.endpoint().observedPurpose, { source: "interactive-input", text: "Review the design" });
 });

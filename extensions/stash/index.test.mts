@@ -96,6 +96,43 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 	return { tools, guidelines, commands, shortcuts, renderers, sent, safety, events, pi, launches };
 }
 
+it("reports handovers that the session writes, reads, or picks up, and never checkpoints", async () => {
+	const { tools, commands, pi } = registry();
+	const reports: unknown[] = [];
+	const emit = pi.events.emit;
+	pi.events.emit = (event, value) => {
+		if (event === "harness:work-reference") reports.push(value);
+		else emit(event, value);
+	};
+	const session = (id: string): TestContext => ({
+		cwd: dir,
+		mode: "rpc",
+		hasUI: true,
+		isIdle: () => true,
+		ui: { notify: () => {} },
+		sessionManager: {
+			getSessionId: () => id,
+			buildSessionProjection: () => SessionManager.inMemory().buildSessionProjection(),
+		},
+	});
+	const ctx = session("writer");
+	await tools
+		.get("stash_write")
+		.execute("write", { title: "Draft checkpoint", summary: "Working.", checkpoint: true }, undefined, undefined, ctx);
+	assert.deepEqual(reports, []);
+	const written = await tools
+		.get("stash_write")
+		.execute("write", { title: "Shared plan", summary: "Plan." }, undefined, undefined, ctx);
+	const id = written.details.id;
+	const handover = { version: 1, kind: "handover", id, title: "Shared plan" };
+	assert.deepEqual(reports, [{ ...handover, sessionId: "writer" }]);
+	await tools.get("stash_read").execute("read", { id }, undefined, undefined, session("reader"));
+	assert.deepEqual(reports.at(-1), { ...handover, sessionId: "reader" });
+	await commands.get("stash").handler(`get ${id}`, session("resumer"));
+	assert.deepEqual(reports.at(-1), { ...handover, sessionId: "resumer" });
+	assert.equal(reports.length, 3);
+});
+
 it("exposes safe reports for write, checkpoint, edit, and completion tools", async () => {
 	const { tools } = registry();
 	const token = "sk-abcdefgh" + "ijklmnop1234";

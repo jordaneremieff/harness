@@ -75,6 +75,7 @@ function publish(
 	intentClaim: PrimaryIntentClaim | null = claim(),
 	cwd = root,
 	observedPurpose?: { source: "session-name" | "interactive-input"; text: string },
+	extra: Record<string, unknown> = {},
 ): void {
 	writeFileSync(
 		primaryEndpointPath(root, id),
@@ -89,6 +90,7 @@ function publish(
 			startedAt: "2026-10-04T09:00:00Z",
 			...(intentClaim === null ? {} : { intentClaim }),
 			...(observedPurpose === undefined ? {} : { observedPurpose }),
+			...extra,
 		}),
 	);
 }
@@ -169,6 +171,72 @@ it("names only project efforts and threads and keeps unrelated arrivals out of t
 	const threadOnly = await prompt();
 	assert.doesNotMatch(threadOnly, /Revised in-project intent/u);
 	assert.match(threadOnly, /Active shared work/u);
+});
+
+it("names live sessions in other repositories that used the same work items, with their first request", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const project = join(root, "project");
+	const other = join(root, "other");
+	mkdirSync(project);
+	mkdirSync(other);
+	for (const cwd of [project, other]) execFileSync("git", ["init", "--quiet", cwd], { timeout: 3000 });
+	const design = { kind: "document", id: "md-design", title: "Service design" };
+	const plan = { kind: "handover", id: "20261124T010203Z-plan", title: "Verification plan" };
+	const reviewer = randomUUID();
+	publish(
+		root,
+		reviewer,
+		null,
+		other,
+		{ source: "interactive-input", text: "Review the service design for edge cases" },
+		{ name: "SomeServiceFile.php", workRefs: [{ kind: "document", id: "md-other" }, design] },
+	);
+	const declared = randomUUID();
+	publish(root, declared, claim("Verify the plan"), other, undefined, { workRefs: [plan] });
+	const unrelated = randomUUID();
+	publish(
+		root,
+		unrelated,
+		null,
+		other,
+		{ source: "interactive-input", text: "UNRELATED-WORK" },
+		{
+			workRefs: [{ kind: "document", id: "md-unrelated" }],
+		},
+	);
+	const current = { ...self, cwd: project, workRefs: [plan, design] };
+	const shared = resources(root, catalog);
+	const view = await readEffortAwareness(shared, current, "canonical", "prompt");
+	const prompt = formatEffortAwareness(view, "prompt");
+	assert.ok(prompt.includes(reviewer), prompt);
+	assert.ok(prompt.includes(declared));
+	assert.doesNotMatch(prompt, /UNRELATED-WORK/u);
+	assert.ok(prompt.includes(unrelated) === false);
+	assert.match(prompt, /"sessionName":"SomeServiceFile\.php"/u);
+	assert.match(prompt, /"request":"Review the service design for edge cases"/u);
+	assert.match(prompt, /"sharedWork":\["document md-design \(Service design\)"\]/u);
+	assert.match(prompt, /"purposeClaim":"Verify the plan"/u);
+	assert.doesNotMatch(prompt, /Operator: edit only the agent slice/u, "another repository's intent stays purpose-only");
+	assert.equal(
+		formatEffortAwareness(await readEffortAwareness(shared, current, "canonical", "prompt"), "prompt"),
+		prompt,
+	);
+	const withoutWork = formatEffortAwareness(
+		await readEffortAwareness(shared, { ...self, cwd: project }, "canonical", "prompt"),
+		"prompt",
+	);
+	assert.equal(withoutWork.includes(reviewer), false);
+	const observation = await readEffortAwareness(shared, current);
+	assert.equal(
+		matchesSchema(EffortAwarenessSchema, observation),
+		true,
+		JSON.stringify(schemaErrors(EffortAwarenessSchema, observation, 10)),
+	);
+	assert.deepEqual(observation.self.workRefs, [plan, design]);
+	const row = observation.presence.efforts.find((effort) => effort.id === reviewer);
+	assert.equal(row?.relationship, "machine");
+	assert.deepEqual(row?.sharedWork, [design]);
+	assert.equal(observation.presence.efforts.find((effort) => effort.id === unrelated)?.sharedWork, undefined);
 });
 
 it("unifies self-published purpose, related presence and active thread hints without schema drift", async (t) => {

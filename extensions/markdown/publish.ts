@@ -838,6 +838,8 @@ export function createPublishTool(
 		pane?: AgentPane;
 		/** The conversation receives a notice when a connected reader pane closes. */
 		paneNotices?: boolean;
+		/** Reports a stored document that this session published; see docs/conventions/work-references.md. */
+		workReference?: (sessionId: string, document: { id: string; title: string }) => void;
 	},
 ): ToolDefinition<typeof PublishParameters, PublishOutcome> {
 	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_publish");
@@ -875,6 +877,7 @@ export function createPublishTool(
 				},
 				previousResponse: async () => previousOrdinary(context.sessionManager),
 			});
+			if (outcome.ok) options.workReference?.(session, { id: outcome.documentId, title: outcome.title });
 			return {
 				content: [{ type: "text", text: publicationText(outcome) }],
 				details: outcome,

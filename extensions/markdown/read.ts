@@ -581,7 +581,11 @@ function content(outcome: ReadOutcome): { type: "text"; text: string }[] {
 	return [{ type: "text", text: header }, ...(source === undefined ? [] : [{ type: "text" as const, text: source }])];
 }
 
-export function createReadTool(options: { store: MarkdownStore }): ToolDefinition<typeof ReadParameters, ReadOutcome> {
+export function createReadTool(options: {
+	store: MarkdownStore;
+	/** Reports a stored document that this session read; see docs/conventions/work-references.md. */
+	workReference?: (sessionId: string, document: { id: string; title: string }) => void;
+}): ToolDefinition<typeof ReadParameters, ReadOutcome> {
 	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_read");
 	return {
 		...presentation,
@@ -591,8 +595,13 @@ export function createReadTool(options: { store: MarkdownStore }): ToolDefinitio
 		promptSnippet: "Find stored Markdown documents and read an exact revision in pages, for example before an update.",
 		parameters: ReadParameters,
 		outputSchema: ReadOutcomeSchema,
-		async execute(_id, params) {
+		async execute(_id, params, _signal, _update, context) {
 			const outcome = await readStored(options.store, params as ReadInput);
+			if (outcome.ok && outcome.op === "read")
+				options.workReference?.(context.sessionManager.getSessionId(), {
+					id: outcome.documentId,
+					title: outcome.title,
+				});
 			return { content: content(outcome), details: outcome, structuredContent: outcome, isError: !outcome.ok };
 		},
 	};

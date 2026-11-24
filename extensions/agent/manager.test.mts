@@ -1017,6 +1017,7 @@ function primaryFactory(onClose?: (channel: CapturedPrimaryChannel, invocation: 
 			publishIntent: () => {},
 			touch: () => {},
 			setObservedPurpose: () => {},
+			setWorkRefs: () => {},
 			close: async () => {
 				captured.closed = true;
 				closedEvent.resolve();

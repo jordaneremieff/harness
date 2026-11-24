@@ -57,6 +57,14 @@ the title, lifecycle state, and a distinguishing id prefix. A choice uses the sa
 pickup path as `/stash get <id>`; cancellation does nothing. Print and JSON modes
 have no UI and retain directions to the direct commands and tools.
 
+In ordinary Pi, writing a handover with `stash_write`, reading one with
+`stash_read`, and picking one up emit one `harness:work-reference` event with
+kind `handover`, the handover id and its title, as the
+[work references convention](../../docs/conventions/work-references.md)
+defines. Checkpoints, failed operations and native tool runs emit nothing. The
+event lets another extension relate the sessions that share a handover; Stash
+does not depend on a listener.
+
 ## Configuration
 
 See [Storage](#storage) for `PI_STASH_DIR` and the default artifact location,

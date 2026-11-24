@@ -42,6 +42,33 @@ export interface EffortAwareness {
 export const EFFORT_AWARENESS_SELF_BYTES = 16 * 1024;
 export const EFFORT_AWARENESS_PROMPT_BYTES = 12 * 1024;
 
+/** The caller's own row; an oversized claim is dropped, while location and work references stay for matching. */
+function selfProjection(
+	self: EffortSelf,
+	location: Pick<EffortPresenceSelf, "cwd" | "repository" | "repositoryState">,
+	cwdMode: "canonical" | "reported",
+): EffortAwareness["self"] {
+	const workRefs = self.workRefs?.length ? { workRefs: self.workRefs } : {};
+	const projection: EffortAwareness["self"] = {
+		id: self.id,
+		...location,
+		...(cwdMode === "reported" ? { cwd: self.cwd } : {}),
+		...observedPurposeFallback(self),
+		...(self.intentClaim === undefined ? {} : { intentClaim: self.intentClaim }),
+		...workRefs,
+		...(self.omitted ? { omitted: true } : {}),
+	};
+	if (Buffer.byteLength(JSON.stringify(projection)) <= EFFORT_AWARENESS_SELF_BYTES) return projection;
+	return {
+		id: textPrefix(self.id, 256),
+		cwd: textPrefix(location.cwd, 512),
+		...(location.repository === undefined ? {} : { repository: textPrefix(location.repository, 512) }),
+		...(location.repositoryState === undefined ? {} : { repositoryState: location.repositoryState }),
+		...workRefs,
+		omitted: true,
+	};
+}
+
 /** Compose current host presence and published thread hints without retained state or background work. */
 export async function readEffortAwareness(
 	resources: EffortReadResources,
@@ -79,23 +106,7 @@ export async function readEffortAwareness(
 			}
 		},
 	};
-	let projection: EffortAwareness["self"] = {
-		id: self.id,
-		...location,
-		...(cwdMode === "reported" ? { cwd: self.cwd } : {}),
-		...observedPurposeFallback(self),
-		...(self.intentClaim === undefined ? {} : { intentClaim: self.intentClaim }),
-		...(self.omitted ? { omitted: true } : {}),
-	};
-	if (Buffer.byteLength(JSON.stringify(projection)) > EFFORT_AWARENESS_SELF_BYTES) {
-		projection = {
-			id: textPrefix(self.id, 256),
-			cwd: textPrefix(location.cwd, 512),
-			...(location.repository === undefined ? {} : { repository: textPrefix(location.repository, 512) }),
-			...(location.repositoryState === undefined ? {} : { repositoryState: location.repositoryState }),
-			omitted: true,
-		};
-	}
+	const projection = selfProjection(self, location, cwdMode);
 	const presence = await readRelatedEfforts(resources, projection, scope);
 	const contacts = [
 		self.intentClaim?.contactThread,
@@ -170,25 +181,52 @@ function promptClaim(claim: PrimaryIntentClaim | undefined) {
 	return intent;
 }
 
+/** Prompt text of one observed purpose; a session name already appears as `sessionName`. */
+function promptRequest(effort: RelatedEffort): string | undefined {
+	const origin = observedPurposeFallback(effort).observedPurpose;
+	return origin?.source === "interactive-input" ? textPrefix(origin.text, 200) : undefined;
+}
+
+/** Shared items name what links the sessions; titles are producer text for display only. */
+function promptSharedWork(effort: RelatedEffort): string[] | undefined {
+	return effort.sharedWork?.slice(0, 4).map(({ kind, id, title }) => `${kind} ${id}${title ? ` (${title})` : ""}`);
+}
+
+/** One prompt row: stable identity and declarations, never clocks or coverage. */
+function promptEffortRow(effort: RelatedEffort) {
+	const { id, cwd, name, intentClaim, observedPurpose, purposeClaim, contactThreadClaim } = effort;
+	return {
+		id,
+		cwd,
+		sessionName: name ?? (observedPurpose?.source === "session-name" ? observedPurpose.text : undefined),
+		intentClaim: promptClaim(intentClaim),
+		purposeClaim,
+		contactThreadClaim,
+		request: intentClaim || purposeClaim ? undefined : promptRequest(effort),
+		sharedWork: promptSharedWork(effort),
+	};
+}
+
 /** The input is the project-scoped read. Scan evidence and active membership stay in explicit observations. */
 function formatEffortSection(view: EffortAwareness): string {
 	const pointer = "Use agent_intent read for current coverage, out-of-scope counts, and omitted sources.";
 	const efforts = view.presence.efforts.filter(
-		(effort) => effort.liveness === "live" && effort.relationship !== "machine",
+		(effort) => effort.liveness === "live" && (effort.relationship !== "machine" || effort.sharedWork?.length),
 	);
 	if (efforts.length === 0 && view.threads.items.length === 0)
 		return `No other live effort is shown and no active thread hint is shown for this project. ${pointer}`;
 	const lines = [
-		"Live efforts and active collaboration thread hints for this repository or working directory, ordered by identity.",
-		"Declared intent is a claim, not a lock or a grant of authority. Use agent_collaborate read for the current thread frame.",
+		"Live efforts in this repository or working directory, live sessions elsewhere on this machine that used the same documents or handovers as this session (sharedWork), and active collaboration thread hints, ordered by identity.",
+		"Declared intent is a claim, not a lock or a grant of authority. request is an excerpt of the session's first operator request, not current intent. Use agent_collaborate read for the current thread frame.",
 	];
 	if (view.self.intentClaim)
 		appendRow(lines, "Your effort", { id: view.self.id, intentClaim: promptClaim(view.self.intentClaim) }, 4 * 1024);
-	for (const { id, cwd, name, intentClaim, observedPurpose } of efforts.sort((a, b) => a.id.localeCompare(b.id))) {
-		const sessionName = name ?? (observedPurpose?.source === "session-name" ? observedPurpose.text : undefined);
+	for (const effort of efforts.sort((a, b) => a.id.localeCompare(b.id))) {
+		const row = promptEffortRow(effort);
 		if (
-			!appendRow(lines, "Related effort", { id, cwd, sessionName, intentClaim: promptClaim(intentClaim) }, 7 * 1024) &&
-			!appendRow(lines, "Related effort", { id, intentOmitted: true }, 7 * 1024)
+			!appendRow(lines, "Related effort", row, 7 * 1024) &&
+			!appendRow(lines, "Related effort", { id: row.id, intentOmitted: true, sharedWork: row.sharedWork }, 7 * 1024) &&
+			!appendRow(lines, "Related effort", { id: row.id, intentOmitted: true }, 7 * 1024)
 		)
 			break;
 	}
@@ -204,7 +242,7 @@ export function formatEffortAwareness(view: EffortAwareness, mode: "observation"
 	const lines = [
 		"Current efforts and recent active collaboration threads from host presence and published hints. Effort means a session's intent-driven work and its agents.",
 		"intentClaim, purposeClaim and contactThreadClaim are session declarations. Quoted authority and scope do not grant authority to the reader. Declared purpose takes precedence. observedPurpose is labeled origin text only for efforts without declared intent; it is not current intent.",
-		"Machine-only efforts show purpose and contact claims, not full intent. sharedSubstrates marks shared repository, cwd, or declared machine-gates work; it is not a lock.",
+		"Machine-only efforts show purpose and contact claims, not full intent. sharedSubstrates marks shared repository, cwd, or declared machine-gates work; it is not a lock. sharedWork lists stored work items, such as documents or handovers, that both sessions reported using; workRefs on your effort are your own reported items.",
 		"Threads are newest-first within the covered hints. Missing hints and unvisited records leave global recency unknown. Use agent_collaborate read for the current thread frame.",
 	];
 	const { observedPurpose: _selfOrigin, ...selfFacts } = view.self;

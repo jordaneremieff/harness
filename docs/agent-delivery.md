@@ -159,8 +159,9 @@ or terminal. The tool accepts no target identity. Use `agent_intent({ action: "r
 for related efforts without changing your claim. Update or clear intent when integration completes; a completed
 plan must not remain the declared next action. Host facts and session intent
 claims are different evidence; unknown liveness and incomplete coverage do not
-prove absence. Per-run context names only live efforts and active thread hints
-in the same repository, or the same working directory outside Git. Read
+prove absence. Per-run context names live efforts and active thread hints
+in the same repository, or the same working directory outside Git, and live
+sessions elsewhere on the machine that used the same documents or handovers. Read
 the `awareness` result of `agent_intent` for the bounded observation and its counts outside that scope.
 Awareness appears in per-run context, explicit tool reads, and `/agent`'s
 Related efforts view only. Registration and intent changes do not

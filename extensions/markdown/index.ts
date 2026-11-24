@@ -471,6 +471,20 @@ export default function markdown(pi: ExtensionAPI): void {
 	const { dir, app, agentPane } = snapshot.values;
 	const writing = writingOptions(agentDir, snapshot);
 	const store = new MarkdownStore(dir);
+	// Other extensions learn which stored documents this session used (docs/conventions/work-references.md).
+	const workReference = (sessionId: string, document: { id: string; title: string }) => {
+		try {
+			pi.events.emit("harness:work-reference", {
+				version: 1,
+				sessionId,
+				kind: "document",
+				id: document.id,
+				...(document.title.trim() ? { title: document.title.trim() } : {}),
+			});
+		} catch {
+			// Reporting is advisory; the document operation already succeeded.
+		}
+	};
 	pi.registerTool(createBriefTool(writing));
 	pi.registerTool(
 		createPublishTool({
@@ -480,9 +494,10 @@ export default function markdown(pi: ExtensionAPI): void {
 			panes: async (ctx) => paneInventory(await live.find(ctx)),
 			pane: agentPane,
 			paneNotices: true,
+			workReference,
 		}),
 	);
-	pi.registerTool(createReadTool({ store }));
+	pi.registerTool(createReadTool({ store, workReference }));
 	pi.registerTool(createLiveTool(live.find, { store, app, connection: live.connection, lifecycle }));
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
 	pi.events.on("harness:tool-display:request", (request) => {

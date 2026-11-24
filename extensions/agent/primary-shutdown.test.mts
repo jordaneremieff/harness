@@ -82,6 +82,7 @@ test("ordinary shutdown awaits close even when the status callback throws", asyn
 			publishIntent() {},
 			touch() {},
 			setObservedPurpose() {},
+			setWorkRefs() {},
 			close: async () => {
 				closes++;
 				started();
@@ -172,6 +173,7 @@ test("primary close reports endpoint cleanup rejection", async (t) => {
 			publishIntent() {},
 			touch() {},
 			setObservedPurpose() {},
+			setWorkRefs() {},
 			close: async () => {
 				throw new Error("Endpoint cleanup failed");
 			},
@@ -226,6 +228,7 @@ test("primary shutdown waits for a channel that finishes creation after abort", 
 				publishIntent() {},
 				touch() {},
 				setObservedPurpose() {},
+				setWorkRefs() {},
 				close: async () => {
 					closing();
 					await closeGate;
@@ -285,6 +288,7 @@ test("failed primary replacement removes the closed registration and rejects its
 				publishIntent() {},
 				touch() {},
 				setObservedPurpose() {},
+				setWorkRefs() {},
 				close: async () => {
 					closed++;
 				},
