@@ -116,6 +116,20 @@ async function directoryEntries(root: string) {
 		throw error;
 	}
 }
+/** Record identities from a names-only listing, in storage ID order. */
+async function recordIdentities(root: string): Promise<string[]> {
+	let names: string[];
+	try {
+		names = await readdir(root);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+	const identities: string[] = [];
+	for (const name of names)
+		if (name.endsWith(".json") && UUID.test(name.slice(0, -5))) identities.push(name.slice(0, -5));
+	return identities.sort();
+}
 export interface CatalogRecord extends HostMetadata {
 	createdAt: string;
 	/** Optional bounded conversation projection; absent means the projection is unknown. */
@@ -417,6 +431,58 @@ export function validateDeliveryRecipient(identity: string): void {
 	throw new Error("Delivery recipient must be an exact native or primary identity");
 }
 
+/** One record of a catalog index read: `value` is undefined when the record exists and could not be read or validated. */
+export interface CatalogIndexEntry<T> {
+	storageId: string;
+	value: T | undefined;
+	unreadable: boolean;
+}
+/** Records between yields of an index read, so a pass over a large catalog never holds the event loop. */
+const INDEX_BATCH = 64;
+const INDEX_ROOTS = 4;
+/**
+ * One derived value per catalog record, kept in this process by record file stamp. A read lists the
+ * catalog directory and stats each record; it reads and validates only the records whose file changed
+ * since the previous read, through `AgentCatalog.derive`. Values are shared between reads: `project`
+ * returns plain data that no reader changes.
+ */
+export class CatalogIndex<T> {
+	private readonly project: (record: CatalogRecord) => T;
+	private readonly roots = new Map<string, Map<string, { fileStamp: string; value: T }>>();
+	constructor(project: (record: CatalogRecord) => T) {
+		this.project = project;
+	}
+
+	/** Every record of the catalog in storage ID order. */
+	async read(catalog: AgentCatalog): Promise<CatalogIndexEntry<T>[]> {
+		const identities = await recordIdentities(catalog.root);
+		const known = this.roots.get(catalog.root);
+		const current = new Map<string, { fileStamp: string; value: T }>();
+		const entries: CatalogIndexEntry<T>[] = [];
+		for (let index = 0; index < identities.length; index++) {
+			if (index > 0 && index % INDEX_BATCH === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+			const storageId = identities[index];
+			try {
+				const retained = known?.get(storageId);
+				const entry =
+					retained !== undefined && catalog.recordStamp(storageId) === retained.fileStamp
+						? retained
+						: catalog.derive(storageId, this.project);
+				current.set(storageId, entry);
+				entries.push({ storageId, value: entry.value, unreadable: false });
+			} catch (error) {
+				// A record removed since the listing is absent, not unreadable.
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+					entries.push({ storageId, value: undefined, unreadable: true });
+			}
+		}
+		this.roots.delete(catalog.root);
+		if (this.roots.size >= INDEX_ROOTS) this.roots.clear();
+		this.roots.set(catalog.root, current);
+		return entries;
+	}
+}
+
 /** Discovery metadata locates storage. It never substitutes for native conversation state. */
 export class AgentCatalog {
 	readonly root: string;
@@ -620,6 +686,17 @@ export class AgentCatalog {
 		} catch {
 			return undefined;
 		}
+	}
+
+	/**
+	 * Derive a value from one validated record, with the record's file stamp. The record can be the
+	 * cache's own object: `project` copies what it keeps and changes nothing. The read neither enters
+	 * the record into the validated-record cache nor renews its entry, so a scan of the whole catalog
+	 * leaves that cache as it is.
+	 */
+	derive<T>(identity: string, project: (record: CatalogRecord) => T): { fileStamp: string; value: T } {
+		const { record, fileStamp } = this.readRetained(identity, false);
+		return { fileStamp, value: project(record) };
 	}
 
 	private readWithTime(identity: string): { record: CatalogRecord; modifiedAt: number; fileStamp: string } {

@@ -2577,22 +2577,24 @@ or automatic replies are prescribed.
 
 Use `agent_collaborate` with `action: "list"` and an optional literal `query` to
 find purpose across storages and repositories. Global discovery reads published
-hints, not hosts. One call reads a window of up to 1,024 catalog records in
-name order and ranks every match in it: active before closed, newest update
-first, thread ID as the tie break. A catalog that fits in one window is ranked
-as a whole; a larger one continues in later windows. The result carries
-`nextCursor`, explicit coverage, and up to 16 omitted or unavailable source
-storages with a `sourcesOmitted` count. A storage whose host has not yet
-published hints appears as an unavailable source; list it with `sessionId`.
-Follow the cursor and repeat the same query; a cursor from another query
-refuses. Use `sessionId` for a storage's retained
-thread list. For `read`, `join`, `leave`, `post`, `revise`, and `close`, supply only
-`threadId` as the storage address. These actions refuse `sessionId` even when
-it names the same storage. Catalog changes follow the filename continuation rules in
-[Controls](#controls). A continuation within one storage's published thread
-hints refuses if that storage's thread publication changed:
-`Thread discovery changed; restart the query`. There is no background relevance
-search or polling loop.
+hints, not hosts. One call ranks every match of the whole catalog, whatever its
+size: active before closed, newest update first, thread ID as the tie break.
+Each process keeps the hints by record file stamp, so a call lists the catalog
+directory, stats each record and reads only the records that changed since its
+last call; it takes no whole record through the validated-record cache and
+yields to the event loop every 64 records. The result carries `nextCursor`,
+explicit coverage, and up to 16 omitted or unavailable source storages in
+storage ID order with a `sourcesOmitted` count. A storage whose host has not yet
+published hints, or whose record is unreadable, appears as an unavailable
+source; list it with `sessionId`. `coverage.complete` is true on the last page
+when no source is unavailable or omitted. Follow the cursor and repeat the same
+query; a cursor from another query refuses. The cursor is the rank key of the
+last returned thread: a later page continues after it, so a thread that changes
+rank between two pages can appear on both or on neither. Use `sessionId` for a
+storage's retained thread list. For `read`, `join`, `leave`, `post`, `revise`,
+and `close`, supply only `threadId` as the storage address. These actions refuse
+`sessionId` even when it names the same storage. There is no background
+relevance search or polling loop.
 
 Catalog thread hints rank active threads before closed threads, then newest
 update first with a stable thread-ID tie break. Selection reads the existing

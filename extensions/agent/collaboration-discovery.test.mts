@@ -14,7 +14,6 @@ import {
 	discoverCollaboration,
 	readRecentCollaboration,
 	RECENT_COLLABORATION_LIMITS,
-	THREAD_DISCOVERY_VISITS,
 } from "./collaboration-discovery.ts";
 
 function fixture(t: { after(fn: () => void): void }) {
@@ -272,7 +271,7 @@ it("pages closed threads after active ones with a stable cursor", async (t) => {
 	});
 });
 
-it("ranks matching threads across every storage in one window, active and newest first", async (t) => {
+it("ranks matching threads across every storage, active and newest first", async (t) => {
 	const { catalog, input } = fixture(t);
 	const published: CollaborationSummary[] = [];
 	for (let index = 0; index < 40; index++)
@@ -281,27 +280,98 @@ it("ranks matching threads across every storage in one window, active and newest
 		.filter((row) => row.title === "docs review")
 		.sort((a, b) => Number(a.closed) - Number(b.closed) || b.updatedAt - a.updatedAt);
 	const first = await discoverCollaboration(catalog, { query: "Docs", limit: 5 });
-	assert.equal(first.coverage.visited, 40, "one call reads every record of a catalog within the window");
+	assert.equal(first.coverage.visited, 40, "one call reads the hints of every record");
 	assert.deepEqual(first.items, matches.slice(0, 5));
 	const rest = await discoverCollaboration(catalog, { query: "Docs", limit: 20, cursor: first.nextCursor });
 	assert.deepEqual(rest.items, matches.slice(5));
 	assert.equal(rest.nextCursor, null);
 });
 
-it("continues a catalog larger than one window in later windows", { timeout: 60000 }, async (t) => {
+it("ranks a catalog of more than a thousand records as a whole and completes its last page", {
+	timeout: 60000,
+}, async (t) => {
 	const { catalog, input } = fixture(t);
-	for (let index = 0; index <= THREAD_DISCOVERY_VISITS; index++) publish(catalog, input, [index]);
-	const seen = new Set<string>();
+	const published: CollaborationSummary[] = [];
+	for (let index = 0; index < 1100; index++) published.push(...publish(catalog, input, [index], 0, index % 2 === 0));
+	const ranked = [...published].sort(
+		(a, b) => Number(a.closed) - Number(b.closed) || b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : 1),
+	);
+	const seen: CollaborationSummary[] = [];
 	let cursor: string | null | undefined;
-	let calls = 0;
+	let last: Awaited<ReturnType<typeof discoverCollaboration>> | undefined;
 	do {
-		const page = await discoverCollaboration(catalog, { limit: 20, ...(cursor ? { cursor } : {}) });
-		for (const item of page.items) seen.add(item.id);
-		cursor = page.nextCursor;
-		calls++;
+		last = await discoverCollaboration(catalog, { limit: 20, ...(cursor ? { cursor } : {}) });
+		assert.equal(last.coverage.visited, 1100);
+		assert.equal(last.coverage.complete, last.nextCursor === null);
+		seen.push(...last.items);
+		cursor = last.nextCursor;
 	} while (cursor);
-	assert.equal(seen.size, THREAD_DISCOVERY_VISITS + 1);
-	assert.equal(calls, Math.ceil(THREAD_DISCOVERY_VISITS / 20) + 1);
+	assert.deepEqual(
+		seen.map((row) => row.id),
+		ranked.map((row) => row.id),
+		"storage ID order never outranks active state and recency",
+	);
+});
+
+it("reads a record again only after its file changed", async (t) => {
+	const { catalog, input } = fixture(t);
+	const records: string[] = [];
+	for (let index = 0; index < 600; index++) records.push(publish(catalog, input, [index])[0].id.split("/")[0]);
+	const reads = t.mock.method(catalog, "derive");
+	const fullReads = t.mock.method(catalog, "read");
+	const first = await discoverCollaboration(catalog, { limit: 20 });
+	assert.equal(reads.mock.callCount(), 600);
+	assert.ok(first.nextCursor);
+	await discoverCollaboration(catalog, { limit: 20, cursor: first.nextCursor });
+	await discoverCollaboration(catalog, { query: "thread" });
+	assert.equal(reads.mock.callCount(), 600, "an unchanged catalog costs a listing and one stat per record");
+	const view = {
+		updatedAt: "2026-10-04T10:00:00.000Z",
+		storageId: records[7],
+		rows: [],
+		coverage: { complete: true, omitted: 0 },
+	};
+	fullReads.mock.resetCalls();
+	new AgentCatalog(join(catalog.root, "..")).updateView(records[7], view, {
+		items: [
+			{
+				id: `${records[7]}/${"f".repeat(32)}`,
+				title: "changed",
+				purpose: "changed",
+				updatedAt: 9000,
+				closed: false,
+				members: 1,
+			},
+		],
+		omitted: 0,
+		updatedAt: "2026-10-04T10:00:00.000Z",
+	});
+	const changed = await discoverCollaboration(catalog, { limit: 1 });
+	assert.equal(changed.items[0]?.title, "changed");
+	assert.equal(reads.mock.callCount(), 601);
+	assert.equal(fullReads.mock.callCount(), 0, "discovery never takes whole records through the validated-record cache");
+});
+
+it("names an unreadable record as an unavailable source", async (t) => {
+	const { catalog, input } = fixture(t);
+	publish(catalog, input, [1]);
+	const broken = "00000000-0000-4000-8000-000000000000";
+	writeFileSync(join(catalog.root, `${broken}.json`), "{ not json");
+	const page = await discoverCollaboration(catalog, {});
+	assert.equal(page.items.length, 1);
+	assert.deepEqual(page.sources, [{ sessionId: broken, omitted: 0, unavailable: true }]);
+	assert.equal(page.coverage.unavailable, 1);
+	assert.equal(page.coverage.complete, false);
+	assert.equal(page.coverage.visited, 2);
+});
+
+it("refuses a cursor of another shape", async (t) => {
+	const { catalog, input } = fixture(t);
+	publish(catalog, input, [1, 2]);
+	const windowed = Buffer.from(JSON.stringify({ query: "", window: null, after: null })).toString("base64url");
+	await assert.rejects(discoverCollaboration(catalog, { cursor: windowed }), {
+		message: "Invalid thread discovery cursor; repeat the same query without cursor",
+	});
 });
 
 it("shows a priority source's threads in prompt mode even outside project scope", async (t) => {
