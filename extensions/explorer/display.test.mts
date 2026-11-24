@@ -201,6 +201,42 @@ test("bounded note listings distinguish returned scope from display limits", () 
 	assert.match(expanded, /stopCount: 2/u);
 });
 
+test("review cards show partial imports and export positions without comment prose in the preview", () => {
+	const review = { range: "base...head" };
+	const imported = card("explorer_notes", { op: "import", review, comments: [{ text: "Private comment text" }] });
+	const call = screen(imported).join("\n");
+	assert.match(call, /review base\.\.\.head · 1 comment/u);
+	assert.doesNotMatch(call, /Private comment text/u);
+	settle(imported, {
+		ok: true,
+		op: "import",
+		summary: "Import receipt.",
+		created: 1,
+		updated: 0,
+		notes: [{ id: noteId, external: "discussion:1" }],
+		skipped: [{ id: "discussion:2", reason: "Missing file" }],
+	});
+	assert.ok(screen(imported).includes("Import: 1 created · 1 skipped."));
+	assert.equal(hints(screen(imported)).length, 1);
+	imported.setExpanded(true);
+	assert.match(screen(imported).join("\n"), /Missing file/u);
+	const exported = card("explorer_notes", { op: "export", review });
+	settle(exported, {
+		ok: true,
+		op: "export",
+		summary: "Export receipt.",
+		review: { label: "Resolved review" },
+		notes: [{ id: noteId, path: "file.ts", start: 3, end: 3, text: "Operator comment", position: { inDiff: false } }],
+	});
+	const collapsed = screen(exported).join("\n");
+	assert.match(collapsed, /Exported 1 operator note\./u);
+	assert.match(collapsed, /1 outside the diff/u);
+	assert.doesNotMatch(collapsed, /Operator comment/u);
+	exported.setExpanded(true);
+	assert.match(screen(exported).join("\n"), /text: Operator comment/u);
+	assert.equal(hints(screen(exported)).length, 0);
+});
+
 test("note listings omit empty groups and distinguish complete from partial empty lists", () => {
 	const component = card("explorer_notes", { op: "list" });
 	const receipt = { ok: true, op: "list", summary: "0 notes match in fixture.", notes: [], tours: [], unreadable: 0 };

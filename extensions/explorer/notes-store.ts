@@ -3,21 +3,49 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, opendir, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
-import { isRelativePath, type Repo, type ReviewScope, resolveAnchor, validScope } from "./repository.ts";
+import {
+	isRelativePath,
+	locateReviewPosition,
+	readReviewAnchor,
+	readReviewDiff,
+	type Repo,
+	type ResolvedScope,
+	type ReviewScope,
+	type ReviewSide,
+	resolveAnchor,
+	resolveScope,
+	validScope,
+} from "./repository.ts";
 
 type State = "draft" | "open" | "sent" | "answered" | "resolved";
-type Author = "operator" | "agent";
+type LocalAuthor = "operator" | "agent";
+type Author = LocalAuthor | "remote";
 type Anchor = { start: number; end: number; commit: string | null; quote: string };
-type ThreadEntry = { id: string; author: Author; text: string; at: string };
+type ThreadEntry = { id: string; author: Author; by?: string; text: string; at: string };
+type RemoteReply = { by: string; text: string; at?: string };
+type RemoteComment = RemoteReply & {
+	id: string;
+	path: string;
+	start: number;
+	end: number;
+	side?: ReviewSide;
+	url?: string;
+	resolved?: boolean;
+	replies?: RemoteReply[];
+};
 export type CreateNote = Anchor & {
 	path: string;
 	side: "head" | "base";
-	author: Author;
+	author: LocalAuthor;
 	state: "draft" | "open" | "sent";
 	text: string;
 	title?: string;
 };
-type StoredNote = Omit<CreateNote, keyof Anchor | "state"> & {
+type StoredNote = Omit<CreateNote, keyof Anchor | "state" | "author"> & {
+	author: Author;
+	by?: string;
+	url?: string;
+	external?: string;
 	id: string;
 	anchor: Anchor;
 	state: State;
@@ -33,13 +61,22 @@ export type Note = StoredNote & {
 	location: "same" | "moved" | "outdated";
 	movedFrom?: number;
 };
-export type Tour = { id: string; title: string; scope?: ReviewScope; stops: string[]; createdAt: string };
+export type Tour = {
+	id: string;
+	title: string;
+	url?: string;
+	summary?: string;
+	scope?: ReviewScope;
+	stops: string[];
+	createdAt: string;
+};
 type Finished = { head: string; at: string };
 type Review = { version: 1; key: string; viewed: string[]; finished?: Finished };
 type Markers = { version: 1; branches: Record<string, Finished> };
 type RecentRoot = { path: string; label: string };
 type Recents = { version: 1; roots: RecentRoot[] };
 type Fields = Record<string, unknown>;
+type WritePlan = () => Promise<{ note?: StoredNote; notes?: StoredNote[]; fields?: Fields }>;
 type ErrorCode = "invalid" | "not-found" | "conflict" | "busy" | "store-failure";
 export class NotesError extends Error {
 	readonly code: ErrorCode;
@@ -67,6 +104,7 @@ const REVIEW_KEY =
 	/^(?:worktree@(?:empty|[0-9a-f]{40}|[0-9a-f]{64})|(?:empty|[0-9a-f]{40}|[0-9a-f]{64})\.\.(?:[0-9a-f]{40}|[0-9a-f]{64}))$/u;
 const WRITE_OPS = new Set([
 	"create",
+	"import",
 	"update",
 	"reply",
 	"state",
@@ -76,7 +114,7 @@ const WRITE_OPS = new Set([
 	"review-set",
 	"remember",
 ]);
-const READ_OPS = new Set(["list", "read", "review-get", "marker"]);
+const READ_OPS = new Set(["list", "read", "export", "review-get", "marker"]);
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const id = (prefix: string) => `${prefix}-${randomBytes(10).toString("hex")}`;
 const now = () => new Date().toISOString();
@@ -114,8 +152,46 @@ function date(value: unknown): value is string {
 		new Date(value).toISOString() === value
 	);
 }
-function author(value: unknown): value is Author {
+function localAuthor(value: unknown): value is LocalAuthor {
 	return value === "agent" || value === "operator";
+}
+function name(value: unknown): value is string {
+	return string(value, 200) && !/[\p{Cc}]/u.test(value);
+}
+function url(value: unknown): value is string {
+	if (!string(value, 2048) || !/^https?:\/\//iu.test(value) || /[\s\p{Cc}]/u.test(value)) return false;
+	return URL.canParse(value);
+}
+function commentText(value: unknown): value is string {
+	return string(value, 16384);
+}
+function remoteReply(value: unknown): value is RemoteReply {
+	return (
+		object(value) &&
+		name(value.by) &&
+		commentText(value.text) &&
+		(value.at === undefined ||
+			(string(value.at, 40) &&
+				/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/u.test(value.at) &&
+				Number.isFinite(Date.parse(value.at))))
+	);
+}
+function remoteComment(value: unknown): value is RemoteComment {
+	return (
+		object(value) &&
+		name(value.id) &&
+		name(value.by) &&
+		commentText(value.text) &&
+		path(value.path) &&
+		line(value.start) &&
+		line(value.end) &&
+		value.start <= value.end &&
+		(value.side === undefined || value.side === "base" || value.side === "head") &&
+		(value.url === undefined || url(value.url)) &&
+		(value.resolved === undefined || typeof value.resolved === "boolean") &&
+		(value.replies === undefined ||
+			(Array.isArray(value.replies) && value.replies.length <= 64 && value.replies.every(remoteReply)))
+	);
 }
 function state(value: unknown): value is State {
 	return value === "draft" || value === "open" || value === "sent" || value === "answered" || value === "resolved";
@@ -146,7 +222,6 @@ function noteBody(value: Fields): boolean {
 	return (
 		path(value.path) &&
 		(value.side === "head" || value.side === "base") &&
-		author(value.author) &&
 		text(value.text) &&
 		(value.title === undefined || title(value.title))
 	);
@@ -155,18 +230,33 @@ function createNote(value: unknown): value is CreateNote {
 	return (
 		object(value) &&
 		noteBody(value) &&
+		localAuthor(value.author) &&
 		(value.state === "draft" || value.state === "open" || value.state === "sent") &&
 		anchor(value)
 	);
 }
 function entry(value: unknown): value is ThreadEntry {
-	return object(value) && matches(value.id, ENTRY_ID) && author(value.author) && text(value.text) && date(value.at);
+	return (
+		object(value) &&
+		matches(value.id, ENTRY_ID) &&
+		text(value.text) &&
+		date(value.at) &&
+		(value.author === "remote"
+			? name(value.by)
+			: localAuthor(value.author) && (value.by === undefined || name(value.by)))
+	);
 }
 function storedNote(value: unknown, expectedId: string): value is StoredNote {
 	return (
 		object(value) &&
 		value.id === expectedId &&
 		noteBody(value) &&
+		(value.author === "remote"
+			? name(value.by) && name(value.external) && (value.url === undefined || url(value.url))
+			: localAuthor(value.author) &&
+				value.by === undefined &&
+				value.external === undefined &&
+				value.url === undefined) &&
 		anchor(value.anchor) &&
 		state(value.state) &&
 		date(value.createdAt) &&
@@ -197,6 +287,8 @@ function tourRecord(value: unknown, expectedId: string): value is Tour {
 		object(value) &&
 		value.id === expectedId &&
 		title(value.title) &&
+		(value.url === undefined || url(value.url)) &&
+		(value.summary === undefined || commentText(value.summary)) &&
 		date(value.createdAt) &&
 		idList(value.stops, MAX_TOUR) &&
 		(value.scope === undefined || validScope(value.scope))
@@ -299,6 +391,30 @@ export async function recentRoots(dir: string): Promise<RecentRoot[]> {
 	if (!absoluteStorePath(dir) || !(await directory(resolve(dir), false))) return [];
 	const { value } = await readRecord(join(dir, "recents.json"));
 	return recentRecord(value) ? value.roots.map(({ path, label }) => ({ path, label })) : [];
+}
+
+function importThread(comment: RemoteComment, previous: StoredNote | undefined, noteId: string, at: string) {
+	const local = previous?.thread.filter((reply) => reply.author !== "remote") ?? [];
+	const remote = new Map(
+		previous?.thread.filter((reply) => reply.author === "remote").map((reply) => [reply.id, reply.at]),
+	);
+	const occurrences = new Map<string, number>();
+	const thread = (comment.replies ?? []).map(({ by, text, at: sourceTime }): ThreadEntry => {
+		const signature = hash(JSON.stringify([by, text, sourceTime]));
+		const index = occurrences.get(signature) ?? 0;
+		occurrences.set(signature, index + 1);
+		const entryId = `r-${hash(`${noteId}:${signature}:${index}`).slice(0, 20)}`;
+		return {
+			id: entryId,
+			author: "remote",
+			by,
+			text,
+			at: sourceTime ? new Date(sourceTime).toISOString() : (remote.get(entryId) ?? at),
+		};
+	});
+	thread.push(...local);
+	thread.sort((a, b) => a.at.localeCompare(b.at));
+	return thread;
 }
 
 export class NotesStore {
@@ -504,33 +620,34 @@ export class NotesStore {
 		return { version: 1, branches: {} };
 	}
 
-	async request(op: string, fields: Fields = {}): Promise<Fields> {
+	async request(op: string, fields: Fields = {}, signal?: AbortSignal): Promise<Fields> {
 		try {
 			check(object(fields) && (READ_OPS.has(op) || WRITE_OPS.has(op)), "Unknown Explorer notes operation.");
-			if (WRITE_OPS.has(op)) {
-				const plan = this.plan(op, fields);
-				const result = await this.locked(async () => {
-					await this.init(true);
-					return plan();
-				});
-				if (result.note) return { note: await this.resolve(result.note) };
-				if (result.notes) {
-					const notes: Note[] = [];
-					for (let index = 0; index < result.notes.length; index += 8) {
-						notes.push(...(await Promise.all(result.notes.slice(index, index + 8).map((note) => this.resolve(note)))));
-					}
-					return { notes };
-				}
-				return result.fields ?? {};
-			}
-			return await this.read(op, fields);
+			if (WRITE_OPS.has(op)) return await this.write(op, fields, signal);
+			return await this.read(op, fields, signal);
 		} catch (error) {
 			if (error instanceof NotesError) throw error;
 			return message("store-failure", "The Explorer store operation failed.");
 		}
 	}
 
-	private async read(op: string, fields: Fields): Promise<Fields> {
+	private async write(op: string, fields: Fields, signal?: AbortSignal): Promise<Fields> {
+		const plan = op === "import" ? await this.planImport(fields, signal) : this.plan(op, fields);
+		const result = await this.locked(async () => {
+			signal?.throwIfAborted();
+			await this.init(true);
+			return plan();
+		});
+		if (result.note) return { note: await this.resolve(result.note) };
+		if (!result.notes) return result.fields ?? {};
+		const notes: Note[] = [];
+		for (let index = 0; index < result.notes.length; index += 8) {
+			notes.push(...(await Promise.all(result.notes.slice(index, index + 8).map((note) => this.resolve(note)))));
+		}
+		return { notes };
+	}
+
+	private async read(op: string, fields: Fields, signal?: AbortSignal): Promise<Fields> {
 		const status = await this.init(false);
 		switch (op) {
 			case "list": {
@@ -544,6 +661,8 @@ export class NotesStore {
 				if (status !== "ready") return message("not-found", "The Explorer note is missing or unreadable.");
 				return { note: await this.resolve(await this.note(id)) };
 			}
+			case "export":
+				return this.exportReview(fields, status, signal);
 			case "review-get": {
 				const { key } = fields;
 				check(matches(key, REVIEW_KEY), "An Explorer review key is required.");
@@ -560,6 +679,145 @@ export class NotesStore {
 			default:
 				return message("invalid", "Unknown Explorer notes operation.");
 		}
+	}
+
+	private async review(scope: unknown): Promise<ResolvedScope> {
+		check(validScope(scope), "An Explorer review scope is required.");
+		const branch = this.repo.branch;
+		const marks = scope.kind === "since-review" && branch ? await this.markers(false) : undefined;
+		const marker = branch && marks && Object.hasOwn(marks.branches, branch) ? marks.branches[branch]?.head : undefined;
+		return resolveScope(this.repo, scope, marker).catch((error: Error) => message("invalid", error.message));
+	}
+
+	private async remoteNotes() {
+		const budget = { bytes: 0, unreadable: 0, truncated: false };
+		const existing = new Map<string, StoredNote>();
+		for (const note of await this.listStoredNotes(undefined, budget)) {
+			if (note.author !== "remote" || note.external === undefined) continue;
+			if (existing.has(note.external))
+				return message("store-failure", "Remote comment IDs in the Explorer store are not unique.");
+			existing.set(note.external, note);
+		}
+		if (budget.truncated || budget.unreadable)
+			return message("store-failure", "The Explorer store could not check all remote comment IDs.");
+		return existing;
+	}
+
+	private async planImport(fields: Fields, signal?: AbortSignal): Promise<WritePlan> {
+		const { comments } = fields;
+		check(
+			Array.isArray(comments) && comments.length > 0 && comments.length <= MAX_BATCH && comments.every(remoteComment),
+			"The remote comments are invalid.",
+		);
+		check(
+			new Set(comments.map(({ id }) => id)).size === comments.length,
+			"Remote comment IDs must be unique within an import.",
+		);
+		const review = await this.review(fields.review);
+		const skipped: { id: string; reason: string }[] = [];
+		const ready: { comment: RemoteComment; side: ReviewSide; anchor: Anchor }[] = [];
+		for (const comment of comments) {
+			signal?.throwIfAborted();
+			const { path, start, end, side = "head" } = comment;
+			try {
+				const anchor = await readReviewAnchor(this.repo, review, path, side, start, end);
+				if (!string(anchor.quote, MiB, false)) throw new Error("The note quote exceeds its size limit.");
+				ready.push({ comment, side, anchor });
+			} catch (error) {
+				skipped.push({
+					id: comment.id,
+					reason:
+						object(error) && error.code === "ENOENT"
+							? "The review file is missing."
+							: error instanceof Error
+								? error.message
+								: "The comment could not be anchored.",
+				});
+			}
+		}
+		return async () => {
+			let updated = 0;
+			const notes: { id: string; external: string }[] = [];
+			if (!ready.length) return { fields: { created: 0, updated, notes, skipped } };
+			const existing = await this.remoteNotes();
+			await directory(join(this.repoDir, "notes"), true);
+			const at = now();
+			for (const { comment, side, anchor } of ready) {
+				const previous = existing.get(comment.id);
+				const noteId = previous?.id ?? id("n");
+				const thread = importThread(comment, previous, noteId, at);
+				const note: StoredNote = {
+					id: noteId,
+					author: "remote",
+					by: comment.by,
+					external: comment.id,
+					url: comment.url,
+					path: comment.path,
+					side,
+					anchor,
+					state: comment.resolved ? "resolved" : "open",
+					text: comment.text,
+					thread,
+					requestId: previous?.requestId,
+					createdAt: previous?.createdAt ?? at,
+					updatedAt: at,
+				};
+				const data = JSON.stringify(note);
+				if (thread.length > MAX_THREAD || Buffer.byteLength(data) + 1 > MAX_RECORD) {
+					skipped.push({ id: comment.id, reason: "The note and its replies exceed the store limit." });
+					continue;
+				}
+				await replace(this.file("notes", noteId), `${data}\n`);
+				updated += Number(previous !== undefined);
+				notes.push({ id: noteId, external: comment.id });
+			}
+			return { fields: { created: notes.length - updated, updated, notes, skipped } };
+		};
+	}
+
+	private async exportReview(fields: Fields, status: "ready" | "empty" | "unreadable", signal?: AbortSignal) {
+		const { ids } = fields;
+		check(ids === undefined || idList(ids, MAX_BATCH), "The export note IDs are invalid.");
+		const review = await this.review(fields.review);
+		const { base, head, label } = review;
+		if (status === "unreadable") return message("store-failure", "The Explorer notes store is unreadable.");
+		let selected: StoredNote[];
+		if (ids !== undefined) {
+			selected = await Promise.all(ids.map((id) => this.note(id)));
+			check(
+				selected.every((note) => note.author === "operator"),
+				"Only operator notes can be exported.",
+			);
+		} else {
+			const budget = { bytes: 0, unreadable: 0, truncated: false };
+			selected =
+				status === "ready"
+					? (await this.listStoredNotes(undefined, budget)).filter(
+							(note) => note.author === "operator" && (note.state === "draft" || note.state === "sent"),
+						)
+					: [];
+			if (budget.truncated || budget.unreadable)
+				return message(
+					"store-failure",
+					"The Explorer store could not read all exportable notes. Select exact note IDs.",
+				);
+		}
+		const scope = { base, head, label };
+		if (!selected.length) return { review: scope, notes: [] };
+		const diff = await readReviewDiff(this.repo, review).catch((error: Error) => message("invalid", error.message));
+		const notes = [];
+		let output = 512;
+		for (const stored of selected) {
+			signal?.throwIfAborted();
+			const note = await this.resolve(stored);
+			const position = await locateReviewPosition(this.repo, review, diff, note);
+			const { id, path, side, title, text, state } = note;
+			const row = { id, path, side, title, text, state, ...position };
+			output += Buffer.byteLength(JSON.stringify(row)) + 1;
+			if (output > MAX_RESULT) return message("conflict", "Select fewer Explorer notes for this export.");
+			notes.push(row);
+		}
+		return { review: scope, notes };
 	}
 
 	private checkEditable(note: StoredNote) {
@@ -599,7 +857,7 @@ export class NotesStore {
 		if (op === "delete")
 			return async () => {
 				const note = await this.note(noteId);
-				if (note.author !== "operator") message("conflict", "Only operator notes can be deleted.");
+				if (note.author === "agent") message("conflict", "Only operator or remote notes can be deleted.");
 				await unlink(this.file("notes", noteId));
 				return {};
 			};
@@ -610,7 +868,7 @@ export class NotesStore {
 				this.checkEditable(note);
 				return this.saveNote({ ...note, text: body });
 			};
-		check(author(who) && (request === undefined || requestId(request)), "The reply is invalid.");
+		check(localAuthor(who) && (request === undefined || requestId(request)), "The reply is invalid.");
 		return async () => {
 			const note = await this.note(noteId);
 			if (note.thread.length >= MAX_THREAD) return message("conflict", "This Explorer note thread is full.");
@@ -620,10 +878,50 @@ export class NotesStore {
 		};
 	}
 
-	private plan(
-		op: string,
-		fields: Fields,
-	): () => Promise<{ note?: StoredNote; notes?: StoredNote[]; fields?: Fields }> {
+	private planTour(fields: Fields): WritePlan {
+		const { title: name, scope, notes: stops, url: link, summary } = fields;
+		check(
+			title(name) &&
+				(link === undefined || url(link)) &&
+				(summary === undefined || commentText(summary)) &&
+				(scope === undefined || validScope(scope)) &&
+				Array.isArray(stops) &&
+				stops.length > 0 &&
+				stops.length <= MAX_TOUR &&
+				stops.every((note) => createNote(note) && note.author === "agent"),
+			"The walkthrough is invalid.",
+		);
+		const tourId = id("t");
+		const notes = (stops as CreateNote[]).map((note, index) => this.make(note, { id: tourId, order: index + 1 }));
+		const tour: Tour = {
+			id: tourId,
+			title: name,
+			...(link === undefined ? {} : { url: link }),
+			...(summary === undefined ? {} : { summary }),
+			scope: scope as ReviewScope | undefined,
+			stops: notes.map((note) => note.id),
+			createdAt: now(),
+		};
+		const records = notes.map((note) => ({ file: this.file("notes", note.id), data: serialise(note) }));
+		return async () => {
+			await directory(join(this.repoDir, "tours"), true);
+			await directory(join(this.repoDir, "notes"), true);
+			const created: string[] = [];
+			try {
+				for (const { file, data } of records) {
+					await replace(file, data);
+					created.push(file);
+				}
+				await replace(this.file("tours", tour.id), serialise(tour));
+			} catch (error) {
+				await Promise.allSettled(created.map((file) => unlink(file)));
+				throw error;
+			}
+			return { fields: { tour } };
+		};
+	}
+
+	private plan(op: string, fields: Fields): WritePlan {
 		switch (op) {
 			case "create": {
 				check(createNote(fields.note), "The note is invalid.");
@@ -661,44 +959,8 @@ export class NotesStore {
 					return { notes: records.map(({ note }) => note) };
 				};
 			}
-			case "tour-create": {
-				const { title: name, scope, notes: stops } = fields;
-				check(
-					title(name) &&
-						(scope === undefined || validScope(scope)) &&
-						Array.isArray(stops) &&
-						stops.length > 0 &&
-						stops.length <= MAX_TOUR &&
-						stops.every((note) => createNote(note) && note.author === "agent"),
-					"The walkthrough is invalid.",
-				);
-				const tourId = id("t");
-				const notes = (stops as CreateNote[]).map((note, index) => this.make(note, { id: tourId, order: index + 1 }));
-				const tour: Tour = {
-					id: tourId,
-					title: name,
-					scope: scope as ReviewScope | undefined,
-					stops: notes.map((note) => note.id),
-					createdAt: now(),
-				};
-				const records = notes.map((note) => ({ file: this.file("notes", note.id), data: serialise(note) }));
-				return async () => {
-					await directory(join(this.repoDir, "tours"), true);
-					await directory(join(this.repoDir, "notes"), true);
-					const created: string[] = [];
-					try {
-						for (const { file, data } of records) {
-							await replace(file, data);
-							created.push(file);
-						}
-						await replace(this.file("tours", tour.id), serialise(tour));
-					} catch (error) {
-						await Promise.allSettled(created.map((file) => unlink(file)));
-						throw error;
-					}
-					return { fields: { tour } };
-				};
-			}
+			case "tour-create":
+				return this.planTour(fields);
 			case "tour-delete": {
 				const { id } = fields;
 				check(matches(id, TOUR_ID), "An Explorer walkthrough ID is required.");

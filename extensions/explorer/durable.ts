@@ -3,6 +3,7 @@ import { nativeConversationConnection, nativeLive } from "./live-host.ts";
 import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
 import {
 	NOTES_DESCRIPTION,
+	NOTES_OUTPUT_BYTES,
 	NotesParameters,
 	outcomeContent,
 	outcomeDetails,
@@ -66,7 +67,7 @@ export function explorerContribution(source: string, bus: SettingsBus, stopFacto
 				parameters: NotesParameters,
 				structuredOutputSchema: ToolOutcomeSchema,
 				replay: "unsafe",
-				outputLimits: { maxBytes: 128 * 1024, maxLines: 32 },
+				outputLimits: { maxBytes: NOTES_OUTPUT_BYTES, maxLines: 32 },
 				async execute(input, _api, context) {
 					const value = await runNotes(input, { cwd: host.cwd, dir, signal: context.abortSignal });
 					return {

@@ -121,6 +121,7 @@ function callParts(name: string, args: Record<string, unknown>) {
 	const op = line(args.op);
 	const ids = array(args.ids).map(line).filter(Boolean);
 	const stops = array(args.stops);
+	const comments = array(args.comments);
 	const targets = [path, line(args.id), ids.join(", "), line(args.title), root].filter(Boolean);
 	const [main, ...others] = targets;
 	return {
@@ -131,6 +132,7 @@ function callParts(name: string, args: Record<string, unknown>) {
 			reviewRef && `review ${reviewRef}`,
 			line(args.state),
 			stops.length && count(stops.length, "stop"),
+			comments.length && count(comments.length, "comment"),
 		].filter(Boolean),
 		body: bodyText(args.text),
 		hidden:
@@ -145,7 +147,7 @@ function callParts(name: string, args: Record<string, unknown>) {
 }
 
 function noteLocation(note: Record<string, unknown>) {
-	return [line(note.id), `${pathLine(note.path)}${range(note.start, note.end)}`, line(note.state)]
+	return [line(note.id), `${pathLine(note.path)}${range(note.start, note.end)}`, line(note.state), line(note.by)]
 		.filter(Boolean)
 		.join(" · ");
 }
@@ -233,8 +235,47 @@ function listReadout(d: Record<string, unknown>): Readout {
 	};
 }
 
+function importedReadout(d: Record<string, unknown>): Readout {
+	const notes = array(d.notes);
+	const skipped = array(d.skipped);
+	const changed = [
+		typeof d.created === "number" && d.created > 0 && `${d.created} created`,
+		typeof d.updated === "number" && d.updated > 0 && `${d.updated} updated`,
+		skipped.length && `${skipped.length} skipped`,
+	]
+		.filter(Boolean)
+		.join(" · ");
+	return {
+		outcome: changed ? `Import: ${changed}.` : "No remote comments imported.",
+		warning: skipped.length > 0,
+		expanded: fields({ notes: notes.length ? notes : undefined, skipped: skipped.length ? skipped : undefined }),
+	};
+}
+
+function exportedReadout(d: Record<string, unknown>): Readout {
+	const notes = array(d.notes).map(record);
+	const outside = notes.filter(({ position }) => record(position).inDiff === false).length;
+	const unplaced = notes.filter(({ position }) => position === null).length;
+	return {
+		outcome: notes.length ? `Exported ${count(notes.length, "operator note")}.` : "No operator notes to export.",
+		facts: [
+			line(record(d.review).label),
+			outside && `${outside} outside the diff`,
+			unplaced && `${unplaced} without a position`,
+		].filter((fact): fact is string => typeof fact === "string" && !!fact),
+		warning: outside > 0 || unplaced > 0,
+		body: notes.map(noteLocation).join("\n"),
+		replacesBody: true,
+		expanded: [field("review", d.review), ...notes.map(fields)].join("\n\n"),
+	};
+}
+
 function notesReadout(d: Record<string, unknown>): Readout {
-	if (d.op === "list" && d.ok === true) return listReadout(d);
+	if (d.ok === true) {
+		if (d.op === "list") return listReadout(d);
+		if (d.op === "import") return importedReadout(d);
+		if (d.op === "export") return exportedReadout(d);
+	}
 	const outcome = firstLine(bodyText(d.summary));
 	const note = record(d.note);
 	if (typeof note.text === "string") return noteReadout(note, outcome, d.op === "read");

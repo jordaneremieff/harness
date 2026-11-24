@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 export type ReviewScope =
 	| { kind: "uncommitted" }
 	| { kind: "commit"; commit: string }
-	| { kind: "range"; base: string; head: string }
+	| { kind: "range"; base: string; head: string; mergeBase?: true }
 	| { kind: "branch"; base?: string }
 	| { kind: "since-review" };
 export interface ResolvedScope {
@@ -67,7 +67,11 @@ export function validScope(value: unknown): value is ReviewScope {
 		case "commit":
 			return ref(input.commit) && Object.keys(input).length === 2;
 		case "range":
-			return ref(input.base) && ref(input.head) && Object.keys(input).length === 3;
+			return (
+				ref(input.base) &&
+				ref(input.head) &&
+				(input.mergeBase === true ? Object.keys(input).length === 4 : Object.keys(input).length === 3)
+			);
 		default:
 			return false;
 	}
@@ -228,7 +232,9 @@ export async function resolveScope(repo: Repo, scope: ReviewScope, marker?: stri
 			key: `worktree@${repo.head ?? "empty"}`,
 		};
 	if (scope.kind === "range") {
-		const [base, head] = await Promise.all([commit(repo.root, scope.base), commit(repo.root, scope.head)]);
+		const [target, head] = await Promise.all([commit(repo.root, scope.base), commit(repo.root, scope.head)]);
+		const base = scope.mergeBase ? await optionalGit(repo.root, ["merge-base", target, head]) : target;
+		if (!base || !sha(base)) throw new Error("The review base and head have no common ancestor.");
 		return review(scope, base, head, `${short(base)}..${short(head)}`);
 	}
 	const head = scope.kind === "commit" ? await commit(repo.root, scope.commit) : repo.head;
@@ -250,7 +256,7 @@ export async function defaultScope(repo: Repo): Promise<ReviewScope> {
 function sourceLines(bytes: Uint8Array) {
 	if (bytes.includes(0)) throw new Error("A note requires text, not binary data.");
 	const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes).replace(/\r\n/gu, "\n");
-	return (content.endsWith("\n") ? content.slice(0, -1) : content).split("\n");
+	return content === "" ? [] : (content.endsWith("\n") ? content.slice(0, -1) : content).split("\n");
 }
 async function readLines(repo: Repo, path: string): Promise<string[]> {
 	if (!isRelativePath(path)) throw new Error("Invalid relative file path.");
@@ -300,11 +306,8 @@ async function committedLines(repo: Repo, path: string, at: string) {
 	return sourceLines(bytes);
 }
 export async function readAnchor(repo: Repo, path: string, start: number, end: number, at?: string): Promise<Anchor> {
-	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start)
-		throw new Error("Note lines must be ordered positive integers.");
 	const lines = at ? await committedLines(repo, path, at) : await readLines(repo, path);
-	if (end > lines.length) throw new Error("The requested note lines are outside the file.");
-	return { start, end, commit: at ?? repo.head, quote: lines.slice(start - 1, end).join("\n") };
+	return anchorLines(lines, start, end, at ?? repo.head);
 }
 export async function reviewAnchor(repo: Repo, path: string, start: number, end: number, review?: ResolvedScope) {
 	const head = review?.head;
@@ -355,6 +358,290 @@ function uniqueQuote(lines: string[], needle: string[]): number {
 	}
 	return found;
 }
+export type ReviewSide = "head" | "base";
+
+function reviewLines(repo: Repo, review: ResolvedScope, path: string, side: ReviewSide): Promise<string[]> {
+	const ref = side === "base" ? review.base : review.head;
+	if (ref === null) throw new Error("The review has no base file.");
+	return ref === "worktree" ? readLines(repo, path) : committedLines(repo, path, ref);
+}
+
+function anchorLines(lines: string[], start: number, end: number, commit: string | null): Anchor {
+	if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start)
+		throw new Error("Note lines must be ordered positive integers.");
+	if (end > lines.length) throw new Error("The requested note lines are outside the file.");
+	return { start, end, commit, quote: lines.slice(start - 1, end).join("\n") };
+}
+
+export async function readReviewAnchor(
+	repo: Repo,
+	review: ResolvedScope,
+	path: string,
+	side: ReviewSide,
+	start: number,
+	end: number,
+): Promise<Anchor> {
+	return anchorLines(
+		await reviewLines(repo, review, path, side),
+		start,
+		end,
+		side === "base" ? review.base : review.head === "worktree" ? repo.head : review.head,
+	);
+}
+
+type Point = { old: number | null; new: number | null; kind: "added" | "deleted" | "context" };
+export type Position = { oldPath: string; newPath: string; start: Point; end: Point; inDiff: boolean };
+type Span = { start: number; end: number; point: Point };
+type Shift = { base: number; head: number };
+type FileDiff = {
+	oldPath: string;
+	newPath: string;
+	spans: Record<ReviewSide, Span[]>;
+	shifts: Shift[];
+	unsupported: boolean;
+	untracked?: true;
+};
+type ReviewDiff = Record<ReviewSide, Map<string, FileDiff>>;
+const diffLimit = 16 * 1024 * 1024;
+const diffSafety = ["--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=all"];
+
+async function withoutCleanFilters(root: string): Promise<string[]> {
+	const keys = await git(
+		root,
+		["config", "--null", "--name-only", "--get-regexp", "^filter\\..*\\.(clean|process|required)$"],
+		sourceLimit,
+	).catch((error: { code?: string | number }) => {
+		if (Number(error.code) === 1) return "";
+		throw error;
+	});
+	return [...new Set(keys.split("\0").filter(Boolean))].flatMap((key) => [
+		"-c",
+		`${key}=${key.endsWith(".required") ? "false" : ""}`,
+	]);
+}
+
+function addSpan(spans: Span[], start: number, length: number, point: Point) {
+	if (!length) return;
+	const previous = spans.at(-1);
+	const past = previous && pointAt(previous, start);
+	if (previous?.end === start - 1 && past?.kind === point.kind && past.old === point.old && past.new === point.new)
+		previous.end += length;
+	else spans.push({ start, end: start + length - 1, point });
+}
+
+type Hunk = { oldLine: number; newLine: number; oldLeft: number; newLeft: number };
+
+function parseHunkHeader(line: string): Hunk | undefined {
+	const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/u.exec(line);
+	if (!hunk) return undefined;
+	return {
+		oldLine: Number(hunk[1]),
+		oldLeft: Number(hunk[2] ?? 1),
+		newLine: Number(hunk[3]),
+		newLeft: Number(hunk[4] ?? 1),
+	};
+}
+
+function appendHunkLine(file: FileDiff, hunk: Hunk, prefix: string) {
+	if (prefix !== " " && prefix !== "+" && prefix !== "-") throw new Error("Git returned an incomplete diff hunk.");
+	const point: Point = {
+		old: prefix === "+" ? null : hunk.oldLine,
+		new: prefix === "-" ? null : hunk.newLine,
+		kind: prefix === "+" ? "added" : prefix === "-" ? "deleted" : "context",
+	};
+	if (point.old !== null) {
+		addSpan(file.spans.base, hunk.oldLine++, 1, point);
+		hunk.oldLeft--;
+	}
+	if (point.new !== null) {
+		addSpan(file.spans.head, hunk.newLine++, 1, point);
+		hunk.newLeft--;
+	}
+	if (hunk.oldLeft < 0 || hunk.newLeft < 0) throw new Error("Git returned an invalid diff hunk.");
+}
+
+function unfinished(hunk: Hunk | undefined): hunk is Hunk {
+	return hunk !== undefined && (hunk.oldLeft > 0 || hunk.newLeft > 0);
+}
+
+function parseHunks(file: FileDiff, patch: string) {
+	let hunk: Hunk | undefined;
+	for (const line of patch.split("\n")) {
+		if (unfinished(hunk)) {
+			if (!line.startsWith("\\ ")) appendHunkLine(file, hunk, line[0]);
+			continue;
+		}
+		if (line.startsWith("Binary files ")) file.unsupported = true;
+		hunk = parseHunkHeader(line);
+		if (hunk) file.shifts.push({ base: hunk.oldLine + (hunk.oldLeft || 1), head: hunk.newLine + (hunk.newLeft || 1) });
+	}
+	if (unfinished(hunk)) throw new Error("Git returned an incomplete diff hunk.");
+}
+
+function addReviewFile(diff: ReviewDiff, file: FileDiff, status: string) {
+	if (status !== "A") diff.base.set(file.oldPath, file);
+	if (status !== "D") diff.head.set(file.newPath, file);
+}
+
+function parseReviewDiff(source: string): ReviewDiff {
+	const diff: ReviewDiff = { base: new Map(), head: new Map() };
+	if (!source) return diff;
+	// The NUL-delimited raw records carry exact paths in patch order, including renames.
+	const boundary = source.indexOf("\0\0");
+	if (boundary < 0) throw new Error("Git returned incomplete review paths.");
+	const raw = source.slice(0, boundary).split("\0");
+	const patches = source
+		.slice(boundary + 2)
+		.split(/^diff --git /mu)
+		.slice(1);
+	let patch = 0;
+	for (let index = 0; index < raw.length; ) {
+		const status = /^:[^\n]+ ([A-Z])[0-9]*$/u.exec(raw[index++])?.[1];
+		const oldPath = raw[index++];
+		const newPath = status === "R" ? raw[index++] : oldPath;
+		if (!status || oldPath === undefined || newPath === undefined)
+			throw new Error("Git returned invalid review paths.");
+		const file: FileDiff = { oldPath, newPath, spans: { base: [], head: [] }, shifts: [], unsupported: false };
+		parseHunks(file, patches[patch++] ?? "");
+		if (status === "T") parseHunks(file, patches[patch++] ?? "");
+		addReviewFile(diff, file, status);
+	}
+	if (patch !== patches.length) throw new Error("Git returned mismatched review paths and patches.");
+	return diff;
+}
+
+export async function readReviewDiff(repo: Repo, review: ResolvedScope): Promise<ReviewDiff> {
+	const base = review.base ?? (await git(repo.root, ["hash-object", "-t", "tree", "/dev/null"])).trim();
+	const worktree = review.head === "worktree";
+	try {
+		const config = worktree ? await withoutCleanFilters(repo.root) : [];
+		const output = await git(
+			repo.root,
+			[
+				...config,
+				"-c",
+				"diff.suppressBlankEmpty=false",
+				"diff",
+				...diffSafety,
+				"--find-renames",
+				"-l0",
+				"--raw",
+				"-z",
+				"--patch",
+				"--unified=3",
+				"--inter-hunk-context=0",
+				"--submodule=short",
+				"--output-indicator-old=-",
+				"--output-indicator-new=+",
+				"--output-indicator-context= ",
+				base,
+				...(worktree ? [] : [review.head]),
+				"--",
+			],
+			diffLimit,
+		);
+		const diff = parseReviewDiff(output);
+		if (worktree) {
+			const others = await git(repo.root, ["ls-files", "-z", "--others", "--exclude-standard", "--"], diffLimit);
+			for (const path of others.split("\0")) {
+				if (!path || diff.head.has(path)) continue;
+				diff.head.set(path, {
+					oldPath: path,
+					newPath: path,
+					spans: { base: [], head: [] },
+					shifts: [],
+					unsupported: false,
+					untracked: true,
+				});
+			}
+		}
+		return diff;
+	} catch {
+		throw new Error("Git could not read the review diff within its size or time limit.");
+	}
+}
+
+function pointAt(span: Span, line: number): Point {
+	const offset = line - span.start;
+	const { old, new: fresh, kind } = span.point;
+	return { old: old === null ? null : old + offset, new: fresh === null ? null : fresh + offset, kind };
+}
+
+function diffPoint(spans: Span[], shifts: Shift[], side: ReviewSide, line: number): Point {
+	for (const span of spans) {
+		if (line < span.start) break;
+		if (line <= span.end) return pointAt(span, line);
+	}
+	let offset = 0;
+	for (const shift of shifts) {
+		if (line < shift[side]) break;
+		offset = shift.head - shift.base;
+	}
+	return side === "base"
+		? { old: line, new: line + offset, kind: "context" }
+		: { old: line - offset, new: line, kind: "context" };
+}
+
+function reviewQuoteStart(lines: string[], needle: string[], note: Pick<Anchor, "start" | "end">, anchor: Anchor) {
+	const matches = (start: number, end: number) =>
+		end - start + 1 === needle.length &&
+		start >= 1 &&
+		end <= lines.length &&
+		needle.every((line, index) => lines[start - 1 + index] === line);
+	return matches(note.start, note.end)
+		? note.start
+		: matches(anchor.start, anchor.end)
+			? anchor.start
+			: uniqueQuote(lines, needle);
+}
+
+function coversRange(spans: Span[], start: number, end: number) {
+	let covered = start;
+	for (const span of spans) {
+		if (span.end < covered) continue;
+		if (span.start > covered) break;
+		covered = span.end + 1;
+		if (covered > end) return true;
+	}
+	return false;
+}
+
+export async function locateReviewPosition(
+	repo: Repo,
+	review: ResolvedScope,
+	diff: ReviewDiff,
+	note: { path: string; side: ReviewSide; start: number; end: number; anchor: Anchor },
+): Promise<{ start: number; end: number; position: Position | null; reason?: string }> {
+	const { path, side, anchor } = note;
+	const counterpart = diff[side === "base" ? "head" : "base"].get(path);
+	const file = diff[side].get(path) ?? (counterpart?.oldPath !== counterpart?.newPath ? counterpart : undefined);
+	const oldPath = file?.oldPath ?? path;
+	const newPath = file?.newPath ?? path;
+	const lines = await reviewLines(repo, review, side === "base" ? oldPath : newPath, side).catch(() => null);
+	const missing = (reason: string) => ({ start: note.start, end: note.end, position: null, reason });
+	if (!lines) return missing("The review side does not contain readable text at this path.");
+	if (file?.unsupported) return missing("Git did not produce comparable text for this path.");
+	const needle = anchor.quote.split("\n");
+	const start = reviewQuoteStart(lines, needle, note, anchor);
+	if (!start) return missing("The note quote does not match a unique location on this review side.");
+	const end = start + needle.length - 1;
+	let spans = file?.spans[side] ?? [];
+	if (side === "head" && file?.untracked)
+		spans = [{ start: 1, end: lines.length, point: { old: null, new: 1, kind: "added" } }];
+	const shifts = file?.shifts ?? [];
+	return {
+		start,
+		end,
+		position: {
+			oldPath,
+			newPath,
+			start: diffPoint(spans, shifts, side, start),
+			end: diffPoint(spans, shifts, side, end),
+			inDiff: coversRange(spans, start, end),
+		},
+	};
+}
+
 export async function resolveAnchor(repo: Repo, path: string, anchor: Anchor): Promise<Location> {
 	const { start, end } = anchor;
 	const outdated: Location = { start, end, location: "outdated" };
@@ -370,12 +657,13 @@ export async function resolveAnchor(repo: Repo, path: string, anchor: Anchor): P
 		movedFrom: start,
 	});
 	if (end - start + 1 === needle.length && matches(start)) return { start, end, location: "same" };
-	if (repo.kind === "git" && anchor.commit && sha(anchor.commit)) {
-		const diff = await git(
-			repo.root,
-			["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=0", anchor.commit, "--", path],
-			sourceLimit,
-		).catch(() => null);
+	const atCommit = anchor.commit;
+	if (repo.kind === "git" && atCommit && sha(atCommit)) {
+		const diff = await withoutCleanFilters(repo.root)
+			.then((config) =>
+				git(repo.root, [...config, "diff", ...diffSafety, "--unified=0", atCommit, "--", path], sourceLimit),
+			)
+			.catch(() => null);
 		const at = diff === null ? undefined : mappedStart(diff, anchor);
 		if (at !== undefined && at !== start && matches(at)) return moved(at);
 	}

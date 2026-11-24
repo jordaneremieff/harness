@@ -2,7 +2,7 @@ import { arr, bool, int, lit, obj, opt, type Static, str, union } from "@earendi
 import type { LiveBridge } from "./live-bridge.ts";
 import { liveArguments } from "./live-launch.ts";
 import type { LiveConfig } from "./live-protocol.ts";
-import { type Note, NotesError, NotesStore } from "./notes-store.ts";
+import { type Note, NotesError, NotesStore, type Tour } from "./notes-store.ts";
 import { BUILD_COMMAND, type LaunchTarget, paneLaunch } from "./pane-command.ts";
 import {
 	isRelativePath,
@@ -21,11 +21,28 @@ const noteId = str({ pattern: "^n-[a-f0-9]{20}$" });
 const line = int({ minimum: 1, maximum: 2_147_483_647 });
 const title = str({ minLength: 1, maxLength: 200 });
 const text = str({ minLength: 1, maxLength: 16384 });
+const url = str({ minLength: 1, maxLength: 2048, description: "HTTP or HTTPS URL" });
+const reply = obj({ by: title, text, at: opt(str({ maxLength: 40, description: "ISO 8601 date and time" })) }, {});
+const comment = obj(
+	{
+		id: title,
+		path: pathInput,
+		start: line,
+		end: line,
+		side: opt(union([lit("head"), lit("base")])),
+		by: title,
+		text,
+		url: opt(url),
+		resolved: opt(bool()),
+		replies: opt(arr(reply, { maxItems: 64 })),
+	},
+	{},
+);
 const review = obj(
 	{
 		scope: opt(union([lit("uncommitted"), lit("branch"), lit("since-review")])),
 		commit: opt(str({ minLength: 1, maxLength: 512 })),
-		range: opt(str({ minLength: 4, maxLength: 1026, description: "Two refs separated by .." })),
+		range: opt(str({ minLength: 4, maxLength: 1027, description: "Two refs separated by .. or ..." })),
 	},
 	{},
 );
@@ -43,7 +60,17 @@ export const ShowParameters = obj(
 );
 export const NotesParameters = obj(
 	{
-		op: union([lit("list"), lit("read"), lit("reply"), lit("resolve"), lit("reopen"), lit("note"), lit("tour")]),
+		op: union([
+			lit("list"),
+			lit("read"),
+			lit("reply"),
+			lit("resolve"),
+			lit("reopen"),
+			lit("note"),
+			lit("tour"),
+			lit("import"),
+			lit("export"),
+		]),
 		root: opt(pathInput),
 		path: opt(pathInput),
 		id: opt(noteId),
@@ -55,6 +82,9 @@ export const NotesParameters = obj(
 		title: opt(title),
 		review: opt(review),
 		stops: opt(arr(stop, { minItems: 1, maxItems: 32 })),
+		url: opt(url),
+		summary: opt(text),
+		comments: opt(arr(comment, { minItems: 1, maxItems: 100 })),
 	},
 	{},
 );
@@ -75,8 +105,9 @@ export function outcomeDetails(value: Outcome) {
 	const retained = value[diagnosticLength];
 	return { summary: value.summary, ...(retained === undefined ? {} : { diagnosticLength: retained }) };
 }
+export const NOTES_OUTPUT_BYTES = 128 * 1024;
 export const NOTES_DESCRIPTION =
-	"List and read a repository's Explorer notes, add an agent note or reply, resolve or reopen notes, or create an ordered walkthrough. root selects the repository; path is relative to its root. note requires path, start, end and text; tour requires title and stops. Pass the returned tour ID to explorer_show to show the walkthrough, or name the ID in your report. This tool opens no pane.";
+	"List, read, add, reply to, resolve or reopen Explorer notes, or save an ordered walkthrough. For a merge or pull request, import remote comments or export operator notes with diff positions. Supply review for import and export, and use the platform's own commands to fetch or post comments. Paths are relative to root. Use a tour ID with explorer_show. This tool opens no pane.";
 type ShowAudience = AgentPane | "native";
 export function showGuidance(pane: ShowAudience): string {
 	const placement =
@@ -99,10 +130,10 @@ export function reviewInput(input: Static<typeof review>): ReviewScope {
 		throw new Error("Choose one review scope, commit or range.");
 	if (scope) return { kind: scope };
 	if (commit) return { kind: "commit", commit };
-	const [base, head, extra] = (range ?? "").split("..");
-	if (!base || !head || extra !== undefined || head.startsWith("."))
-		throw new Error("A review range must have the form base..head.");
-	return { kind: "range", base, head };
+	const [base, separator, head, extra] = (range ?? "").split(/(\.{2,})/u);
+	if (!base || !head || extra !== undefined || (separator !== ".." && separator !== "..."))
+		throw new Error("A review range must have the form base..head or base...head.");
+	return { kind: "range", base, head, ...(separator === "..." ? { mergeBase: true } : {}) };
 }
 export async function checkedScope(repo: Repo, store: NotesStore, scope: ReviewScope) {
 	const marker =
@@ -279,6 +310,8 @@ function preview(note: Note) {
 		end: note.end,
 		state: note.state,
 		author: note.author,
+		by: note.by,
+		url: note.url,
 		location: note.location,
 		movedFrom: note.movedFrom,
 		preview: prefix(note.text, 256),
@@ -310,10 +343,24 @@ async function createTour(input: NotesInput, context: Context, repo: Repo, store
 		context.signal?.throwIfAborted();
 		notes.push(await agentNote(repo, row.path, row.start, row.end, row.text, row.title, review));
 	}
-	const { tour } = await store.request("tour-create", { title, scope, notes });
+	const { tour } = await store.request("tour-create", { title, scope, notes, url: input.url, summary: input.summary });
 	const { id } = tour as { id: string };
 	return outcome("tour", `Saved walkthrough ${id}.`, { tourId: id, tour });
 }
+async function exportNotes(input: NotesInput, context: Context, store: NotesStore) {
+	const review = reviewInput(required(input.review, "review"));
+	const result = await store.request("export", { review, ids: input.ids }, context.signal);
+	const { notes } = result as { notes: unknown[] };
+	const receipt = outcome(
+		"export",
+		`Exported ${notes.length} operator ${notes.length === 1 ? "note" : "notes"}.`,
+		result,
+	);
+	if (Buffer.byteLength(JSON.stringify(receipt)) > NOTES_OUTPUT_BYTES)
+		throw new NotesError("conflict", "Select fewer Explorer notes by ID for a complete export.");
+	return receipt;
+}
+
 export async function runNotes(input: NotesInput, context: Context): Promise<Outcome> {
 	try {
 		context.signal?.throwIfAborted();
@@ -326,10 +373,12 @@ export async function runNotes(input: NotesInput, context: Context): Promise<Out
 				const notes = (listed.notes as Note[]).filter(
 					(note) => input.state === undefined || note.state === input.state,
 				);
-				const tours = listed.tours as Array<{ id: string; title: string; scope?: ReviewScope; stops: string[] }>;
+				const tours = listed.tours as Tour[];
 				const rows = boundedRows(notes.slice(0, 64).map(preview), 64, 80 * 1024);
 				const walks = boundedRows(
-					tours.slice(0, 32).map(({ id, title, scope, stops }) => ({ id, title, scope, stopCount: stops.length })),
+					tours
+						.slice(0, 32)
+						.map(({ id, title, scope, stops, url }) => ({ id, title, scope, url, stopCount: stops.length })),
 					32,
 					16 * 1024,
 				);
@@ -360,6 +409,7 @@ export async function runNotes(input: NotesInput, context: Context): Promise<Out
 				});
 			}
 			case "note": {
+				const selected = input.review ? await checkedScope(repo, store, reviewInput(input.review)) : undefined;
 				const { note } = await store.request("create", {
 					note: await agentNote(
 						repo,
@@ -368,12 +418,29 @@ export async function runNotes(input: NotesInput, context: Context): Promise<Out
 						required(input.end, "end"),
 						required(input.text, "text"),
 						input.title,
+						selected,
 					),
 				});
 				return outcome(op, `Saved ${(note as Note).id}.`, { note: boundedNote(note as Note) });
 			}
 			case "tour":
 				return await createTour(input, context, repo, store);
+			case "import": {
+				const review = reviewInput(required(input.review, "review"));
+				const result = await store.request(
+					op,
+					{ review, comments: required(input.comments, "comments") },
+					context.signal,
+				);
+				const { created, updated, skipped } = result as { created: number; updated: number; skipped: unknown[] };
+				return outcome(
+					op,
+					`Imported comments: ${created} created, ${updated} updated, ${skipped.length} skipped.`,
+					result,
+				);
+			}
+			case "export":
+				return await exportNotes(input, context, store);
 		}
 	} catch (error) {
 		return failure(input.op, error);
