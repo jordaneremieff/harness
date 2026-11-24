@@ -75,6 +75,7 @@ import {
 import { readPrimaryObservation, type OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { readRelatedEfforts, type EffortPresencePage, type EffortReadResources } from "./effort-presence.ts";
 import { createPrimaryLocationResolver, type PrimaryLocationResolver } from "./effort-location.ts";
+import { RecoveryOrder } from "./recovery-order.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
 import {
@@ -178,6 +179,8 @@ export interface AgentManagerOptions {
 	/** Largest delivered-key memory; the oldest key evicts first. */
 	deliveredLimit?: number;
 	createPrimary?: typeof createPrimaryChannel;
+	/** Resolves the working directory of a registering primary; defaults to a resolver that this manager owns. */
+	locations?: PrimaryLocationResolver;
 	/** Validate catalog presence; return the effective thinking level when Pi clamps it. */
 	validateModel?: (
 		model: { provider: string; modelId: string },
@@ -485,6 +488,8 @@ export class AgentManager {
 	private readonly opening = new Map<string, Promise<HostConnection>>();
 	private readonly launchRows = new Map<string, AgentConversationSummary>();
 	private readonly recovering = new Set<string>();
+	/** Lets overlapping reads of one due record end in one acquisition, whatever order their batches run in. */
+	private readonly recoveryOrder = new RecoveryOrder();
 	/** Catalogue work markers do not replace the exit evidence required after a known link loss. */
 	private readonly recoveryHolds = new Map<string, symbol>();
 	private recoveryQueue: Promise<void> = Promise.resolve();
@@ -521,7 +526,7 @@ export class AgentManager {
 	constructor(options: AgentManagerOptions) {
 		this.options = options;
 		this.catalog = new AgentCatalog(options.root);
-		this.locations = createPrimaryLocationResolver();
+		this.locations = options.locations ?? createPrimaryLocationResolver();
 		this.inventory = new CatalogObservation(this.catalog);
 		this.places = new PlaceBook(join(options.root, "durable"));
 		this.delivered = new BoundedMap(options.deliveredLimit ?? DEFAULT_DELIVERED_LIMIT);
@@ -2200,28 +2205,33 @@ export class AgentManager {
 		registeringPrimary?: string,
 		read: { reconcileAfterMs?: number } = {},
 	): Promise<void> {
-		const due: CatalogRecord[] = [];
-		const inventory = await this.inventory.read(read);
-		let visited = 0;
-		let complete = true;
-		for (const fact of inventory.facts.values()) {
-			if (this.stopping(owner) || visited >= MAX_INVENTORY_PAGES * 20) {
-				complete = false;
-				break;
+		const order = this.recoveryOrder.begin();
+		try {
+			const due: CatalogRecord[] = [];
+			const inventory = await this.inventory.read(read);
+			let visited = 0;
+			let complete = true;
+			for (const fact of inventory.facts.values()) {
+				if (this.stopping(owner) || visited >= MAX_INVENTORY_PAGES * 20) {
+					complete = false;
+					break;
+				}
+				if (!fact) {
+					complete = false;
+					continue;
+				}
+				visited++;
+				if (this.recoveryCandidate(fact.record, registeringPrimary)) due.push(fact.record);
 			}
-			if (!fact) {
-				complete = false;
-				continue;
-			}
-			visited++;
-			if (this.recoveryCandidate(fact.record, registeringPrimary)) due.push(fact.record);
+			if (!complete)
+				this.failures.set(
+					"startup",
+					"Startup recovery reached its inventory bound or unreadable metadata; use agent_list for the remaining storage",
+				);
+			await this.enqueueRecovery(due, owner, order.at, registeringPrimary);
+		} finally {
+			order.end();
 		}
-		if (!complete)
-			this.failures.set(
-				"startup",
-				"Startup recovery reached its inventory bound or unreadable metadata; use agent_list for the remaining storage",
-			);
-		await this.enqueueRecovery(due, owner, registeringPrimary);
 	}
 
 	/** Await only this registration's teardown, including endpoint removal before process replacement. */
@@ -2385,9 +2395,11 @@ export class AgentManager {
 		}
 	}
 
+	/** `readAt` is the recovery order position at which the read of `due` began. */
 	private async enqueueRecovery(
 		due: CatalogRecord[],
 		primary: RecoveryOwner,
+		readAt: number,
 		registeringPrimary?: string,
 	): Promise<void> {
 		let next = 0;
@@ -2396,7 +2408,7 @@ export class AgentManager {
 				const record = due[next++];
 				if (record) {
 					this.queuedRecovery.delete(record.storageId);
-					await this.recover(record, primary, registeringPrimary);
+					await this.recover(record, primary, readAt, registeringPrimary);
 				}
 			}
 		};
@@ -2432,26 +2444,47 @@ export class AgentManager {
 		return current.recoveryDue === true || this.parkedWakeDue(current, registeringPrimary, true);
 	}
 
-	private async recover(record: CatalogRecord, primary: RecoveryOwner, registeringPrimary?: string): Promise<void> {
+	/** Acquire the host of one due record and note the outcome for the reads that began before it. */
+	private async acquireRecovery(
+		storageId: string,
+		primary: RecoveryOwner,
+		launchNeeded: () => boolean,
+	): Promise<HostConnection> {
+		try {
+			return await (this.options.acquire ?? acquireHost)(
+				hostMetadata(this.catalog.read(storageId), this.options.packageDir),
+				{ ...MANAGED_LINK, launchNeeded },
+			);
+		} finally {
+			// A stopped owner's acquisition proves nothing for the reads of other owners.
+			if (this.stopping(primary)) this.recoveryOrder.withdraw(storageId);
+			else this.recoveryOrder.settled(storageId);
+		}
+	}
+
+	private async recover(
+		record: CatalogRecord,
+		primary: RecoveryOwner,
+		readAt: number,
+		registeringPrimary?: string,
+	): Promise<void> {
 		if (this.crashes.get(record.storageId)?.stopped) return;
 		if (await this.refreshRecoveryClient(record.storageId)) return;
 		if (this.recovering.has(record.storageId)) return;
+		// An acquisition for this storage settled after this record was read; its outcome is the newer fact.
+		if (this.recoveryOrder.done(record.storageId, readAt)) return;
 		if (record.recoveryDue === true && this.recoveryHolds.has(record.storageId)) {
 			if (registeringPrimary === undefined) return;
 			this.recoveryHolds.set(record.storageId, Symbol());
 		}
 		this.recovering.add(record.storageId);
 		try {
-			const open = this.options.acquire ?? acquireHost;
 			const launchNeeded = () => this.recoveryLaunchNeeded(record.storageId, primary, registeringPrimary);
 			if (!launchNeeded()) {
 				this.recovering.delete(record.storageId);
 				return;
 			}
-			const client = await open(hostMetadata(this.catalog.read(record.storageId), this.options.packageDir), {
-				...MANAGED_LINK,
-				launchNeeded,
-			});
+			const client = await this.acquireRecovery(record.storageId, primary, launchNeeded);
 			if (this.stopping(primary)) {
 				await client.close();
 				this.recovering.delete(record.storageId);
@@ -2547,10 +2580,13 @@ export class AgentManager {
 				}
 				this.recoveryHolds.delete(storageId);
 				this.queuedRecovery.add(storageId);
-				void this.enqueueRecovery([record], primary).catch((error) => {
-					this.queuedRecovery.delete(storageId);
-					this.recordRecoveryError(storageId, errorText(error));
-				});
+				const order = this.recoveryOrder.begin();
+				void this.enqueueRecovery([record], primary, order.at)
+					.catch((error) => {
+						this.queuedRecovery.delete(storageId);
+						this.recordRecoveryError(storageId, errorText(error));
+					})
+					.finally(order.end);
 			} catch (error) {
 				this.recordRecoveryError(storageId, errorText(error));
 			}

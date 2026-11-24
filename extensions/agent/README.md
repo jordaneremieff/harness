@@ -4948,7 +4948,13 @@ crashes before the marker clears.
 
 Startup recovery reads the marker and matching wake sidecars within existing
 bounded catalog pages; it does not enumerate the wake directory or open, copy,
-or status-probe every storage. Recovery acquisitions run at most two at a time. A
+or status-probe every storage. Recovery acquisitions run at most two at a time.
+Reads of the due records overlap: a primary registration starts one and each
+catalog notice starts one, and their batches run in turn. An acquisition that
+settled after a read began completes that read's entry for the storage, so reads
+that overlap share one acquisition, whether it connected a host or failed. A
+read that begins later acts on the marker again: a record that is still due
+with no link is acquired again, which tries a failed launch once more. A
 transient recovery link closes when the internal `recovery-state` check reports
 no pending native work and no active delivery; host change notifications trigger
 that check, not polling. A row addressed only to a proven-dead ordinary primary

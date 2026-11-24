@@ -26,7 +26,7 @@ after(() => {
 });
 import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
-import { publishCatalogChange } from "./catalog-events.ts";
+import { publishCatalogChange, subscribeCatalogChanges } from "./catalog-events.ts";
 import { dashboardText } from "./dashboard-roster.ts";
 import {
 	acquireHost,
@@ -43,6 +43,7 @@ import { HOST_CONTRACT, contractRefusal, type RuntimeContract } from "./version-
 import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
 import type { ContinuityFact } from "./continuity-facts.ts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
+import type { PrimaryLocationResolver } from "./effort-location.ts";
 import { isThreadStorage, threadStorageId } from "./identity.ts";
 import { DURABLE_TARGET_QUESTION } from "./peer-questions.ts";
 import { PLACE_FILE_MAX_BYTES } from "./places.ts";
@@ -188,6 +189,25 @@ async function settleCatalogueRecovery(manager: AgentManager): Promise<void> {
 	const state = manager as unknown as { catalogueScan?: Promise<void>; recoveryQueue: Promise<void> };
 	await state.catalogueScan;
 	await state.recoveryQueue;
+}
+
+/** Resolves once the catalog notices of every earlier write were sent, so none reaches a later subscriber. */
+async function catalogNoticesSent(manager: AgentManager, root: string): Promise<void> {
+	const noticed = eventLog<string>();
+	const stop = subscribeCatalogChanges(
+		manager.catalog.root,
+		(change) => {
+			for (const storageId of change ?? []) noticed.push(storageId);
+		},
+		() => {},
+	);
+	try {
+		// Publications run in order, so the notice of this last write follows every earlier one.
+		const last = createRecord(manager, root, "last-write");
+		while (!noticed.includes(last.storageId)) await noticed.waitForCount(noticed.length + 1);
+	} finally {
+		stop();
+	}
 }
 
 /** A structural stand-in for one registered primary client. */
@@ -2231,6 +2251,8 @@ for (const [kind, error] of [
 		t.after(() => manager.close());
 		const record = createRecord(manager, root);
 		manager.catalog.markRecoveryDue(record.storageId, true);
+		// A later catalog notice would start a read of its own, and that read tries a failed launch again.
+		await catalogNoticesSent(manager, root);
 		await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
 		await settleCatalogueRecovery(manager);
 		const page = await manager.dashboardPage(),
@@ -2900,61 +2922,135 @@ it("refreshes an existing recovery link at another primary registration", { time
 	assert.equal(connection?.closed, true);
 });
 
-it("launches only marked-due records and caps concurrent recovery at two", { timeout: 60000 }, async (t) => {
+/** A location resolver that settles without waiting for I/O, so a registration reaches its recovery read at once. */
+const immediateLocations: PrimaryLocationResolver = {
+	resolve: async (cwd) => ({ cwd, repositoryState: "outside-git" }),
+	resolveMany: async (cwds) => ({
+		locations: new Map([...cwds].map((cwd) => [cwd, { cwd, repositoryState: "outside-git" as const }])),
+		unresolved: 0,
+	}),
+	invalidate() {},
+	clear() {},
+};
+
+// With a resolver that never waits, the catalog notices of the fixture's own writes arrive after the manager
+// subscribed, so a second read of the catalog follows the registration's read.
+for (const [resolver, locations] of [
+	["the default location resolver", undefined],
+	["a location resolver that never waits", immediateLocations],
+] as const)
+	it(`launches only marked-due records and caps concurrent recovery at two with ${resolver}`, {
+		timeout: 60000,
+	}, async (t) => {
+		const root = fixtureRoot(t);
+		const acquired = eventLog<string>();
+		const gates = new Map<string, () => void>();
+		const activity = { active: 0, peak: 0 };
+		let flowing = false;
+		const packageDir = join(root, "caller-installation");
+		const manager = new AgentManager(
+			managerOptions(root, {
+				packageDir,
+				createPrimary: primaryFactory().factory,
+				...(locations === undefined ? {} : { locations }),
+				acquire: async (metadata) => {
+					assert.equal(metadata.packageDir, packageDir, "startup recovery uses the caller installation");
+					const storageId = metadata.storageId;
+					acquired.push(storageId);
+					activity.active += 1;
+					activity.peak = Math.max(activity.peak, activity.active);
+					if (!flowing) {
+						await new Promise<void>((release) =>
+							gates.set(storageId, () => {
+								flowing = true;
+								release();
+							}),
+						);
+					}
+					activity.active -= 1;
+					return fakeConnection(metadata, async (method) => {
+						if (method !== "recovery-state") return {};
+						// A host with nothing left clears its marker in the request that reports it.
+						manager.catalog.markRecoveryDue(storageId, false);
+						return { workPending: false, deliveriesPending: false, deliveriesActive: false };
+					});
+				},
+				observe: async () => ({ conversations: [] }),
+				connect: noHost,
+			}),
+		);
+		t.after(() => manager.close());
+		const due = Array.from({ length: 5 }, (_, index) => {
+			const record = createRecord(manager, root, `due-${index}`);
+			manager.catalog.markRecoveryDue(record.storageId, true);
+			return record;
+		});
+		const clean = createRecord(manager, root, "clean");
+		const primary = fakePrimary(new AbortController().signal);
+		const registering = manager.registerPrimary("owner-1", primary.client);
+		await acquired.waitForCount(2);
+		assert.equal(activity.peak, 2, "at most two recoveries run at once");
+		assert.equal(acquired.length, 2, "the queue holds the other due records until a slot frees");
+		for (const gate of [...gates.values()]) gate();
+		await registering;
+		assert.deepEqual(
+			acquired.slice().sort(),
+			due.map((record) => record.storageId).sort(),
+			"every due record recovers once and the clean record never launches",
+		);
+		assert.equal(acquired.includes(clean.storageId), false);
+		assert.deepEqual(
+			manager.connectedStorageIds(),
+			[],
+			"delivery-only recovery stays out of the persistent client map",
+		);
+	});
+
+it("tries a failing launch once for two reads that overlap, and again for a later read", {
+	timeout: 60000,
+}, async (t) => {
 	const root = fixtureRoot(t);
 	const acquired = eventLog<string>();
-	const gates = new Map<string, () => void>();
-	const activity = { active: 0, peak: 0 };
-	let flowing = false;
-	const packageDir = join(root, "caller-installation");
+	const gates: Array<() => void> = [];
+	let held = true;
 	const manager = new AgentManager(
 		managerOptions(root, {
-			packageDir,
 			createPrimary: primaryFactory().factory,
+			locations: immediateLocations,
 			acquire: async (metadata) => {
-				assert.equal(metadata.packageDir, packageDir, "startup recovery uses the caller installation");
-				const storageId = metadata.storageId;
-				acquired.push(storageId);
-				activity.active += 1;
-				activity.peak = Math.max(activity.peak, activity.active);
-				if (!flowing) {
-					await new Promise<void>((release) =>
-						gates.set(storageId, () => {
-							flowing = true;
-							release();
-						}),
-					);
-				}
-				activity.active -= 1;
-				return fakeConnection(metadata, async (method) =>
-					method === "recovery-state" ? { workPending: false, deliveriesPending: false, deliveriesActive: false } : {},
-				);
+				acquired.push(metadata.storageId);
+				if (held) await new Promise<void>((release) => gates.push(release));
+				// No host starts, so the record stays marked due.
+				throw new Error("launch failed");
 			},
 			observe: async () => ({ conversations: [] }),
 			connect: noHost,
 		}),
 	);
 	t.after(() => manager.close());
-	const due = Array.from({ length: 5 }, (_, index) => {
-		const record = createRecord(manager, root, `due-${index}`);
-		manager.catalog.markRecoveryDue(record.storageId, true);
-		return record;
-	});
-	const clean = createRecord(manager, root, "clean");
-	const primary = fakePrimary(new AbortController().signal);
-	const registering = manager.registerPrimary("owner-1", primary.client);
+	const due = [0, 1]
+		.map((index) => {
+			const record = createRecord(manager, root, `due-${index}`);
+			manager.catalog.markRecoveryDue(record.storageId, true);
+			return record.storageId;
+		})
+		.sort();
+	await catalogNoticesSent(manager, root);
+	const notice = () =>
+		(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([due[0] as string]);
+	const registering = manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
 	await acquired.waitForCount(2);
-	assert.equal(activity.peak, 2, "at most two recoveries run at once");
-	assert.equal(acquired.length, 2, "the queue holds the other due records until a slot frees");
-	for (const gate of [...gates.values()]) gate();
+	// A catalog notice starts a second read of the same due records while the first read's launches are open.
+	notice();
+	held = false;
+	for (const release of gates.splice(0)) release();
 	await registering;
-	assert.deepEqual(
-		acquired.slice().sort(),
-		due.map((record) => record.storageId).sort(),
-		"every due record recovers once and the clean record never launches",
-	);
-	assert.equal(acquired.includes(clean.storageId), false);
-	assert.deepEqual(manager.connectedStorageIds(), [], "delivery-only recovery stays out of the persistent client map");
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(acquired.slice().sort(), due, "the second read began before the launches failed");
+	// A read that begins after the failure finds the records still due and tries again.
+	notice();
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(acquired.slice().sort(), [...due, ...due].sort());
 });
 
 it("serializes simultaneous primary registrations without duplicate recovery", { timeout: 60000 }, async (t) => {
@@ -3026,9 +3122,12 @@ it("delegates marked recovery to acquisition without diagnostic ownership assump
 			createPrimary: primaryFactory().factory,
 			acquire: async (metadata) => {
 				acquired.push(metadata.storageId);
-				return fakeConnection(metadata, async (method) =>
-					method === "recovery-state" ? { workPending: false, deliveriesPending: false, deliveriesActive: false } : {},
-				);
+				return fakeConnection(metadata, async (method) => {
+					if (method !== "recovery-state") return {};
+					// A host with nothing left clears its marker in the request that reports it.
+					manager.catalog.markRecoveryDue(metadata.storageId, false);
+					return { workPending: false, deliveriesPending: false, deliveriesActive: false };
+				});
 			},
 			connect: async (metadata) => {
 				connected.push(metadata.storageId);
