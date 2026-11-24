@@ -16,7 +16,7 @@ export class LaunchFailures {
 		this.limit = options.limit;
 		this.windowMs = options.windowMs;
 		this.bound = options.storages;
-		this.now = options.now ?? Date.now;
+		this.now = options.now ?? (() => Date.now());
 	}
 
 	/** The storage's entry with only the failures of the current window; an empty window forgets the storage. */
@@ -31,7 +31,13 @@ export class LaunchFailures {
 
 	/** True while the storage has used the automatic launches of its window. */
 	capped(storageId: string): boolean {
-		return (this.current(storageId, this.now())?.times.length ?? 0) >= this.limit;
+		return this.waitsUntil(storageId) !== undefined;
+	}
+
+	/** The time at which a storage that waits may launch again: its oldest failure then leaves the window. */
+	waitsUntil(storageId: string): number | undefined {
+		const times = this.current(storageId, this.now())?.times;
+		return times !== undefined && times.length >= this.limit ? (times[0] as number) + this.windowMs : undefined;
 	}
 
 	/**
@@ -62,5 +68,43 @@ export class LaunchFailures {
 	/** The wait comes first, so a display that cuts a long text still states it. */
 	private waitText(error: string): string {
 		return `Recovery waits after ${this.limit} failed launches in ${this.windowMs / 1000} seconds; agent_attach or a primary registration tries at once. Last error: ${error}`;
+	}
+}
+
+/**
+ * One timer for the earliest time at which a waiting storage may launch again. A read that skips a waiting
+ * storage asks for a replay; without it nothing would read the catalog again on a quiet machine, because a failed
+ * launch causes no catalog notice. Many requests keep one timer, and it never holds the process open.
+ */
+export class LaunchReplay {
+	private pending: { at: number; timer: ReturnType<typeof setTimeout> } | undefined;
+	private closed = false;
+	private readonly replay: () => void;
+	private readonly now: () => number;
+
+	constructor(replay: () => void, now: () => number = () => Date.now()) {
+		this.replay = replay;
+		this.now = now;
+	}
+
+	/** Ask for a replay at `at`. A pending replay that is due no later stays; a later one moves forward. */
+	arm(at: number): void {
+		if (this.closed || (this.pending !== undefined && this.pending.at <= at)) return;
+		if (this.pending !== undefined) clearTimeout(this.pending.timer);
+		const timer = setTimeout(
+			() => {
+				this.pending = undefined;
+				this.replay();
+			},
+			Math.max(1, at - this.now()),
+		);
+		timer.unref?.();
+		this.pending = { at, timer };
+	}
+
+	close(): void {
+		this.closed = true;
+		if (this.pending !== undefined) clearTimeout(this.pending.timer);
+		this.pending = undefined;
 	}
 }

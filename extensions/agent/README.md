@@ -4974,7 +4974,11 @@ with no link is acquired again, which tries a failed launch once more. A
 storage gets at most three failed recovery acquisitions in 60 seconds from
 catalog notices, so a host that never starts cannot be launched at the rate of
 the notices; a runner that reports the storage busy counts too. While the
-storage waits, a notice read skips it. A primary registration and
+storage waits, a notice read skips it and does not judge its parked wake, so a
+recipient that became available during the wait still reads as new afterwards.
+A failed launch causes no catalog notice, so the manager keeps one timer for
+the earliest end of a wait and reads the catalog again then; the timer does not
+hold the process open and ends with the manager. A primary registration and
 `agent_attach` are explicit acts and try at once; `agent_attach` and a
 successful acquisition also end the wait. One error text is recorded once in
 those 60 seconds, and the failure that uses the last automatic launch replaces

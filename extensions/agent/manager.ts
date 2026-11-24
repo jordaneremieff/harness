@@ -75,7 +75,7 @@ import {
 import { readPrimaryObservation, type OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { readRelatedEfforts, type EffortPresencePage, type EffortReadResources } from "./effort-presence.ts";
 import { createPrimaryLocationResolver, type PrimaryLocationResolver } from "./effort-location.ts";
-import { LaunchFailures } from "./launch-failures.ts";
+import { LaunchFailures, LaunchReplay } from "./launch-failures.ts";
 import { RecoveryOrder } from "./recovery-order.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
@@ -526,6 +526,8 @@ export class AgentManager {
 		windowMs: CRASH_WINDOW_MS,
 		storages: DEFAULT_FAILURE_LIMIT,
 	});
+	/** Reads the catalog again when a waiting storage may launch, since no catalog notice follows a failed launch. */
+	private readonly launchReplay = new LaunchReplay(() => this.recoverCatalogueChanges());
 	private readonly recoveryErrors = new BoundedMap<string>(DEFAULT_FAILURE_LIMIT);
 	private readonly recoveryNotes = new BoundedMap<string>(DEFAULT_FAILURE_LIMIT);
 	private readonly queuedRecovery = new Set<string>();
@@ -2176,8 +2178,18 @@ export class AgentManager {
 		return [...available].some(([recipient, fingerprint]) => previous?.get(recipient) !== fingerprint);
 	}
 
+	/** True while the storage waits for its launch window; the catalog is then read again when the wait ends. */
+	private launchWaits(storageId: string): boolean {
+		const until = this.launchFailures.waitsUntil(storageId);
+		if (until === undefined) return false;
+		this.launchReplay.arm(until);
+		return true;
+	}
+
 	private recoveryCandidate(record: CatalogRecord, registeringPrimary?: string): boolean {
 		if (record.recoveryDue === true) return true;
+		// A waiting storage keeps its wake unjudged, so the read after the wait still finds a new availability new.
+		if (registeringPrimary === undefined && this.launchWaits(record.storageId)) return false;
 		try {
 			return this.parkedWakeDue(record, registeringPrimary);
 		} catch (error) {
@@ -2491,7 +2503,7 @@ export class AgentManager {
 			this.recoveryHolds.set(record.storageId, Symbol());
 		}
 		// A launch that keeps failing waits for its window; a registration is an explicit act and tries at once.
-		if (registeringPrimary === undefined && this.launchFailures.capped(record.storageId)) return;
+		if (registeringPrimary === undefined && this.launchWaits(record.storageId)) return;
 		this.recovering.add(record.storageId);
 		try {
 			const launchNeeded = () => this.recoveryLaunchNeeded(record.storageId, primary, registeringPrimary);
@@ -2839,6 +2851,7 @@ export class AgentManager {
 	close(): Promise<void> {
 		if (this.closing) return this.closing;
 		this.shuttingDown = true;
+		this.launchReplay.close();
 		this.recoveryHolds.clear();
 		this.lifecycle.abort();
 		this.locations.clear();

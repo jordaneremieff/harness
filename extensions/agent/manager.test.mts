@@ -198,14 +198,20 @@ async function catalogNoticesSent(manager: AgentManager, root: string): Promise<
 	const stop = subscribeCatalogChanges(
 		manager.catalog.root,
 		(change) => {
-			for (const storageId of change ?? []) noticed.push(storageId);
+			for (const storageId of change ?? ["*"]) noticed.push(storageId);
 		},
 		() => {},
 	);
 	try {
-		// Publications run in order, so the notice of this last write follows every earlier one.
-		const last = createRecord(manager, root, "last-write");
-		while (!noticed.includes(last.storageId)) await noticed.waitForCount(noticed.length + 1);
+		// Publications run in order, so the notice that names a last write follows every earlier one. A notice
+		// for the whole catalog names nothing and may predate that write: then one more write decides.
+		for (;;) {
+			const from = noticed.length;
+			const last = createRecord(manager, root, "last-write");
+			while (!noticed.slice(from).some((storageId) => storageId === last.storageId || storageId === "*"))
+				await noticed.waitForCount(noticed.length + 1);
+			if (noticed.slice(from).includes(last.storageId)) return;
+		}
 	} finally {
 		stop();
 	}
@@ -3153,6 +3159,90 @@ it("launches a host that never starts at most three times a minute under a burst
 	assert.equal(launches, 8);
 	await burst(200);
 	assert.equal(launches, 11, "the attachment cleared the window, so three automatic launches follow");
+});
+
+it("reads the catalog again when a storage's launch wait ends, without a catalog notice", {
+	timeout: 60000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	let launches = 0;
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			locations: immediateLocations,
+			acquire: async () => {
+				launches++;
+				throw new Error("Host launch failed");
+			},
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+		}),
+	);
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	await catalogNoticesSent(manager, root);
+	t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+	const notice = async () => {
+		(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([record.storageId]);
+		await settleCatalogueRecovery(manager);
+	};
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	for (let index = 0; index < 200; index++) await notice();
+	assert.equal(launches, 3, "the storage waits after its third failed launch");
+	// A failed launch writes nothing to the catalog, so no notice follows on a quiet machine.
+	t.mock.timers.tick(59_999);
+	await settleCatalogueRecovery(manager);
+	assert.equal(launches, 3);
+	t.mock.timers.tick(1);
+	await settleCatalogueRecovery(manager);
+	assert.equal(launches, 4, "the first failure left the window, and the skipped read ran again once");
+});
+
+it("wakes a parked delivery after the source's launch wait when the recipient became available during it", {
+	timeout: 60000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	const launched: string[] = [];
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			locations: immediateLocations,
+			acquire: async (metadata) => {
+				launched.push(metadata.storageId);
+				throw new Error("Host launch failed");
+			},
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+		}),
+	);
+	t.after(() => manager.close());
+	const source = createRecord(manager, root),
+		target = createRecord(manager, root);
+	// The recipient of the source's parked delivery has no catalogue record yet.
+	unlinkSync(manager.catalog.path(target.storageId));
+	manager.catalog.markRecoveryDue(source.storageId, true);
+	writeDeliveryWake(root, source.storageId, [target.storageId]);
+	await catalogNoticesSent(manager, root);
+	t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+	const notice = async (storageId: string) => {
+		(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([storageId]);
+		await settleCatalogueRecovery(manager);
+	};
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await notice(source.storageId);
+	await notice(source.storageId);
+	assert.equal(launched.length, 3, "the source waits after three failed launches");
+	// Only the parked delivery keeps the source a candidate from here on.
+	manager.catalog.markRecoveryDue(source.storageId, false);
+	await notice(source.storageId);
+	// The recipient becomes available while the source waits.
+	writeFileSync(manager.catalog.path(target.storageId), JSON.stringify(target));
+	await notice(target.storageId);
+	assert.equal(launched.length, 3, "the waiting source launches nothing");
+	t.mock.timers.tick(60_000);
+	await notice(target.storageId);
+	assert.equal(launched.length, 4, "the read after the wait still finds the recipient newly available");
 });
 
 it("serializes simultaneous primary registrations without duplicate recovery", { timeout: 60000 }, async (t) => {
