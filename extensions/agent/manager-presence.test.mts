@@ -64,7 +64,12 @@ it("samples activity writes and keeps observed purpose separate from declared in
 	assert.equal(result.published.intentClaim?.purpose, intent.purpose);
 	assert.equal(result.awareness.self.intentClaim?.scope.fullGate, true);
 	manager.updatePrimary(id, { name: "Parser effort" });
-	assert.deepEqual(channel.info().observedPurpose, { source: "session-name", text: "Parser effort" });
+	assert.equal(channel.info().name, "Parser effort");
+	assert.deepEqual(
+		channel.info().observedPurpose,
+		{ source: "interactive-input", text: "Review the parser" },
+		"the first request leads a session name",
+	);
 	assert.equal(channel.info().intentClaim?.purpose, intent.purpose);
 	manager.updatePrimary(id, { name: undefined });
 	assert.equal(channel.info().observedPurpose?.text, "Review the parser");
