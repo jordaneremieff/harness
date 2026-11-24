@@ -59,12 +59,15 @@ function oneLine(value: string): string {
 function bounded(value: string): { text: string; limit?: string } {
 	const clean = safe(value).trimEnd();
 	if (clean.length <= DISPLAY_LIMIT) return { text: clean };
-	const points = [...clean];
-	if (points.length <= DISPLAY_LIMIT) return { text: clean };
-	return {
-		text: points.slice(0, DISPLAY_LIMIT).join(""),
-		limit: `Truncated: showing ${DISPLAY_LIMIT} of ${points.length} characters`,
-	};
+	// Count the characters in place: a copy of each one would cost many times the size of a large value.
+	let points = 0;
+	let end = clean.length;
+	for (let index = 0; index < clean.length; points++) {
+		if (points === DISPLAY_LIMIT) end = index;
+		index += (clean.codePointAt(index) ?? 0) > 0xffff ? 2 : 1;
+	}
+	if (points <= DISPLAY_LIMIT) return { text: clean };
+	return { text: clean.slice(0, end), limit: `Truncated: showing ${DISPLAY_LIMIT} of ${points} characters` };
 }
 
 function clip(value: string, width: number): string {
