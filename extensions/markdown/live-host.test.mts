@@ -96,8 +96,15 @@ function ordinaryMock(manager = SessionManager.inMemory()) {
 	return { pi, ctx: ctx as ExtensionContext, manager, sent, event };
 }
 function assertEditGuidance(text: string) {
-	assert.match(text, /Use markdown_live with the pane handle to read the current buffer before any edit/u);
+	assert.match(
+		text,
+		/Answer by editing this document: use markdown_live with the pane handle to read the current buffer, then apply/u,
+	);
 	assert.match(text, /apply \{find, replace\} edits/u);
+	assert.match(
+		text,
+		/If the question clearly asks for no change to the document, answer it briefly; the Ask card shows your final message/u,
+	);
 	assert.match(text, /Do not substitute a stored document, file write or new pane/u);
 	assert.match(text, /Marks in a source excerpt enclose the selection/u);
 	assert.match(text, /Offsets count UTF-16 code units at the stated generation/u);

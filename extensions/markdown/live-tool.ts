@@ -26,12 +26,12 @@ import {
 	liveId,
 	readLiveAction,
 } from "./live-protocol.ts";
-import { type ShowOptions, ShowOutcomes, showStored } from "./live-show.ts";
+import { type ShowInput, type ShowOptions, ShowOutcomes, type ShowResult, showStored } from "./live-show.ts";
 import { LaunchSchema, PaneSchema, paneInventory } from "./pane-state.ts";
 import { responseDigest, SOURCE_BYTES, validUnicode } from "./responses.ts";
 
 const DESCRIPTION =
-	"Use list for this conversation's connected panes and pending launches. Each handle names an exact live buffer; view.documentId names its stored document. A dirty or conflicted view reports its base, not saved live text. Conflict means autosave stopped: preserve the draft and read the stored revision separately. Use show with a full stored document ID for current/follow, or add revision to pin. Show reuses an agent pane by default, never an operator pane. Set newPane: true to request a separate launch without changing any existing pane. Do not combine it with a handle. Only navigated confirms a switch. Only launch supplies argv for an initial pane; confirm its view with list. Never type navigation into the terminal or repeat an uncertain show. Use read on an exact handle. Only complete has whole source; for page, join all fragments from offset zero with nextOffset and unchanged baseGeneration/baseDigest. Use apply with unique {find,replace} anchors. An explicit base binds the edit; range edits require it. Claim ranges before composing a larger edit; claims never block the person. If busy, edit elsewhere or read after the person leaves the passage. Retry an uncertain edit only with its UUID and identical arguments. Applied confirms private recovery, not a saved revision. Use comments for delivered open or closed comments; continue with nextOffset and the sheet version as expectedVersion. setComment requires the listed item ID, its version as expectedVersion, and the new state. It does not send a message.";
+	"Use list for this conversation's connected panes and pending launches. Each handle names an exact live buffer; view.documentId names its stored document. A dirty or conflicted view reports its base, not saved live text. Conflict means autosave stopped: preserve the draft and read the stored revision separately. Use show with a full stored document ID for current/follow, or add revision to pin. To show a document as you publish it, use markdown_publish with show: true instead. Show reuses an agent pane by default, never an operator pane. Set newPane: true to request a separate launch without changing any existing pane. Do not combine it with a handle. Only navigated confirms a switch. Only launch supplies argv for an initial pane; confirm its view with list. Never type navigation into the terminal or repeat an uncertain show. Use read on an exact handle. Only complete has whole source; for page, join all fragments from offset zero with nextOffset and unchanged baseGeneration/baseDigest. Use apply with unique {find,replace} anchors. An explicit base binds the edit; range edits require it. Claim ranges before composing a larger edit; claims never block the person. If busy, edit elsewhere or read after the person leaves the passage. Retry an uncertain edit only with its UUID and identical arguments. Applied confirms private recovery, not a saved revision. Use comments for delivered open or closed comments; continue with nextOffset and the sheet version as expectedVersion. setComment requires the listed item ID, its version as expectedVersion, and the new state. It does not send a message.";
 const Anchor = obj({ find: str({ minLength: 1 }), replace: str() }, { open: false });
 const Range = obj(
 	{ start: int({ minimum: 0 }), end: int({ minimum: 0 }), expected: str(), replacement: str() },
@@ -545,14 +545,54 @@ function usedDocument(op: Input["op"], result: LiveOutcome): { id: string; title
 	return { id: view.documentId, ...(typeof view.title === "string" ? { title: view.title } : {}) };
 }
 
+type LocalShowOptions = Omit<ShowOptions, "connection"> & {
+	lifecycle?: () => AbortSignal;
+	connection: (ctx: ExtensionContext) => ReturnType<ShowOptions["connection"]>;
+	/** Reports a stored document that this session used through a pane; see docs/conventions/work-references.md. */
+	workReference?: (sessionId: string, document: { id: string; title: string }) => void;
+};
+/** One live operation in an ordinary conversation, bound to the invoking session for a show. */
+async function runLocal(
+	find: (ctx: ExtensionContext) => Promise<LiveBridge | undefined>,
+	show: LocalShowOptions | undefined,
+	input: Input,
+	signal: AbortSignal | undefined,
+	ctx: ExtensionContext,
+): Promise<LiveOutcome> {
+	const id = input.op === "show" && show ? ctx.sessionManager.getSessionId() : undefined;
+	const checkRoute = () => {
+		if (ctx.sessionManager.getSessionId() !== id) throw new Error("The invoking Markdown conversation changed.");
+	};
+	const local =
+		show && input.op === "show"
+			? {
+					...show,
+					checkRoute,
+					connection: () => {
+						checkRoute();
+						return show.connection(ctx);
+					},
+				}
+			: undefined;
+	const lifetime = local?.lifecycle?.();
+	const active = lifetime && signal ? AbortSignal.any([lifetime, signal]) : (lifetime ?? signal);
+	const result = await execute(() => find(ctx), input, active, undefined, undefined, local);
+	const used = usedDocument(input.op, result);
+	if (used) show?.workReference?.(ctx.sessionManager.getSessionId(), { id: used.id, title: used.title ?? "" });
+	return result;
+}
+export type LocalShow = (ctx: ExtensionContext, request: ShowInput, signal?: AbortSignal) => Promise<ShowResult>;
+/** The show operation of markdown_live, for a tool that shows the document it just saved. */
+export function createLocalShow(
+	find: (ctx: ExtensionContext) => Promise<LiveBridge | undefined>,
+	show: LocalShowOptions,
+): LocalShow {
+	return async (ctx, request, signal) =>
+		(await runLocal(find, show, { ...request, op: "show" }, signal, ctx)) as ShowResult;
+}
 export function createLiveTool(
 	find: (ctx: ExtensionContext) => Promise<LiveBridge | undefined>,
-	show?: Omit<ShowOptions, "connection"> & {
-		lifecycle?: () => AbortSignal;
-		connection: (ctx: ExtensionContext) => ReturnType<ShowOptions["connection"]>;
-		/** Reports a stored document that this session used through a pane; see docs/conventions/work-references.md. */
-		workReference?: (sessionId: string, document: { id: string; title: string }) => void;
-	},
+	show?: LocalShowOptions,
 ): ToolDefinition<typeof LiveParameters> {
 	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_live");
 	return {
@@ -564,26 +604,7 @@ export function createLiveTool(
 		outputSchema: LiveOutcomeSchema,
 		async execute(_id, input, signal, _update, ctx) {
 			if (!checkInput(input)) throw new Error("Invalid live Markdown arguments.");
-			const id = input.op === "show" && show ? ctx.sessionManager.getSessionId() : undefined;
-			const checkRoute = () => {
-				if (ctx.sessionManager.getSessionId() !== id) throw new Error("The invoking Markdown conversation changed.");
-			};
-			const local =
-				show && input.op === "show"
-					? {
-							...show,
-							checkRoute,
-							connection: () => {
-								checkRoute();
-								return show.connection(ctx);
-							},
-						}
-					: undefined;
-			const lifetime = local?.lifecycle?.();
-			const active = lifetime && signal ? AbortSignal.any([lifetime, signal]) : (lifetime ?? signal);
-			const result = await execute(() => find(ctx), input, active, undefined, undefined, local);
-			const used = usedDocument(input.op, result);
-			if (used) show?.workReference?.(ctx.sessionManager.getSessionId(), { id: used.id, title: used.title ?? "" });
+			const result = await runLocal(find, show, input, signal, ctx);
 			return {
 				content: output(result),
 				details: result,
@@ -616,12 +637,35 @@ async function oncePerTask(
 	return result.status === "launch" ? result : await api.memo("markdown.live.receipt", result, context);
 }
 
+type NativeShowOptions = Omit<ShowOptions, "connection"> & {
+	connection: (id: Durable.ConversationId, context: Context) => ReturnType<ShowOptions["connection"]>;
+};
+export type NativeShow = (api: Durable.ToolExecutionApi, context: Context, request: ShowInput) => Promise<ShowResult>;
+/** The show operation of markdown_live in a native task: one launch offer or navigation per task. */
+export function createNativeShow(
+	find: (conversation: string) => Promise<LiveBridge | undefined>,
+	show: NativeShowOptions,
+): NativeShow {
+	return async (api, context, request) =>
+		(await oncePerTask(
+			"show",
+			() =>
+				execute(
+					() => find(String(api.conversationId)),
+					{ ...request, op: "show" },
+					context.abortSignal,
+					String(api.taskId),
+					undefined,
+					{ ...show, connection: () => show.connection(api.conversationId, context) },
+				),
+			api,
+			context,
+		)) as ShowResult;
+}
 export function createNativeLiveTool(
 	durable: typeof Durable,
 	find: (conversation: string) => Promise<LiveBridge | undefined>,
-	show?: Omit<ShowOptions, "connection"> & {
-		connection: (id: Durable.ConversationId, context: Context) => ReturnType<ShowOptions["connection"]>;
-	},
+	show?: NativeShowOptions,
 ): Durable.ToolRegistration<typeof LiveParameters> {
 	return durable.defineTool({
 		name: "markdown_live",

@@ -18,6 +18,8 @@ import {
 import { describeRules, RULE_IDS } from "./check-rules.ts";
 import { checkWriting, describeFindings, type Finding } from "./checks.ts";
 import { toolDisplay } from "./display.ts";
+import { type ShowInput, type ShowResult, ShowResultSchema } from "./live-show.ts";
+import type { LocalShow, NativeShow } from "./live-tool.ts";
 import { previousNative } from "./native-responses.ts";
 import { type PaneInventory, PaneInventorySchema, type ShowRequest, ShowRequestSchema } from "./pane-state.ts";
 import { previousOrdinary, type ResponseSnapshot, responseSnapshotWrite } from "./responses.ts";
@@ -67,6 +69,12 @@ export const PublishParameters = obj(
 				minLength: 1,
 				maxLength: 256,
 				description: "Explicit request identity. Equal input reuses the first publication; different input conflicts.",
+			}),
+		),
+		show: opt(
+			bool({
+				description:
+					"After the save, show the saved document in your reader pane in this call, exactly as markdown_live show does. Use it only when you may show material.",
 			}),
 		),
 	},
@@ -119,6 +127,8 @@ export type PublishOutcome =
 			open: string;
 			show: ShowRequest;
 			paneState: PaneState;
+			/** The show that the request asked for, when no pane already reported the saved revision. */
+			shown?: ShowResult;
 			checks?: { findings: Finding[] };
 	  }
 	| {
@@ -176,6 +186,7 @@ export const PublishOutcomeSchema = union([
 		open: str(),
 		show: ShowRequestSchema,
 		paneState: PaneStateSchema,
+		shown: opt(ShowResultSchema),
 		checks: opt(obj({ findings: FindingsSchema })),
 	}),
 	obj({
@@ -216,7 +227,7 @@ const INSPECTION_TEXT: Record<InspectionFailure, string> = {
 	"output-invalid": `the reference tool returned invalid or oversized output; rebuild the reader app with ${BUILD}`,
 };
 const ASK_REPLY =
-	"For a question from a live Markdown Ask card, give the substantive answer in your final message. The existing card shows that text; do not publish or open another pane just to answer it.";
+	"A question from a reader Ask card names its pane. Answer it by editing that document with markdown_live apply, then say in one or two sentences what changed. If the question clearly asks for no change to the document, answer briefly in your final message; the Ask card shows that message. Do not publish another document, open another pane or write a long final message to answer an Ask.";
 const READER_MATERIAL =
 	"a reply with headings, a table, three or more explained points, or more than about ten lines; or a document, comparison, or diagram";
 const REPORT =
@@ -226,14 +237,16 @@ const PLACEMENT: Record<AgentPane, string> = {
 	float: "a floating pane that stays in place",
 };
 const USE_PANE =
-	"Pass the returned show request to markdown_live. Only status:launch offers a one-use command for a new pane. Run that exact command as its program, with no target, and close the pane when its program ends. Starting the program does not confirm display. Check the reported document and revision with markdown_live list. Status:navigated confirms the document, revision and handle. If display is uncertain, list panes rather than launching another. Respect the operator's requested placement. Do not take focus unless the operator asked to see it now.";
+	"To show what you publish, call markdown_publish with show: true; it saves and shows in one call. To show a stored document, use markdown_live show with its ID. Status navigated confirms the document, revision and pane. Status launch gives a one-use argv: run it unchanged as the program of a new pane, with no target, and close the pane when its program ends. Then call markdown_live list once to confirm the document and revision. For a pending or uncertain show, list panes; never start another pane. Respect the operator's requested placement. Do not take focus unless the operator asked to see it now.";
+const CHAT_BESIDE_PANE =
+	"When a reader pane shows your material, the chat reply is at most three sentences: the answer or the decision you need, and what the pane holds. Do not summarise or repeat the pane in chat.";
 export const NATIVE_PUBLISH_GUIDANCE = `Publish silently when a document helps the recipient. ${REPORT} Do not open or navigate a reader pane unless the operator explicitly asks you to show the material. For that request, reuse a reader pane you opened. For a new pane, use a split on the right of the inherited pane. ${USE_PANE} ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
 export const publishGuideline = (pane: AgentPane): string =>
-	`If you work for another agent or run without an interactive conversation, publish silently and do not open or navigate a reader pane unless the operator explicitly asks you to show the material. ${REPORT} In the interactive session with the operator, show material that is hard to read in a terminal without waiting to be asked: ${READER_MATERIAL}. Choose which findings from other agents to show. Publish your synthesis or use markdown_read with the reported document ID. Reuse your reader pane across reports. For a new pane, use ${PLACEMENT[pane]}. ${USE_PANE} Say what the pane holds only after the reader confirms the revision. Give the answer and any needed decision in chat. A plain answer of a few sentences stays in chat. ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
+	`If you work for another agent or run without an interactive conversation, publish silently and do not open or navigate a reader pane unless the operator explicitly asks you to show the material. ${REPORT} In the interactive session with the operator, show material that is hard to read in a terminal without waiting to be asked: ${READER_MATERIAL}. Choose which findings from other agents to show. Publish your synthesis or use markdown_read with the reported document ID. Reuse your reader pane across reports. For a new pane, use ${PLACEMENT[pane]}. ${USE_PANE} Say that the pane holds the material only after a navigated result or a confirming list. ${CHAT_BESIDE_PANE} A plain answer of a few sentences stays in chat without a document. ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
 const EDITORIAL_POLICY =
 	"Writing checks apply to new full publications and replacements, not to live edits, private drafts, Undo, recovery, exact captures or saved replays. If publication checks refuse your text, repair it rather than switching to live edits. Use markdown_live for a requested change to the actual buffer.";
 const describePublication = (guidance: string, paneNotices: boolean) =>
-	`Save an exact Markdown document silently. Supply a title and one source: text or an explicit local file. To capture the earlier answer exactly, use response "previous" alone. For a diagram, publish a Markdown file that references the SVG or PNG beside it. To revise a stored draft, use its document ID and expectedRevision. Read the current revision with markdown_read if you do not hold its text. A clean editor permits a stored revision. On conflict, follow the receipt: preserve unsaved edits, check the current stored revision, and never retry an older replacement blindly. ${EDITORIAL_POLICY} ${guidance} Publication does not open or navigate panes. paneState.showing identifies only panes that reported the saved revision. Check the observations before you claim a pane shows it.${paneNotices ? " When a reader pane connected to this conversation closes, a notice identifies the departed pane." : ""} The operator can also open a document under Published in the Markdown view or with the open command in ordinary Pi.`;
+	`Save an exact Markdown document silently. Supply a title and one source: text or an explicit local file. To capture the earlier answer exactly, use response "previous" alone. For a diagram, publish a Markdown file that references the SVG or PNG beside it. To revise a stored draft, use its document ID and expectedRevision. Read the current revision with markdown_read if you do not hold its text. A clean editor permits a stored revision. On conflict, follow the receipt: preserve unsaved edits, check the current stored revision, and never retry an older replacement blindly. ${EDITORIAL_POLICY} ${guidance} Without show, publication does not open or navigate panes. paneState.showing identifies only panes that reported the saved revision. Check the observations before you claim a pane shows it.${paneNotices ? " When a reader pane connected to this conversation closes, a notice identifies the departed pane." : ""} The operator can also open a document under Published in the Markdown view or with the open command in ordinary Pi.`;
 export const publishDescription = (pane: AgentPane, paneNotices = false): string =>
 	describePublication(publishGuideline(pane), paneNotices);
 export type {
@@ -770,12 +783,27 @@ function paneText(state: PaneState): string {
 		"\n",
 	);
 }
+function showText(shown: ShowResult): string {
+	switch (shown.status) {
+		case "navigated": {
+			const revision = shown.view.revision === undefined ? "" : ` revision ${shown.view.revision}`;
+			return `Shown: pane ${shown.handle} confirmed ${shown.view.documentId ?? shown.view.kind}${revision}.`;
+		}
+		case "launch":
+			return `Show: no agent pane is connected, so launch ${shown.launchId} is reserved. ${shown.message} argv: ${JSON.stringify(shown.argv)}`;
+		case "pending":
+			return `Show not run: ${shown.message}`;
+		default:
+			return `Show did not complete (${shown.status}): ${shown.message} The document is saved; do not publish it again to show it.`;
+	}
+}
 function nextText(outcome: Extract<PublishOutcome, { ok: true }>): string {
+	if (outcome.shown) return showText(outcome.shown);
 	return [
 		paneText(outcome.paneState),
 		...(outcome.paneState.status === "observed" && outcome.paneState.showing.length
 			? []
-			: [`Optional display request for markdown_live (not run): ${JSON.stringify(outcome.show)}`]),
+			: [`Not shown. To show this saved revision, call markdown_live with ${JSON.stringify(outcome.show)}.`]),
 	].join("\n");
 }
 type PublishError = Extract<PublishOutcome, { ok: false }>["error"];
@@ -831,8 +859,30 @@ async function withPanes(
 		}),
 	};
 }
+/**
+ * A requested show runs after the save unless a pane already reported the saved revision. A show
+ * failure leaves the publication intact and reports the failure beside its receipt.
+ */
+async function withShow(
+	outcome: PublishOutcome,
+	requested: boolean | undefined,
+	run: ((request: ShowInput) => Promise<ShowResult>) | undefined,
+): Promise<PublishOutcome> {
+	if (requested !== true || !outcome.ok) return outcome;
+	if (outcome.paneState.status === "observed" && outcome.paneState.showing.length) return outcome;
+	const { op: _op, ...request } = outcome.show;
+	const shown: ShowResult = run
+		? await run(request).catch((error: unknown) => ({
+				status: "error" as const,
+				message: `The show failed: ${error instanceof Error ? error.message : String(error)} List panes before another show.`,
+			}))
+		: { status: "error", message: "This host has no live show route." };
+	return { ...outcome, shown };
+}
 export function createPublishTool(
 	options: Omit<PublishOptions, "cwd" | "observePanes"> & {
+		/** Shows the saved document for a request with show: true. */
+		show?: LocalShow;
 		cwd?: string;
 		panes?: (context: ExtensionContext) => Promise<PaneInventory | undefined>;
 		pane?: AgentPane;
@@ -854,8 +904,8 @@ export function createPublishTool(
 		promptGuidelines: [publishGuideline(pane)],
 		parameters: PublishParameters,
 		outputSchema: PublishOutcomeSchema,
-		async execute(_id, params, _signal, _update, context) {
-			const { panes } = options;
+		async execute(_id, params, signal, _update, context) {
+			const { panes, show } = options;
 			const session = context.sessionManager.getSessionId();
 			const observePanes = panes
 				? async () => {
@@ -876,7 +926,9 @@ export function createPublishTool(
 					...(context.model ? { model: `${context.model.provider}/${context.model.id}` } : {}),
 				},
 				previousResponse: async () => previousOrdinary(context.sessionManager),
-			});
+			}).then((saved) =>
+				withShow(saved, (params as PublishInput).show, show && ((request) => show(context, request, signal))),
+			);
 			if (outcome.ok) options.workReference?.(session, { id: outcome.documentId, title: outcome.title });
 			return {
 				content: [{ type: "text", text: publicationText(outcome) }],
@@ -897,6 +949,8 @@ export function createNativePublishTool(
 	host: NativeHost,
 	options: Omit<PublishOptions, "cwd" | "plan" | "observePanes"> & {
 		panes?: (conversation: Durable.ConversationId) => Promise<PaneInventory | undefined>;
+		/** Shows the saved document for a request with show: true, once per task. */
+		show?: NativeShow;
 	},
 ): Durable.ToolRegistration<typeof PublishParameters, Durable.JsonObject> {
 	return host.durable.defineTool({
@@ -917,7 +971,14 @@ export function createNativePublishTool(
 								previousResponse: () => nativePrevious(host, api, context),
 							})
 						: await nativePublication(params, api, context, host, local);
-				return nativeResult(await withPanes(outcome, local));
+				const { show } = options;
+				return nativeResult(
+					await withShow(
+						await withPanes(outcome, local),
+						params?.show,
+						show && ((request) => show(api, context, request)),
+					),
+				);
 			} catch (error) {
 				return nativeResult(failure(error));
 			}

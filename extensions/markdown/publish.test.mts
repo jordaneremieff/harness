@@ -42,6 +42,8 @@ import type { WritingBrief } from "./brief.ts";
 import { createBriefTool, createNativeBriefTool } from "./brief-tool.ts";
 import { LIMITS, MarkdownStore, type PublicationPlan, type WriteResult } from "./store.ts";
 import type { PaneInventory } from "./pane-state.ts";
+import type { ShowResult } from "./live-show.ts";
+import type { LocalShow } from "./live-tool.ts";
 const scratch = tmpdir();
 async function fixture(run: (root: string, store: MarkdownStore) => Promise<void>) {
 	const root = await mkdtemp(join(scratch, "markdown-publish-"));
@@ -646,12 +648,16 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 				/a reply with headings, a table, three or more explained points, or more than about ten lines/u,
 			);
 			assert.match(guidance, /A plain answer of a few sentences stays in chat/u);
+			assert.match(guidance, /the chat reply is at most three sentences/u);
+			assert.match(guidance, /Do not summarise or repeat the pane in chat/u);
 		}
 		for (const guidance of [...interactive, NATIVE_PUBLISH_GUIDANCE]) {
 			assert.match(guidance, /unless the operator explicitly asks you to show/u);
 			assert.match(guidance, /complete report/u);
 			assert.match(guidance, /include its ID and title/u);
-			assert.match(guidance, /Ask card, give the substantive answer in your final message/u);
+			assert.match(guidance, /Answer it by editing that document with markdown_live apply/u);
+			assert.match(guidance, /the Ask card shows that message/u);
+			assert.match(guidance, /call markdown_publish with show: true; it saves and shows in one call/u);
 			assert.match(guidance, /Do not take focus unless the operator asked to see it now/u);
 			assert.doesNotMatch(
 				guidance,
@@ -924,7 +930,7 @@ test("native model and codemode calls share outcomes, prefixes and explicit reus
 			assert.ok(firstOutcome?.ok);
 			assert.match(
 				results[0]?.text ?? "",
-				/^Saved new document md-[a-f0-9]{20} revision 1 \(\d+ bytes, sha256:[a-f0-9]{64}\)\. No window opened\.\nReferences not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\.\nReader pane state is unknown for this conversation\.\nOptional display request for markdown_live/u,
+				/^Saved new document md-[a-f0-9]{20} revision 1 \(\d+ bytes, sha256:[a-f0-9]{64}\)\. No window opened\.\nReferences not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\.\nReader pane state is unknown for this conversation\.\nNot shown\. To show this saved revision, call markdown_live with/u,
 			);
 			faux.setResponses([
 				fauxAssistantMessage(
@@ -1016,7 +1022,7 @@ test("a silent publication returns a show request; replay targets the exact revi
 		const replay = success(await publish(input, options));
 		assert.equal(replay.replayed, true);
 		assert.deepEqual(replay.show, { op: "show", document: first.documentId, revision: 1 });
-		assert.match(publicationText(replay), /Optional display request for markdown_live/u);
+		assert.match(publicationText(replay), /Not shown\. To show this saved revision, call markdown_live with/u);
 		assert.doesNotMatch(publicationText(replay), /--pane|:open|follows this revision/u);
 	}));
 
@@ -1095,8 +1101,9 @@ test("only a conversation that receives pane closure notices is told to expect t
 		assert.doesNotMatch(description, /a notice identifies the departed pane/u);
 		assert.match(description, /only panes that reported the saved revision/u);
 		assert.match(description, /repair it rather than switching to live edits/u);
-		assert.match(description, /Only status:launch offers a one-use command/u);
-		assert.match(description, /Status:navigated confirms the document, revision and handle/u);
+		assert.match(description, /Status launch gives a one-use argv/u);
+		assert.match(description, /Status navigated confirms the document, revision and pane/u);
+		assert.match(description, /Without show, publication does not open or navigate panes/u);
 		assert.doesNotMatch(description, /:open|paneInput|follows this revision/u);
 	}
 });
@@ -1166,7 +1173,7 @@ test("publication reports each last-observed view and pending launch, not an ass
 		reading.view.follows = true;
 		const replay = success(await publish(input, options));
 		assert.deepEqual(replay.paneState, { status: "observed", inventory, showing: [reading.handle] });
-		assert.doesNotMatch(publicationText(replay), /Optional display request/u);
+		assert.doesNotMatch(publicationText(replay), /Not shown\. To show/u);
 		assert.ok(
 			publicationText(replay).includes(
 				`${document} revision 2, reading, follow latest on, store ${storeId}). It reported the saved revision.`,
@@ -1432,3 +1439,98 @@ for (const mode of ["block", "warn", "off"] as const)
 			}
 		}),
 	);
+
+test("publish with show saves and shows in one call, and a show failure keeps the save", () =>
+	fixture(async (root, store) => {
+		const requests: unknown[] = [];
+		let reply: ShowResult | Error = { status: "error", message: "unset" };
+		const show: LocalShow = async (_context, request) => {
+			requests.push(request);
+			if (reply instanceof Error) throw reply;
+			return reply;
+		};
+		const context = {
+			cwd: root,
+			sessionManager: { getSessionId: () => "shown" },
+			model: { provider: "faux", id: "faux-1" },
+		} as never;
+		const run = async (tool: ReturnType<typeof createPublishTool>, input: Record<string, unknown>) => {
+			const result = await tool.execute("call", input as never, undefined, undefined, context);
+			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+			return { outcome: success(result.structuredContent as PublishOutcome), text, isError: result.isError };
+		};
+		const tool = createPublishTool({ store, cwd: root, show });
+		reply = {
+			status: "launch",
+			documentId: "md-00000000000000000000",
+			launchId: "launch-1",
+			argv: ["reader", "--pane"],
+			message: "Run this exact one-use argv as the initial pane program.",
+		};
+		const launched = await run(tool, { title: "Shown", text: "# Shown", show: true });
+		const document = launched.outcome.documentId;
+		assert.deepEqual(requests, [{ document }]);
+		assert.equal(launched.outcome.shown?.status, "launch");
+		assert.equal(launched.isError, false);
+		assert.match(
+			launched.text,
+			/\nShow: no agent pane is connected, so launch launch-1 is reserved\. .*argv: \["reader","--pane"\]$/u,
+		);
+		assert.doesNotMatch(launched.text, /Not shown/u);
+
+		const view = { ...reader("1".repeat(32), document).view, revision: 2 };
+		reply = { status: "navigated", workspace: "w", document: "d", handle: "w:d", view };
+		const navigated = await run(tool, { title: "Shown", text: "# Two", document, expectedRevision: 1, show: true });
+		assert.equal(navigated.outcome.shown?.status, "navigated");
+		assert.match(navigated.text, new RegExp(`\\nShown: pane w:d confirmed ${document} revision 2\\.$`, "u"));
+
+		const silent = await run(tool, { title: "Shown", text: "# Three", document, expectedRevision: 2 });
+		assert.equal(requests.length, 2, "a publication without show runs no show");
+		assert.equal(silent.outcome.shown, undefined);
+		assert.match(silent.text, /Not shown\. To show this saved revision, call markdown_live with/u);
+
+		reply = new Error("route gone");
+		const failed = await run(tool, { title: "Shown", text: "# Four", document, expectedRevision: 3, show: true });
+		assert.equal(failed.outcome.revision, 4);
+		assert.equal(failed.isError, false);
+		assert.match(failed.text, /Show did not complete \(error\): The show failed: route gone .*The document is saved/u);
+
+		const routeless = await run(createPublishTool({ store, cwd: root }), {
+			title: "Shown",
+			text: "# Five",
+			document,
+			expectedRevision: 4,
+			show: true,
+		});
+		assert.deepEqual(routeless.outcome.shown, { status: "error", message: "This host has no live show route." });
+	}));
+
+test("publish with show leaves a pane that already reported the saved revision alone", () =>
+	fixture(async (root, store) => {
+		const first = success(await publish({ title: "Draft", text: "First." }, { cwd: root, store }));
+		const storeId = (await store.initialise()).storeId;
+		const pane = reader(storeId, first.documentId);
+		pane.view.revision = 2;
+		let shows = 0;
+		const tool = createPublishTool({
+			store,
+			cwd: root,
+			panes: async () => ({ panes: [pane], pending: [] }),
+			show: async () => {
+				shows++;
+				return { status: "error", message: "unexpected" };
+			},
+		});
+		const context = { cwd: root, sessionManager: { getSessionId: () => "s" } } as never;
+		const result = await tool.execute(
+			"call",
+			{ title: "Draft", text: "Second.", document: first.documentId, expectedRevision: 1, show: true },
+			undefined,
+			undefined,
+			context,
+		);
+		const outcome = success(result.structuredContent as PublishOutcome);
+		assert.equal(shows, 0);
+		assert.equal(outcome.shown, undefined);
+		assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /It reported the saved revision\./u);
+	}));

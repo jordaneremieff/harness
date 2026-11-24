@@ -9,7 +9,7 @@ import { markdownContribution } from "./durable.ts";
 import type { Frame } from "./frame.ts";
 import { ordinaryLive } from "./live-host.ts";
 import type { LiveConfig } from "./live-protocol.ts";
-import { createLiveTool } from "./live-tool.ts";
+import { createLiveTool, createLocalShow } from "./live-tool.ts";
 import type { MarkdownOperations, MarkdownScope, MarkdownViewState } from "./operator-view.ts";
 import { paneInventory } from "./pane-state.ts";
 import { coverageText, createPublishTool, fileSnapshotInput, referenceSummary } from "./publish.ts";
@@ -501,6 +501,7 @@ export default function markdown(pi: ExtensionAPI): void {
 			// Reporting is advisory; the document operation already succeeded.
 		}
 	};
+	const showOptions = { store, app, connection: live.connection, lifecycle, workReference };
 	pi.registerTool(createBriefTool(writing));
 	pi.registerTool(
 		createPublishTool({
@@ -508,13 +509,14 @@ export default function markdown(pi: ExtensionAPI): void {
 			store,
 			app,
 			panes: async (ctx) => paneInventory(await live.find(ctx)),
+			show: createLocalShow(live.find, showOptions),
 			pane: agentPane,
 			paneNotices: true,
 			workReference,
 		}),
 	);
 	pi.registerTool(createReadTool({ store, workReference }));
-	pi.registerTool(createLiveTool(live.find, { store, app, connection: live.connection, lifecycle, workReference }));
+	pi.registerTool(createLiveTool(live.find, showOptions));
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
 	pi.events.on("harness:tool-display:request", (request) => {
 		if (typeof request === "object" && request !== null && "version" in request && request.version === 1)

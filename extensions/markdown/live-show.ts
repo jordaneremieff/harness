@@ -1,4 +1,4 @@
-import { arr, int, lit, obj, opt, str } from "@earendil-works/pi-schema";
+import { arr, int, lit, obj, oneOf, opt, type Static, str, union } from "@earendil-works/pi-schema";
 import type { LiveBridge } from "./live-bridge.ts";
 import { withLiveShow } from "./live-launch.ts";
 import type { LiveConfig } from "./live-protocol.ts";
@@ -18,6 +18,13 @@ export const ShowOutcomes = [
 		message: str(),
 	}),
 ] as const;
+/** Every result of a show: a confirmed navigation, an outstanding launch, a one-use launch offer or a refusal. */
+export const ShowResultSchema = union([
+	...ShowOutcomes,
+	obj({ status: oneOf(["stale", "busy", "closed", "error", "uncertain"]), message: str() }),
+]);
+export type ShowResult = Static<typeof ShowResultSchema>;
+export type ShowInput = { document?: string; revision?: number; handle?: string; newPane?: boolean };
 
 export interface ShowOptions {
 	store: MarkdownStore;

@@ -2,7 +2,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type * as Durable from "@earendil-works/pi-durable";
 import { createNativeBriefTool } from "./brief-tool.ts";
 import { nativeConnection, nativeConversationConnection, nativeLive } from "./live-host.ts";
-import { createNativeLiveTool } from "./live-tool.ts";
+import { createNativeLiveTool, createNativeShow } from "./live-tool.ts";
 import { type NativeSource, readNative, recentNative } from "./native-responses.ts";
 import { paneInventory } from "./pane-state.ts";
 import { type MarkdownAnswer, readPanelRequest, responsePage } from "./panel-protocol.ts";
@@ -115,6 +115,8 @@ export function markdownContribution(source: string, bus: SettingsBus, stopFacto
 				if (!conversation) throw new Error("The exact invoking conversation is unavailable.");
 				return nativeConversationConnection(host, conversation);
 			};
+			const findBridge = (conversation: string) => live.bridges.find(conversation);
+			const showOptions = { store, app: settings.app, connection };
 			return host.durable.defineExtension({
 				name: "markdown",
 				tools: [
@@ -126,14 +128,11 @@ export function markdownContribution(source: string, bus: SettingsBus, stopFacto
 							app: settings.app,
 							writing,
 							panes: async (conversation) => paneInventory(await live.bridges.find(String(conversation))),
+							show: createNativeShow(findBridge, showOptions),
 						},
 					),
 					createNativeReadTool(host.durable, { store }),
-					createNativeLiveTool(host.durable, (conversation) => live.bridges.find(conversation), {
-						store,
-						app: settings.app,
-						connection,
-					}),
+					createNativeLiveTool(host.durable, findBridge, showOptions),
 				],
 				sections: [host.durable.section("markdown", () => NATIVE_PUBLISH_GUIDANCE)],
 			});
