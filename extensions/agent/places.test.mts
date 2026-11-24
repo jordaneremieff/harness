@@ -6,6 +6,7 @@ import {
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readFileSync,
 	rmSync,
 	symlinkSync,
@@ -150,7 +151,7 @@ describe("place bindings", () => {
 		}
 	});
 
-	it("refuses live, foreign, invalid and dead claims without online replacement", () => {
+	it("refuses unmarked live, foreign, invalid and dead claims of the exclusive-create protocol", () => {
 		const root = base();
 		try {
 			const book = new PlaceBook(root);
@@ -166,7 +167,7 @@ describe("place bindings", () => {
 			const dead = spawnSync(process.execPath, ["-e", ""]);
 			assert.ok(dead.pid, "the helper process has a pid");
 			writeFileSync(lock, claim(root, dead.pid, "dead"));
-			assert.throws(() => book.bind("/work/area", "session"), /offline recovery/u);
+			assert.throws(() => book.bind("/work/area", "session"), /exclusive-create protocol, which takes no kernel lock/u);
 			assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "dead", "the dead claim stays");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
@@ -333,3 +334,99 @@ function runBinder(moduleUrl: string, root: string, id: number, count: number): 
 		});
 	});
 }
+
+describe("place book kernel lock", () => {
+	it("takes over the lock of an exited holder without manual cleanup", async () => {
+		const root = base();
+		try {
+			const moduleUrl = new URL("./places.ts", import.meta.url).href;
+			const script = join(root, "exit-holding.mjs");
+			writeFileSync(
+				script,
+				`import { PlaceBook } from ${JSON.stringify(moduleUrl)};\n` +
+					"const book = new PlaceBook(process.argv[2]);\n" +
+					"await book.withArea('/work/held', async () => process.exit(0));\n",
+			);
+			assert.equal(spawnSync(process.execPath, [script, root]).status, 0);
+			const book = new PlaceBook(root);
+			const left = JSON.parse(readFileSync(`${book.file}.lock`, "utf8"));
+			assert.equal(left.kernel, true, "the exited holder left its marked claim");
+			book.bind("/work/area", "session");
+			assert.equal(book.exact("/work/area")?.sessionId, "session");
+			assert.equal(existsSync(`${book.file}.lock`), false, "the release removes the lock file");
+			writeFileSync(`${book.file}.lock`, "", { mode: 0o600 });
+			book.bind("/work/second", "second");
+			assert.equal(book.exact("/work/second")?.sessionId, "second", "an empty file without a holder is free");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("waits a bounded time for a live holder and excludes the exclusive-create protocol", async () => {
+		const root = base();
+		try {
+			const holder = new PlaceBook(root);
+			let publish: () => void = () => {};
+			let entered: () => void = () => {};
+			const inside = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			let finish: () => void = () => {};
+			const done = new Promise<void>((resolve) => {
+				finish = resolve;
+			});
+			const held = holder.withArea("/work/first", async (_current, reserve) => {
+				publish = reserve("first");
+				entered();
+				await done;
+				return "first";
+			});
+			await inside;
+			assert.throws(
+				() => openSync(`${holder.file}.lock`, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600),
+				/EEXIST/u,
+				"an exclusive-create holder sees the lock as taken",
+			);
+			await assert.rejects(
+				new PlaceBook(root, { lockWaitMs: 50 }).withArea("/work/other", async () => "other"),
+				(error: Error) => error.name === "PlaceLockedError" && error.message.includes(`process ${process.pid}`),
+			);
+			const waiting = new PlaceBook(root, { lockWaitMs: 10_000 }).withArea("/work/other", async (current, reserve) => {
+				assert.equal(current, undefined);
+				reserve("other")();
+				return "other";
+			});
+			publish();
+			const second = await waiting;
+			assert.equal(second.binding.sessionId, "other", "the waiter proceeds once the holder publishes");
+			finish();
+			assert.equal((await held).value, "first");
+			assert.equal(existsSync(`${holder.file}.lock`), false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("runs a reuse operation and the work after publication outside the lock", async () => {
+		const root = base();
+		try {
+			const book = new PlaceBook(root);
+			book.bind("/work/area", "owner");
+			const reused = await book.withArea("/work/area", async (current) => {
+				assert.equal(current?.sessionId, "owner");
+				book.bind("/work/elsewhere", "during-reuse");
+				return "reused";
+			});
+			assert.equal(reused.value, "reused");
+			await book.withArea("/work/new", async (_current, reserve) => {
+				reserve("new")();
+				book.bind("/work/after-publication", "after");
+				return "created";
+			});
+			assert.equal(book.exact("/work/elsewhere")?.sessionId, "during-reuse");
+			assert.equal(book.exact("/work/after-publication")?.sessionId, "after");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});

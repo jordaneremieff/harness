@@ -4748,3 +4748,47 @@ it("refuses a message, steer or report that a primary addresses to itself", asyn
 		);
 	assert.deepEqual(primary.sent, [], "nothing reaches the primary's own channel");
 });
+
+it("admits a place in another area while a first place waits on its task admission", async (t) => {
+	const root = fixtureRoot(t);
+	const areas = [join(root, "area-a"), join(root, "area-b")];
+	for (const area of areas) mkdirSync(area);
+	const gate = deferred();
+	const entered = deferred();
+	let first = true;
+	const submits: string[] = [];
+	const manager = new AgentManager(
+		managerOptions(root, {
+			validateModel: () => {},
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method, params) => {
+					if (method !== "task-submit") return {};
+					submits.push(String((params as { message: string }).message));
+					if (first) {
+						first = false;
+						entered.resolve();
+						await gate.promise;
+					}
+					return nativeAdmission(params);
+				}),
+		}),
+	);
+	t.after(() => manager.close());
+	const caller = { id: "caller", cwd: root };
+	const waiting = manager.place({ area: areas[0], prompt: "work A" }, caller);
+	await entered.promise;
+	try {
+		await manager.place({ area: areas[1], prompt: "work B" }, caller);
+	} finally {
+		gate.resolve();
+	}
+	await waiting;
+	assert.deepEqual(submits, ["work A", "work B"]);
+	assert.deepEqual(
+		manager.places
+			.read()
+			.map((binding) => binding.area)
+			.sort(),
+		areas.map((area) => realpathSync(area)).sort(),
+	);
+});

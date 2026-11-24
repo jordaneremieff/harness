@@ -32,7 +32,7 @@ it("admits the exact UTF-8 boundary and preserves readable bytes on overflow", (
 	}
 });
 
-it("refuses cumulative ordinary rows before the admitted effect and keeps the lock through admission", async () => {
+it("refuses cumulative ordinary rows before the admitted effect and releases the lock at publication", async () => {
 	const root = mkdtempSync(join(tmpdir(), "place-admission-"));
 	try {
 		const book = new PlaceBook(root),
@@ -64,8 +64,9 @@ it("refuses cumulative ordinary rows before the admitted effect and keeps the lo
 		assert.equal(book.read().length, rows.length);
 		await book.withArea("/short", async (_existing, reserve) => {
 			const publish = reserve("s");
+			assert.throws(() => book.bind("/other", "o"), /locked/u, "the reservation holds the lock");
 			publish();
-			assert.throws(() => book.bind("/other", "o"), /locked/u);
+			book.bind("/other", "o");
 		});
 		assert.equal(book.readState().kind, "ok");
 	} finally {

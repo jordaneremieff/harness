@@ -1738,9 +1738,19 @@ agents and partial costs.
 
 ## Agent collaboration and placement
 
-Place mutations hold one exclusive book lock. Every existing lock refuses
-mutation, including an orphan. Offline recovery requires all relevant writers
-and launchers stopped. Lookups retain valid binding rows from a partially malformed
+Place mutations hold one kernel lock (`O_EXLOCK`) on the book's lock file. The
+kernel releases it when its holder exits, so the lock of an exited holder never
+blocks a later mutation, and no process ID is consulted. The file carries the
+holder's claim, marked as kernel-held, for the refusal text; the holder removes
+the file while it still holds the lock. A claim without that mark comes from the
+exclusive-create protocol of older code, which takes no kernel lock, so it still
+refuses: its holder may be live. A place operation waits up to 15 seconds for a
+live holder, then refuses with the holder's process and start time; bind and
+unbind refuse at once. The lock covers only the book: a place that reuses a
+binding reads it under the lock and then releases it, and a creation releases it
+when it publishes the binding, before the first task is submitted. Places in
+different areas therefore wait for each other only while one reads or writes the
+book or starts a new owner's host. Lookups retain valid binding rows from a partially malformed
 book, but every mutation refuses that book without replacing its bytes or starting
 its place operation. `readState` reports the malformed binding as corruption.
 A proposed book must fit the reader's serialized UTF-8

@@ -8,10 +8,14 @@
  * longest matching directory, so a session bound to a subdirectory wins over a
  * session bound to its parent.
  *
- * Every mutation takes one exclusive lock file beside the book. The lock claim
- * follows the shared writer-claim shape (host, session identity, cwd), so an
- * existing claim refuses until offline recovery with all writers and launchers
- * stopped. Reads never follow a symlink. Reads admit at most
+ * Every mutation holds a kernel lock (`O_EXLOCK`) on one lock file beside the
+ * book, which the kernel releases when its holder exits, so a dead holder never
+ * blocks a later mutation. The file also carries a claim in the shared
+ * writer-claim shape, marked as kernel-held, for diagnostics. A claim without
+ * that mark comes from the exclusive-create protocol that takes no kernel lock,
+ * and it still excludes: its holder may be live. The holder removes the file
+ * while it still holds the lock. A mutation waits a bounded time for a live
+ * holder. Reads never follow a symlink. Reads admit at most
  * `PLACE_FILE_MAX_BYTES` and use one extra sentinel byte to detect growth.
  * A mutation refuses a malformed, oversized, nonregular,
  * or symlinked book instead of replacing it, so unknown bindings are never
@@ -23,18 +27,20 @@ import {
 	closeSync,
 	constants,
 	fstatSync,
+	ftruncateSync,
+	lstatSync,
 	mkdirSync,
 	openSync,
 	readSync,
 	realpathSync,
 	renameSync,
 	unlinkSync,
+	watch,
 	writeSync,
 	writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
-import { type ClaimFile, type ClaimIdentity, classifyProcessClaim, readClaimFile } from "./claims.ts";
 
 /** One area-to-session binding. */
 export interface PlaceBinding {
@@ -61,6 +67,8 @@ export interface PlaceLockClaim {
 	readonly sessionId: string;
 	readonly cwd: string;
 	readonly createdAt: string;
+	/** Set by a holder of the kernel lock; its claim excludes only while that lock is held. */
+	readonly kernel?: true;
 }
 
 /** One bounded read of the book: usable bindings, an absent file, or explicit corruption. */
@@ -102,6 +110,11 @@ export class PlaceBookError extends Error {
 export const PLACE_FILE_MAX_BYTES = 1024 * 1024;
 
 const LOCK_SESSION = "agent.places";
+const DARWIN_O_EXLOCK = 0x20;
+/** How long a place operation waits for a live holder of the book lock. */
+export const PLACE_LOCK_WAIT_MS = 15_000;
+const LOCK_RECHECK_MS = 100;
+const LOCK_CLAIM_BYTES = 4096;
 
 interface PlaceFile {
 	places: PlaceBinding[];
@@ -150,6 +163,43 @@ function noFollow(): number {
 	return typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 }
 
+interface HeldLock {
+	readonly descriptor: number;
+	readonly dev: number;
+	readonly ino: number;
+}
+type PlaceLockAttempt =
+	| { readonly kind: "held"; readonly release: () => void }
+	| {
+			readonly kind: "busy";
+			readonly claim: PlaceLockClaim | undefined;
+			readonly detail?: string;
+			/** The holder released between two opens; a new attempt follows at once. */
+			readonly retry?: boolean;
+	  };
+
+/**
+ * Resolve when the lock directory changes or after `ms`, whichever comes first. A change notice only shortens
+ * the wait for the next attempt; the timer covers a notice that the platform drops.
+ */
+function lockChange(directory: string, ms: number): Promise<void> {
+	return new Promise((done) => {
+		let watcher: ReturnType<typeof watch> | undefined;
+		const finish = () => {
+			clearTimeout(timer);
+			watcher?.close();
+			done();
+		};
+		const timer = setTimeout(finish, ms);
+		try {
+			watcher = watch(directory, { persistent: false }, finish);
+			watcher.on("error", finish);
+		} catch {
+			// Without a watcher the timer alone ends the wait.
+		}
+	});
+}
+
 /** Classify one bounded read of the book. */
 function parseReadState(raw: string, tolerateInvalidBindings: boolean): PlaceReadState {
 	let parsed: unknown;
@@ -195,9 +245,11 @@ function readPlaceFile(fd: number, tolerateInvalidBindings: boolean): PlaceReadS
  */
 export class PlaceBook {
 	readonly file: string;
+	private readonly lockWaitMs: number;
 
-	constructor(root: string) {
+	constructor(root: string, options: { readonly lockWaitMs?: number } = {}) {
 		this.file = join(root, "places.json");
+		this.lockWaitMs = options.lockWaitMs ?? PLACE_LOCK_WAIT_MS;
 	}
 
 	/** Bounded read state; corruption is explicit instead of an empty book. */
@@ -247,7 +299,7 @@ export class PlaceBook {
 	}
 
 	bind(area: string, sessionId: string, topic?: string): PlaceBinding {
-		const release = this.lock();
+		const release = this.lockNow();
 		try {
 			const target = resolve(area);
 			const binding: PlaceBinding = {
@@ -264,7 +316,7 @@ export class PlaceBook {
 	}
 
 	unbind(area: string): PlaceBinding | undefined {
-		const release = this.lock();
+		const release = this.lockNow();
 		try {
 			const target = resolve(area);
 			const current = this.readForMutation();
@@ -290,9 +342,11 @@ export class PlaceBook {
 	}
 
 	/**
-	 * Hold the lock across one place operation. Reuse the longest binding if
-	 * present. Otherwise reserve a bounded binding before creation, then publish
-	 * it before any task dispatch. A dispatch failure does not undo ownership.
+	 * Run one place operation. The lock covers only the book: a reused binding
+	 * is read under it and the operation runs after its release. A creation
+	 * reserves a bounded binding under the lock, and the lock holds until that
+	 * binding is published, which happens before any task dispatch. A dispatch
+	 * failure does not undo ownership.
 	 */
 	async withArea<T>(
 		area: string,
@@ -301,11 +355,17 @@ export class PlaceBook {
 			reserve: (sessionId: string, topic?: string) => () => void,
 		) => Promise<T>,
 	): Promise<PlaceTransaction<T>> {
-		const release = this.lock();
+		let release: (() => void) | undefined = await this.lock();
+		const unlock = () => {
+			const held = release;
+			release = undefined;
+			held?.();
+		};
 		try {
 			const target = resolve(area);
 			const bindings = this.readForMutation();
 			const current = longestBinding(bindings, target);
+			if (current) unlock();
 			let reserved = false;
 			let published: PlaceBinding | undefined;
 			const value = await operation(current, (sessionId, topic) => {
@@ -317,13 +377,14 @@ export class PlaceBook {
 					if (published) throw new Error("The place operation already published its binding");
 					this.publish(serialized);
 					published = candidate;
+					unlock();
 				};
 			});
 			const binding = current ?? published;
 			if (!binding) throw new Error("The place operation did not publish a binding");
 			return { binding, value, created: current === undefined };
 		} finally {
-			release();
+			unlock();
 		}
 	}
 
@@ -335,11 +396,6 @@ export class PlaceBook {
 		throw new PlaceBookError(this.file, state.reason);
 	}
 
-	/** Claim identity used for classification: this book, in its own directory. */
-	private claimIdentity(): ClaimIdentity {
-		return { sessionId: LOCK_SESSION, cwd: dirname(this.file) };
-	}
-
 	private newClaim(): PlaceLockClaim {
 		return {
 			token: randomBytes(8).toString("hex"),
@@ -348,76 +404,129 @@ export class PlaceBook {
 			sessionId: LOCK_SESSION,
 			cwd: resolve(dirname(this.file)),
 			createdAt: new Date().toISOString(),
+			kernel: true,
 		};
 	}
 
-	/** Take the exclusive mutation lock, or throw when a live or unverifiable holder exists. */
-	private lock(): () => void {
+	/** Take the mutation lock once, or report its holder. */
+	private tryLock(): PlaceLockAttempt {
 		const lockFile = `${this.file}.lock`;
-		mkdirSync(dirname(this.file), { recursive: true });
-		const claim = this.newClaim();
-		const held = this.tryTake(lockFile, claim);
-		if (!held) {
-			const file = this.readLock(lockFile);
-			const observed = classifyProcessClaim(file.claim, this.claimIdentity());
-			throw new PlaceLockedError(
-				lockFile,
-				isClaim(file.claim) ? file.claim : undefined,
-				observed.kind === "live" ? undefined : "offline recovery requires all relevant writers and launchers stopped",
-			);
+		const opened = this.openLock(lockFile);
+		if ("kind" in opened) return opened;
+		const { descriptor, created } = opened;
+		try {
+			const stat = fstatSync(descriptor);
+			const held = { descriptor, dev: stat.dev, ino: stat.ino };
+			// The path lookup and the lock are two steps: a file that its holder removed in between is not the lock.
+			if (!this.named(lockFile, held)) {
+				closeSync(descriptor);
+				return { kind: "busy", claim: undefined, retry: true };
+			}
+			if (!created) {
+				const existing = this.readLockClaim(descriptor);
+				// Unheld, a marked claim belongs to an exited holder and an empty file to a creator that never wrote.
+				// Any other content comes from the exclusive-create protocol, which takes no kernel lock.
+				if (existing?.kernel !== true && stat.size > 0) {
+					closeSync(descriptor);
+					return {
+						kind: "busy",
+						claim: existing,
+						detail: "held under the exclusive-create protocol, which takes no kernel lock",
+					};
+				}
+				ftruncateSync(descriptor, 0);
+			}
+			writeSync(descriptor, `${JSON.stringify(this.newClaim())}\n`, 0, "utf8");
+			return { kind: "held", release: () => this.release(lockFile, held) };
+		} catch (error) {
+			closeSync(descriptor);
+			throw error;
 		}
-		return () => this.release(lockFile, held);
 	}
 
-	/** One exclusive create. A taken path, including a symlink, returns undefined. */
-	private tryTake(lockFile: string, claim: PlaceLockClaim): PlaceLockClaim | undefined {
-		let fd: number;
+	/** Open the lock file with the kernel lock: created by this call, or an existing file that no process holds. */
+	private openLock(lockFile: string): { descriptor: number; created: boolean } | PlaceLockAttempt {
+		mkdirSync(dirname(this.file), { recursive: true });
+		const flags = constants.O_RDWR | DARWIN_O_EXLOCK | constants.O_NONBLOCK | noFollow();
 		try {
-			fd = openSync(lockFile, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow(), 0o600);
+			return { descriptor: openSync(lockFile, flags | constants.O_CREAT | constants.O_EXCL, 0o600), created: true };
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "EEXIST" || code === "ELOOP") return undefined;
-			throw error;
+			if (code !== "EEXIST" && code !== "EAGAIN") throw error;
 		}
 		try {
-			writeSync(fd, `${JSON.stringify(claim)}\n`, undefined, "utf8");
+			return { descriptor: openSync(lockFile, flags), created: false };
 		} catch (error) {
-			closeSync(fd);
-			try {
-				unlinkSync(lockFile);
-			} catch {
-				// The write failure is retained.
-			}
-			throw error;
-		}
-		closeSync(fd);
-		return claim;
-	}
-
-	/** Read one lock claim, refusing with the lock path when it cannot be read. */
-	private readLock(lockFile: string): ClaimFile {
-		try {
-			return readClaimFile(lockFile);
-		} catch (error) {
-			throw new PlaceLockedError(
-				lockFile,
-				undefined,
-				`the lock claim is unreadable (${error instanceof Error ? error.message : String(error)})`,
-			);
+			const code = (error as NodeJS.ErrnoException).code;
+			// A holder released the file between the two opens: the next attempt creates it again.
+			if (code === "ENOENT") return { kind: "busy", claim: undefined, retry: true };
+			if (code !== "EAGAIN") throw error;
+			return { kind: "busy", claim: this.readLockClaim(lockFile) };
 		}
 	}
 
-	/** Remove the lock only while this process still owns the claim. */
-	private release(lockFile: string, claim: PlaceLockClaim): void {
-		let file: ClaimFile;
+	/** Take the mutation lock, waiting up to `waitMs` for a live holder to release it. */
+	private async lock(waitMs = this.lockWaitMs): Promise<() => void> {
+		const deadline = Date.now() + waitMs;
+		for (;;) {
+			const attempt = this.tryLock();
+			if (attempt.kind === "held") return attempt.release;
+			const remaining = deadline - Date.now();
+			if (remaining <= 0 && attempt.retry !== true)
+				throw new PlaceLockedError(`${this.file}.lock`, attempt.claim, attempt.detail);
+			await lockChange(dirname(this.file), Math.max(1, Math.min(remaining, LOCK_RECHECK_MS)));
+		}
+	}
+
+	/** A one-attempt lock for synchronous mutations; a live holder refuses at once. */
+	private lockNow(): () => void {
+		for (;;) {
+			const attempt = this.tryLock();
+			if (attempt.kind === "held") return attempt.release;
+			if (attempt.retry !== true) throw new PlaceLockedError(`${this.file}.lock`, attempt.claim, attempt.detail);
+		}
+	}
+
+	/** The diagnostic claim in the lock file, or undefined when it is absent or unreadable. */
+	private readLockClaim(source: string | number): PlaceLockClaim | undefined {
+		let descriptor: number;
 		try {
-			file = readClaimFile(lockFile);
+			descriptor = typeof source === "number" ? source : openSync(source, constants.O_RDONLY | noFollow());
+		} catch {
+			return undefined;
+		}
+		try {
+			const buffer = Buffer.alloc(LOCK_CLAIM_BYTES);
+			const bytes = readSync(descriptor, buffer, 0, buffer.length, 0);
+			const parsed: unknown = JSON.parse(buffer.subarray(0, bytes).toString("utf8"));
+			return isClaim(parsed) ? parsed : undefined;
+		} catch {
+			return undefined;
+		} finally {
+			if (typeof source !== "number") closeSync(descriptor);
+		}
+	}
+
+	/** True while the lock path names the held file; a replaced or removed path no longer excludes. */
+	private named(lockFile: string, held: HeldLock): boolean {
+		try {
+			const named = lstatSync(lockFile);
+			return named.dev === held.dev && named.ino === held.ino;
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
 			throw error;
 		}
-		if (!isClaim(file.claim) || file.claim.token !== claim.token) return;
-		unlinkSync(lockFile);
+	}
+
+	/** Remove the lock file while the kernel lock still excludes, then drop the lock. */
+	private release(lockFile: string, held: HeldLock): void {
+		try {
+			if (!this.named(lockFile, held))
+				throw new Error(`place book lock ${lockFile} was replaced while held; the mutation is not confirmed exclusive`);
+			unlinkSync(lockFile);
+		} finally {
+			closeSync(held.descriptor);
+		}
 	}
 
 	private serialize(places: PlaceBinding[]): string {
