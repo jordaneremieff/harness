@@ -168,6 +168,7 @@ async function primaryFixture(t: TestContext) {
 			await opened.prompt(text, options);
 			await opened.waitForIdle();
 		},
+		navigate: (targetId: string) => opened.navigateTree(targetId),
 	};
 }
 
@@ -203,4 +204,22 @@ it("retains and publishes the work items that producers report for this session 
 	assert.deepEqual(fixture.endpoint().workRefs, refs);
 	await fixture.prompt("Review the design");
 	assert.deepEqual(fixture.endpoint().observedPurpose, { source: "interactive-input", text: "Review the design" });
+});
+
+it("replaces the published work items with the branch's own copy after tree navigation", {
+	timeout: 20000,
+}, async (t) => {
+	const fixture = await primaryFixture(t);
+	const sessionId = fixture.sessionManager.getSessionId();
+	await fixture.prompt("Start the review");
+	const before = fixture.sessionManager.getLeafId();
+	assert.ok(before);
+	fixture.emit({ version: 1, sessionId, kind: "document", id: "md-a", title: "Design" });
+	await fixture.prompt("Continue on the design");
+	assert.deepEqual(fixture.endpoint().workRefs, [{ kind: "document", id: "md-a", title: "Design" }]);
+	await fixture.navigate(before);
+	assert.equal(fixture.endpoint().workRefs, undefined, "the earlier branch used no item");
+	fixture.emit({ version: 1, sessionId, kind: "handover", id: "plan" });
+	assert.deepEqual(fixture.workEntries().at(-1), { refs: [{ kind: "handover", id: "plan" }] });
+	assert.deepEqual(fixture.endpoint().workRefs, [{ kind: "handover", id: "plan" }]);
 });

@@ -5,8 +5,8 @@ import { PRIMARY_WORK_REFERENCE_LIMIT, validateWorkReference, type PrimaryWorkRe
 export const WORK_REFERENCE_EVENT = "harness:work-reference";
 /** This extension's own retained copy of a session's references, restored on resume. */
 export const WORK_REFERENCES_ENTRY = "agent.work-references";
-/** Ancestry entries visited for the newest retained copy. */
-const RESTORE_VISITS = 4096;
+/** A parent chain longer than this is malformed; a real branch ends at its root well before it. */
+const RESTORE_VISITS = 10_000_000;
 
 /** A checked event for one session, or undefined for a malformed or unsupported payload. */
 export function parseWorkReferenceEvent(
@@ -68,7 +68,10 @@ function restoredCopy(data: unknown): PrimaryWorkReference[] {
 	}
 }
 
-/** The newest retained copy on the current branch; an absent or malformed copy restores nothing. */
+/**
+ * The newest retained copy on the current branch; an absent or malformed copy restores nothing. A
+ * copy is written only when the list changes, so the walk follows the whole in-memory branch.
+ */
 export function retainedWorkReferences(
 	session: Pick<SessionManager, "getLeafId" | "getEntry">,
 ): PrimaryWorkReference[] {

@@ -2971,8 +2971,11 @@ Each ordinary primary keeps its 16 most recently used distinct references,
 newest first, in its own `agent.work-references` session entries and in the
 optional `workRefs` field of its endpoint record. A repeated use reorders the
 list in memory; only a new item or a changed title rewrites the record and
-appends an entry. Resume restores the newest retained copy found within 4,096
-ancestry entries. Native conversations report no references. Old readers ignore
+appends an entry. Resume restores the newest retained copy on the current
+branch, however far back it lies. Tree navigation replaces the list and the
+endpoint field with the copy on the new branch, so items used only on the branch
+the session left stop linking it to other sessions. Native conversations report
+no references. Old readers ignore
 the added endpoint field.
 
 Two live sessions share work when both lists contain an equal `kind` and `id`.

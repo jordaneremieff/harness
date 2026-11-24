@@ -1578,7 +1578,15 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		threadNoticeSnapshots = projection.snapshots;
 		return { messages: projection.messages };
 	});
-	pi.on("session_tree", () => resetThreadNotices());
+	pi.on("session_tree", (_event, ctx) => {
+		resetThreadNotices();
+		// The new branch's own retained copy replaces the work items of the branch the session left.
+		const id = ctx.sessionManager.getSessionId();
+		if (!primaries.has(id)) return;
+		const refs = retainedWorkReferences(ctx.sessionManager);
+		workReferences.set(id, refs);
+		getManager().setPrimaryWorkRefs(id, refs);
+	});
 	pi.on("before_agent_start", async (event, ctx) => {
 		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
 		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(

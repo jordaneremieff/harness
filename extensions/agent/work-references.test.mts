@@ -91,6 +91,14 @@ it("restores the newest retained copy on the current branch and nothing from a m
 	assert.deepEqual(retainedWorkReferences(session), []);
 });
 
+it("restores a copy that lies far behind the leaf of a long branch", () => {
+	const session = SessionManager.inMemory();
+	session.appendCustomEntry(WORK_REFERENCES_ENTRY, { refs: [{ kind: "document", id: "early" }] });
+	for (let index = 0; index < 6000; index++)
+		session.appendMessage({ role: "user", content: `step ${index}`, timestamp: index });
+	assert.deepEqual(retainedWorkReferences(session), [{ kind: "document", id: "early" }]);
+});
+
 it("matches shared items by kind and id in the other session's order", () => {
 	const self = [
 		{ kind: "document", id: "a" },
