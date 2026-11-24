@@ -5,6 +5,7 @@ import { SessionManager, type ExtensionContext, type SessionBoundaryDraft } from
 import { ORDINARY_CONTINUITY_ENTRY, type ContinuityFact } from "./continuity-facts.ts";
 import { HostError } from "./host-protocol.ts";
 import {
+	CONTINUITY_NOTE_ENTRY,
 	OrdinaryContinuity,
 	PLANNING_BUDGET_NOTICE,
 	deliveredResults,
@@ -471,5 +472,50 @@ it("reads the session's questions once per context head and lists those it close
 	assert.match(
 		note,
 		/Questions closed unanswered because the asked session ended; no reply will come: \n\{"sessionId":"22222222[^"]*","question":"question:owner:2"\}/u,
+	);
+});
+
+it("states the retained note of a head again in a reopened session instead of reading its questions anew", () => {
+	const session = SessionManager.inMemory("/tmp");
+	const id = session.getSessionId();
+	let reads = 0;
+	const continuity = (excerpt: string) =>
+		new OrdinaryContinuity({
+			append: (fact) => {
+				session.appendCustomEntry(ORDINARY_CONTINUITY_ENTRY, fact);
+			},
+			retainNote: (note) => {
+				session.appendCustomEntry(CONTINUITY_NOTE_ENTRY, note);
+			},
+			budget: () => undefined,
+			diagnose: () => {},
+			questions: () => {
+				reads++;
+				return { asked: [{ id: "question:owner:1", peer: WORKER, at: 1, excerpt }], received: [] };
+			},
+		});
+	const first = continuity("Live?");
+	first.start(id, session.getEntries());
+	const request = (target: OrdinaryContinuity) => {
+		const messages = session.buildSessionContext().messages;
+		return target.context({ type: "context", messages }, { sessionManager: session })?.messages ?? messages;
+	};
+	const kept = session.appendMessage({ role: "user", content: "kept input", timestamp: 1 });
+	session.appendCompaction("Summary", kept, 100);
+	const [note] = noteText(request(first));
+	const retained = session
+		.getEntries()
+		.filter((entry) => entry.type === "custom" && entry.customType === CONTINUITY_NOTE_ENTRY);
+	assert.equal(retained.length, 1);
+
+	const reopened = continuity("Changed?");
+	reopened.start(id, session.getEntries());
+	assert.deepEqual(noteText(request(reopened)), [note], "the head states the same note");
+	assert.equal(reads, 1, "the reopened session reads no questions for a retained head");
+	assert.equal(
+		session.getEntries().filter((entry) => entry.type === "custom" && entry.customType === CONTINUITY_NOTE_ENTRY)
+			.length,
+		1,
+		"a retained note is not retained again",
 	);
 });

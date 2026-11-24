@@ -88,12 +88,19 @@ import {
 } from "./observation-schema.ts";
 import type { PrimaryIntentClaim } from "./primary-channel.ts";
 import { ORDINARY_CONTINUITY_ENTRY } from "./continuity-facts.ts";
-import { OrdinaryContinuity, PLANNING_BUDGET_NOTICE, deliveredResults } from "./ordinary-continuity.ts";
+import {
+	CONTINUITY_NOTE_ENTRY,
+	OrdinaryContinuity,
+	PLANNING_BUDGET_NOTICE,
+	deliveredResults,
+} from "./ordinary-continuity.ts";
 import { formatPrimaryObservation } from "./primary-observation.ts";
 import { PrimaryInbox } from "./primary-inbox.ts";
 import {
 	endedQuestionText,
 	noticeText,
+	type OpenQuestion,
+	OwedNotices,
 	PEER_QUESTION_ENDED,
 	PEER_QUESTION_ENTRY,
 	PeerQuestions,
@@ -612,8 +619,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	let currentPreferences = registrationPreferences;
 	const continuity = new OrdinaryContinuity({
 		append: (fact) => pi.appendEntry(ORDINARY_CONTINUITY_ENTRY, fact),
+		retainNote: (note) => pi.appendEntry(CONTINUITY_NOTE_ENTRY, note),
 		questions: (sessionId) => {
-			const questions = peerQuestions.get(sessionId);
+			const questions = peerQuestions.get(sessionId)?.questions;
 			if (questions === undefined) return undefined;
 			const ended = questions.reconcile(sessionEnded);
 			return { ...questions.open(), ended };

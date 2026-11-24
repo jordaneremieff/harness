@@ -24,6 +24,16 @@ import { sentWorkIdentity } from "./session-work.ts";
 
 /** Custom message type of the notice a session receives when it crosses its own planning budget. */
 export const PLANNING_BUDGET_NOTICE = "agent.planning-budget";
+/** Custom entry that retains the note text of one context head, so a reopened or reloaded session states it again. */
+export const CONTINUITY_NOTE_ENTRY = "agent.continuity-note";
+const MAX_NOTE_TEXT = 64 * 1024;
+function retainedNote(data: unknown): { headId: string; text: string } | undefined {
+	if (data === null || typeof data !== "object") return undefined;
+	const { headId, text } = data as { headId?: unknown; text?: unknown };
+	return typeof headId === "string" && headId !== "" && typeof text === "string" && text.length <= MAX_NOTE_TEXT
+		? { headId, text }
+		: undefined;
+}
 
 export type ContinuityRecorder = (fact: ContinuityFact) => void;
 export type DeliveredResult = ResultReference & { requestId: string };
@@ -91,11 +101,20 @@ export interface OrdinaryContinuityOptions {
 	readonly diagnose: (sessionId: string, text: string | undefined) => void;
 	/** The session's questions at the first request of a context head; it may close those whose asked session ended. */
 	readonly questions?: (sessionId: string) => QuestionState | undefined;
+	/** Retain the note text of a head as a `CONTINUITY_NOTE_ENTRY` session entry. */
+	readonly retainNote?: (note: { headId: string; text: string }) => void;
 	readonly now?: () => number;
 }
 type Note = { readonly headId: string; readonly text?: string };
 type Episode = { readonly headId: string | undefined; previous?: number; noticed: boolean };
-type SessionState = { readonly facts: Map<string, ContinuityFact>; note?: Note; diagnosed: boolean; episode: Episode };
+type SessionState = {
+	readonly facts: Map<string, ContinuityFact>;
+	/** Note texts retained by earlier processes, by head entry ID. */
+	readonly notes: Map<string, string>;
+	note?: Note;
+	diagnosed: boolean;
+	episode: Episode;
+};
 
 /**
  * Continuity of one ordinary session across compactions: the retained admission facts, the frozen
@@ -112,7 +131,7 @@ export class OrdinaryContinuity {
 	private session(sessionId: string): SessionState {
 		let state = this.sessions.get(sessionId);
 		if (state === undefined) {
-			state = { facts: new Map(), diagnosed: false, episode: { headId: undefined, noticed: false } };
+			state = { facts: new Map(), notes: new Map(), diagnosed: false, episode: { headId: undefined, noticed: false } };
 			this.sessions.set(sessionId, state);
 		}
 		return state;
@@ -121,8 +140,13 @@ export class OrdinaryContinuity {
 	/** Fold the retained facts once. An entry that is not a valid fact changes no request. */
 	start(sessionId: string, entries: readonly SessionEntry[]): void {
 		this.sessions.delete(sessionId);
-		const facts = this.session(sessionId).facts;
+		const { facts, notes } = this.session(sessionId);
 		for (const entry of entries) {
+			if (entry.type === "custom" && entry.customType === CONTINUITY_NOTE_ENTRY) {
+				const note = retainedNote(entry.data);
+				if (note !== undefined && !notes.has(note.headId)) notes.set(note.headId, note.text);
+				continue;
+			}
 			if (entry.type !== "custom" || entry.customType !== ORDINARY_CONTINUITY_ENTRY) continue;
 			try {
 				this.apply(facts, entry.data as ContinuityFact);
@@ -191,33 +215,16 @@ export class OrdinaryContinuity {
 
 	/**
 	 * Insert the frozen note directly after the current compaction summary. The head is identified by
-	 * its entry ID alone; the summary text only detects an inconsistent request.
+	 * its entry ID alone; the summary text only detects an inconsistent request. The first text of a head
+	 * is retained in the session, so the head states the same note after a reload, reopen or tree return
+	 * and the provider cache of the conversation stays valid.
 	 */
 	context(event: ContextEvent, ctx: Pick<ExtensionContext, "sessionManager">): ContextEventResult | undefined {
 		const head = ctx.sessionManager.buildContextEntries()[0];
 		if (head?.type !== "compaction") return undefined;
 		const sessionId = ctx.sessionManager.getSessionId(),
 			state = this.session(sessionId);
-		if (state.note?.headId !== head.id) {
-			try {
-				state.note = {
-					headId: head.id,
-					text: ordinaryContinuityText(
-						sessionId,
-						head.id,
-						ctx.sessionManager.getEntries(),
-						this.options.questions?.(sessionId),
-					),
-				};
-			} catch (error) {
-				state.note = { headId: head.id };
-				this.diagnose(
-					state,
-					sessionId,
-					`The continuity note for context head ${head.id} is unavailable: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			}
-		}
+		state.note = this.note(state, sessionId, head.id, ctx);
 		if (state.note.text === undefined) return undefined;
 		const projection = projectOrdinaryContinuity(event.messages, head, state.note.text);
 		if (projection.mismatch !== undefined) {
@@ -230,6 +237,40 @@ export class OrdinaryContinuity {
 		}
 		if (state.diagnosed) this.diagnose(state, sessionId, undefined);
 		return { messages: projection.messages };
+	}
+	/** The note of a head: this process's, one an earlier process retained, or a new one that is then retained. */
+	private note(
+		state: SessionState,
+		sessionId: string,
+		headId: string,
+		ctx: Pick<ExtensionContext, "sessionManager">,
+	): Note {
+		if (state.note?.headId === headId) return state.note;
+		const retained = state.notes.get(headId);
+		if (retained !== undefined) return { headId, text: retained };
+		let text: string;
+		try {
+			text = ordinaryContinuityText(
+				sessionId,
+				headId,
+				ctx.sessionManager.getEntries(),
+				this.options.questions?.(sessionId),
+			);
+		} catch (error) {
+			this.diagnose(
+				state,
+				sessionId,
+				`The continuity note for context head ${headId} is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return { headId };
+		}
+		state.notes.set(headId, text);
+		try {
+			this.options.retainNote?.({ headId, text });
+		} catch {
+			// The note still holds in this process; a later process computes it again.
+		}
+		return { headId, text };
 	}
 	private diagnose(state: SessionState, sessionId: string, text: string | undefined): void {
 		state.diagnosed = text !== undefined;
