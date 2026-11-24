@@ -24,9 +24,9 @@ const help = {
 			"Open your working directory, a repository, a folder or a file. Quote a path to distinguish it from a command name.",
 	},
 	changes: {
-		usage: "/explorer changes [uncommitted|branch|since-review|<commit>|<base>..<head>]",
+		usage: "/explorer changes [uncommitted|branch|since-review|<commit>|<base>..<head>|<target>...<head>]",
 		description:
-			"Open a review. The default is uncommitted changes when present; otherwise review since your last review on the default branch, or compare this branch with the default branch.",
+			"Open a review. The default is uncommitted changes when present; otherwise review since your last review on the default branch, or compare this branch with the default branch. Three dots compare the head with its merge base.",
 	},
 	notes: { usage: "/explorer notes", description: "Open the repository's Notes list." },
 	update: { usage: "/explorer update", description: "Build and install the native app in the background." },

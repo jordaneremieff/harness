@@ -980,8 +980,9 @@
 			if (author === "remote") return by ?? "Reviewer";
 			return author === "agent" ? "Agent" : "You";
 		}
-		function movedSuffix(note: ExplorerNote) {
-			if (note.location === "outdated") return " · Outdated";
+		// A card shown on lines that hold the note's quote, such as a review's head, is not outdated there.
+		function movedSuffix(note: ExplorerNote, shown: boolean) {
+			if (note.location === "outdated") return shown ? "" : " · Outdated";
 			if (note.location === "moved") return ` · Moved from L${note.movedFrom ?? note.anchor.start}`;
 			return "";
 		}
@@ -993,13 +994,13 @@
 			}
 		}
 		// One note and its replies as a thread entry block.
-		function threadEntry(note: ExplorerNote) {
+		function threadEntry(note: ExplorerNote, shown: boolean) {
 			const block = el("div", "thread-entry");
 			block.append(
-				el("p", "thread-meta", `${authorName(note.author, note.by)} · ${note.state}${movedSuffix(note)}`),
+				el("p", "thread-meta", `${authorName(note.author, note.by)} · ${note.state}${movedSuffix(note, shown)}`),
 				rich(note.text, note.path, note.side),
 			);
-			if (note.location !== "same") drawQuote(block, note.anchor.quote);
+			if (note.location === "moved" || (note.location === "outdated" && !shown)) drawQuote(block, note.anchor.quote);
 			appendReplies(block, note);
 			return block;
 		}
@@ -1038,13 +1039,21 @@
 			const byId = new Map(ctx.notes().map((note) => [note.id, note]));
 			return notes.map((note) => byId.get(note.id) ?? note);
 		}
+		// The note's lines in the open view, including the original lines of a note the view still quotes.
+		function shownRange(note: ExplorerNote) {
+			const own = anchorOf(note);
+			if (own) return own;
+			const range = { side: note.side, start: note.anchor.start, end: note.anchor.end };
+			const shown = ctx.excerpt(range);
+			return shown?.path === note.path && shown.quote === note.anchor.quote ? range : null;
+		}
 		function threadTitle(notes: ExplorerNote[]) {
 			if (notes.length > 1) return `${notes.length} notes`;
 			return notes[0].author === "remote" ? "Discussion" : "Note";
 		}
 		function threadCard(notes: ExplorerNote[], position?: ExplorerRange | null) {
 			const first = notes[0];
-			const range = position === undefined ? anchorOf(first) : position;
+			const range = position === undefined ? shownRange(first) : position;
 			const current = makeCard(
 				first.title ?? threadTitle(notes),
 				label(excerptOf(first)),
@@ -1201,7 +1210,7 @@
 				if (next === threadStamp) return;
 				threadStamp = next;
 				entries.replaceChildren();
-				for (const note of visible) entries.append(threadEntry(note));
+				for (const note of visible) entries.append(threadEntry(note, range !== null));
 				current.actions.replaceChildren(state, answer);
 				refreshThreadState(visible[0]);
 				reposition();
@@ -1435,12 +1444,18 @@
 			tourNavigation(current, active);
 			reposition();
 		}
+		// The summary page opens over the first stop's file, so the change is in view.
+		async function overview(active: Walk, serial: number) {
+			const first = stopNote(active.tour, 0);
+			if (first) await ctx.go(first, active.tour);
+			if (walkthrough === active && serial === tourSerial) showOverview(active);
+		}
 		async function moveTour(index: number) {
 			const active = walkthrough;
 			if (!active || index < firstStop(active.tour) || index >= active.tour.stops.length) return;
 			active.index = index;
 			const serial = ++tourSerial;
-			if (index < 0) return showOverview(active);
+			if (index < 0) return overview(active, serial);
 			const note = stopNote(active.tour, index);
 			if (!note) return showMissingStop(active);
 			const range = await ctx.go(note, active.tour);

@@ -14,7 +14,8 @@ test("command readers distinguish paths and review scopes", () => {
 	assert.deepEqual(commandInput('"notes"'), { mode: "open", value: "notes" });
 	assert.deepEqual(commandInput("  changes  HEAD~2..HEAD "), { mode: "changes", value: "HEAD~2..HEAD" });
 	assert.deepEqual(commandScope("HEAD~2..HEAD"), { kind: "range", base: "HEAD~2", head: "HEAD" });
-	assert.throws(() => commandScope("HEAD...HEAD"), /base\.\.head/u);
+	assert.deepEqual(commandScope("main...HEAD"), { kind: "range", base: "main", head: "HEAD", mergeBase: true });
+	assert.throws(() => commandScope("HEAD....HEAD"), /base\.\.head/u);
 	assert.deepEqual(
 		completions("changes since")?.map((choice) => choice.value),
 		["changes since-review"],

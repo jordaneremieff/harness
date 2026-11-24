@@ -825,7 +825,14 @@
 		heading.append(summary);
 		renderChangedFiles();
 	}
+	// A note anchored at the open review's own commit keeps its lines in that review.
+	function anchoredInReview(note: ExplorerNote) {
+		const resolved = review?.resolved;
+		const commit = note.side === "base" ? resolved?.base : resolved?.head;
+		return !!commit && note.anchor.commit === commit;
+	}
 	function noteLocation(note: ExplorerNote) {
+		if (note.location === "outdated" && anchoredInReview(note)) return `L${note.anchor.start} · in this review`;
 		if (note.location === "outdated") return `Outdated · was L${note.anchor.start}`;
 		if (note.location === "moved") return `L${note.start} · moved from L${note.movedFrom ?? note.anchor.start}`;
 		return `L${note.start}`;
@@ -1208,7 +1215,8 @@
 	function renderOutdated() {
 		const anchor = get("anchor-notice");
 		anchor.replaceChildren();
-		const old = activeNotes().filter((note) => note.location === "outdated");
+		// A note outdated in the working tree is not outdated where the shown review still holds its quote.
+		const old = activeNotes().filter((note) => note.location === "outdated" && !locateNote(note));
 		anchor.hidden = editor.active() || !old.length;
 		if (anchor.hidden) return;
 		for (const note of old) {
