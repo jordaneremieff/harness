@@ -334,6 +334,7 @@ export class AgentDashboard implements Component, Focusable {
 	private rosterPending = false;
 	private rosterAgain = false;
 	private sourceGeneration = 0;
+	private retiredReadGeneration: number | undefined;
 	private selectionRead = new AbortController();
 	/** The roster facts that the cards of the open conversation last drew. */
 	private cardFacts: string | undefined;
@@ -1086,9 +1087,11 @@ export class AgentDashboard implements Component, Focusable {
 		const console = this.console;
 		if (this.closed || generation !== this.sourceGeneration || !console) return;
 		const frame = this.source.frame(console.row.id);
-		// A selection change during the read owns the pane; this application is stale.
-		if (this.closed || generation !== this.sourceGeneration || this.console !== console) return;
 		const availability = this.source.availability(console.row.id);
+		if (availability?.state === "retired") {
+			this.applyRetiredFrame(console, frame, generation);
+			return;
+		}
 		if (frame) {
 			console.save();
 			this.applyHistory(console, frame);
@@ -1106,6 +1109,18 @@ export class AgentDashboard implements Component, Focusable {
 			this.resetAppliedHistory();
 			if (!frame) console.warning = "Not connected; stored messages shown";
 		}
+		this.redraw();
+	}
+
+	private applyRetiredFrame(console: AgentConsole, frame: ConversationFrame | undefined, generation: number): void {
+		if (this.retiredReadGeneration === generation) return;
+		this.retiredReadGeneration = generation;
+		console.save();
+		if (frame) this.applyHistory(console, frame);
+		this.setConversation();
+		console.warning = undefined;
+		console.usage = undefined;
+		void this.readSelected(console.row, generation);
 		this.redraw();
 	}
 

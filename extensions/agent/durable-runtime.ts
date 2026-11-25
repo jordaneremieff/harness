@@ -49,6 +49,7 @@ import { boundCatalogView, withAttentionHints, withModelEvidence, type CatalogVi
 import { projectCatalogAttention } from "./catalog-attention.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import type { HostRuntime } from "./host-process.ts";
+import { isPassiveHostOperation } from "./host-passive.ts";
 import { DurableHost, readTaskGraph, stopBeforeResume } from "./durable-host.ts";
 import { hostActivityPublisher } from "./host-activity.ts";
 import { onStoredCommit } from "./commit-observation.ts";
@@ -1258,10 +1259,11 @@ export async function createDurableRuntime(
 		}
 	}
 
-	function finishRequest(method: string, counted: boolean, reload: boolean): void {
+	function finishRequest(method: string, counted: boolean, reload: boolean, passive: boolean): void {
 		if (counted) activeRequests--;
 		if (ADMITTING_METHODS.has(method)) activeAdmissions--;
 		if (reload) reloading = false;
+		if (passive) return;
 		scheduleRecoveryMarker();
 		notifyActivity();
 	}
@@ -1274,13 +1276,14 @@ export async function createDurableRuntime(
 		const reload = method === "command" && (input as { name?: unknown } | undefined)?.name === "reload";
 		if (reload && activeRequests > 0) throw new Error("Reload requires all other controls to settle");
 		const counted = method !== "receipts";
-		activityGeneration++;
+		const passive = isPassiveHostOperation(method);
+		if (!passive) activityGeneration++;
 		beginRequest(method, counted);
 		reloading = reload;
 		try {
 			return await requestScope.run(method, () => executeRequest(method, input, requestId, signal));
 		} finally {
-			finishRequest(method, counted, reload);
+			finishRequest(method, counted, reload, passive);
 		}
 	}
 	async function spawn(

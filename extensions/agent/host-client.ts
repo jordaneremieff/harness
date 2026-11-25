@@ -20,7 +20,8 @@ import {
 	type TransportRequest,
 	type TransportSubscription,
 } from "../../transport/index.ts";
-import { readClaimFile } from "./claims.ts";
+import { observeClaim, readClaimFile } from "./claims.ts";
+import { isPassiveHostOperation } from "./host-passive.ts";
 import {
 	HOST_CONTRACT_MEMBER,
 	HostError,
@@ -120,10 +121,9 @@ export type HostObservationScope =
 	| { readonly scope: "conversation"; readonly sessionId: string; readonly conversationId?: number }
 	| { readonly scope: "tasks"; readonly sessionId: string };
 
-/** One open live observation. `frame` is the latest delivered reading, never a cached cold copy. */
-/** One live-frame listener state: normal frames are `live`, a dropped connection is `unavailable`. */
-export type HostObservationState = "live" | "unavailable";
-/** One live-frame listener. An `unavailable` call carries the last known frame, or undefined. */
+/** A clean writer end is distinct from an unexplained transport loss. */
+export type HostObservationState = "live" | "unavailable" | "retired";
+/** A terminal notification carries the last known frame, if one arrived. */
 export type HostObservationListener = (
 	frame: ObservationFrame | undefined,
 	fresh: boolean,
@@ -213,7 +213,7 @@ interface ObservationEntry {
 	token: string | undefined;
 	subscription: TransportSubscription | undefined;
 	frame: ObservationFrame | undefined;
-	unavailable?: boolean;
+	state?: HostObservationState;
 	disposed: boolean;
 	removeAbort: () => void;
 }
@@ -919,6 +919,12 @@ class HostConnectionImpl implements HostConnection {
 		this.ownerReleasedValue = false;
 		this.unsubscribeState = link.client.onClose((reason) => {
 			if (this.closedValue || link.client !== this.client) return;
+			const paths = hostPaths(this.metadata);
+			const end = observeClaim(paths.claim, paths.identity);
+			if (end.kind === "dead" && end.writerId === link.writerId && end.endedAt !== undefined) {
+				this.shutdownLocal(new HostError("The durable host retired", "unavailable"), "retired");
+				return;
+			}
 			this.clearPublication("The host transport was lost");
 			for (const entry of this.observationEntries.values()) this.markObservationUnavailable(entry);
 			this.startRecovery(new Error(`durable host connection closed: ${reason}`));
@@ -1195,22 +1201,12 @@ class HostConnectionImpl implements HostConnection {
 				return current;
 			},
 			onFrame: (listener) => {
-				if (entry.disposed) {
-					try {
-						listener(entry.frame, false, "unavailable");
-					} catch {
-						/* A listener failure never changes observation state. */
-					}
-					return () => {};
-				}
-				entry.listeners.add(listener);
-				const current = entry.frame;
-				if (current !== undefined) {
-					try {
-						listener(current, !entry.unavailable, entry.unavailable ? "unavailable" : "live");
-					} catch {
-						// One listener failure never stops the others.
-					}
+				const state = entry.disposed && entry.state !== "retired" ? "unavailable" : (entry.state ?? "live");
+				if (!entry.disposed) entry.listeners.add(listener);
+				try {
+					listener(entry.frame, state === "live", state);
+				} catch {
+					/* A listener failure never changes observation state. */
 				}
 				return () => {
 					entry.listeners.delete(listener);
@@ -1274,7 +1270,7 @@ class HostConnectionImpl implements HostConnection {
 	): void {
 		if (this.closedValue || entry.disposed) return;
 		entry.frame = frame;
-		entry.unavailable = state === "unavailable";
+		entry.state = state;
 		for (const listener of [...entry.listeners]) {
 			try {
 				listener(frame, fresh, state);
@@ -1304,20 +1300,20 @@ class HostConnectionImpl implements HostConnection {
 		await this.request("observe-close", { token }).catch(() => undefined);
 	}
 
-	private markObservationUnavailable(entry: ObservationEntry): void {
-		if (entry.unavailable) return;
-		entry.unavailable = true;
+	private markObservationUnavailable(entry: ObservationEntry, state: "unavailable" | "retired" = "unavailable"): void {
+		if (entry.state === state) return;
+		entry.state = state;
 		for (const listener of [...entry.listeners]) {
 			try {
-				listener(entry.frame, false, "unavailable");
+				listener(entry.frame, false, state);
 			} catch {
 				/* One listener failure never stops the others. */
 			}
 		}
 	}
 
-	private notifyObservationUnavailable(entry: ObservationEntry): void {
-		this.markObservationUnavailable(entry);
+	private notifyObservationUnavailable(entry: ObservationEntry, state?: "unavailable" | "retired"): void {
+		this.markObservationUnavailable(entry, state);
 		entry.listeners.clear();
 	}
 
@@ -1328,14 +1324,14 @@ class HostConnectionImpl implements HostConnection {
 		this.notifyObservationUnavailable(entry);
 	}
 
-	private disposeObservationEntries(): void {
+	private disposeObservationEntries(state: "unavailable" | "retired" = "unavailable"): void {
 		for (const entry of [...this.observationEntries.values()]) {
 			entry.disposed = true;
 			entry.removeAbort();
 			const subscription = entry.subscription;
 			entry.subscription = undefined;
 			if (subscription) void subscription.dispose().catch(() => undefined);
-			this.notifyObservationUnavailable(entry);
+			this.notifyObservationUnavailable(entry, state);
 		}
 		this.observationEntries.clear();
 	}
@@ -1442,7 +1438,9 @@ class HostConnectionImpl implements HostConnection {
 		}
 		let link: Link;
 		try {
-			link = await this.recoveryLink(() => retryable.some((call) => this.pending.has(call)));
+			link = await this.recoveryLink(() =>
+				retryable.some((call) => !isPassiveHostOperation(call.method) && this.pending.has(call)),
+			);
 		} catch (error) {
 			this.shutdownLocal(toError(error));
 			return;
@@ -1472,7 +1470,7 @@ class HostConnectionImpl implements HostConnection {
 		}
 	}
 
-	private shutdownLocal(error: Error): void {
+	private shutdownLocal(error: Error, observationState?: "retired"): void {
 		if (this.closedValue) return;
 		this.closedValue = true;
 		this.clearPublication("The local host connection is closed");
@@ -1480,7 +1478,7 @@ class HostConnectionImpl implements HostConnection {
 		this.unsubscribeState?.();
 		this.unsubscribeState = undefined;
 		this.disposeChangeEntries();
-		this.disposeObservationEntries();
+		this.disposeObservationEntries(observationState);
 		this.rejectAll(error);
 		void this.client.dispose().catch(() => undefined);
 		this.notifyClosed();

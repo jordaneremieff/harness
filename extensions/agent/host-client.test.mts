@@ -471,7 +471,7 @@ it("retries a safe call only after an exact owned failed exit", { timeout: 30000
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
-	await connection.request("timer-list", { recovered: true });
+	await connection.request("submit", { prompt: "explicit recovery demand" });
 	track(t, connection.pid);
 	assert.notEqual(connection.pid, firstPid);
 	assert.equal(readFixtureState(statePath).starts, 2);
@@ -479,6 +479,19 @@ it("retries a safe call only after an exact owned failed exit", { timeout: 30000
 	await pending;
 	assert.equal(connection.closed, false);
 	await connection.close();
+});
+
+it("does not start a replacement for passive reads after a failed owned exit", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const statePath = join(root, "state.json");
+	const connection = await openHost(t, root);
+	const pending = connection.request("receipts", { fixtureGate: true });
+	const rejected = assert.rejects(pending);
+	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) === 1);
+	process.kill(connection.pid, "SIGKILL");
+	await rejected;
+	await waitForConnectionClose(connection);
+	assert.equal(readFixtureState(statePath).starts, 1);
 });
 
 it("rejects an unsafe call instead of resending it", { timeout: 30000 }, async (t) => {
@@ -617,7 +630,7 @@ it("rebinds change subscriptions after an owned failed exit with retryable work"
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
-	await connection.request("timer-list", { recovered: true });
+	await connection.request("submit", { prompt: "explicit recovery demand" });
 	track(t, connection.pid);
 	assert.notEqual(connection.pid, firstPid);
 	assert.equal(connection.closed, false);
@@ -953,7 +966,12 @@ it("keeps a task observation live after an owned failed exit and reconnect", { t
 	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
 	await markers.marker("snapshot-gated");
 	process.kill(firstPid, "SIGKILL");
-	await pending;
+	const admission = connection.request("submit", {
+		sessionId: config.storageId,
+		message: "Resume work",
+		requestId: "explicit-recovery",
+	});
+	await Promise.all([pending, admission]);
 	track(t, connection.pid);
 	await frames.waitFor(
 		(items) => connection.pid !== firstPid && items.filter((item) => item.fresh && item.state === "live").length >= 2,
@@ -992,7 +1010,12 @@ it("marks a refused observation reopen unavailable without closing the recovered
 	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
 	await markers.marker("snapshot-gated");
 	process.kill(firstPid, "SIGKILL");
-	await pending;
+	const admission = connection.request("submit", {
+		sessionId: config.storageId,
+		message: "Resume work",
+		requestId: "explicit-recovery",
+	});
+	await Promise.all([pending, admission]);
 	track(t, connection.pid);
 	await markers.marker("observation-reopen-refused");
 	await states.waitFor((items) => items.includes("unavailable"));
@@ -1078,8 +1101,13 @@ it("close during a held observation rebind prevents every late live callback", {
 	const pending = connection.request("snapshot", { sessionId: metadata.storageId, fixtureHold: true });
 	await markers.marker("snapshot-gated");
 	process.kill(connection.pid, "SIGKILL");
+	const admission = connection.request("submit", {
+		sessionId: metadata.storageId,
+		message: "Resume work",
+		requestId: "explicit-recovery",
+	});
 	await markers.marker("observation-reopen-held");
-	await pending;
+	await Promise.all([pending, admission]);
 	track(t, connection.pid);
 	await connection.close();
 	const settled = states.slice();
@@ -1110,7 +1138,7 @@ function lifecycleRunner(mode: string): string {
 			writeFileSync(path, JSON.stringify({ starts: ++starts }));
 			return {
 				request: async (method, params) => {
-					if (method === "receipts" && params?.fixtureGate === true) {
+					if (method === "submit" && params?.fixtureGate === true) {
 						await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "waiting");
 						return new Promise(resolve => { finish = resolve; });
 					}
@@ -1338,7 +1366,7 @@ it("close during held recovery never installs a late link or stops its independe
 	});
 	track(t, connection.pid);
 	t.after(() => connection.close());
-	const pending = connection.request("receipts", { fixtureGate: true });
+	const pending = connection.request("submit", { fixtureGate: true });
 	const rejected = assert.rejects(pending);
 	await markers.marker("waiting");
 	process.kill(connection.pid, "SIGKILL");
@@ -1366,10 +1394,18 @@ it("a clean owned exit does not automatically resume a pending read", { timeout:
 	track(t, connection.pid);
 	t.after(() => connection.close());
 	const firstPid = connection.pid;
+	const observation = await observeFrames(connection, { scope: "conversation", sessionId: metadata.storageId });
+	const states = eventLog<{ state?: string; revision?: number; fresh: boolean }>();
+	observation.onFrame((frame, fresh, state) => states.push({ state, revision: frame?.revision, fresh }));
 	const pending = connection.request("snapshot", { sessionId: metadata.storageId, fixtureHold: true });
 	const rejected = assert.rejects(pending);
 	await markers.marker("snapshot-gated");
 	await rejected;
+	await states.waitForCount(2);
+	assert.deepEqual(states.slice(), [
+		{ state: "live", revision: observation.frame.revision, fresh: true },
+		{ state: "retired", revision: observation.frame.revision, fresh: false },
+	]);
 	await new Promise<void>((resolve) => {
 		connection.onClose(resolve);
 	});

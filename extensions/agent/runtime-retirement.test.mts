@@ -677,7 +677,7 @@ it("cancels release when a second client admits work during the response grace",
 	}
 });
 
-it("preserves release through a generation change without new work", { timeout: 15000 }, async (t) => {
+it("does not reset the retirement generation for a completed status read", { timeout: 15000 }, async (t) => {
 	const f = await fixture(t);
 	assert.ok(f.runtime.requestRelease);
 	assert.ok(f.runtime.tryRetire);
@@ -693,13 +693,16 @@ it("preserves release through a generation change without new work", { timeout: 
 		return idle;
 	});
 	try {
+		let sealChecked = false;
 		assert.equal(
 			await f.runtime.tryRetire(() => {
-				assert.fail("changed generation must not seal");
+				sealChecked = true;
+				return false;
 			}),
 			false,
 		);
 		assert.equal(changed, true);
+		assert.equal(sealChecked, true, "the status read does not invalidate the retirement check");
 		assert.equal(f.runtime.releaseRequested, true);
 	} finally {
 		gate.mock.restore();
