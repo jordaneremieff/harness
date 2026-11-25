@@ -175,6 +175,17 @@ waits for none, apart from the [shared acts](#shared-acts).
    commit of `main` stays eligible after `main` moves on. Missing or unreadable
    Git evidence is a refusal, never a pass. After a refusal that concerns the
    entry, read the entry again and decide from the new state.
+
+   After a switch the script records it in `harness-activations.jsonl` beside
+   the settings file and removes, with `git worktree remove` and no force, the
+   snapshots beside the new one that nothing can use. It keeps the active and
+   the previous entry, the newest three, every snapshot whose path a running
+   process names in its command line or working directory, every snapshot
+   whose commit `main` does not contain, and every snapshot that was active at
+   any time since the oldest running Pi process started. Where the log does
+   not reach back to that start, it keeps every snapshot made after it and the
+   newest one made before it. Without process evidence it removes nothing. It
+   prints the count, the space freed, and each kept snapshot with its reasons.
 5. **Confirm.** Start a fresh Pi process on the configured route and exercise
    the changed behaviour. This step checks the configured route under the
    running Pi.
@@ -231,9 +242,11 @@ before these acts only:
   write.
 - **A host-operation, stored-format, or host-contract change.** Follow step 3
   of [Activate](#activate).
-- **Removing worktrees, branches, or snapshots you did not create.** Check
-  that their work is on `main` and that no process or open effort uses them.
-  Age alone is not a reason.
+- **Removing worktrees or branches you did not create.** Check that their
+  work is on `main` and that no process or open effort uses them. Age alone is
+  not a reason. Release snapshots need no such act: each switch removes the
+  unused ones by the rules in [Activate](#activate) step 4, so do not remove
+  them by other means.
 
 A session that needs a quiet machine, for example for a timing measurement,
 declares it; a session that sees the declaration holds its own full suite

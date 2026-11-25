@@ -15,7 +15,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type TestContext, test } from "node:test";
 import lockfile from "proper-lockfile";
-import { switchHarnessPackage } from "./activate.mts";
+import {
+	activationLogPath,
+	describePrune,
+	pruneSnapshots,
+	recordActivation,
+	switchHarnessPackage,
+} from "./activate.mts";
 
 function tempRoot(t: TestContext): string {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "activate-")));
@@ -403,4 +409,136 @@ test("a failed Git inspection is refused", (t) => {
 		/Could not establish .*refs\/heads\/main/,
 	);
 	assert.ok(message.includes(middle), message);
+});
+
+/** Snapshots made one after another, so each has a later creation time than the one before. */
+function snapshots(root: string, names: string[]): Record<string, string> {
+	const made: Record<string, string> = {};
+	for (const name of names) {
+		made[name] = realpathSync(makeSnapshot(root, name));
+		const created = statSync(made[name]).birthtimeMs;
+		while (Date.now() <= created + 2) {
+			// Creation times must differ.
+		}
+	}
+	return made;
+}
+
+function names(paths: string[]): string[] {
+	return paths.map((path) => path.split("/").at(-1) ?? path).sort();
+}
+
+test("an activation record names the real paths of both snapshots", (t) => {
+	const root = tempRoot(t);
+	const made = snapshots(root, ["from", "to"]);
+	const logPath = activationLogPath(writeSettings(root, "{}"));
+	recordActivation(logPath, join(root, "snapshots", ".", "from"), made.to, new Date("2026-11-25T00:00:00.000Z"));
+	recordActivation(logPath, made.to, made.from, new Date("2026-11-25T00:01:00.000Z"));
+	const records = readFileSync(logPath, "utf8")
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line));
+	assert.deepEqual(records, [
+		{ at: "2026-11-25T00:00:00.000Z", from: made.from, to: made.to },
+		{ at: "2026-11-25T00:01:00.000Z", from: made.to, to: made.from },
+	]);
+});
+
+test("pruning removes only the snapshots that no rule protects", (t) => {
+	const root = tempRoot(t);
+	const side = realpathSync(makeSnapshot(root, "side", unmergedCommit(root, "side")));
+	const made = snapshots(root, ["old1", "old2", "logged", "byCommand", "byCwd", "previous", "extra", "active"]);
+	const piStart = Date.now() + 60_000;
+	const logPath = activationLogPath(writeSettings(root, "{}"));
+	recordActivation(logPath, made.old1, made.logged, new Date(piStart - 1_000));
+	recordActivation(logPath, made.logged, made.active, new Date(piStart + 1_000));
+	const result = pruneSnapshots({
+		releasesDir: dirname(made.active),
+		active: made.active,
+		previous: made.previous,
+		logPath,
+		now: () => piStart + 2_000,
+		processes: () => [
+			{ pid: 10, startedAt: piStart, command: "pi" },
+			{ pid: 11, startedAt: piStart, command: `/usr/bin/node ${made.byCommand}/extensions/agent/durable-runner.ts {}` },
+			{ pid: 12, startedAt: piStart, command: "/bin/zsh", cwd: join(made.byCwd, "extensions") },
+		],
+	});
+	assert.deepEqual(names(result.removed), ["old1", "old2"]);
+	assert.equal(existsSync(made.old1), false);
+	assert.ok(result.freedBytes >= 0);
+	const kept = Object.fromEntries(result.kept.map((item) => [item.path.split("/").at(-1), item.reasons]));
+	assert.deepEqual(kept.active, ["active", "among the newest 3", "active since the oldest running Pi process started"]);
+	assert.deepEqual(kept.previous, ["previous entry", "among the newest 3"]);
+	assert.deepEqual(kept.extra, ["among the newest 3"]);
+	assert.deepEqual(kept.byCommand, ["used by a running process"]);
+	assert.deepEqual(kept.byCwd, ["used by a running process"]);
+	assert.deepEqual(kept.logged, ["active since the oldest running Pi process started"]);
+	assert.deepEqual(kept[side.split("/").at(-1) ?? ""], ["commit not on main"]);
+	assert.match(git(repositoryOf(root), "worktree", "list"), /active/u);
+	assert.doesNotMatch(git(repositoryOf(root), "worktree", "list"), /old1/u);
+});
+
+test("without an activation log that covers the oldest Pi process, pruning keeps every snapshot it could have loaded", (t) => {
+	const root = tempRoot(t);
+	const made = snapshots(root, ["old1", "old2", "beforePi"]);
+	const piStart = Date.now();
+	while (Date.now() <= piStart + 2) {
+		// The next snapshot is made after the Pi process started.
+	}
+	Object.assign(made, snapshots(root, ["afterPi1", "afterPi2", "afterPi3", "afterPi4"]));
+	const logPath = activationLogPath(writeSettings(root, "{}"));
+	recordActivation(logPath, made.afterPi3, made.afterPi4, new Date(piStart + 60_000));
+	const result = pruneSnapshots({
+		releasesDir: dirname(made.afterPi4),
+		active: made.afterPi4,
+		previous: made.afterPi3,
+		logPath,
+		processes: () => [{ pid: 10, startedAt: piStart, command: "pi" }],
+	});
+	assert.deepEqual(names(result.removed), ["old1", "old2"]);
+	const kept = Object.fromEntries(result.kept.map((item) => [item.path.split("/").at(-1), item.reasons]));
+	const uncovered = "possibly loaded by a running Pi process (no activation log covers its start)";
+	assert.deepEqual(kept.beforePi, [uncovered]);
+	assert.deepEqual(kept.afterPi1, [uncovered]);
+});
+
+test("pruning keeps a snapshot that git refuses to remove and removes nothing without process evidence", (t) => {
+	const root = tempRoot(t);
+	const made = snapshots(root, ["dirty", "clean", "n1", "n2", "active"]);
+	writeFileSync(join(made.dirty, "untracked.txt"), "work\n");
+	const logPath = activationLogPath(writeSettings(root, "{}"));
+	const base = { releasesDir: dirname(made.active), active: made.active, previous: made.n2, logPath };
+	const blind = pruneSnapshots({
+		...base,
+		processes: () => {
+			throw new Error("ps failed");
+		},
+	});
+	assert.match(blind.skipped ?? "", /process evidence is unavailable: ps failed/u);
+	assert.deepEqual(blind.removed, []);
+	assert.match(describePrune(blind), /^Removed no snapshots: process evidence is unavailable/u);
+	const result = pruneSnapshots({ ...base, processes: () => [] });
+	assert.deepEqual(names(result.removed), ["clean"]);
+	const dirty = result.kept.find((item) => item.path === made.dirty);
+	assert.match(dirty?.reasons.join(" ") ?? "", /git worktree remove refused: .*untracked/u);
+	assert.equal(existsSync(join(made.dirty, "untracked.txt")), true);
+	assert.match(describePrune(result), /^Removed 1 unused snapshots \(\d+ MB freed\); kept 4: /u);
+});
+
+test("the script switches, records the activation and reports the clean-up", (t) => {
+	const root = tempRoot(t);
+	const made = snapshots(root, ["old1", "current", "n1", "next"]);
+	const settingsPath = writeSettings(root, JSON.stringify({ packages: ["../snapshots/current"] }));
+	const script = join(dirname(new URL(import.meta.url).pathname), "activate.mts");
+	const run = spawnSync(process.execPath, [script, "--expect", made.current, made.next], {
+		encoding: "utf8",
+		env: { ...fixtureEnvironment, PI_CODING_AGENT_DIR: dirname(settingsPath) },
+	});
+	assert.equal(run.status, 0, run.stderr);
+	assert.match(run.stdout, /Switched harness package: \.\.\/snapshots\/current -> \.\.\/snapshots\/next/u);
+	assert.match(run.stdout, /Removed (0|1) unused snapshots/u);
+	const record = JSON.parse(readFileSync(activationLogPath(settingsPath), "utf8").trim());
+	assert.deepEqual([record.from, record.to], [made.current, made.next]);
+	assert.equal(JSON.parse(readFileSync(settingsPath, "utf8")).packages[0], "../snapshots/next");
 });

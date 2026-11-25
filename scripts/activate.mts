@@ -4,15 +4,19 @@
 // package. The new snapshot must hold a commit of its repository's local main
 // branch. The read, check and write run under Pi's settings lock so two
 // sessions cannot overwrite each other's switch, and only the one package
-// source is rewritten.
+// source is rewritten. Each switch is recorded in an activation log beside the
+// settings file; afterwards the script removes the snapshots beside the new one
+// that no running process can use, and keeps any whose use it cannot rule out.
 
 import { spawnSync } from "node:child_process";
 import {
+	appendFileSync,
 	closeSync,
 	existsSync,
 	fchmodSync,
 	fsyncSync,
 	openSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	renameSync,
@@ -21,7 +25,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import lockfile from "proper-lockfile";
@@ -295,6 +299,300 @@ export function switchHarnessPackage(options: SwitchOptions): { from: string; to
 	}
 }
 
+/** The activation log beside the settings file: one JSON record per switch. */
+export function activationLogPath(settingsPath: string): string {
+	return join(dirname(resolve(settingsPath)), "harness-activations.jsonl");
+}
+
+interface ActivationRecord {
+	at: string;
+	from: string;
+	to: string;
+}
+
+/** Appends one switch record with the real paths of both snapshots. */
+export function recordActivation(logPath: string, from: string, to: string, at = new Date()): void {
+	const record: ActivationRecord = { at: at.toISOString(), from: resolvedPath(from), to: resolvedPath(to) };
+	appendFileSync(logPath, `${JSON.stringify(record)}\n`);
+}
+
+/** The valid records of the log in file order, or undefined when the log is missing or unreadable. */
+function readActivations(logPath: string): ActivationRecord[] | undefined {
+	let text: string;
+	try {
+		text = readFileSync(logPath, "utf8");
+	} catch {
+		return undefined;
+	}
+	const records: ActivationRecord[] = [];
+	for (const line of text.split("\n")) {
+		if (line.trim() === "") continue;
+		try {
+			const value = JSON.parse(line) as Partial<ActivationRecord>;
+			if (
+				typeof value.at === "string" &&
+				Number.isFinite(Date.parse(value.at)) &&
+				typeof value.from === "string" &&
+				typeof value.to === "string"
+			)
+				records.push({ at: value.at, from: value.from, to: value.to });
+		} catch {
+			/* A torn line holds no record. */
+		}
+	}
+	return records;
+}
+
+/** One running process: its start, command line and working directory where known. */
+export interface ProcessInfo {
+	pid: number;
+	startedAt: number;
+	command: string;
+	cwd?: string;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const PS_LINE = /^\s*(\d+)\s+\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})\s(.*)$/u;
+
+function parseProcessTable(text: string): Map<number, ProcessInfo> {
+	const processes = new Map<number, ProcessInfo>();
+	for (const line of text.split("\n")) {
+		const match = PS_LINE.exec(line);
+		if (match === null) continue;
+		const [, pid, month, day, hours, minutes, seconds, year, command] = match;
+		const startedAt = Date.UTC(
+			Number(year),
+			MONTHS.indexOf(month),
+			Number(day),
+			Number(hours),
+			Number(minutes),
+			Number(seconds),
+		);
+		processes.set(Number(pid), { pid: Number(pid), startedAt, command: command.trim() });
+	}
+	return processes;
+}
+
+/** Working directories from `lsof -Fpn` output: `p<pid>` then `n<path>` lines. */
+function addLsofDirectories(text: string, processes: Map<number, ProcessInfo>): void {
+	let current: ProcessInfo | undefined;
+	for (const line of text.split("\n")) {
+		if (line.startsWith("p")) current = processes.get(Number(line.slice(1)));
+		else if (line.startsWith("n") && current !== undefined) current.cwd = line.slice(1);
+	}
+}
+
+function addProcDirectories(processes: Map<number, ProcessInfo>): void {
+	for (const info of processes.values()) {
+		try {
+			info.cwd = realpathSync(`/proc/${info.pid}/cwd`);
+		} catch {
+			/* A process of another user or one that ended keeps no readable cwd. */
+		}
+	}
+}
+
+/** This machine's processes with `ps`, and their working directories with `lsof` or `/proc`; throws without them. */
+export function localProcesses(): ProcessInfo[] {
+	const env = { ...process.env, TZ: "UTC0", LC_ALL: "C" };
+	const ps = spawnSync("ps", ["-axww", "-o", "pid=,lstart=,command="], { encoding: "utf8", env, maxBuffer: 64 << 20 });
+	if (ps.status !== 0) throw new Error(`ps failed: ${ps.stderr.trim() || ps.status}`);
+	const processes = parseProcessTable(ps.stdout);
+	if (process.platform === "darwin") {
+		const lsof = spawnSync("lsof", ["-a", "-d", "cwd", "-Fpn"], { encoding: "utf8", env, maxBuffer: 64 << 20 });
+		if (lsof.error !== undefined || lsof.stdout.trim() === "") throw new Error("lsof listed no working directories");
+		addLsofDirectories(lsof.stdout, processes);
+	} else if (process.platform === "linux") addProcDirectories(processes);
+	else throw new Error(`no working-directory source on ${process.platform}`);
+	return [...processes.values()];
+}
+
+/** Pi sets its process title to `pi`; a process started through the package entry names it. */
+function isPiProcess(command: string): boolean {
+	const trimmed = command.trim();
+	return trimmed === "pi" || trimmed.startsWith("pi ") || trimmed.includes("pi-coding-agent");
+}
+
+export interface PruneOptions {
+	/** The directory that holds the snapshots: the parent of the new one. */
+	releasesDir: string;
+	active: string;
+	previous: string;
+	logPath: string;
+	processes?: () => ProcessInfo[];
+	now?: () => number;
+}
+
+export interface PruneResult {
+	removed: string[];
+	kept: { path: string; reasons: string[] }[];
+	freedBytes: number;
+	skipped?: string;
+}
+
+/** Disk use of one directory in bytes, or zero when `du` cannot measure it. */
+function diskBytes(directory: string): number {
+	const du = spawnSync("du", ["-sk", directory], { encoding: "utf8" });
+	const kilobytes = Number.parseInt(du.stdout, 10);
+	return du.status === 0 && Number.isFinite(kilobytes) ? kilobytes * 1024 : 0;
+}
+
+function createdAt(directory: string): number {
+	const stat = statSync(directory);
+	return stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
+}
+
+/** The repository's worktrees from `git worktree list --porcelain`; the first is the main worktree. */
+function worktrees(directory: string): string[] {
+	const listed = runGit(directory, ["worktree", "list", "--porcelain"]);
+	if (listed.status !== 0) throw new Error(`git worktree list failed: ${listed.detail}`);
+	return listed.stdout
+		.split("\n")
+		.filter((line) => line.startsWith("worktree "))
+		.map((line) => resolvedPath(line.slice("worktree ".length)));
+}
+
+/** Snapshots that were active at any time since `since`, or undefined when the log does not reach back that far. */
+function activeSince(logPath: string, since: number, active: string): Set<string> | undefined {
+	const records = readActivations(logPath);
+	if (records === undefined || records.length === 0 || Date.parse(records[0].at) > since) return undefined;
+	const result = new Set([active]);
+	let before: string | undefined;
+	for (const record of records) {
+		if (Date.parse(record.at) <= since) before = record.to;
+		else {
+			result.add(resolvedPath(record.from));
+			result.add(resolvedPath(record.to));
+		}
+	}
+	if (before !== undefined) result.add(resolvedPath(before));
+	return result;
+}
+
+function within(path: string, directory: string): boolean {
+	return path === directory || path.startsWith(`${directory}${sep}`);
+}
+
+/** What every candidate is judged against. */
+interface KeepContext {
+	active: string;
+	previous: string;
+	newest: readonly string[];
+	processes: readonly ProcessInfo[];
+	mainCommit: string;
+	/** Snapshots active since the oldest running Pi process started, when the log covers that start. */
+	since: Set<string> | undefined;
+	oldestPi: number;
+	newestBefore: string | undefined;
+	created: Map<string, number>;
+}
+
+function usedByProcess(candidate: string, processes: readonly ProcessInfo[]): boolean {
+	return processes.some(
+		(info) => info.command.includes(candidate) || (info.cwd !== undefined && within(resolvedPath(info.cwd), candidate)),
+	);
+}
+
+function mainReason(candidate: string, mainCommit: string): string | undefined {
+	const head = runGit(candidate, ["rev-parse", "--verify", "HEAD^{commit}"]);
+	if (head.status !== 0) return "commit check failed";
+	const reach = runGit(candidate, ["merge-base", "--is-ancestor", head.stdout.trim(), mainCommit]).status;
+	return reach === 0 ? undefined : reach === 1 ? "commit not on main" : "commit check failed";
+}
+
+function reasonsFor(candidate: string, context: KeepContext): string[] {
+	const reasons: string[] = [];
+	if (candidate === context.active) reasons.push("active");
+	if (candidate === context.previous) reasons.push("previous entry");
+	if (context.newest.includes(candidate)) reasons.push("among the newest 3");
+	if (usedByProcess(candidate, context.processes)) reasons.push("used by a running process");
+	const main = mainReason(candidate, context.mainCommit);
+	if (main !== undefined) reasons.push(main);
+	if (context.since?.has(candidate)) reasons.push("active since the oldest running Pi process started");
+	const created = context.created.get(candidate) ?? 0;
+	if (context.since === undefined && (created > context.oldestPi || candidate === context.newestBefore))
+		reasons.push("possibly loaded by a running Pi process (no activation log covers its start)");
+	return reasons;
+}
+
+/** The reasons to keep each snapshot candidate; an empty list allows removal. */
+function keepReasons(
+	candidates: readonly string[],
+	options: PruneOptions,
+	processes: readonly ProcessInfo[],
+	mainCommit: string,
+	now: number,
+): Map<string, string[]> {
+	const created = new Map(candidates.map((candidate) => [candidate, createdAt(candidate)]));
+	const byAge = [...candidates].sort((a, b) => (created.get(b) ?? 0) - (created.get(a) ?? 0));
+	const active = resolvedPath(options.active);
+	const piStarts = processes.filter((info) => isPiProcess(info.command)).map((info) => info.startedAt);
+	const oldestPi = piStarts.length === 0 ? now : Math.min(...piStarts);
+	const context: KeepContext = {
+		active,
+		previous: resolvedPath(options.previous),
+		newest: byAge.slice(0, 3),
+		processes,
+		mainCommit,
+		since: activeSince(options.logPath, oldestPi, active),
+		oldestPi,
+		newestBefore: byAge.find((candidate) => (created.get(candidate) ?? 0) <= oldestPi),
+		created,
+	};
+	return new Map(candidates.map((candidate) => [candidate, reasonsFor(candidate, context)]));
+}
+
+/**
+ * Removes the snapshot worktrees beside the new snapshot that nothing can use. A snapshot stays when it is the active
+ * or previous entry, among the newest three, named by a running process's command line or working directory, holds
+ * a commit that main does not contain, or was active at any time since the oldest running Pi process started. Without
+ * an activation log that reaches back to that start, every snapshot made after it stays, and so does the newest one
+ * made before it. Removal uses `git worktree remove` without force, so a snapshot with untracked or changed files
+ * stays as well. Missing process evidence removes nothing.
+ */
+export function pruneSnapshots(options: PruneOptions): PruneResult {
+	const releasesDir = resolvedPath(options.releasesDir);
+	const result: PruneResult = { removed: [], kept: [], freedBytes: 0 };
+	let processes: ProcessInfo[];
+	try {
+		processes = (options.processes ?? localProcesses)();
+	} catch (error) {
+		return {
+			...result,
+			skipped: `process evidence is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+	const listed = worktrees(options.active);
+	const mainWorktree = listed[0];
+	const mainCommit = mainEvidence(options.active, ["show-ref", "--verify", "--hash", mainRef]).trim();
+	const entries = new Set(readdirSync(releasesDir).map((name) => resolvedPath(join(releasesDir, name))));
+	const candidates = listed.slice(1).filter((path) => entries.has(path) && dirname(path) === releasesDir);
+	const reasons = keepReasons(candidates, options, processes, mainCommit, (options.now ?? Date.now)());
+	for (const candidate of candidates) {
+		const kept = reasons.get(candidate) ?? [];
+		if (kept.length > 0) {
+			result.kept.push({ path: candidate, reasons: kept });
+			continue;
+		}
+		const bytes = diskBytes(candidate);
+		const removed = runGit(mainWorktree, ["worktree", "remove", candidate]);
+		if (removed.status === 0) {
+			result.removed.push(candidate);
+			result.freedBytes += bytes;
+		} else result.kept.push({ path: candidate, reasons: [`git worktree remove refused: ${removed.detail}`] });
+	}
+	if (result.removed.length > 0) runGit(mainWorktree, ["worktree", "prune"]);
+	return result;
+}
+
+/** One line for the operator: what was removed and freed, and what stayed and why. */
+export function describePrune(result: PruneResult): string {
+	if (result.skipped !== undefined) return `Removed no snapshots: ${result.skipped}`;
+	const megabytes = Math.round(result.freedBytes / (1024 * 1024));
+	const kept = result.kept.map((item) => `${basename(item.path)} (${item.reasons.join("; ")})`).join(", ");
+	return `Removed ${result.removed.length} unused snapshots (${megabytes} MB freed); kept ${result.kept.length}${kept === "" ? "" : `: ${kept}`}`;
+}
+
 function parseArguments(args: string[]): { rollback: boolean; expect: string; to: string } {
 	const rollback = args[0] === "--rollback";
 	const rest = rollback ? args.slice(1) : args;
@@ -304,8 +602,31 @@ function parseArguments(args: string[]): { rollback: boolean; expect: string; to
 
 function main(): void {
 	const { rollback, expect, to } = parseArguments(process.argv.slice(2));
-	const result = switchHarnessPackage({ settingsPath: join(getAgentDir(), "settings.json"), expect, to, rollback });
+	const settingsPath = join(getAgentDir(), "settings.json");
+	const result = switchHarnessPackage({ settingsPath, expect, to, rollback });
 	console.log(`Switched harness package: ${result.from} -> ${result.to}`);
+	// The switch stands whatever follows; the log and the clean-up report their own failures.
+	const logPath = activationLogPath(settingsPath);
+	try {
+		recordActivation(logPath, expect, to);
+	} catch (error) {
+		console.error(`The activation log was not written, so no snapshot was removed: ${errorText(error)}`);
+		return;
+	}
+	try {
+		const toReal = resolvedPath(to);
+		console.log(
+			describePrune(
+				pruneSnapshots({ releasesDir: dirname(toReal), active: toReal, previous: resolvedPath(expect), logPath }),
+			),
+		);
+	} catch (error) {
+		console.error(`Snapshot clean-up failed: ${errorText(error)}`);
+	}
+}
+
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : undefined;
