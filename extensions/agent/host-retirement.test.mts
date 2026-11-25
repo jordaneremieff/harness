@@ -6,9 +6,10 @@ import { it } from "node:test";
 import { connectTransport } from "../../transport/index.ts";
 import { connectHost, type HostConnection } from "./host-client.ts";
 import { eventLog, fixtureMetadata } from "./host-fixture.mts";
-import { hostPaths } from "./host-protocol.ts";
+import { HOST_CONTRACT_MEMBER, hostPaths } from "./host-protocol.ts";
 import { runHost, type HostRuntime } from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
+import { manualClock } from "./observation-clock-fixture.mts";
 import { observeClaim } from "./claims.ts";
 
 function deferred() {
@@ -19,14 +20,24 @@ function deferred() {
 	return { promise, resolve };
 }
 
-async function fixture(t: { after(fn: () => void | Promise<void>): void }, runtime: HostRuntime, idleMs = 10) {
+async function fixture(
+	t: { after(fn: () => void | Promise<void>): void },
+	runtime: HostRuntime,
+	idleMs = 10,
+	clock?: ReturnType<typeof manualClock>,
+) {
 	const root = mkdtempSync(join(tmpdir(), "host-retirement-"));
-	t.after(() => rmSync(root, { recursive: true, force: true }));
+	let cleanup = async (): Promise<void> => {};
+	t.after(async () => {
+		await cleanup();
+		rmSync(root, { recursive: true, force: true });
+	});
 	const metadata = fixtureMetadata(root);
 	const checks = eventLog<{ fire(): void; cancelled: boolean }>();
 	const host = await runHost(() => runtime, {
 		metadata,
 		idleMs,
+		observationClock: clock,
 		announceReady: () => {},
 		scheduleIdleCheck: (fire) => {
 			const entry = { fire, cancelled: false };
@@ -36,8 +47,23 @@ async function fixture(t: { after(fn: () => void | Promise<void>): void }, runti
 			};
 		},
 	});
-	t.after(() => host.close().catch(() => {}));
+	cleanup = () => host.close().catch(() => {});
 	return { metadata, host, checks };
+}
+
+async function rawClient(
+	t: { after(fn: () => void | Promise<void>): void },
+	metadata: ReturnType<typeof fixtureMetadata>,
+) {
+	const paths = hostPaths(metadata);
+	const link = await connectTransport({ serverId: paths.serverId, path: paths.socket });
+	t.after(() => link.dispose());
+	return {
+		status: (requestId: string) =>
+			link.request({ method: "status", requestId, contract: HOST_CONTRACT.operations.status }),
+		fence: () => link.request({ method: HOST_CONTRACT_MEMBER, requestId: "fence" }),
+		subscribe: () => link.subscribe("changes", undefined, () => {}),
+	};
 }
 
 it("retires with passive clients and change subscriptions without cancelling their idle window", {
@@ -94,34 +120,208 @@ it("retires both hosts in a passive peer connection cycle", { timeout: 3000 }, a
 	assert.ok(toFirst.closed && toSecond.closed);
 });
 
-it("finishes an in-flight read but refuses new reads after the idle deadline", { timeout: 3000 }, async (t) => {
+it("finishes an in-flight read and refuses paused reads only after the seal", { timeout: 3000 }, async (t) => {
 	const started = deferred();
 	const release = deferred();
 	t.after(release.resolve);
-	let closed = false;
+	let reads = 0;
 	const f = await fixture(t, {
 		request: async () => {
+			reads++;
 			started.resolve();
 			await release.promise;
 			return { read: "x".repeat(512 * 1024) };
 		},
 		isIdle: () => true,
-		close: async () => {
-			closed = true;
-		},
+		close: async () => {},
 	});
-	const client = await connectHost(f.metadata, { retryAttempts: 0 });
-	t.after(() => client.close());
-	const reading = client.request("status");
+	const link = await rawClient(t, f.metadata);
+	const reading = link.status("first");
 	await started.promise;
-	f.checks[f.checks.length - 1].fire();
-	assert.equal(closed, false);
-	await assert.rejects(client.request("status"), /checking whether it can retire/u);
+	f.checks[0].fire();
+	const refused = assert.rejects(link.status("second"), /shutting down/u);
+	await link.fence();
+	assert.equal(reads, 1);
 	release.resolve();
 	assert.deepEqual(await reading, { read: "x".repeat(512 * 1024) });
+	await refused;
 	await f.host.done;
+	assert.equal(reads, 1);
 	assert.equal(f.checks.length, 1, "the reply does not start another interval");
 });
+
+it("serves passive reads at the idle deadline when native work is already busy", { timeout: 3000 }, async (t) => {
+	let attempted = false;
+	const f = await fixture(t, {
+		request: async () => ({ busy: true }),
+		isIdle: () => false,
+		tryRetire: async () => {
+			attempted = true;
+			return false;
+		},
+		close: async () => {},
+	});
+	const link = await rawClient(t, f.metadata);
+	const reading = link.status("busy");
+	f.checks[0].fire();
+	assert.deepEqual(await reading, { busy: true });
+	assert.equal(attempted, false, "known busy work skips the asynchronous check");
+	assert.equal(f.checks.length, 2);
+});
+
+it("serves paused reads and subscriptions on the same writer after a refused check", { timeout: 3000 }, async (t) => {
+	const checking = deferred();
+	const checkDone = deferred();
+	t.after(checkDone.resolve);
+	let reads = 0;
+	let busy = false;
+	const f = await fixture(t, {
+		request: async () => {
+			reads++;
+			return { busy };
+		},
+		isIdle: () => !busy,
+		tryRetire: async (seal) => {
+			checking.resolve();
+			await checkDone.promise;
+			return !busy && seal();
+		},
+		close: async () => {},
+	});
+	const link = await rawClient(t, f.metadata);
+	const hello = await link.fence();
+	f.checks[0].fire();
+	await checking.promise;
+	busy = true;
+	const reading = link.status("during-check");
+	const subscription = link.subscribe();
+	void reading.catch(() => {});
+	void subscription.catch(() => {});
+	assert.deepEqual(await link.fence(), hello);
+	assert.equal(reads, 0);
+	checkDone.resolve();
+	assert.deepEqual(await reading, { busy: true });
+	await subscription;
+	assert.deepEqual(await link.fence(), hello);
+	assert.equal(reads, 1);
+	assert.equal(f.checks.length, 2);
+});
+
+it("reopens passive admission after a refused release until real quiescence", { timeout: 3000 }, async (t) => {
+	const checking = deferred();
+	const checkDone = deferred();
+	t.after(checkDone.resolve);
+	let quiescent = () => {};
+	let eligible = false;
+	let checks = 0;
+	const f = await fixture(
+		t,
+		{
+			request: async () => ({ available: true }),
+			isIdle: () => eligible,
+			releaseRequested: true,
+			onQuiescent: (listener) => {
+				quiescent = listener;
+				return () => {};
+			},
+			tryRetire: async (seal) => {
+				checks++;
+				if (eligible) return seal();
+				checking.resolve();
+				await checkDone.promise;
+				return false;
+			},
+			close: async () => {},
+		},
+		0,
+	);
+	const link = await rawClient(t, f.metadata);
+	await checking.promise;
+	const reading = link.status("during-release");
+	void reading.catch(() => {});
+	await link.fence();
+	checkDone.resolve();
+	assert.deepEqual(await reading, { available: true });
+	assert.deepEqual(await link.status("after-release-check"), { available: true });
+	assert.equal(checks, 1);
+	eligible = true;
+	quiescent();
+	await f.host.done;
+	assert.equal(checks, 2);
+});
+
+for (const resume of ["activity", "refused check"] as const)
+	it(`publishes one deferred observation frame after ${resume}`, { timeout: 3000 }, async (t) => {
+		const checking = deferred();
+		const checkDone = deferred();
+		t.after(checkDone.resolve);
+		let changed = () => {};
+		let active = () => {};
+		let revision = 1;
+		let frameReads = 0;
+		const clock = manualClock();
+		const f = await fixture(
+			t,
+			{
+				request: async (method, params) => {
+					if (method === "observe-open") return { token: (params as { token: string }).token };
+					if (method !== "observe-frame") return {};
+					frameReads++;
+					return {
+						scope: "tasks",
+						storageId: "fixture",
+						revision,
+						observedAt: new Date().toISOString(),
+						tasks: [],
+						labels: [],
+						coverage: { complete: true, live: true },
+					};
+				},
+				isIdle: () => true,
+				tryRetire: async () => {
+					checking.resolve();
+					await checkDone.promise;
+					return false;
+				},
+				onObservationChange: (listener) => {
+					changed = listener;
+					return () => {};
+				},
+				onActivity: (listener) => {
+					active = listener;
+					return () => {};
+				},
+				close: async () => {},
+			},
+			10,
+			clock,
+		);
+		const client = await connectHost(f.metadata, { retryAttempts: 0 });
+		t.after(() => client.close());
+		assert.ok(client.observe);
+		const observation = await client.observe({ scope: "tasks", sessionId: f.metadata.storageId });
+		const delivered = deferred();
+		observation.onFrame((frame) => {
+			if (frame?.revision === 2) delivered.resolve();
+		});
+		clock.advance(0);
+		await new Promise<void>(setImmediate);
+		f.checks[0].fire();
+		await checking.promise;
+		const before = frameReads;
+		revision++;
+		changed();
+		clock.advance(1000);
+		await new Promise<void>(setImmediate);
+		assert.equal(frameReads, before, "the change reaches the pump while admission is paused");
+		if (resume === "activity") active();
+		else checkDone.resolve();
+		await f.checks.waitForCount(2);
+		clock.advance(1000);
+		await delivered.promise;
+		assert.equal(frameReads, before + 1);
+		checkDone.resolve();
+	});
 
 it("releases the last open observation token on retirement, even before subscription", {
 	timeout: 3000,

@@ -3960,9 +3960,10 @@ a token request after close.
   the host alive. Actual storage changes and active controls, including explicit
   attachment, reset the interval. Parked and terminal delivery rows alone do
   not keep a writer alive. Passive reads and feeds, including open conversation
-  and task views, do not reset the interval. At expiry the host refuses new
-  passive reads, lets existing replies finish, and checks that no active control
-  or native work raced retirement. The host releases its observation tokens
+  and task views, do not reset the interval. At expiry the host lets existing
+  replies finish and pauses new reads during the retirement check. If the host
+  stays live, it serves the paused reads and refreshes any deferred observations.
+  The host refuses new reads only after it seals admission. It releases its observation tokens
   when it retires. The dashboard keeps the last view and reads stored history
   without starting a replacement. An unexplained disconnect still reports loss.
   A failed observation frame releases only that token.

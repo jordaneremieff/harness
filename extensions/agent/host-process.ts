@@ -268,12 +268,15 @@ class HostProcessServer implements HostProcess {
 	private pendingReplies = 0;
 	private activeRequests = 0;
 	private idleExpired = false;
+	private passiveWait: { promise: Promise<void>; resolve: () => void } | undefined;
+	private observationDeferred = false;
 	private activityGeneration = 0;
 	private readonly attachments = new Map<string, AttachmentState>();
 	private retirementChecking = false;
 	private releasePending = false;
 	private releaseScheduled = false;
 	private releaseGraceExpired = false;
+	private releaseDraining = false;
 	private releaseTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly releaseRequesters = new Set<AttachmentState>();
 	private releaseChecking = false;
@@ -367,8 +370,8 @@ class HostProcessServer implements HostProcess {
 			request: (request, peer) => this.invoke(request, this.attachment(peer)),
 			subscribe: async (kind, token, peer, publish) => {
 				const state = this.attachment(peer);
-				if (this.closing) throw retiringRefusal("The durable host process is shutting down");
-				this.admitPassive();
+				while (this.passiveAdmissionPaused()) await this.waitForPassiveAdmission();
+				this.assertPassiveAdmission(state);
 				this.pendingReplies++;
 				try {
 					return kind === "changes"
@@ -465,8 +468,10 @@ class HostProcessServer implements HostProcess {
 		if (method !== HOST_CONTRACT_MEMBER) this.validateOperation(method, contract);
 		if (method === HOST_CONTRACT_MEMBER || method === "close") return this.dispatch(request, state);
 		const passive = isPassiveHostOperation(method);
-		if (passive) this.admitPassive();
-		else {
+		if (passive) {
+			while (this.passiveAdmissionPaused()) await this.waitForPassiveAdmission();
+			this.assertPassiveAdmission(state);
+		} else {
 			this.activeRequests++;
 			this.resetIdleWindow();
 		}
@@ -567,7 +572,11 @@ class HostProcessServer implements HostProcess {
 
 	/** Publish one state update per subscription whose frame revision advanced. */
 	private async pumpObservations(): Promise<void> {
-		if (this.closing || this.passiveAdmissionStopped()) return;
+		if (this.closing) return;
+		if (this.passiveAdmissionPaused()) {
+			this.observationDeferred = true;
+			return;
+		}
 		this.pendingReplies++;
 		try {
 			await Promise.all([...this.observations].map((entry) => this.publishObservation(entry)));
@@ -699,7 +708,7 @@ class HostProcessServer implements HostProcess {
 
 	private shutdownIfRequired(): void {
 		if (!this.runtime.shutdownRequired || this.closing) return;
-		this.closing = true;
+		this.sealPassiveAdmission();
 		// Let the service response reach the client before shutdown closes transport.
 		setImmediate(() => {
 			void this.shutdown().catch(() => {});
@@ -711,14 +720,42 @@ class HostProcessServer implements HostProcess {
 		this.idleExpired = false;
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
+		this.resumePassiveAdmission();
 	}
 
-	private passiveAdmissionStopped(): boolean {
-		return this.idleExpired || (this.releasePending && this.releaseGraceExpired);
+	private passiveAdmissionPaused(): boolean {
+		return !this.closing && (this.idleExpired || this.releaseDraining);
 	}
 
-	private admitPassive(): void {
-		if (this.passiveAdmissionStopped()) throw retiringRefusal("The durable host is checking whether it can retire");
+	private waitForPassiveAdmission(): Promise<void> {
+		// A tentative check is not a retiring refusal: the same writer may still serve the caller.
+		if (!this.passiveWait) {
+			let resolve = () => {};
+			const promise = new Promise<void>((done) => {
+				resolve = done;
+			});
+			this.passiveWait = { promise, resolve };
+		}
+		return this.passiveWait.promise;
+	}
+
+	private assertPassiveAdmission(state: AttachmentState): void {
+		if (this.closing) throw retiringRefusal("The durable host process is shutting down");
+		if (state.released)
+			throw new ChordError({ code: "unavailable", message: "The attachment closed before admission" });
+	}
+
+	private resumePassiveAdmission(): void {
+		if (this.passiveAdmissionPaused()) return;
+		this.passiveWait?.resolve();
+		this.passiveWait = undefined;
+		if (!this.closing && this.observationDeferred && this.observations.size > 0) this.observationPump.markDirty();
+		this.observationDeferred = false;
+	}
+
+	private sealPassiveAdmission(): void {
+		this.closing = true;
+		this.resumePassiveAdmission();
 	}
 
 	/** Chord queues the reply after the invocation returns; the Unix transport drains writes on close. */
@@ -729,8 +766,9 @@ class HostProcessServer implements HostProcess {
 	private endReply(passive: boolean): void {
 		this.pendingReplies--;
 		if (!passive) this.activeRequests--;
-		if (this.releasePending) this.scheduleRelease();
-		else if (this.idleExpired) void this.onIdleCheck();
+		if (this.releasePending) {
+			if (!passive || this.releaseDraining) this.scheduleRelease();
+		} else if (this.idleExpired) void this.onIdleCheck();
 		else this.scheduleRetirement();
 	}
 
@@ -746,6 +784,7 @@ class HostProcessServer implements HostProcess {
 			() => {
 				this.releaseTimer = undefined;
 				this.releaseGraceExpired = true;
+				this.releaseDraining = true;
 				this.releaseScheduled = false;
 				void this.releaseWhenQuiescent().catch(() => {});
 			},
@@ -757,15 +796,17 @@ class HostProcessServer implements HostProcess {
 		this.releasePending = false;
 		this.releaseAgain = false;
 		this.releaseGraceExpired = false;
+		this.releaseDraining = false;
 		this.releaseScheduled = false;
 		this.releaseRequesters.clear();
 		if (this.releaseTimer !== undefined) clearTimeout(this.releaseTimer);
 		this.releaseTimer = undefined;
+		this.resumePassiveAdmission();
 		this.scheduleRetirement();
 	}
 
 	private async releaseWhenQuiescent(): Promise<void> {
-		if (this.closing || !this.releasePending || this.releaseChecking || this.pendingReplies > 0) return;
+		if (this.closing || !this.releasePending || this.retirementChecking || this.pendingReplies > 0) return;
 		this.releaseChecking = true;
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
@@ -774,6 +815,8 @@ class HostProcessServer implements HostProcess {
 			await this.onIdleCheck(true);
 		} finally {
 			this.releaseChecking = false;
+			this.releaseDraining = false;
+			this.resumePassiveAdmission();
 			const again = this.releaseAgain;
 			this.releaseAgain = false;
 			if (this.releasePending && (again || generation !== this.activityGeneration)) this.scheduleRelease();
@@ -827,13 +870,14 @@ class HostProcessServer implements HostProcess {
 				(releasing ? !this.releasePending : !this.idleExpired)
 			)
 				return false;
-			this.closing = true;
+			this.sealPassiveAdmission();
 			// Admission is sealed now; the deadline covers the observation cleanup that precedes shutdown.
 			this.armShutdownDeadline();
 			this.closeObservations();
 			return true;
 		};
 		try {
+			if (!releasing && !this.runtime.isIdle()) return;
 			const retired = this.runtime.tryRetire ? await this.runtime.tryRetire(seal) : this.runtime.isIdle() && seal();
 			if (retired) {
 				await Promise.allSettled([...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]));
@@ -848,12 +892,11 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private resumeRetirement(generation: number, releasing: boolean): void {
+		if (generation === this.activityGeneration) this.idleExpired = false;
+		this.resumePassiveAdmission();
 		if (this.releasePending) {
 			if (!releasing) this.scheduleRelease();
-			return;
-		}
-		if (generation === this.activityGeneration) this.idleExpired = false;
-		if (this.idleExpired) void this.onIdleCheck();
+		} else if (this.idleExpired) void this.onIdleCheck();
 		else this.scheduleRetirement();
 	}
 
@@ -870,7 +913,7 @@ class HostProcessServer implements HostProcess {
 		} catch {
 			this.writerLost = true;
 		}
-		this.closing = true;
+		this.sealPassiveAdmission();
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
 		this.cancelLeaseCheck?.();
@@ -899,7 +942,7 @@ class HostProcessServer implements HostProcess {
 
 	private shutdown(): Promise<void> {
 		if (this.closePromise) return this.closePromise;
-		this.closing = true;
+		this.sealPassiveAdmission();
 		this.armShutdownDeadline();
 		this.closePromise = this.performShutdown().finally(() => {
 			this.cancelShutdownDeadline?.();
@@ -939,7 +982,6 @@ class HostProcessServer implements HostProcess {
 		if (this.releaseTimer !== undefined) clearTimeout(this.releaseTimer);
 		this.releaseTimer = undefined;
 		this.releaseRequesters.clear();
-		this.closing = true;
 		this.unsubscribeObservation?.();
 		this.unsubscribeObservation = undefined;
 		this.unsubscribeActivity?.();
