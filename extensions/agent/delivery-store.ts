@@ -229,17 +229,16 @@ export async function retainedReport(tx: Tx, ownerId: string, sourceId: string):
 /**
  * Reads the retained intents of inputs that have not settled. A transaction read of an absent row creates that
  * row, and most inputs of a run are events that never had an intent, so this reader tests membership before it
- * reads a row. An intent stays in the pending or terminal intent references until the commit that stores its
- * receipt, and a receipt follows the settlement of its input. Membership therefore decides exactly for an input
- * that has not settled; it says nothing about a settled input.
+ * reads a row. The membership is the pending intent references alone: an intent stays there until the commit that
+ * stores its receipt, and that list holds current work, so its length does not follow the history of the storage.
+ * An intent whose route is terminal has left that list. Such a route receives nothing (its recipient identity is
+ * malformed or names a thread storage, its admission origin is corrupt, or it has no native submission), so the
+ * reader reports no intent for it. The reader says nothing about a settled input.
  */
 export async function unsettledIntentReader(
 	tx: Tx,
 ): Promise<(conversationId: number, requestId: string) => Promise<DeliveryIntent | undefined>> {
-	const keys = new Set([
-		...(await listReferences(tx, "pending:intent")),
-		...(await listReferences(tx, "terminal:intent")),
-	]);
+	const keys = new Set(await listReferences(tx, "pending:intent"));
 	return async (conversationId, requestId) =>
 		keys.has(intentKey(conversationId, requestId)) ? retainedIntent(tx, conversationId, requestId) : undefined;
 }

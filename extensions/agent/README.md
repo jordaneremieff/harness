@@ -4558,10 +4558,13 @@ by owner and request ID; source IDs independently identify acknowledgements.
 Absent observation keys and unknown acknowledgement keys do not create records.
 A read of an absent row inside a transaction creates that row with no value.
 A path that asks about inputs which may have no intent therefore tests the
-pending and terminal intent references first (`unsettledIntentReader`): an
-intent stays in those references until the commit that stores its receipt.
-Capacity reports and report interventions read the intents of a live run's
-inputs this way, so an event input leaves no row behind.
+pending intent references first (`unsettledIntentReader`): an intent stays in
+those references until the commit that stores its receipt. That list holds
+current work, so the cost of the test does not follow the history of the
+storage. An intent whose route is terminal has left the list and reads as
+absent; such a route receives nothing. Capacity reports and report
+interventions read the intents of a live run's inputs this way, so an event
+input leaves no row behind.
 
 Each reference page records the list that owns it. Every page read and append
 checks that identity and refuses a page that names no list or another list:

@@ -26,6 +26,7 @@ import {
 } from "./durable-controls.ts";
 import {
 	automaticDeliveryPage,
+	DELIVERY_PAGE_SIZE,
 	deliveryPendingCount,
 	deliveryState,
 	DeliveryArchiveDoc,
@@ -56,6 +57,19 @@ import {
 	scriptedRuntime,
 	toolCallMessage,
 } from "./durable-host-fixture.mts";
+
+function unsettledIntent(requestId: string): DeliveryIntent {
+	return {
+		requestId,
+		ownerId: "owner",
+		conversationId: 1 as ConversationId,
+		message: "work",
+		whenBusy: null,
+		operationId: null,
+		submissionId: null,
+		origin: "model",
+	};
+}
 
 function report(index: number): DeliveryReport {
 	return {
@@ -416,22 +430,12 @@ it("reads the intent of an input that has not settled and creates no row for an 
 	);
 	t.after(() => harness.close(context));
 	await migrateDeliveryStore(harness, context);
-	const intent = (requestId: string): DeliveryIntent => ({
-		requestId,
-		ownerId: "owner",
-		conversationId: 1 as ConversationId,
-		message: "work",
-		whenBusy: null,
-		operationId: null,
-		submissionId: null,
-		origin: "model",
-	});
 	await harness.commit(async (tx) => {
-		await storeDeliveryRow(tx, "intent", intent("waits"), true);
+		await storeDeliveryRow(tx, "intent", unsettledIntent("waits"), true);
 		await storeDeliveryRow(
 			tx,
 			"intent",
-			{ ...intent("refused"), delivery: { state: "terminal", reason: "refused" } },
+			{ ...unsettledIntent("refused"), delivery: { state: "terminal", reason: "malformed recipient identity" } },
 			true,
 		);
 	}, context);
@@ -444,10 +448,60 @@ it("reads the intent of an input that has not settled and creates no row for an 
 	}, context);
 	assert.deepEqual(
 		found.map((row) => row?.requestId),
-		["waits", "refused"],
+		["waits", undefined],
+		"a terminal route receives nothing, so the reader reports no intent for it",
 	);
 	assert.equal(storage.operations, 0, "the reader writes nothing for keys without an intent");
 	assert.equal(await snapshotIntent(harness, 1, "event-0", context), undefined);
+});
+
+it("reads the same number of documents for an absent intent whatever terminal history the storage holds", {
+	timeout: 30000,
+}, async (t) => {
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{ models: await fixtureRuntime("answer"), registry: fixtureRegistry() },
+		context,
+	);
+	t.after(() => harness.close(context));
+	await migrateDeliveryStore(harness, context);
+	const documentReads = async (): Promise<number> => {
+		let reads = 0;
+		await harness.commit(async (tx) => {
+			const counted = new Proxy(tx, {
+				get(target, property) {
+					const value: unknown = Reflect.get(target, property, target);
+					if (typeof value !== "function") return value;
+					if (property !== "doc") return value.bind(target);
+					return (...args: unknown[]) => {
+						reads += 1;
+						return Reflect.apply(value, target, args);
+					};
+				},
+			});
+			const intentOf = await unsettledIntentReader(counted);
+			assert.equal(await intentOf(2, "event-without-an-intent"), undefined);
+		}, context);
+		return reads;
+	};
+	const empty = await documentReads();
+	const batches = 16;
+	const perBatch = DELIVERY_PAGE_SIZE * 2;
+	for (let batch = 0; batch < batches; batch++)
+		await harness.commit(async (tx) => {
+			for (let index = 0; index < perBatch; index++)
+				await storeDeliveryRow(
+					tx,
+					"intent",
+					{
+						...unsettledIntent(`terminal-${batch}-${index}`),
+						delivery: { state: "terminal", reason: "refused" },
+					},
+					true,
+				);
+		}, context);
+	assert.equal(await deliveryPendingCount(harness, context), batches * perBatch, "the terminal rows are retained");
+	assert.equal(await documentReads(), empty, "terminal intents of other requests add no document read");
 });
 
 it("retains terminal diagnostics and owner acknowledgement without active traversal", async (t) => {
