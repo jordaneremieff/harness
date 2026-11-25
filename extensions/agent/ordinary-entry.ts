@@ -1754,7 +1754,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const id = ctx.sessionManager.getSessionId();
 		const manager = eventManager();
 		manager?.touchPrimary(id);
-		if (event.source === "interactive" && manager?.recordPrimaryInput(id, event.text, event.source)) {
+		// Every input reaches the manager, so a first input that an extension or a client sent ends capture.
+		if (manager?.recordPrimaryInput(id, event.text, event.source)) {
 			pi.appendEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: purposeExcerpt(event.text) });
 		}
 	});

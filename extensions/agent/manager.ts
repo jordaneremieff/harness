@@ -2582,7 +2582,11 @@ export class AgentManager {
 		this.rosterChanged();
 	}
 
-	/** Only interactive input supplies an observed fallback; extension-generated text never does. */
+	/**
+	 * The first input of any source ends capture, and only interactive input supplies the observed fallback. A
+	 * session that an extension or a client started, such as by a handover pickup or a command's kickoff, has
+	 * message history before its first typed input, so that input is not its first request.
+	 */
 	recordPrimaryInput(ownerId: string, text: string, source: string): boolean {
 		const primary = this.primaries.get(ownerId);
 		if (!primary) return false;
@@ -2594,7 +2598,7 @@ export class AgentManager {
 			},
 			{ source, text },
 		);
-		if (source === "interactive") primary.observedInputCanCapture = false;
+		primary.observedInputCanCapture = false;
 		if (!excerpt) return false;
 		primary.observedInput = excerpt;
 		this.primaryChannels.get(ownerId)?.setObservedPurpose(this.observedPurpose(primary));

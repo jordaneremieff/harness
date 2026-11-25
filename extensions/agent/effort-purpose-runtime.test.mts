@@ -176,15 +176,26 @@ it("records only the first interactive input as observed purpose and leaves the 
 	timeout: 20000,
 }, async (t) => {
 	const fixture = await primaryFixture(t);
-	await fixture.prompt("Generated input", { source: "rpc" });
-	await fixture.prompt("Extension input", { source: "extension" });
-	assert.deepEqual(fixture.purposeEntries(), [], "rpc and extension input supply no observed purpose");
 	await fixture.prompt("Real task input");
 	await fixture.prompt("Later task input");
+	await fixture.prompt("Extension input", { source: "extension" });
 	assert.deepEqual(fixture.purposeEntries(), [{ source: "interactive", text: "Real task input" }]);
+	assert.deepEqual(fixture.endpoint().observedPurpose, { source: "interactive-input", text: "Real task input" });
 	assert.equal(fixture.sessionManager.getSessionName(), undefined, "input never names the session");
 	assert.deepEqual(fixture.nameChanges, []);
 });
+
+for (const source of ["extension", "rpc"] as const)
+	it(`records no observed purpose when the first input came from ${source === "rpc" ? "a client" : "an extension"}`, {
+		timeout: 20000,
+	}, async (t) => {
+		// A handover pickup or a command's kickoff starts the session; the operator types a correction later.
+		const fixture = await primaryFixture(t);
+		await fixture.prompt("Generated start of the work", { source });
+		await fixture.prompt("did you get my note");
+		assert.deepEqual(fixture.purposeEntries(), [], "a later typed message is not the first request");
+		assert.equal(fixture.endpoint().observedPurpose, undefined);
+	});
 
 it("retains and publishes the work items that producers report for this session only", {
 	timeout: 20000,

@@ -3204,9 +3204,12 @@ reload and fork do not reopen capture. A projection after earlier message histor
 is not a valid first-input source. Incomplete ancestry also leaves it unknown.
 Only a fresh session with proven input-free history captures its first interactive
 input; an empty first input closes capture without inventing a description.
-RPC and extension-generated input do not supply the fallback. The extension does
-not interpret another extension's prompts or entry formats. A session name or
-declared purpose still supplies useful context.
+RPC and extension-generated input do not supply the fallback, and as a first
+input they close capture too. A session that a handover pickup or a command's
+kickoff started therefore shows its session name, not a later typed message as
+its first request. The extension does not interpret another extension's prompts
+or entry formats. A session name or declared purpose still supplies useful
+context.
 
 `agent_intent` publishes only the invoking ordinary primary or native
 conversation. It takes no target identity. Native conversations retain claims in

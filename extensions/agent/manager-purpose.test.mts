@@ -45,7 +45,7 @@ it("does not promote a later remark after a complete resumed history scan", asyn
 	assert.equal(declared.self.omitted, undefined);
 });
 
-it("captures only the first eligible interactive input and closes empty capture", async (t) => {
+it("captures a first input only when it is interactive and closes capture at any first input", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "primary-first-purpose-"));
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
 	t.after(async () => {
@@ -53,8 +53,9 @@ it("captures only the first eligible interactive input and closes empty capture"
 		rmSync(root, { recursive: true, force: true });
 	});
 	const id = randomUUID(),
-		emptyId = randomUUID();
-	for (const sessionId of [id, emptyId])
+		emptyId = randomUUID(),
+		injectedId = randomUUID();
+	for (const sessionId of [id, emptyId, injectedId])
 		await manager.registerPrimary(sessionId, {
 			signal: new AbortController().signal,
 			cwd: root,
@@ -62,13 +63,16 @@ it("captures only the first eligible interactive input and closes empty capture"
 			observedInputComplete: true,
 			observedInputCanCapture: true,
 		});
-	assert.equal(manager.recordPrimaryInput(id, "Injected text", "extension"), false);
 	assert.equal(manager.recordPrimaryInput(id, "Build the parser", "interactive"), true);
 	assert.equal(manager.recordPrimaryInput(id, "continue", "interactive"), false);
 	assert.equal((await manager.awareness(id)).self.observedPurpose?.text, "Build the parser");
 	assert.equal(manager.recordPrimaryInput(emptyId, "", "interactive"), false);
 	assert.equal(manager.recordPrimaryInput(emptyId, "A later remark", "interactive"), false);
 	assert.equal((await manager.awareness(emptyId)).self.observedPurpose, undefined);
+	// A handover pickup or a command's kickoff is the first input, so a later typed message is not the first request.
+	assert.equal(manager.recordPrimaryInput(injectedId, "Injected text", "extension"), false);
+	assert.equal(manager.recordPrimaryInput(injectedId, "did you get my note", "interactive"), false);
+	assert.equal((await manager.awareness(injectedId)).self.observedPurpose, undefined);
 });
 
 it("names collaboration selectors before routing malformed identities", async (t) => {
