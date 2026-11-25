@@ -230,8 +230,10 @@ async function driveFrame(
 ): Promise<void> {
 	ctx.ui.custom = async <T,>(
 		factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
+		options?: Parameters<ExtensionContext["ui"]["custom"]>[1],
 	): Promise<T> =>
 		new Promise<T>((resolve, reject) => {
+			assert.equal(options?.blocked, undefined, "browsing and reports do not advertise a blocked session");
 			const frame = factory(
 				{ terminal: { rows: 40, columns: 120 }, requestRender() {} },
 				theme,

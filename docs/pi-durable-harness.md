@@ -1179,9 +1179,11 @@ fullscreen rendering or terminal restore trial.
 OSC 7501 program status is terminal status, not task acceptance. Ordinary
 select and input dialogs default to `question`, confirm defaults to
 `permission`, and `blockedKind` selects the status of a specific decision.
-Pi uses the first line of the title for the status message. Agent and Policy
-mark permission decisions; opening a browser or dashboard does not by itself
-block work. Pi repaints after an asynchronous editor replacement or paste.
+Pi uses the first line of the title for the status message. Agent trust prompts
+and Policy's command-level approval and rejection prompts report `permission`.
+A review inside the Policy browser keeps the browser's status: Pi sets the
+status when the frame opens. Pi repaints after an asynchronous editor
+replacement or paste.
 Composer still owns the native draft and its separate bounded recall history;
 a repeated prompt moves to the newest position. Regular TUI
 mode no longer writes OSC 133 prompt markers, which ended that status in some
