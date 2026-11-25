@@ -4341,7 +4341,11 @@ runners of one storage first queue on a start gate beside the storage file
 (`.leases/<storage file>.starting` in the storage's directory); the winner holds it
 until its endpoint listens, so a
 contender reports BUSY only once that endpoint can answer, and concurrent first
-uses of one storage all attach to the winner. A cold stop queues on the same
+uses of one storage all attach to the winner. A host of older code holds no
+start gate, so its contender can report BUSY before its endpoint exists; the
+caller then waits within its launch budget for the endpoint path to appear (a
+directory notice, with a recheck every 500 ms for a notice the platform drops)
+and attaches once. A cold stop queues on the same
 gate for at most 30 s, or until its caller withdraws; until it passes the gate it
 has changed nothing, so it then ends with "nothing was stopped". Once the caller
 confirms the passed gate, the stop runs to its end even if the caller leaves. A

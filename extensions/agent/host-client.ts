@@ -10,7 +10,8 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstatSync, statSync } from "node:fs";
+import { type FSWatcher, lstatSync, statSync, watch } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { awaitWithContext, withAbortSignal, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PluginError, isChordError } from "@earendil-works/chord";
@@ -754,6 +755,17 @@ export function waitForHostRelease(
 }
 
 async function attachBusyLink(metadata: HostMetadata, deadline: number, signal?: AbortSignal): Promise<Link> {
+	let failure: unknown;
+	try {
+		return await attachLink(metadata, deadline, signal);
+	} catch (error) {
+		if (signal?.aborted || error instanceof HostError || isChordError(error) || error instanceof PluginError)
+			throw error;
+		failure = error;
+	}
+	// A busy writer without an endpoint yet is a host of older code that is still starting: it holds no start gate.
+	if (!(await endpointAppears(hostPaths(metadata).socket, deadline, signal)))
+		throw new HostBusyEndpointUnavailableError(metadata.storageId, failure);
 	try {
 		return await attachLink(metadata, deadline, signal);
 	} catch (error) {
@@ -761,6 +773,51 @@ async function attachBusyLink(metadata: HostMetadata, deadline: number, signal?:
 			throw error;
 		throw new HostBusyEndpointUnavailableError(metadata.storageId, error);
 	}
+}
+
+/** A recheck that covers a directory notice the platform drops; notices end most waits sooner. */
+const ENDPOINT_RECHECK_MS = 500;
+
+/**
+ * Resolve true once the endpoint path exists, false at the deadline or the caller's signal. The listener links its
+ * socket into place only after it listens, so an existing path can answer.
+ */
+function endpointAppears(socketPath: string, deadline: number, signal?: AbortSignal): Promise<boolean> {
+	return new Promise((resolve) => {
+		let settled = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let watcher: FSWatcher | undefined;
+		const finish = (found: boolean) => {
+			if (settled) return;
+			settled = true;
+			if (timer !== undefined) clearTimeout(timer);
+			watcher?.close();
+			signal?.removeEventListener("abort", aborted);
+			resolve(found);
+		};
+		const aborted = () => finish(false);
+		const check = () => {
+			if (lstatSync(socketPath, { throwIfNoEntry: false }) !== undefined) finish(true);
+			else if (performance.now() >= deadline) finish(false);
+		};
+		const recheck = () => {
+			check();
+			if (!settled)
+				timer = setTimeout(recheck, Math.max(1, Math.min(ENDPOINT_RECHECK_MS, deadline - performance.now())));
+		};
+		signal?.addEventListener("abort", aborted, { once: true });
+		if (signal?.aborted) {
+			finish(false);
+			return;
+		}
+		try {
+			watcher = watch(dirname(socketPath), { persistent: false }, check);
+			watcher.on("error", () => watcher?.close());
+		} catch {
+			/* The recheck alone bounds the wait. */
+		}
+		recheck();
+	});
 }
 
 /** Exclusion belongs to the runner lease; endpoint metadata never authorises replacement. */
