@@ -1596,3 +1596,19 @@ it("a roster refresh builds the tool cards again only when a fact that cards dra
 		f.ui.dispose();
 	}
 });
+
+it("a view that the roster subscription refuses holds no frame subscription", () => {
+	const observed = source([row("one")]);
+	let frameListeners = 0;
+	observed.subscribe = () => {
+		frameListeners++;
+		return () => {
+			frameListeners--;
+		};
+	};
+	observed.subscribeRoster = () => {
+		throw new Error("Catalog observation capacity is occupied; close unused Pi windows before retrying");
+	};
+	assert.throws(() => fixture(80, 24, observed), /capacity is occupied/u);
+	assert.equal(frameListeners, 0);
+});

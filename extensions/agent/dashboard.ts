@@ -462,15 +462,17 @@ export class AgentDashboard implements Component, Focusable {
 			modelFor: (identity: string) => this.knownModelFacts(identity),
 		});
 		this.find = new TextField("Find", state.filter, (value) => this.setFilter(value));
+		// The roster subscription can refuse. It comes first, so a view that does not open holds no subscription.
+		const offRoster = source.subscribeRoster(() => {
+			this.relations.invalidate();
+			this.relationsDirty = true;
+			this.queueRoster();
+			if (this.surface === "threads") void this.threads?.refresh();
+			if (this.surface === "efforts") void this.efforts?.refresh();
+		});
 		this.unsubscribe.push(
 			source.subscribe(() => this.frameChanged()),
-			source.subscribeRoster(() => {
-				this.relations.invalidate();
-				this.relationsDirty = true;
-				this.queueRoster();
-				if (this.surface === "threads") void this.threads?.refresh();
-				if (this.surface === "efforts") void this.efforts?.refresh();
-			}),
+			offRoster,
 		);
 		this.reconciliation = setInterval(() => void this.refreshRoster(), 2000);
 		// The roster refresh never holds a process open on its own; the terminal or Pi does.
