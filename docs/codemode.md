@@ -323,8 +323,10 @@ return { answers: result.answers, responseId, usage };
 not a rejected promise. Preserve those fields and any reported usage rather
 than interpreting an empty answer as a classification. `responseId`, when present,
 identifies the provider's response, not the Pi tool call. A service can report
-usage even when its answers could not be parsed. A cost with
-`usage.cost.totalFromProvider` comes from the provider; a catalog estimate is not a bill.
+usage even when its answers could not be parsed. If `usage.cost.totalFromProvider`
+is true, `usage.cost.total` is the provider's billed total. Otherwise the total
+is a catalog estimate. The input, output and cache costs are catalog estimates
+in both cases.
 Local argument or tool errors still reject normally.
 
 Image format and count limits depend on the selected service, not only the
