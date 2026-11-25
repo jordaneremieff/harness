@@ -164,6 +164,7 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 	};
 
 	return {
+		startedCount: () => started,
 		/** Shows the entry of a session whose earlier runtimes started jobs; their outcomes are not known again. */
 		restore(ctx: FooterContext, startedBefore: number): void {
 			if (closed) return;

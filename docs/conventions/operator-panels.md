@@ -194,7 +194,7 @@ own UI opens next, or text placed in the editor, sees the real editor.
 - State that should survive closing and reopening, such as a query and a
   selection, belongs to the extension instance, not to the view.
 
-Owners: stash (`/stash`), clipboard (`/clipboard`), markdown
+Owners: jobs (`/jobs`), stash (`/stash`), clipboard (`/clipboard`), markdown
 (`/markdown recent` and `/markdown published`), pillars (`/pillars browse`),
 policy (`/policy`), and statusline (`/commands`, `/statuses`, and the Model
 view). The agent extension draws its own work view, which `/agent` opens in

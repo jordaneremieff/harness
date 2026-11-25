@@ -356,6 +356,35 @@ card is elapsed at observation, and a card without `endedAt` has no final
 duration. The cards omit identity or clock facts absent from the record.
 `logs` results carry the job record alongside the page.
 
+## Jobs view
+
+`/jobs` shows this Pi process's background jobs in the editor slot below the
+conversation, at 60% of the window's rows, as the other owner views do
+([operator views](../../docs/conventions/operator-panels.md#ordinary-pi)). It
+reads the job records and starts nothing.
+
+- The title row counts the jobs that run now and every job that the session
+  started, as the footer entry does.
+- One row per job: the jobs that run, then the jobs that ended, newest first in
+  each. A row shows a dot, the state (`running`, `stopping`, `succeeded`,
+  `failed`, `timed out`, `cancelled`), the elapsed time and the command preview.
+  The dot uses the footer's colours: yellow while the job runs, red when it
+  failed or timed out, grey hollow otherwise.
+- Below the list, a rule names the selected job's exit code or time limit and
+  its folder, and the rest of the view shows the last lines of its output,
+  wrapped to the width. The view reads the records and the output again every
+  second while it is open.
+- Up and Down, or the wheel, select a job; a click on a row selects it. `c`
+  cancels the selected job while it runs, through the same path as
+  `jobs cancel`, so it delivers no completion. Escape closes the view; a click
+  on a key-row control runs its key.
+- Without jobs, the view keeps to three rows and says so. Jobs of earlier Pi
+  processes of the session are not kept, and the view says that too.
+
+The selection survives closing and reopening the view. A second `/jobs` while
+the view shows changes nothing, and session shutdown closes it. Outside the
+interactive terminal, `/jobs` answers with the counts and one line per job.
+
 ## Tool cards
 
 Jobs follows the [emission grammar](../../docs/conventions/emissions.md).
@@ -574,6 +603,9 @@ streaming turn, and while idle, then lets the run continue, aborts it, clears
 the queue as Escape does, throws from the handler, or breaks run preparation.
 It checks that the decoded record never claims addition without the matching
 session entry, and that it does claim addition once the entry exists.
+The view test covers the rows, their order and states, the output tail, the
+empty state, selection by key and click, cancellation and the summary outside
+the interactive terminal; the adapter test opens `/jobs` through the command.
 The colocated codemode test runs an ordinary Pi session with synthetic model
 calls and native codemode. It checks foreground success and nonzero results,
 job admission, management actions, bounded logs, errors, shutdown, and the

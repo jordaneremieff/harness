@@ -405,9 +405,42 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 		renderShell: yieldDisplay?.renderShell,
 	});
 
+	/** The open `/jobs` view, and the selection that survives closing and reopening it. */
+	let jobsView: { close(): void } | undefined;
+	const jobsSelection: { id?: string } = {};
+	const jobsSource = {
+		list: () => manager.list(),
+		logs: (id: string, cursor?: number) => manager.logs(id, cursor),
+		cancel: (id: string) => void cancelJob(id),
+		started: activity.startedCount,
+	};
+
+	pi.registerCommand("jobs", {
+		description: "Show this session's background jobs and the last output of the selected one",
+		handler: async (args, ctx) => {
+			if (args.trim()) {
+				if (ctx.hasUI) ctx.ui.notify("/jobs takes no arguments.", "warning");
+				return;
+			}
+			const { openJobsView, summaryText } = await import("./view.ts");
+			if (ctx.mode !== "tui") {
+				const text = summaryText(manager.list(), Date.now(), activity.startedCount());
+				if (ctx.hasUI) ctx.ui.notify(text, "info");
+				else console.error(text);
+				return;
+			}
+			if (closed || jobsView) return;
+			const view = openJobsView(ctx.ui, jobsSource, jobsSelection, () => {
+				jobsView = undefined;
+			});
+			jobsView = view;
+			await view.closed;
+		},
+	});
+
 	// The footer entry counts the session's jobs from its first one, across reloads and resumes.
 	pi.on("session_start", async (_event, ctx) => {
-		if (ctx.hasUI) activity.restore(ctx, startedJobs(ctx));
+		activity.restore(ctx, startedJobs(ctx));
 	});
 	pi.on("agent_start", async (_event, ctx) => {
 		lastRunAborted = false;
@@ -444,6 +477,7 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	pi.on("session_tree", async (_event, ctx) => activity.onBranch(retainedCompletions(ctx)));
 	pi.on("session_shutdown", async (_event, ctx) => {
 		closed = true;
+		jobsView?.close();
 		try {
 			activity.shutdown(ctx);
 		} finally {

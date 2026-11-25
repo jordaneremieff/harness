@@ -68,6 +68,10 @@ class TestPi {
 	registerTool(tool: Tool) {
 		this.tools.set(tool.name, tool);
 	}
+	commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
+	registerCommand(name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) {
+		this.commands.set(name, command);
+	}
 	renderers = new Map<string, unknown>();
 	registerMessageRenderer(customType: string, renderer: unknown) {
 		this.renderers.set(customType, renderer);
@@ -484,6 +488,91 @@ describe("Command Jobs adapter", () => {
 			await pi.shutdown();
 		}
 		assert.deepEqual(terminal.statuses.at(-1), ["jobs", undefined], "shutdown clears the entry");
+	});
+
+	it("answers /jobs outside the interactive terminal with one line per job, newest first", async () => {
+		const notices: string[] = [];
+		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]>, notices };
+		const { pi, call } = setup(root, false, terminal, "rpc");
+		const command = pi.commands.get("jobs");
+		assert.ok(command, "/jobs is registered");
+		assert.ok(pi.ctx);
+		try {
+			await command.handler("", pi.ctx);
+			assert.deepEqual(notices, ["No background jobs in this session."]);
+			const done = jobOf(await call("bash", { command: "printf done", background: true }));
+			await completion(pi, done.id);
+			const running = jobOf(await call("bash", { command: "tail -f /dev/null", background: true }));
+			await command.handler("", pi.ctx);
+			const lines = notices.at(-1)?.split("\n") ?? [];
+			assert.equal(lines[0], "Jobs: 1 running · 2 started");
+			assert.match(lines[1] ?? "", /^● running \d+s {2}tail -f \/dev\/null$/u);
+			assert.match(lines[2] ?? "", /^○ succeeded \d+s {2}printf done$/u);
+			await call("jobs", { action: "cancel", id: running.id });
+			await command.handler("extra", pi.ctx);
+			assert.equal(notices.at(-1), "/jobs takes no arguments.");
+		} finally {
+			await pi.shutdown();
+		}
+	});
+
+	it("opens one /jobs view in the interactive terminal, cancels through it, and closes it at shutdown", async () => {
+		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]> };
+		const { pi, call } = setup(root, false, terminal);
+		const command = pi.commands.get("jobs");
+		assert.ok(command && pi.ctx);
+		let opened = 0;
+		let view: { render(width: number): string[]; handleInput(data: string): void } | undefined;
+		let finished = false;
+		const plain = {
+			fg: (_c: string, text: string) => text,
+			bg: (_c: string, text: string) => text,
+			bold: (text: string) => text,
+		};
+		const ctx = {
+			...pi.ctx,
+			ui: {
+				...pi.ctx.ui,
+				custom: (factory: (...args: unknown[]) => typeof view) =>
+					new Promise<void>((resolve) => {
+						opened += 1;
+						view = factory({ terminal: { rows: 30 }, requestRender() {} }, plain, {}, () => {
+							finished = true;
+							resolve();
+						});
+					}),
+			},
+		} as unknown as ExtensionContext;
+		try {
+			const job = jobOf(await call("bash", { command: "printf 'one\\ntwo\\n'; tail -f /dev/null", background: true }));
+			const first = command.handler("", ctx);
+			await command.handler("", ctx);
+			assert.equal(opened, 1, "a second /jobs while the view shows changes nothing");
+			assert.ok(view);
+			const deadline = Date.now() + 5000;
+			let lines = view.render(80);
+			while (!lines.some((line) => line.includes(" two")) && Date.now() < deadline) {
+				await delay(50);
+				(view as unknown as { refresh(): void }).refresh();
+				lines = view.render(80);
+			}
+			assert.equal(lines.length, 18, "the view takes 60% of the rows");
+			assert.match(lines[0] ?? "", /^─ Jobs ─+ 1 running · 1 started ─$/u);
+			assert.match(lines[1] ?? "", /^›● running/u);
+			assert.ok(
+				lines.some((line) => line.startsWith(" two")),
+				"the selected job's last output shows",
+			);
+			assert.match(lines.at(-1) ?? "", /^ c cancel {2}esc close/u);
+			view.handleInput("c");
+			assert.equal((await settled(call, job.id)).status, "cancelled");
+			assert.equal(pi.sent.length, 0, "a job cancelled from the view sends no completion");
+			await pi.shutdown();
+			await first;
+			assert.ok(finished, "shutdown closes the open view");
+		} finally {
+			await pi.shutdown();
+		}
 	});
 
 	it("settles the terminal record and the footer when the completion message cannot be sent", async () => {
