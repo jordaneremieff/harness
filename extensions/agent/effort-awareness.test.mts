@@ -14,6 +14,7 @@ import * as Durable from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { AgentCatalog } from "./catalog.ts";
+import { runHost } from "./host-process.ts";
 import { createAgentContribution } from "./durable-agents.ts";
 import { effortNoteRequestHooks } from "./effort-notes-native.ts";
 import {
@@ -260,6 +261,127 @@ it("names the live effort of a thread that its agents hold and leaves ended effo
 			[loop, undefined],
 		].sort(),
 		"then the project's other open threads, without an effort",
+	);
+});
+
+it("keeps the thread of a running native effort without a live ancestor in the prompt, marked unconfirmed", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	// A running Durable host holds the real writer lease of its storage; its creating session has ended.
+	const record = catalog.create({
+		cwd: root,
+		agentDir: root,
+		packageDir: root,
+		model: { provider: "faux", modelId: "faux-1" },
+		thinkingLevel: "off",
+		ownerId: randomUUID(),
+	});
+	const { createdAt: _createdAt, ...metadata } = record;
+	const host = await runHost(() => ({ request: async () => ({}), close: async () => {}, isIdle: () => true }), {
+		metadata,
+		idleMs: 0,
+		announceReady: () => {},
+	});
+	// The host closes before the fixture removes its root, so its lease is still in place at shutdown.
+	try {
+		await expectNativeThread(root, catalog, self, record.storageId);
+	} finally {
+		await host.close();
+	}
+});
+
+async function expectNativeThread(
+	root: string,
+	catalog: AgentCatalog,
+	self: { id: string; cwd: string },
+	storageId: string,
+): Promise<void> {
+	const record = { storageId };
+	const thread = publishThread(catalog, root, "Native coordination", "Lanes", record.storageId);
+	catalog.updateView(record.storageId, {
+		storageId: record.storageId,
+		updatedAt: new Date().toISOString(),
+		rows: [
+			{
+				id: record.storageId,
+				storageId: record.storageId,
+				cwd: root,
+				modifiedAt: 1,
+				owner: "here",
+				state: "idle",
+				cost: 0,
+				partial: false,
+			},
+		],
+		coverage: { complete: true, omitted: 0 },
+		intentClaims: {
+			rows: {
+				[record.storageId]: {
+					claim: claim("Native coordinator"),
+					cwd: root,
+					hostname: hostname(),
+					startedAt: new Date().toISOString(),
+					repository: null,
+					repositoryState: "outside-git",
+					taskId: 1,
+				},
+			},
+			coverage: { complete: true, omitted: 0 },
+		},
+	});
+	const shared = resources(root, catalog);
+	const observation = await readEffortAwareness(shared, self);
+	assert.deepEqual(
+		observation.presence.efforts.map((effort) => [effort.id, effort.liveness]),
+		[[record.storageId, "unknown"]],
+	);
+	const view = await readEffortAwareness(shared, self, "canonical", "prompt");
+	assert.deepEqual(view.presence.efforts, [], "an effort whose liveness is unknown has no prompt row");
+	assert.deepEqual(
+		view.threads.items.map((item) => [item.id, item.effort, item.effortLiveness]),
+		[[thread, record.storageId, "unknown"]],
+	);
+	assert.ok(
+		formatEffortAwareness(view, "prompt").includes(`"effort":"${record.storageId}","effortLiveness":"unknown"`),
+	);
+}
+
+it("attributes an agent to the exact conversation that created it, never to a sibling conversation", async (t) => {
+	const { root, catalog } = fixture(t);
+	const shared = resources(root, catalog);
+	const storage = (ownerId: string) =>
+		catalog.create({
+			cwd: root,
+			agentDir: root,
+			packageDir: root,
+			model: { provider: "faux", modelId: "faux-1" },
+			thinkingLevel: "off",
+			ownerId,
+		}).storageId;
+	const base = storage(randomUUID());
+	const reader = { id: `${base}:2`, cwd: root };
+	const sibling = publishThread(catalog, root, "Sibling agent thread", "Separate work", `${base}:3`);
+	const own = publishThread(catalog, root, "Own agent thread", "My work", reader.id);
+	const prompt = await readEffortAwareness(shared, reader, "canonical", "prompt");
+	assert.deepEqual(
+		prompt.threads.items.map((item) => [item.id, item.effort]),
+		[[own, reader.id]],
+		"the sibling's agent is not the reader's, and nothing in view owns it",
+	);
+	// A live session that started the whole storage owns every agent that its conversations start.
+	const starter = randomUUID();
+	publish(root, starter, null);
+	const owned = storage(starter);
+	const nested = publishThread(catalog, root, "Nested agent thread", "Lanes", `${owned}:3`);
+	const withStarter = await readEffortAwareness(shared, reader, "canonical", "prompt");
+	assert.deepEqual(
+		withStarter.threads.items.find((item) => item.id === nested)?.effort,
+		starter,
+		"the chain continues with the creator of the storage that hosts the owning conversation",
+	);
+	assert.equal(
+		withStarter.threads.items.some((item) => item.id === sibling),
+		false,
+		"the starter of another storage does not own the sibling's agent",
 	);
 });
 

@@ -3288,17 +3288,23 @@ own storages and those of the efforts that the read collects and that share the
 caller's location or an item, also an effort that the observation's limits leave
 out: an effort's own storage, its thread storage, and every storage whose chain
 of creating owners reaches the effort, such as the agents it started and their
-agents. A chain step from a native conversation continues at its storage. The
-chain uses the owners that catalog records hold, so it costs no read. The
-contact thread that the caller or such an effort declares admits that one thread
-from its storage. A hint from a priority source names in `effort` the session
-whose storages hold the thread, or else the session whose claim names it. An
-effort that shares only a topic adds its row, not its threads, and its contact
-thread stays a claim on its row. A prompt collects only live efforts and shows
-only threads from priority sources, in identity order, so a thread that no live
-effort holds or names, such as one that an ended effort left open, stays out of
-every prompt. An observation also collects efforts whose liveness is unknown,
-such as a running Durable agent, whose native claim never reads as live.
+agents. The chain matches exact identities. When an owner is not in view, the
+chain continues with the creator of the storage that hosts that owner, never
+with a sibling conversation of that storage. The chain uses the owners that
+catalog records hold, so it costs no read. The contact thread that the caller or
+such an effort declares admits that one thread from its storage. A hint from a
+priority source names in `effort` the session whose thread storage or agents
+hold the thread, or else the session whose claim names it. A native storage
+hosts several conversations, so a thread in a native effort's own storage stays
+visible without a named effort unless a claim names it. `effortLiveness` marks
+an effort that is not confirmed live. An effort that shares only a topic adds
+its row, not its threads, and its contact thread stays a claim on its row. A
+prompt shows live efforts as rows. It also collects efforts whose liveness is
+unknown at the caller's location or with a shared item, such as a running
+Durable agent, whose native claim never reads as live, so their threads stay in
+the prompt. It shows only threads from priority sources, in identity order, so a
+thread that no effort in view holds or names, such as one that an ended effort
+left open, stays out of every prompt.
 An observation lists the priority threads first and then the other active
 threads of the project without `effort`, each group newest first; it counts
 threads outside the project as out of scope and does not list them. Records

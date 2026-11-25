@@ -128,6 +128,7 @@ export const RecentCollaborationSchema = obj({
 			effort: opt(
 				str({ description: "The session whose storages hold the thread, or else the session whose claim names it." }),
 			),
+			effortLiveness: opt(union([lit("unknown"), lit("incompatible")])),
 		}),
 	),
 	coverage: obj({

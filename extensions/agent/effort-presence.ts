@@ -339,9 +339,12 @@ async function collectEffort(
 	liveness: RelatedEffort["liveness"],
 	scope?: EffortProjectScope,
 ): Promise<void> {
-	if (scope?.prompt && liveness !== "live") return;
 	const matches = scope === undefined || (await scope.matches(info));
 	if (!matches && liveness === "live") page.coverage.outOfScope = (page.coverage.outOfScope ?? 0) + 1;
+	// Prompt rows are live efforts only. A prompt read still collects an effort whose liveness is unknown, such as
+	// a running Durable agent, at the reader's location or with a shared item, because it can lead threads.
+	if (scope?.prompt && liveness !== "live" && !matches && !sharedWorkReferences(self.workRefs, info.workRefs).length)
+		return;
 	const topics = sharedTopics(self.topics, effortTopics(info));
 	const relationship = scope?.prompt ? promptRelation(self, info, matches, topics) : relation(self, info);
 	if (relationship === null) return;
@@ -606,7 +609,8 @@ export async function readRelatedEfforts(
 /** Select the prompt rows, or apply the observation order and limits, to a collected page. */
 export function finishRelatedEfforts(page: EffortPresencePage, scope?: EffortProjectScope): EffortPresencePage {
 	if (scope?.prompt) {
-		page.efforts.splice(0, page.efforts.length, ...selectPromptEfforts(page.efforts, page.limits.results));
+		const live = page.efforts.filter((effort) => effort.liveness === "live");
+		page.efforts.splice(0, page.efforts.length, ...selectPromptEfforts(live, page.limits.results));
 		page.efforts.sort((a, b) => a.id.localeCompare(b.id));
 	} else limitObservation(page);
 	return page;

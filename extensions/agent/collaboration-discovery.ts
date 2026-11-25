@@ -7,8 +7,13 @@ import {
 	type CollaborationSummary,
 } from "./collaboration-contract.ts";
 
-/** A thread hint; `effort` names the session whose storages hold the thread, or else the one whose claim names it. */
-export type RecentThreadHint = CollaborationSummary & { effort?: string };
+/** Liveness of an effort that its process does not confirm, such as a running Durable agent. */
+type UnconfirmedLiveness = "unknown" | "incompatible";
+/**
+ * A thread hint; `effort` names the session whose storages hold the thread, or else the one whose claim names
+ * it, and `effortLiveness` marks an effort that is not confirmed live.
+ */
+export type RecentThreadHint = CollaborationSummary & { effort?: string; effortLiveness?: UnconfirmedLiveness };
 export interface RecentCollaborationPage {
 	items: RecentThreadHint[];
 	coverage: {
@@ -46,6 +51,11 @@ function recentPartial(page: RecentCollaborationPage, reason: string): void {
 type Admission = { rank: number; only?: ReadonlySet<string> };
 /** The effort of a priority storage, keyed by storage, and of a contact thread, keyed by thread. */
 type ThreadEfforts = ReadonlyMap<string, string>;
+/** Which effort a priority thread names, and the liveness of efforts that are not confirmed live. */
+interface ThreadAttribution {
+	readonly efforts: ThreadEfforts;
+	readonly liveness: ReadonlyMap<string, UnconfirmedLiveness>;
+}
 
 /**
  * Whether a record's active threads stay on the page under the project scope. A thread outside the
@@ -71,10 +81,12 @@ function hint(
 	thread: CollaborationSummary,
 	storageId: string,
 	admission: Admission,
-	efforts: ThreadEfforts,
+	{ efforts, liveness }: ThreadAttribution,
 ): RecentThreadHint {
 	const effort = admission.rank === 0 ? (efforts.get(storageId) ?? efforts.get(thread.id)) : undefined;
-	return effort === undefined ? thread : { ...thread, effort };
+	if (effort === undefined) return thread;
+	const effortLiveness = liveness.get(effort);
+	return effortLiveness === undefined ? { ...thread, effort } : { ...thread, effort, effortLiveness };
 }
 
 /** Priority threads first; a prompt then keeps identity order, an observation shows newest first. */
@@ -95,11 +107,11 @@ async function collectRecentHints(
 	record: EffortRecord,
 	ranks: Map<string, number>,
 	admission: Admission,
-	efforts: ThreadEfforts,
+	attribution: ThreadAttribution,
 	scope?: ThreadProjectScope,
 	check?: ScopeCheck,
 ): Promise<void> {
-	// A thread that no live effort holds or names is history, not a current coordination point.
+	// A thread that no effort in view holds or names is history, not a current coordination point.
 	if (scope?.prompt && admission.rank > 0) return;
 	if (record.threads === undefined) {
 		page.coverage.missingHints += 1;
@@ -118,7 +130,7 @@ async function collectRecentHints(
 	for (const thread of active) {
 		if (ranks.has(thread.id)) continue;
 		ranks.set(thread.id, admission.rank);
-		page.items.push(hint(thread, record.storageId, admission, efforts));
+		page.items.push(hint(thread, record.storageId, admission, attribution));
 		page.items.sort(order);
 		if (page.items.length > page.limits.results) {
 			page.items.pop();
@@ -126,6 +138,25 @@ async function collectRecentHints(
 			recentPartial(page, "result-limit");
 		}
 	}
+}
+
+/**
+ * Only an observation shows records outside the priority sources, and only those with active threads need their
+ * location; one batch locates them all.
+ */
+async function locateOthers(
+	entries: readonly CatalogIndexEntry<EffortRecord>[],
+	admissions: ReadonlyMap<string, Admission>,
+	scope: ThreadProjectScope | undefined,
+): Promise<ScopeCheck | undefined> {
+	if (scope?.prompt || scope?.locate === undefined) return undefined;
+	return scope.locate(
+		entries.flatMap(({ storageId, value }) =>
+			value !== undefined && !admissions.has(storageId) && value.threads?.items.some((thread) => !thread.closed)
+				? [value.cwd]
+				: [],
+		),
+	);
 }
 
 /**
@@ -164,6 +195,8 @@ export async function readRecentCollaboration(
 		records?: readonly CatalogIndexEntry<EffortRecord>[];
 		/** The effort of each storage and contact thread to rank first; every storage here is a priority source. */
 		efforts?: ThreadEfforts;
+		/** The liveness of efforts in `efforts` that are not confirmed live. */
+		liveness?: ReadonlyMap<string, UnconfirmedLiveness>;
 	} = {},
 ): Promise<RecentCollaborationPage> {
 	const page: RecentCollaborationPage = {
@@ -193,27 +226,21 @@ export async function readRecentCollaboration(
 			return page;
 		}
 	}
-	const efforts = options.efforts ?? new Map<string, string>();
+	const attribution: ThreadAttribution = {
+		efforts: options.efforts ?? new Map<string, string>(),
+		liveness: options.liveness ?? new Map(),
+	};
 	const admissions = threadAdmissions(
 		priorityIdentities.slice(0, page.limits.visits),
 		options.contactThreads ?? [],
-		efforts,
+		attribution.efforts,
 	);
 	const ranks = new Map<string, number>();
 	const ordered = [
 		...entries.filter((entry) => admissions.has(entry.storageId)),
 		...entries.filter((entry) => !admissions.has(entry.storageId)),
 	];
-	// Only an observation shows records outside the priority sources, and only those with active threads need their location.
-	const check = scope?.prompt
-		? undefined
-		: await scope?.locate?.(
-				ordered.flatMap(({ storageId, value }) =>
-					value !== undefined && !admissions.has(storageId) && value.threads?.items.some((thread) => !thread.closed)
-						? [value.cwd]
-						: [],
-				),
-			);
+	const check = await locateOthers(ordered, admissions, scope);
 	for (const entry of ordered) {
 		page.coverage.visited += 1;
 		page.coverage.records += 1;
@@ -227,7 +254,7 @@ export async function readRecentCollaboration(
 			entry.value,
 			ranks,
 			admissions.get(entry.storageId) ?? { rank: 1 },
-			efforts,
+			attribution,
 			scope,
 			check,
 		);
