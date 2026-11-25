@@ -60,7 +60,7 @@ import {
 } from "./catalog.ts";
 import type { CatalogView } from "./catalog-view.ts";
 import type { NativeOwnerEvidence } from "./host-changes.ts";
-import { subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
+import { CatalogObservationCapacityError, subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
 import { sessionFigures } from "./footer.ts";
 import { sentWorkIdentity } from "./session-work.ts";
 import type { ContinuityFact } from "./continuity-facts.ts";
@@ -511,21 +511,25 @@ export class AgentManager {
 	private readonly observationOwnerEnded = (): void => {
 		void this.releaseObservation().catch((error) => this.failures.set("cold-observation", errorText(error)));
 	};
-	/** Start catalogue observation. A failed start is recorded; a later owner tries again. */
-	private startCatalogObservation(): void {
+	/** A failed start of catalogue observation stays visible in status; a later owner tries again. */
+	private recordObservationFailure(error: unknown): void {
+		this.failures.set(
+			"catalog-observation",
+			`Catalog updates are unavailable: ${errorText(error)}. Restart this Pi process.`,
+		);
+	}
+	/**
+	 * A full observer table refuses the subscription, so observers stay bounded. After any other failed start the
+	 * roster view still opens; it shows what its own reads return.
+	 */
+	subscribeRoster(listener: () => void): () => void {
+		if (this.shuttingDown) throw new Error("Agent manager is closed");
 		try {
 			this.observeCatalogChanges();
 		} catch (error) {
-			this.failures.set(
-				"catalog-observation",
-				`Catalog updates are unavailable: ${errorText(error)}. Restart this Pi process.`,
-			);
+			if (error instanceof CatalogObservationCapacityError) throw error;
+			this.recordObservationFailure(error);
 		}
-	}
-	/** A roster view without catalogue updates still opens; it shows what its own reads return. */
-	subscribeRoster(listener: () => void): () => void {
-		if (this.shuttingDown) throw new Error("Agent manager is closed");
-		this.startCatalogObservation();
 		this.rosterListeners.add(listener);
 		this.retainColdObservations();
 		let subscribed = true;
@@ -2310,7 +2314,11 @@ export class AgentManager {
 			},
 			{ once: true },
 		);
-		this.startCatalogObservation();
+		try {
+			this.observeCatalogChanges();
+		} catch (error) {
+			this.recordObservationFailure(error);
+		}
 		this.rosterChanged();
 		primary.resumeInbox?.();
 		await this.refreshFooter();

@@ -115,6 +115,13 @@ function readObserver(path: string): ObserverFile | undefined {
 	}
 }
 
+/** Every observer slot of the catalogue belongs to a live process. */
+export class CatalogObservationCapacityError extends Error {
+	constructor() {
+		super("Catalog observation capacity is occupied; close unused Pi windows before retrying");
+	}
+}
+
 /** Bind before advertising, so an immediate external publication has a receiver. */
 export function subscribeCatalogChanges(
 	root: string,
@@ -193,7 +200,7 @@ export function subscribeCatalogChanges(
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			}
 		}
-		if (!path) throw new Error("Catalog observation capacity is occupied; close unused Pi windows before retrying");
+		if (!path) throw new CatalogObservationCapacityError();
 	} catch (error) {
 		close();
 		throw error;
