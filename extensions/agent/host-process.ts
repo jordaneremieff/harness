@@ -877,8 +877,9 @@ class HostProcessServer implements HostProcess {
 			return true;
 		};
 		try {
-			if (!releasing && !this.runtime.isIdle()) return;
-			const retired = this.runtime.tryRetire ? await this.runtime.tryRetire(seal) : this.runtime.isIdle() && seal();
+			const idle = this.runtime.isIdle();
+			if (!releasing && !idle) return;
+			const retired = this.runtime.tryRetire ? await this.runtime.tryRetire(seal) : idle && seal();
 			if (retired) {
 				await Promise.allSettled([...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]));
 				await this.shutdown();
