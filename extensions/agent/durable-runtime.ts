@@ -121,10 +121,17 @@ const FOREIGN_OBSERVATION_METHODS: ReadonlySet<string> = new Set([
 /** Coalesce a burst of native commits into one catalog view publication. */
 const PUBLISH_COALESCE_MS = 250;
 /**
- * A publication reads only the conversations with a stored change. Ages in a retained row are those of its last
- * read, so every conversation is read again at this interval while publications continue, and at each flush.
+ * A publication reads only the conversations with a stored change. A retained row keeps the facts that no stored
+ * change names: the running time of a turn, a retry delay, ages, and a task that the scheduler blocked. Every
+ * conversation is read again at this interval while publications continue, once more within this interval of the
+ * last complete read when the publications stop, and at each flush.
  */
 const COMPLETE_PROJECTION_INTERVAL_MS = 5_000;
+
+/** Options of one runtime. `completeViewIntervalMs` replaces the complete-read interval for timing tests. */
+export type DurableRuntimeOptions = Pick<CreateDurableServicesOptions, "modelRuntime"> & {
+	readonly completeViewIntervalMs?: number;
+};
 
 /** The conversation that one stored change belongs to; undefined for a change that any row may depend on. */
 function changedConversation(change: CommitChange): ConversationId | undefined {
@@ -289,7 +296,7 @@ function assertPrimaryMessage(method: string, params: Record<string, unknown>): 
 
 export async function createDurableRuntime(
 	metadata: HostMetadata,
-	options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {},
+	{ completeViewIntervalMs = COMPLETE_PROJECTION_INTERVAL_MS, ...options }: DurableRuntimeOptions = {},
 ): Promise<HostRuntime> {
 	const controller = new AbortController();
 	let services = await bootstrap(metadata, controller, true, options);
@@ -350,6 +357,7 @@ export async function createDurableRuntime(
 	/** A storage-wide change, a failed publication or the first one reads every conversation. */
 	let readEveryConversation = true;
 	let everyConversationReadAt = 0;
+	let completeViewTimer: ReturnType<typeof setTimeout> | undefined;
 
 	function runtimeUnavailable(): boolean {
 		return closed || reloadFailed || retirementSealed;
@@ -570,15 +578,39 @@ export async function createDurableRuntime(
 		}
 	}
 
+	function cancelCompleteView(): void {
+		clearTimeout(completeViewTimer);
+		completeViewTimer = undefined;
+	}
+
+	/**
+	 * One complete read follows a partial one without another commit, so the published view never keeps a
+	 * retained row for longer than the interval after the commits stop. A complete read arms no timer.
+	 */
+	function scheduleCompleteView(): void {
+		if (completeViewTimer !== undefined || closed) return;
+		completeViewTimer = setTimeout(
+			() => {
+				completeViewTimer = undefined;
+				readEveryConversation = true;
+				scheduleCatalogView();
+			},
+			Math.max(0, everyConversationReadAt + completeViewIntervalMs - Date.now()),
+		);
+		completeViewTimer.unref?.();
+	}
+
 	/** The conversations that the next publication reads again; undefined reads every conversation. */
 	function takeChangedConversations(force: boolean): Set<ConversationId> | undefined {
-		const every =
-			force || readEveryConversation || Date.now() - everyConversationReadAt >= COMPLETE_PROJECTION_INTERVAL_MS;
+		const every = force || readEveryConversation || Date.now() - everyConversationReadAt >= completeViewIntervalMs;
 		const changed = every ? undefined : new Set(changedConversations);
 		changedConversations.clear();
 		readEveryConversation = false;
-		// A failed publication asks for every conversation again, whatever this time says.
-		if (every) everyConversationReadAt = Date.now();
+		if (every) {
+			// A failed publication asks for every conversation again, whatever this time says.
+			everyConversationReadAt = Date.now();
+			cancelCompleteView();
+		} else scheduleCompleteView();
 		return changed;
 	}
 
@@ -1414,6 +1446,7 @@ export async function createDurableRuntime(
 			clearTimeout(publishTimer);
 			publishTimer = undefined;
 		}
+		cancelCompleteView();
 		unsubscribeChanges?.();
 		unsubscribeObservation?.();
 		observationListeners.clear();

@@ -3239,7 +3239,12 @@ visibility. A publication reads again only the conversations that a stored
 change names and keeps the rows of the others. A change that names no
 conversation, a failed publication, the first publication and each flush read
 every conversation, and so does one publication in every five seconds. A kept
-row carries the ages of its last read, dated by `ageObservedAt`. Native diagnostic records never prove a live lease holder. A valid
+row carries the facts of its last read that no stored change names: its ages,
+dated by `ageObservedAt`, the running time of its turn, a retry delay and a task
+that the scheduler blocked. When the commits stop after a publication that kept
+rows, one more publication reads every conversation within five seconds of the
+last complete read, so the view of a storage at rest holds no kept row.
+Native diagnostic records never prove a live lease holder. A valid
 same-host clean-end marker or same-host ESRCH ends only the recorded generation;
 those efforts and their declarations no longer appear. So does an empty writer
 lease: a serving host writes its record into the lease file when it takes the

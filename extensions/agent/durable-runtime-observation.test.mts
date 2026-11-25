@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
 import { existsSync, rmSync, statSync } from "node:fs";
 import { it } from "node:test";
+import { setTimeout as pause } from "node:timers/promises";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { AssistantEntry, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { AssistantEntry, ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
 import { resolveAgentControlDispatch } from "./durable-agents.ts";
 import { DurableHost } from "./durable-host.ts";
 import { DurableObservation } from "./durable-observation.ts";
-import { answerMessage, fixtureRegistry, fixtureRuntime, hostOptions } from "./durable-host-fixture.mts";
+import {
+	answerMessage,
+	completed,
+	fixtureRegistry,
+	fixtureRuntime,
+	hostOptions,
+	pending,
+} from "./durable-host-fixture.mts";
 import { createDurableRuntime } from "./durable-runtime.ts";
 import { runtimeFixture } from "./durable-runtime-fixture.mts";
 import { hostPaths } from "./host-protocol.ts";
@@ -226,4 +234,96 @@ it("a view publication reads again only the conversations with a stored change",
 	await next;
 	assert.deepEqual(reads.slice(1), [[ROOT_CONVERSATION_ID]], "the next one reads the conversation of the new entry");
 	assert.equal(opened.publishedView?.rows[0]?.latestReply, "durable answer");
+});
+
+it("a complete view follows a partial one without another commit", { timeout: 60000 }, async (t) => {
+	let runtime: Awaited<ReturnType<typeof createDurableRuntime>> | undefined;
+	t.after(() => runtime?.close());
+	const fixture = runtimeFixture(t);
+	const model = { provider: testModel.provider, modelId: testModel.id };
+	let hold = false;
+	const models = await createTestRuntime();
+	// The second request never ends: its turn runs, and no stored change names its conversation.
+	const streamSimple = () => (hold ? pending(answerMessage("in flight")) : completed(answerMessage()));
+	models.registerNativeProvider({
+		id: testModel.provider,
+		name: "Held request fixture",
+		getModels: () => [testModel],
+		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		stream: streamSimple,
+		streamSimple,
+	});
+	let native: DurableHost | undefined;
+	const open = DurableHost.open;
+	t.mock.method(DurableHost, "open", async (...args: Parameters<typeof open>) => {
+		native = await open(...args);
+		return native;
+	});
+	const projection = DurableHost.prototype.catalogProjection;
+	const reads: (readonly number[] | "every")[] = [];
+	t.mock.method(
+		DurableHost.prototype,
+		"catalogProjection",
+		function (this: DurableHost, ...args: Parameters<typeof projection>) {
+			reads.push(args[1] === undefined ? "every" : [...args[1]]);
+			return projection.apply(this, args);
+		},
+	);
+	const opened = await createDurableRuntime(
+		{ ...fixture.metadata, model },
+		{ modelRuntime: models, completeViewIntervalMs: 1500 },
+	);
+	runtime = opened;
+	const published = () =>
+		new Promise<void>((resolve) => {
+			const off = opened.onChange?.(() => {
+				off?.();
+				resolve();
+			});
+		});
+	const row = (index: number) => opened.publishedView?.rows[index];
+	assert.ok(native);
+	const host = native;
+	const first = await host.submit({ message: "First request", requestId: "first", origin: "operator" });
+	await host.wait(first.submissionId, BACKGROUND_CONTEXT);
+	const assistant = (await host.root().entries({}, 20, undefined, BACKGROUND_CONTEXT)).items.find(
+		(item) => item.kind === "pi.assistant",
+	);
+	assert.ok(assistant);
+	const fork = (await host.request("fork", { entryId: assistant.id })) as { conversationId: ConversationId };
+	hold = true;
+	await host.submit({ message: "Second request", requestId: "second", origin: "operator" });
+	while (row(0)?.state !== "working" || row(1) === undefined) await published();
+
+	// A change in the fork alone: the publication keeps the row of the root, whose turn still runs.
+	let partial: readonly number[] | undefined;
+	for (let attempt = 0; attempt < 5 && partial === undefined; attempt++) {
+		const marker = `Marker ${attempt}`;
+		await host.harness.commit(
+			(tx) => tx.appendEntry(AssistantEntry, fork.conversationId, { model: [answerMessage(marker)] }),
+			BACKGROUND_CONTEXT,
+		);
+		while (row(1)?.latestReply !== marker) await published();
+		const last = reads.at(-1);
+		if (last !== "every") partial = last;
+	}
+	assert.deepEqual(partial, [fork.conversationId]);
+	const retained = row(0)?.durationMs;
+	assert.equal(typeof retained, "number");
+
+	// A stored change of the running turn can still name the root; only a read of every conversation counts.
+	const deadline = new AbortController();
+	const expired = pause(5000, "expired" as const, { signal: deadline.signal }).catch(() => "expired" as const);
+	let outcome: "complete" | "expired" | undefined;
+	while (outcome === undefined) {
+		const next = await Promise.race([published().then(() => "published" as const), expired]);
+		if (next === "expired") outcome = "expired";
+		else if (reads.at(-1) === "every") outcome = "complete";
+	}
+	deadline.abort();
+	assert.equal(outcome, "complete", "the commits stopped, and a view that reads every conversation followed");
+	assert.ok(
+		(row(0)?.durationMs ?? 0) > (retained ?? 0),
+		`the running time of the root's turn moved on from ${retained} ms to ${row(0)?.durationMs} ms`,
+	);
 });
