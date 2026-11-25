@@ -608,6 +608,34 @@ test("user Bash spill failure is discoverable and distinct from the command exit
 	);
 	assert.equal(readHistory(sm, { entryId: id, pointer: "/message/exitCode" }).value, 7);
 	assert.equal(readHistory(sm, { entryId: id, pointer: "/message/fullOutputPath" }).status, "field_absent");
+	for (const source of ["user", "toolResult"] as const) {
+		assert.deepEqual(matches(searchHistory(sm, { query: "ENOSPC", filter: { source } })), []);
+	}
+});
+
+test("Bash tool spill text is searchable and its structured diagnostic is read by exact pointer", () => {
+	const sm = SessionManager.inMemory();
+	const fullOutputError = "📁 ENOSPC: could not save output";
+	const id = sm.appendMessage({
+		role: "toolResult",
+		toolCallId: "bash-call",
+		toolName: "bash",
+		content: [{ type: "text", text: `retained tail\n\n[Could not save the full output: ${fullOutputError}]` }],
+		details: { fullOutputError, truncation: { truncated: true } },
+		isError: false,
+		timestamp: 1,
+	});
+	const filter = { source: "toolResult" as const, toolName: "bash" };
+	assert.deepEqual(
+		matches(searchHistory(sm, { query: "ENOSPC", filter })).map(({ pointer }) => pointer),
+		["/message/content/0/text"],
+	);
+	assert.deepEqual(matches(searchHistory(sm, { query: "ENOSPC", filter: { ...filter, errorsOnly: true } })), []);
+	const pointer = "/message/details/fullOutputError";
+	const head = readHistory(sm, { entryId: id, pointer, maxBytes: 4 });
+	assert.equal(head.text, "📁");
+	const tail = readHistory(sm, head.next);
+	assert.equal(`${head.text}${tail.text}`, fullOutputError);
 });
 
 test("defensive execute validation rejects mutated parameters and observes cancellation", async () => {
