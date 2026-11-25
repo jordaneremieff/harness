@@ -51,7 +51,14 @@ import {
 	type FinalReportRead,
 	type RequestWork,
 } from "./open-work.ts";
-import { LiveDoc, type ConversationId, type EntryId, type Harness, type Tx } from "@earendil-works/pi-durable";
+import {
+	LiveDoc,
+	type ConversationId,
+	type EntryId,
+	type Harness,
+	type TaskId,
+	type Tx,
+} from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
 import { isThreadStorage, threadStorageUnanswered } from "./identity.ts";
 import { foldContinuity } from "./continuity-facts.ts";
@@ -67,7 +74,8 @@ import {
 	settleDeliveries,
 	providerRetryReportSettled,
 } from "./durable-controls.ts";
-import type { DurableHost } from "./durable-host.ts";
+import { readTaskGraph, type DurableHost } from "./durable-host.ts";
+import { CHECK_IN_DEADLINE_TASK, CheckInParkedSignal, resumePausedCheckIn } from "./durable-checkins.ts";
 import {
 	receiptSourceIdentity,
 	receiptDeliveryRequestId,
@@ -1216,6 +1224,27 @@ function transientTargetFailure(error: unknown): boolean {
 	);
 }
 
+/** The source ID of a parked check-in notice. */
+function newlyParkedCheckIn(item: EligibilityRow): string[] {
+	if (item.kind !== "report" || item.eligibility.state !== "parked") return [];
+	const report = item.row as DeliveryReport;
+	return report.checkIn === undefined ? [] : [report.sourceId];
+}
+
+/** Sleeping check-in deadline tasks that wait on the park signal of one of `keys`. */
+function parkedCheckInWaits(
+	graph: Awaited<ReturnType<typeof readTaskGraph>>,
+	keys: ReadonlySet<string>,
+): { id: TaskId; key: string }[] {
+	return Object.values(graph.tasks).flatMap((node) =>
+		node.kind === CHECK_IN_DEADLINE_TASK && node.state.status === "sleeping"
+			? (node.state.signals ?? [])
+					.filter((wait) => wait.signal === CheckInParkedSignal.name && keys.has(wait.key))
+					.map((wait) => ({ id: node.id, key: wait.key }))
+			: [],
+	);
+}
+
 /**
  * Start the source-side delivery watcher. The watcher owns its commit
  * subscription, target links, primary-channel connections, and retry timer;
@@ -1447,6 +1476,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			)
 				return true;
 			await storeDeliveryRow(tx, "report", { ...current, acknowledged: true });
+			await resumePausedCheckIn(tx, current.ownerId, current.checkIn, host.currentTime());
 			return false;
 		}, BACKGROUND_CONTEXT);
 	};
@@ -1500,6 +1530,19 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 
 	const acknowledgeRow = async (row: DeliveryRow, owners: readonly string[]): Promise<void> => {
 		if (owners.length === 0) return;
+		if (row.kind === "report" && row.report.checkIn !== undefined) {
+			const { report } = row;
+			const { checkIn } = row.report;
+			// The acknowledgement and the re-arm of a paused watch commit together, so a crash on either side of
+			// the commit leaves the same outcome.
+			await host.harness.commit(async (tx) => {
+				const current = await retainedReport(tx, report.ownerId, report.sourceId);
+				if (current === undefined || current.acknowledged) return;
+				await storeDeliveryRow(tx, "report", { ...current, acknowledged: true });
+				await resumePausedCheckIn(tx, report.ownerId, checkIn, host.currentTime());
+			}, BACKGROUND_CONTEXT);
+			return;
+		}
 		if (row.kind === "report") {
 			await acknowledgeReports(host.harness, row.report.ownerId, [row.report.sourceId], BACKGROUND_CONTEXT);
 			return;
@@ -2016,6 +2059,25 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const prepareReceiptGroups = async (rows: readonly DeliveryRow[]): Promise<void> => {
 		for (const row of rows) if (row.kind === "receipt") await prepareReceiptRow(row);
 	};
+	/** Notices whose park this watcher already signalled to the deadline task that waits on them. */
+	const signalledCheckIns = new Set<string>();
+	/**
+	 * Wake the deadline task of each newly parked check-in notice, which pauses its watch. The task waits on the
+	 * notice's source ID, so the graph names it without a stored task reference; at its deadline it pauses anyway.
+	 */
+	const signalParkedCheckIns = async (rows: readonly EligibilityRow[]): Promise<void> => {
+		const keys = new Set(rows.flatMap(newlyParkedCheckIn).filter((key) => !signalledCheckIns.has(key)));
+		if (keys.size === 0) return;
+		try {
+			const graph = await readTaskGraph(host.harness, BACKGROUND_CONTEXT);
+			for (const { id, key } of parkedCheckInWaits(graph, keys))
+				await host.harness.signal(id, CheckInParkedSignal, key, {}, BACKGROUND_CONTEXT);
+			for (const key of keys) signalledCheckIns.add(key);
+		} catch (error) {
+			fail(new Error(`check-in pause signal: ${asError(error).message}`));
+		}
+	};
+
 	/** One bounded pending page per pass; stable source identities join later recipient chunks. */
 	const scan = async (): Promise<void> => {
 		if (!traversing) {
@@ -2058,6 +2120,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const current = await reloadDeliveryRows(host.harness, state, BACKGROUND_CONTEXT);
 		const after = await observeDeliveryEligibility(host.harness, eligibilityOptions, current);
 		await retainEligibility(host.harness, after);
+		await signalParkedCheckIns(after);
 		const keys = new Set(page.keys);
 		after.filter((item) => keys.has(rowKey(item))).forEach(includeSummaryRow);
 		const terminal = await observeDeliveryEligibility(

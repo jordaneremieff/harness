@@ -4939,6 +4939,25 @@ acknowledgement. A model-origin check-in wakes its live primary owner; an
 explicit operator-origin interval stays quiet. If the owner cannot take the
 check-in, its row parks at the source like any other delivery.
 
+An owner that cannot take its check-in receives one outstanding notice, not one
+for each interval. The deadline task sleeps on a park signal named by the
+notice's source ID, and the delivery watcher sends that signal when it parks the
+notice; a watcher that sends none leaves the task to see the parked row at its
+next deadline. The task then stores the paused watch
+(`agent.check-in-pause`, keyed by owner, conversation and request) and
+completes. Its parent watch ends with it, without aborting the watched input,
+and creates no deadline while the pause stands, including after a restart. A
+paused watch holds no task, so it neither keeps its host alive nor sets the
+recovery marker; the watched work itself still does. When the owner accepts the
+outstanding notice, the same commit that acknowledges it re-arms one watch if
+the request is still open: a new `agent.check-in` task that waits for the next
+future interval of the existing admission. It finds the admitted input by its
+request ID, so nothing is submitted again, and no missed interval produces a
+notice. A settled request only clears the pause. Because acknowledgement and
+re-arm commit together, a crash before or after that commit gives the same
+outcome. A host of an earlier release starts a re-armed watch at its first
+interval, which gives at most one immediate notice.
+
 The headline names the agent and says it is still working, not finished, with
 elapsed time and retained conversation-total cost. The bounded body covers only
 the watched task. Its retained-entry scan starts at the watched input's

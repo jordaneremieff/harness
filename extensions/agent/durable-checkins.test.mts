@@ -8,7 +8,19 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { recordDeliveryIntent, settleDeliveries, type DeliveryReport } from "./durable-controls.ts";
-import { CheckInTask, CheckInDeadlineTask, createCheckIn } from "./durable-checkins.ts";
+import {
+	CheckInTask,
+	CheckInDeadlineTask,
+	CheckInParkedSignal,
+	createCheckIn,
+	resumePausedCheckIn,
+} from "./durable-checkins.ts";
+import { retainedReport, storeDeliveryRow } from "./delivery-store.ts";
+import { startDurableDelivery } from "./durable-delivery.ts";
+import { AgentCatalog } from "./catalog.ts";
+import { parseHostMetadata } from "./host-protocol.ts";
+import { createPrimaryChannel } from "./primary-channel.ts";
+import { randomUUID } from "node:crypto";
 import {
 	Harness,
 	MemoryStorage,
@@ -932,6 +944,231 @@ it("explicit operator check-ins retain operator origin and no default is needed"
 		const row = await waitForReport(f, `check-in:${conversation.id}:operator-explicit:1`);
 		assert.equal(row.checkIn?.origin, "operator");
 		assert.equal(row.checkIn?.conversationId, Number(conversation.id));
+	} finally {
+		f.releaseAnswer();
+	}
+});
+
+type ScheduleFixture = Awaited<ReturnType<typeof scheduleFixture>>;
+
+/** Check-in tasks of the storage: the watch and its deadline. */
+async function checkInTasks(f: ScheduleFixture) {
+	return (await f.host.harness.inspect(BACKGROUND_CONTEXT)).tasks.filter(
+		(row) => row.record.kind === CheckInTask.definition.name || row.record.kind === CheckInDeadlineTask.definition.name,
+	);
+}
+
+/** Resolve once no check-in task remains; fail after a bounded wait. */
+async function checkInsEnded(f: ScheduleFixture): Promise<void> {
+	for (let attempt = 0; attempt < 500; attempt++) {
+		if ((await checkInTasks(f)).length === 0) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.fail(
+		`check-in tasks did not end: ${JSON.stringify((await checkInTasks(f)).map((row) => [row.record.kind, row.record.state, row.state]))}`,
+	);
+}
+
+async function parkReport(f: ScheduleFixture, sourceId: string): Promise<void> {
+	await f.host.harness.commit(
+		async (tx) =>
+			editDeliveryFixture(tx, async (state) => {
+				const index = state.reports.findIndex((row) => row.sourceId === sourceId);
+				assert.ok(index >= 0);
+				state.reports[index] = {
+					...state.reports[index],
+					delivery: { state: "parked", reason: "the owner has no live endpoint" },
+				};
+			}),
+		BACKGROUND_CONTEXT,
+	);
+}
+
+async function signalDeadline(f: ScheduleFixture, sourceId: string): Promise<string> {
+	const graph = await f.host.harness.inspect(BACKGROUND_CONTEXT);
+	const deadline = graph.tasks.find((row) => row.record.kind === CheckInDeadlineTask.definition.name);
+	assert.ok(deadline);
+	return f.host.harness.signal(deadline.record.id, CheckInParkedSignal, sourceId, {}, BACKGROUND_CONTEXT);
+}
+
+it("pauses at a parked notice without another notice, and re-arms one future deadline when the owner accepts it", {
+	timeout: 60000,
+}, async (t) => {
+	const epoch = Date.now();
+	let now = epoch;
+	const f = await scheduleFixture(t, { agentExtension: true, deferAnswers: true, now: () => now });
+	t.mock.method(Date, "now", () => epoch);
+	try {
+		const submitted = (await f.host.request("submit", {
+			sessionId: f.storageId,
+			message: "long work",
+			requestId: "paused-watch",
+			ownerId: f.ownerId,
+			origin: "model",
+			checkInMinutes: 1,
+		})) as { submissionId: number };
+		const conversation = await f.conversation();
+		const key = (k: number) => `check-in:${conversation.id}:paused-watch:${k}`;
+		now = epoch + 60000;
+		await f.reopen();
+		const first = await waitForReport(f, key(1));
+		await parkReport(f, first.sourceId);
+		assert.equal(await signalDeadline(f, first.sourceId), "delivered");
+		await checkInsEnded(f);
+		const input = await f.host.harness.submission(submitted.submissionId as never, BACKGROUND_CONTEXT);
+		assert.notEqual((await input?.status(BACKGROUND_CONTEXT))?.status, "done", "the watched input keeps running");
+
+		now = epoch + 600000;
+		await f.reopen();
+		const waiting = (await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true))?.reports ?? [];
+		assert.deepEqual(
+			waiting.map((row) => row.sourceId),
+			[key(1)],
+			"one notice stays outstanding for the owner",
+		);
+		assert.deepEqual(await checkInTasks(f), [], "a paused watch keeps no task");
+
+		// The owner accepts the outstanding notice: one deadline re-arms at the next future interval.
+		await f.host.harness.commit(async (tx) => {
+			const current = await retainedReport(tx, f.ownerId, first.sourceId);
+			assert.ok(current?.checkIn);
+			await storeDeliveryRow(tx, "report", { ...current, acknowledged: true });
+			await resumePausedCheckIn(tx, f.ownerId, current.checkIn, now);
+		}, BACKGROUND_CONTEXT);
+		const rearmed = (await checkInTasks(f)).filter((row) => row.record.kind === CheckInTask.definition.name);
+		assert.equal(rearmed.length, 1, "one watch re-arms");
+		assert.equal((rearmed[0].record.input as { next?: number }).next, 11, "at the next future interval");
+		now = epoch + 660000;
+		await f.reopen();
+		await waitForReport(f, key(11));
+		const after = (await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true))?.reports ?? [];
+		assert.deepEqual(
+			after.map((row) => row.sourceId),
+			[key(1), key(11)],
+			"the re-armed watch writes no notice for the missed intervals",
+		);
+		assert.equal(
+			(await f.host.harness.inspect(BACKGROUND_CONTEXT)).submissions.filter((row) => row.requestId === "paused-watch")
+				.length,
+			1,
+			"the input is not submitted again",
+		);
+		f.releaseAnswer();
+		await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);
+		await checkInsEnded(f);
+	} finally {
+		f.releaseAnswer();
+	}
+});
+
+it("pauses at its next deadline when the notice parked without a signal", { timeout: 60000 }, async (t) => {
+	const epoch = Date.now();
+	let now = epoch;
+	const f = await scheduleFixture(t, { agentExtension: true, deferAnswers: true, now: () => now });
+	t.mock.method(Date, "now", () => epoch);
+	try {
+		await f.host.request("submit", {
+			sessionId: f.storageId,
+			message: "long work",
+			requestId: "unsignalled",
+			ownerId: f.ownerId,
+			origin: "model",
+			checkInMinutes: 1,
+		});
+		const conversation = await f.conversation();
+		now = epoch + 60000;
+		await f.reopen();
+		const first = await waitForReport(f, `check-in:${conversation.id}:unsignalled:1`);
+		await parkReport(f, first.sourceId);
+		now = epoch + 120000;
+		await f.reopen();
+		await checkInsEnded(f);
+		const rows = (await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true))?.reports ?? [];
+		assert.deepEqual(
+			rows.map((row) => [row.sourceId, row.acknowledged]),
+			[[first.sourceId, false]],
+		);
+		// A settled request clears the paused watch when its notice resolves; nothing re-arms.
+		f.releaseAnswer();
+		await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);
+		await f.host.harness.commit(async (tx) => {
+			const current = await retainedReport(tx, f.ownerId, first.sourceId);
+			assert.ok(current?.checkIn);
+			await resumePausedCheckIn(tx, f.ownerId, current.checkIn, now);
+		}, BACKGROUND_CONTEXT);
+		assert.deepEqual(await checkInTasks(f), []);
+	} finally {
+		f.releaseAnswer();
+	}
+});
+
+it("pauses through the delivery watcher for an absent owner, so the host holds no check-in task", {
+	timeout: 60000,
+}, async (t) => {
+	const epoch = Date.now();
+	let now = epoch;
+	const f = await scheduleFixture(t, { agentExtension: true, deferAnswers: true, now: () => now });
+	t.mock.method(Date, "now", () => epoch);
+	const root = mkdtempSync(join(tmpdir(), "check-in-pause-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const owner = randomUUID();
+	try {
+		await f.host.request("submit", {
+			sessionId: f.storageId,
+			message: "long work",
+			requestId: "absent-owner",
+			ownerId: owner,
+			origin: "model",
+			checkInMinutes: 1,
+		});
+		const conversation = await f.conversation();
+		now = epoch + 60000;
+		await f.reopen();
+		await waitForReport(f, `check-in:${conversation.id}:absent-owner:1`);
+		const watcher = startDurableDelivery({
+			host: f.host,
+			metadata: parseHostMetadata({
+				storageId: f.storageId,
+				cwd: root,
+				agentDir: join(root, "agent"),
+				packageDir: join(root, "package"),
+				storagePath: join(root, "unused.sqlite"),
+				model: { provider: testModel.provider, modelId: testModel.id },
+				thinkingLevel: "off",
+			}),
+			catalog: new AgentCatalog(join(root, "catalog")),
+			sessionsRoot: join(root, "sessions"),
+			signal: new AbortController().signal,
+		});
+		t.after(() => watcher.close());
+		await checkInsEnded(f);
+		const [notice] = (await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true))?.reports ?? [];
+		assert.equal(notice?.delivery?.state, "parked");
+		assert.equal(notice?.acknowledged, false);
+
+		// The owner returns: its acceptance of the outstanding notice re-arms one watch in the same commit.
+		const received: unknown[] = [];
+		const channel = await createPrimaryChannel({
+			id: owner,
+			cwd: root,
+			sessionsRoot: join(root, "sessions"),
+			deliver: (message) => {
+				received.push(message);
+			},
+			promptTrust: async () => undefined,
+		});
+		t.after(() => channel.close());
+		for (let attempt = 0; attempt < 500; attempt++) {
+			if ((await checkInTasks(f)).some((row) => row.record.kind === CheckInTask.definition.name)) break;
+			if (!watcher.busy) watcher.refresh();
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.equal(received.length, 1, "the owner receives the outstanding notice once");
+		const rows = (await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true))?.reports ?? [];
+		assert.equal(rows[0]?.acknowledged, true);
+		const watches = (await checkInTasks(f)).filter((row) => row.record.kind === CheckInTask.definition.name);
+		assert.equal(watches.length, 1, "acceptance re-arms one watch");
+		assert.equal((watches[0].record.input as { next?: number }).next, 2);
 	} finally {
 		f.releaseAnswer();
 	}

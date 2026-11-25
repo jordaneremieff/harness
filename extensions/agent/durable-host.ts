@@ -519,6 +519,11 @@ export class DurableHost {
 		return this.idle;
 	}
 
+	/** The Harness clock of this host. */
+	currentTime(): number {
+		return this.now();
+	}
+
 	/** Bounded owner diagnostic, never a sender assertion or an admission failure. */
 	get communicationMetadataDiagnostic(): "retention-unavailable" | "invalid-envelope" | undefined {
 		return this.communicationDiagnostic;
