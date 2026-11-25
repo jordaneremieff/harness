@@ -72,11 +72,9 @@ ranges for relevant code.
   note only while background jobs that this session started, or agents that
   it gave work to, still run for it. The note is one sentence, two at most.
   It opens with **Waiting**, then says exactly what the session waits on
-  and what happens next. If an agent that it waits on cannot go on without
-  help, such as a model at its usage limit, the note opens with **Blocked**
-  and says what would free it. Write the note of `agent_yield` and
-  `jobs_yield` the same way, without the bold. With no such work open, end
-  the answer without a note.
+  and what happens next. Write the note of `agent_yield` and `jobs_yield`
+  the same way, without the bold. With no such work open, end the answer
+  without a note.
 - When he asks whether a session is done, still needed or safe to close,
   answer yes or no first, then give the note if work is still open.
 - Say what you checked and what you inferred. Claim only what the evidence
