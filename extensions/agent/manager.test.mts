@@ -1,6 +1,8 @@
 import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { fork, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	existsSync,
@@ -491,6 +493,38 @@ for (const withdrawal of ["gate bound", "caller signal"] as const)
 			if (lease.kind === "held") lease.lease.release();
 		}
 	});
+
+it("a cold stop writer whose caller does not answer leaves the start gate and stops nothing", {
+	timeout: 20000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root, "owner");
+	const metadata = { ...hostMetadata(record), packageDir: getPackageDir() };
+	const runner = fileURLToPath(new URL("./durable-runner.ts", import.meta.url));
+	const child = fork(runner, [JSON.stringify(metadata), "stop", record.storageId, "false"], {
+		cwd: metadata.cwd,
+		execArgv: [],
+		stdio: ["ignore", "ignore", "ignore", "ipc"],
+	});
+	const messages: unknown[] = [];
+	child.on("message", (message) => messages.push(message));
+	t.after(() => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+	});
+	const began = Date.now();
+	const [code] = await once(child, "exit");
+	assert.equal(code, 0);
+	assert.ok(Date.now() - began < 15000, "the writer leaves at its answer bound");
+	assert.deepEqual(messages, [{ phase: "gate-passed" }, { unconfirmed: true }]);
+	for (const path of [startGatePath(metadata), ...writerLeasePaths(metadata)]) {
+		const lease = tryNativeWriterLease(path);
+		assert.equal(lease.kind, "held", "the writer left every lock free");
+		if (lease.kind === "held") lease.lease.release();
+	}
+	assert.equal(existsSync(record.storagePath), false, "the writer never opened the storage");
+});
 
 it("stops a live target once and never acquires a serving host for a cold stop", async (t) => {
 	const root = fixtureRoot(t);

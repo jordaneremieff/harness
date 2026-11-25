@@ -9,6 +9,8 @@ import type { stopBeforeResume } from "./durable-host.ts";
 
 export type ColdStopResult = Awaited<ReturnType<typeof stopBeforeResume>>;
 type Reply = { busy: true } | { result: ColdStopResult };
+/** The writer's own answer when its caller did not confirm the passed gate in time; it changed nothing. */
+type Unconfirmed = { unconfirmed: true };
 /**
  * The writer reports passing the start gate and takes the writer leases only after the caller answers that it will not
  * withdraw, or after the caller has gone. Until then it has changed nothing.
@@ -20,20 +22,32 @@ function isPhase(value: unknown, phase: string): boolean {
 	return value !== null && typeof value === "object" && (value as { phase?: unknown }).phase === phase;
 }
 
-/** Report the passed gate and wait for the caller's answer; a caller that has gone cannot withdraw. */
-function confirmGatePassed(): Promise<void> {
-	if (!process.connected || !process.send) return Promise.resolve();
+/**
+ * The writer holds the start gate while it waits for its caller's answer, which blocks every runner of the storage,
+ * so a caller that does not answer this soon (stopped or blocked) lets the writer leave without a stop.
+ */
+export const CALLER_ANSWER_WAIT_MS = 5_000;
+
+/**
+ * Report the passed gate and wait for the caller's answer: true to proceed, false when no answer came in time. A
+ * caller that has gone cannot withdraw.
+ */
+function confirmGatePassed(): Promise<boolean> {
+	if (!process.connected || !process.send) return Promise.resolve(true);
 	return new Promise((resolve) => {
-		const done = () => {
+		const done = (proceed: boolean) => {
+			clearTimeout(timer);
 			process.off("message", answered);
-			process.off("disconnect", done);
-			resolve();
+			process.off("disconnect", gone);
+			resolve(proceed);
 		};
 		const answered = (message: unknown) => {
-			if (isPhase(message, PROCEED.phase)) done();
+			if (isPhase(message, PROCEED.phase)) done(true);
 		};
+		const gone = () => done(true);
+		const timer = setTimeout(() => done(false), CALLER_ANSWER_WAIT_MS);
 		process.on("message", answered);
-		process.once("disconnect", done);
+		process.once("disconnect", gone);
 		process.send?.(GATE_PASSED);
 	});
 }
@@ -44,14 +58,20 @@ function confirmGatePassed(): Promise<void> {
 export const COLD_STOP_GATE_WAIT_MS = 30_000;
 
 /** Only the winner opens storage. A busy lease requests attachment to its actual writer, never another launch. */
-export async function withColdWriter(metadata: HostMetadata, stop: () => Promise<ColdStopResult>): Promise<Reply> {
+export async function withColdWriter(
+	metadata: HostMetadata,
+	stop: () => Promise<ColdStopResult>,
+): Promise<Reply | Unconfirmed> {
 	// The caller that reads these diagnostics can exit first. A closed pipe must not end the stop or hold its lease.
 	for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
 	const leases = writerLeasePaths(metadata);
 	for (const path of [...leases, startGatePath(metadata)]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	// A host that is still starting holds the start gate; its endpoint answers once the gate opens.
 	const gate = waitNativeWriterLease(startGatePath(metadata));
-	await confirmGatePassed();
+	if (!(await confirmGatePassed())) {
+		gate.release();
+		return { unconfirmed: true };
+	}
 	const writer = tryNativeWriterLeases(leases);
 	gate.release();
 	if (writer.kind === "busy") return { busy: true };
@@ -73,6 +93,18 @@ function abortError(signal: AbortSignal | undefined): Error {
 	return reason instanceof Error
 		? reason
 		: new Error("The abort was withdrawn before its stop started; nothing was stopped.");
+}
+
+/** The confirmed reply of a writer that exited cleanly, a refusal that stopped nothing, or undefined when unconfirmed. */
+function writerOutcome(answer: Reply | Unconfirmed | undefined, background: boolean): Reply | Error | undefined {
+	if (answer === undefined) return undefined;
+	if ("unconfirmed" in answer)
+		return new HostError(
+			"The stop writer did not receive this caller's confirmation in time and left without a stop; nothing was stopped. Repeat the abort.",
+			"unavailable",
+		);
+	if ("busy" in answer) return answer.busy === true ? answer : undefined;
+	return answer.result?.background === background ? answer : undefined;
 }
 
 /** The isolated writer outlives its caller's wait. Its exit confirms that its lease is no longer held. */
@@ -99,7 +131,7 @@ export function stopColdStorage(
 		stdio: ["ignore", "ignore", "pipe", "ipc"],
 	});
 	return new Promise((resolve, reject) => {
-		let reply: Reply | undefined;
+		let reply: Reply | Unconfirmed | undefined;
 		let diagnostic = "";
 		let gatePassed = false;
 		let withdrawn: Error | undefined;
@@ -134,17 +166,14 @@ export function stopColdStorage(
 				if (withdrawn) return;
 				passGate();
 				child.send(PROCEED);
-			} else reply = message as Reply;
+			} else reply = message as Reply | Unconfirmed;
 		});
 		child.once("error", reject);
 		child.once("exit", (code, signal) => {
 			passGate();
-			if (withdrawn) {
-				reject(withdrawn);
-				return;
-			}
-			if (code === 0 && reply && ("busy" in reply ? reply.busy === true : reply.result?.background === background))
-				resolve(reply);
+			const outcome = withdrawn ?? writerOutcome(code === 0 ? reply : undefined, background);
+			if (outcome instanceof Error) reject(outcome);
+			else if (outcome) resolve(outcome);
 			else
 				reject(
 					new Error(

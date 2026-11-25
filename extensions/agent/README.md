@@ -4322,7 +4322,9 @@ contender reports BUSY only once that endpoint can answer, and concurrent first
 uses of one storage all attach to the winner. A cold stop queues on the same
 gate for at most 30 s, or until its caller withdraws; until it passes the gate it
 has changed nothing, so it then ends with "nothing was stopped". Once the caller
-confirms the passed gate, the stop runs to its end even if the caller leaves. The caller then attempts one attachment to the expected endpoint. A failed endpoint remains
+confirms the passed gate, the stop runs to its end even if the caller leaves. A
+writer whose living caller does not answer within 5 s (a stopped or blocked
+process) releases the gate and leaves without a stop. The caller then attempts one attachment to the expected endpoint. A failed endpoint remains
 unavailable; no poll, PID check or record age authorises replacement.
 
 An owned launch has one monotonic budget across readiness, connection and
