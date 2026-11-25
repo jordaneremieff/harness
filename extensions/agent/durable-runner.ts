@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { writeSync } from "node:fs";
 import { enableCompileCache } from "node:module";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,6 +12,37 @@ import { bindInstallationPackages } from "./installation-binding.ts";
  * well above one listener per extension, so a channel that keeps growing still warns.
  */
 const EXTENSION_BUS_LISTENER_LIMIT = 64;
+
+/**
+ * Once its service has ended, the process stops at the latest this long afterwards. The writer lease is released
+ * or was never taken by then, so nothing that still runs has storage work to finish; MCP servers that outlive the
+ * process are ended by their guardian.
+ */
+const SERVICE_END_EXIT_MS = 5_000;
+
+/** Report on stderr; a closed or broken pipe never stops the exit that follows the report. */
+function diagnostic(text: string): void {
+	try {
+		writeSync(2, text);
+	} catch {
+		/* The process outlives its launcher's pipes. */
+	}
+}
+
+/**
+ * End the process when its service has ended: after clean retirement, release or close, and after a refused
+ * start. It ends as soon as nothing else runs, and at the latest after the grace, so a handle that an extension,
+ * a child transport or a socket leaves open cannot keep a retired runner alive.
+ */
+function endAfterService(): void {
+	const timer = setTimeout(() => {
+		diagnostic(
+			`Durable host: open handles kept the process running ${SERVICE_END_EXIT_MS / 1000} s after its service ended; it exits now.\n`,
+		);
+		process.exit(typeof process.exitCode === "number" ? process.exitCode : 0);
+	}, SERVICE_END_EXIT_MS);
+	timer.unref();
+}
 
 /** Read the caller installation before any host module resolves a Pi package import. */
 function callerInstallation(input: unknown): string {
@@ -91,8 +123,11 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	const input = process.argv[2];
 	if (!input) throw new Error("Durable host metadata is required");
-	void runDurableAgentHost(input).catch((error: unknown) => {
-		// Process exit stops a partial runtime before the kernel releases its lease.
-		process.stderr.write(`Durable host failed: ${String(error)}\n`, () => process.exit(1));
-	});
+	void runDurableAgentHost(input).then(
+		() => endAfterService(),
+		(error: unknown) => {
+			// Process exit stops a partial runtime before the kernel releases its lease.
+			process.stderr.write(`Durable host failed: ${String(error)}\n`, () => process.exit(1));
+		},
+	);
 }

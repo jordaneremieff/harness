@@ -4017,7 +4017,12 @@ a token request after close.
 
 `durable-runner.ts` starts the process and enables Node's compile cache before
 it imports the host modules, so a later host start reuses their compiled code;
-`NODE_DISABLE_COMPILE_CACHE=1` turns the cache off. The runner does not install
+`NODE_DISABLE_COMPILE_CACHE=1` turns the cache off. When the host's service
+ends (clean retirement, release, a close request, or a start refused because
+another host holds the lease), the runner process ends as soon as nothing else
+runs and at the latest 5 s later, with a diagnostic on stderr; a timer, socket
+or child transport that an extension leaves open cannot keep a retired runner
+alive. The runner does not install
 Pi's own HTTP dispatcher, which Pi's public exports do not offer, so Pi's
 `httpIdleTimeoutMs` and `httpProxy` settings do not configure a host's HTTP
 clients; `fetch` keeps Node's default 300-second header and body timeouts.

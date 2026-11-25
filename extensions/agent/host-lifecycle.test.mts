@@ -328,6 +328,44 @@ it("a wire close exits the durable process and releases its writer claim", { tim
 	assertReleased(fixture.metadata);
 });
 
+it("a retired runner exits although an extension keeps a timer running", { timeout: 30000 }, async (t) => {
+	const fixture = runtimeFixture(t);
+	const lingering = join(fixture.root, "lingering-extension.ts");
+	writeFileSync(lingering, "export default function () {\n\tsetInterval(() => {}, 60_000);\n}\n");
+	const settingsPath = join(fixture.metadata.agentDir, "settings.json");
+	const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as { extensions: string[] };
+	writeFileSync(settingsPath, JSON.stringify({ ...settings, extensions: [...settings.extensions, lingering] }));
+	const child = spawn(
+		process.execPath,
+		[fileURLToPath(new URL("./durable-runner.ts", import.meta.url)), JSON.stringify(fixture.metadata)],
+		{
+			cwd: fixture.cwd,
+			env: { ...process.env, ...fixture.env("answer"), PI_AGENT_SESSIONS_DIR: fixture.root },
+			stdio: ["ignore", "pipe", "pipe"],
+		},
+	);
+	const exited = once(child, "exit");
+	t.after(async () => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		await exited;
+	});
+	let stdout = "";
+	let stderr = "";
+	child.stdout.on("data", (chunk: Buffer) => {
+		stdout = `${stdout}${chunk.toString()}`.slice(-8192);
+	});
+	child.stderr.on("data", (chunk: Buffer) => {
+		stderr = `${stderr}${chunk.toString()}`.slice(-8192);
+	});
+	// Nothing attaches, so the host retires after its idle interval and its service ends.
+	const [code, signal] = await exited;
+	assert.ok(stdout.includes(HOST_READY_PREFIX), stderr);
+	assert.equal(code, 0, stderr);
+	assert.equal(signal, null);
+	assert.match(stderr, /open handles kept the process running 5 s after its service ended/u);
+	assertReleased(fixture.metadata);
+});
+
 it("a lost claim pathname makes the durable runner exit with failure on shutdown", { timeout: 15000 }, async (t) => {
 	let connection: Awaited<ReturnType<typeof acquireHost>> | undefined;
 	t.after(() => connection?.close());
