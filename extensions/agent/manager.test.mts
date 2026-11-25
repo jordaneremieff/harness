@@ -1771,6 +1771,22 @@ it("shares catalog observation across primary reload, replacement, and roster te
 	assert.deepEqual(registrations(), [], "repeated teardown leaves no observation registration");
 });
 
+it("names the next call when a read or control names an identity that nothing holds", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	mkdirSync(manager.catalog.root, { recursive: true });
+	const caller = { id: randomUUID(), cwd: root };
+	const ended = randomUUID();
+	const remedy = new RegExp(
+		`No retained agent and no registered ordinary session has the identity ${ended}\\. A session that ended cannot be read or reached\\. Find current agents with agent_list and live sessions with agent_status\\.`,
+		"u",
+	);
+	await assert.rejects(manager.control("inspect", { sessionId: ended, view: "activity" }, caller), remedy);
+	await assert.rejects(manager.status(ended, undefined, caller), remedy);
+	await assert.rejects(manager.status(ended, undefined, caller), /No peer was contacted\.$/u);
+});
+
 it("opens a roster subscription when catalog observation cannot start and records the failure", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root));
@@ -3758,9 +3774,10 @@ it("lists an ordinary session's threads by its identity, before and after its th
 	const empty = { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } };
 	assert.deepEqual(await manager.collaborate({ action: "list", sessionId: primary }, caller), empty);
 	assert.deepEqual(await manager.collaborate({ action: "list", sessionId: peer }, caller), empty);
-	await assert.rejects(manager.collaborate({ action: "list", sessionId: randomUUID() }, caller), {
-		message: "The exact native target is not retained and no ordinary primary is registered",
-	});
+	await assert.rejects(
+		manager.collaborate({ action: "list", sessionId: randomUUID() }, caller),
+		/No retained agent and no registered ordinary session has the identity .* Find current agents with agent_list/u,
+	);
 	const storageId = manager.catalog.createThreadStorage({
 		cwd: root,
 		agentDir: join(root, "agent"),

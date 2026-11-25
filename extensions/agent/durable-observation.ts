@@ -1934,7 +1934,9 @@ function inspectionEntries(
 			!Number.isSafeInteger(cursor.after) ||
 			(cursor.order !== undefined && cursor.order !== "ascending" && cursor.order !== "descending"))
 	)
-		throw new InspectionRequestError("Invalid storage cursor");
+		throw new InspectionRequestError(
+			"Invalid storage cursor. Pass the nextCursor of the previous page of the same view and conversation unchanged, or omit cursor to start at the newest entries.",
+		);
 	return conversation.entries(query, limit, cursor, context);
 }
 
@@ -2019,7 +2021,26 @@ interface ExactPage {
 	readonly omissions?: EntryOmissions;
 }
 
+/** Why an entry ID does not select an entry of this conversation, and which call reaches the entry. */
+async function entryNotVisible(
+	harness: Harness,
+	storageId: string,
+	conversation: Conversation,
+	entryId: EntryId,
+	context: Context,
+): Promise<Error> {
+	const stored = await harness.commit((tx) => tx.entry(entryId), context);
+	const reason =
+		stored === undefined
+			? `storage ${storageId} holds no entry ${entryId}. An entry ID is valid only with the sessionId of the conversation whose activity, history or search view returned it; a call without sessionId reads the calling conversation.`
+			: stored.conversationId === conversation.id
+				? "it is outside the retained history of this conversation."
+				: `it belongs to conversation ${stored.conversationId} of this storage. Repeat the call with sessionId ${durableIdentity(storageId, stored.conversationId === 1 ? undefined : stored.conversationId)}.`;
+	return new Error(`entry ${entryId} is not visible from conversation ${conversation.id}: ${reason}`);
+}
+
 async function readExact(
+	harness: Harness,
 	storageId: string,
 	conversation: Conversation,
 	params: DurableInspectParams,
@@ -2030,7 +2051,7 @@ async function readExact(
 	const page = await conversation.entries({ minEntryId: entryId, maxEntryId: entryId }, 1, undefined, context);
 	const entry = page.items[0];
 	if (entry === undefined || entry.id !== entryId)
-		throw new Error(`entry ${entryId} is not visible from conversation ${conversation.id}`);
+		throw await entryNotVisible(harness, storageId, conversation, entryId, context);
 	const projected = projectEntry(entry);
 	const cut = fragment(projected.text, params.offset ?? 0, ENTRY_PAGE_UNITS);
 	return {
@@ -2859,7 +2880,10 @@ function finalReportPage(
 			work: resultWork(work, record),
 			reason: `Final report ${work.finalReport.requestId} is not retained for ${work.finalReport.ownerId}`,
 		});
-	if (offset > text.length) throw new RangeError("result offset exceeds the retained final report length");
+	if (offset > text.length)
+		throw new RangeError(
+			`result offset exceeds the retained final report length: the report has ${text.length} units. Continue with the nextOffset of the previous page, or use offset 0 for the first page.`,
+		);
 	const { requestId, ownerId, status } = work.finalReport;
 	const declared = resultWork(work, record);
 	return fitResultBody(text, offset, (cut) => ({
@@ -3126,7 +3150,10 @@ async function readResultBody(
 		return boundedResult({ ...base, ...optionalParam("receiptGroup", await groupFor(base)) });
 	}
 	const offset = params.offset ?? 0;
-	if (offset > text.length) throw new RangeError("result offset exceeds the retained answer length");
+	if (offset > text.length)
+		throw new RangeError(
+			`result offset exceeds the retained answer length: the answer has ${text.length} units. Continue with the nextOffset of the previous page, or use offset 0 for the first page.`,
+		);
 	const draft = (cut: ResultCut): ResultPage => ({
 		...identity,
 		answer: cut.text,
@@ -3252,7 +3279,7 @@ export async function readInspection(
 		case "search":
 			return readSearch(storageId, conversation, params, context);
 		case "exact":
-			return readExact(storageId, conversation, params, context);
+			return readExact(harness, storageId, conversation, params, context);
 		case "activity":
 			return readActivity(harness, storageId, conversation, params, options, context);
 		case "result":

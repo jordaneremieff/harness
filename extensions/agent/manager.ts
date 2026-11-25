@@ -20,6 +20,7 @@ import {
 	threadStorageRecipientRefusal,
 	threadStorageRefusal,
 	threadStorageServes,
+	unknownTargetRefusal,
 } from "./identity.ts";
 import {
 	durableTargetInput,
@@ -1204,7 +1205,7 @@ export class AgentManager {
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 			if (!readPrimaryEndpointDescriptor(this.options.root, sessionId).info)
-				throw new Error("The exact native target is not retained and no ordinary primary is registered");
+				throw new Error(unknownTargetRefusal(sessionId));
 			return this.primaryControl(method, input, sessionId, caller);
 		}
 		({ method, input } = durableTargetInput(method, input, caller.id, caller.name));
@@ -1454,7 +1455,7 @@ export class AgentManager {
 		const descriptor = readPrimaryEndpointDescriptor(this.options.root, sessionId);
 		if (!descriptor.info)
 			throw new Error(
-				`Ordinary primary observation is unavailable: ${descriptor.unreadable ? "endpoint unreadable" : descriptor.state}. No peer was contacted.`,
+				`${unknownTargetRefusal(sessionId)} The endpoint of an ordinary session with this identity is ${descriptor.unreadable ? "unreadable" : descriptor.state}. No peer was contacted.`,
 			);
 		return readPrimaryObservation(descriptor.info, {
 			view,
@@ -2051,7 +2052,7 @@ export class AgentManager {
 			if (session === sessionId)
 				throw new Error(`No retained storage ${sessionId}. Find current agents and threads with agent_list.`);
 			if (session !== caller.id && !readPrimaryEndpointDescriptor(this.options.root, session).info)
-				throw new Error("The exact native target is not retained and no ordinary primary is registered");
+				throw new Error(unknownTargetRefusal(session));
 			return { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } };
 		}
 		return this.observe(target, action === "list" ? "collaboration-list" : "collaboration-read", {

@@ -172,3 +172,8 @@ export function targetIdentity(selector: string, catalogRoot?: string): string {
 	if (catalogRoot === undefined) throw new Error("Handle resolution requires the host catalog namespace");
 	return handleStorageId(selector.slice(1), catalogRoot);
 }
+
+/** Why a read or control of an identity found neither a retained agent nor a registered ordinary session. */
+export function unknownTargetRefusal(sessionId: string): string {
+	return `No retained agent and no registered ordinary session has the identity ${sessionId}. A session that ended cannot be read or reached. Find current agents with agent_list and live sessions with agent_status.`;
+}

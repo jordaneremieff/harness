@@ -42,6 +42,7 @@ import {
 	threadStorageRecipientRefusal,
 	threadStorageRefusal,
 	threadStorageServes,
+	unknownTargetRefusal,
 } from "./identity.ts";
 import { storageStatusPageInput } from "./storage-status.ts";
 import { boundCatalogView, withAttentionHints, withModelEvidence, type CatalogView } from "./catalog-view.ts";
@@ -774,7 +775,7 @@ export async function createDurableRuntime(
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 				if (!readPrimaryEndpointDescriptor(dirname(dirname(metadata.storagePath)), sessionId).info)
-					throw new Error("The exact native target is not retained and no ordinary primary is registered");
+					throw new Error(unknownTargetRefusal(sessionId));
 				return await primaryControl(method, params, sessionId);
 			}
 			refuseThreadStorageTarget(target, method, params);

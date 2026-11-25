@@ -326,3 +326,50 @@ it("a projection reads again only the conversations named as changed and returns
 	assert.deepEqual(partial.modelEvidence, dated(complete.modelEvidence));
 	assert.equal(partial.modelEvidence.sampling?.samples.length, 2);
 });
+
+it("an exact inspection of an entry outside the conversation names the call that reaches it", async (t) => {
+	const f = runtimeFixture(t);
+	const host = await DurableHost.open(
+		hostOptions(join(f.root, "exact.sqlite"), await fixtureRuntime("answer"), fixtureRegistry(), f.cwd),
+		context,
+	);
+	t.after(() => host.close());
+	const first = await host.submit({ message: "First request", requestId: "first" });
+	await host.wait(first.submissionId, context);
+	const assistant = (await host.root().entries({}, 20, undefined, context)).items.find(
+		(item) => item.kind === "pi.assistant",
+	);
+	assert.ok(assistant);
+	const fork = (await host.request("fork", { entryId: assistant.id })) as {
+		conversationId: Durable.ConversationId;
+		identity: string;
+	};
+	const branch = await host.submit({
+		message: "Branch request",
+		requestId: "branch",
+		conversationId: fork.conversationId,
+	});
+	await host.wait(branch.submissionId, context);
+	const conversation = await host.harness.conversation(fork.conversationId, context);
+	assert.ok(conversation);
+	const branchEntry = (await conversation.entries({}, 1, undefined, context)).items[0];
+	assert.ok(branchEntry && branchEntry.conversationId === fork.conversationId);
+
+	await assert.rejects(
+		host.request("inspect", { view: "exact", entryId: branchEntry.id }),
+		new RegExp(
+			`entry ${branchEntry.id} is not visible from conversation 1: it belongs to conversation ${fork.conversationId} of this storage\\. Repeat the call with sessionId ${fork.identity}\\.`,
+			"u",
+		),
+	);
+	await assert.rejects(
+		host.request("inspect", { view: "exact", entryId: 99_999 }),
+		/entry 99999 is not visible from conversation 1: storage \S+ holds no entry 99999\. An entry ID is valid only with the sessionId of the conversation whose activity, history or search view returned it/u,
+	);
+	const exact = (await host.request("inspect", {
+		view: "exact",
+		entryId: branchEntry.id,
+		sessionId: fork.identity,
+	})) as { entryId: number };
+	assert.equal(exact.entryId, branchEntry.id);
+});
