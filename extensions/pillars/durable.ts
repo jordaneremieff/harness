@@ -25,7 +25,19 @@ import { readPanelRequest, type PillarsPanelAnswer } from "./panel-protocol.ts";
 import type { Stage } from "./capacity.ts";
 import { Collector, utcDay } from "./collector.ts";
 import { judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
-import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, DraftSchema, splitDraft } from "./draft.ts";
+import {
+	DRAFT_GUIDANCE,
+	DraftInputError,
+	draftAssessment,
+	DraftSchema,
+	freshReading,
+	isReading,
+	type Reading,
+	type ReadingCompletion,
+	type RequestText,
+	requestText,
+	splitDraft,
+} from "./draft.ts";
 import { InputError } from "./input.ts";
 import { accessEvidence, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
 import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./readback.ts";
@@ -119,13 +131,17 @@ function parsedInput(args: unknown): ReturnType<typeof splitDraft> {
  * task names the call instead of repeating the draft.
  */
 function assessmentDiagnostics(
-	input: ReturnType<typeof splitDraft>,
-	resource: string,
+	draft: string,
+	reading: Reading,
 	signal: AbortSignal | undefined,
 ): Durable.ToolDiagnostic[] {
-	if (input.draft === undefined || signal?.aborted === true) return [];
-	return [{ severity: "info", message: draftAssessment(input.draft, { resource }) }];
+	if (signal?.aborted === true) return [];
+	return [{ severity: "info", message: draftAssessment(draft, reading, "model") }];
 }
+
+/** The memo that keeps one reading per call, so a replay after process loss does not request another. */
+const READING_MEMO = "pillars.reading";
+const NO_READING: Reading = { status: "unavailable", reason: "the call recorded no reading" };
 
 export const PILLARS_COMMAND_DESCRIPTION =
 	"Ask the conversation to check Pillars alignment, derive candidates, or review guidance. Accepts an optional hint.";
@@ -256,6 +272,48 @@ export function pillarsDurableContribution(
 				);
 			}
 
+			/** The conversation's user messages, without this extension's own assessment entries. */
+			async function conversationRequest(api: Durable.ToolExecutionApi, context: Context): Promise<RequestText> {
+				const conversation = await host.harness.conversation(api.conversationId, context);
+				if (conversation === undefined) return {};
+				const view = await conversation.context(context);
+				return requestText(
+					view.entries.flatMap((entry, index) =>
+						entry.kind === "pillars-draft" ? [] : (view.contributions[index] ?? []),
+					),
+				);
+			}
+
+			async function conversationModel(
+				api: Durable.ToolExecutionApi,
+				context: Context,
+			): Promise<ReadingCompletion | string> {
+				const reference = (await api.agent(context)).model;
+				if (reference === undefined) return "the conversation has no selected model";
+				const model = api.models.getModel(reference.provider, reference.modelId);
+				if (model === undefined) return "the conversation's model is not in the model catalog";
+				return (modelContext, options) => api.models.completeSimple(model, modelContext, options);
+			}
+
+			/** The conversation's own model reads the request, the draft and the inventory without the conversation. */
+			async function readDraft(
+				draft: string,
+				inventory: string,
+				api: Durable.ToolExecutionApi,
+				context: Context,
+			): Promise<Reading> {
+				const prior = await api.memo<JsonValue>(READING_MEMO, context);
+				if (isReading(prior)) return prior;
+				const reading = await freshReading(
+					await conversationModel(api, context),
+					{ request: await conversationRequest(api, context), draft, inventory },
+					context.abortSignal,
+				);
+				if (context.abortSignal?.aborted) return reading;
+				const stored = await api.memo<JsonValue>(READING_MEMO, reading, context);
+				return isReading(stored) ? stored : reading;
+			}
+
 			/** HookApi exposes no agent; the contract resolves it through the host Harness. */
 			async function resolvedAgent(api: Durable.HookApi, context: Context): Promise<Durable.Agent | undefined> {
 				const conversation = await host.harness.conversation(api.conversationId, context);
@@ -337,6 +395,12 @@ export function pillarsDurableContribution(
 				);
 			}
 
+			/** The reading that this call's execution stored, or a stated absence. */
+			async function storedReading(api: Durable.HookApi, context: Context): Promise<Reading> {
+				const stored = await api.memo<JsonValue>(READING_MEMO, context);
+				return isReading(stored) ? stored : NO_READING;
+			}
+
 			/**
 			 * Nested diagnostics stay with the caller; admit the assessment into the conversation instead.
 			 * The transcript holds no nested arguments, so this task carries the draft itself.
@@ -352,6 +416,7 @@ export function pillarsDurableContribution(
 				if ((result.details as { schema?: string } | undefined)?.schema !== "pillars-source") return;
 				const { draft } = splitDraft(call.arguments);
 				if (draft === undefined) return;
+				const reading = await storedReading(api, context);
 				const conversation = await host.harness.conversation(api.conversationId, context);
 				if (conversation === undefined) return;
 				await conversation.submit(
@@ -360,7 +425,13 @@ export function pillarsDurableContribution(
 						requestId: `pillars:draft:${String(api.taskId)}`,
 						entry: {
 							kind: "pillars-draft",
-							model: [{ role: "user", content: draftAssessment(draft), timestamp: Date.now() }],
+							model: [
+								{
+									role: "user",
+									content: draftAssessment(draft, reading, "nested"),
+									timestamp: Date.now(),
+								},
+							],
 						},
 					},
 					context,
@@ -407,12 +478,9 @@ export function pillarsDurableContribution(
 							prepareArguments(input) {
 								try {
 									const { source, draft } = splitDraft(input);
+									if (draft !== undefined) return { draft };
 									const { referenceBodyDigest, ...args } = parseAccess(source, catalog);
-									return {
-										...args,
-										...(referenceBodyDigest === undefined ? {} : { referenceBodyDigest }),
-										...(draft === undefined ? {} : { draft }),
-									};
+									return { ...args, ...(referenceBodyDigest === undefined ? {} : { referenceBodyDigest }) };
 								} catch (error) {
 									if (!(error instanceof InputError) && !(error instanceof DraftInputError)) throw error;
 									throw new Error(
@@ -424,6 +492,10 @@ export function pillarsDurableContribution(
 								const input = parsedInput(args);
 								const result = await access(catalog, input.source, context.abortSignal);
 								if (result.schema === "pillars-source") await recordDelivery(result, api, context);
+								const reading =
+									result.schema === "pillars-source" && input.draft !== undefined
+										? await readDraft(input.draft, result.text, api, context)
+										: undefined;
 								if (result.schema === "pillars-source-error")
 									return {
 										output: [{ type: "text", text: JSON.stringify(result) }],
@@ -433,7 +505,10 @@ export function pillarsDurableContribution(
 								return {
 									output: [{ type: "text", text: JSON.stringify(result) }],
 									details: asDetails(result),
-									diagnostics: assessmentDiagnostics(input, result.resource, context.abortSignal),
+									diagnostics:
+										input.draft === undefined || reading === undefined
+											? []
+											: assessmentDiagnostics(input.draft, reading, context.abortSignal),
 								};
 							},
 						}),

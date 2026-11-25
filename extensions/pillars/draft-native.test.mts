@@ -9,7 +9,15 @@ import { obj } from "@earendil-works/pi-schema";
 import { compile } from "@earendil-works/pi-schema";
 import { access } from "./access.ts";
 import { utcDay } from "./collector.ts";
-import { draftAssessment, DraftInputError, DraftSchema, MAX_DRAFT_CHARACTERS, splitDraft } from "./draft.ts";
+import {
+	draftAssessment,
+	DraftInputError,
+	DraftSchema,
+	MAX_DRAFT_CHARACTERS,
+	READING_SYSTEM_PROMPT,
+	type Reading,
+	splitDraft,
+} from "./draft.ts";
 import { PillarsStore } from "./store.ts";
 
 const hostRoot = process.env.PI_PILLARS_TEST_HOST_ROOT;
@@ -23,6 +31,8 @@ const ai: typeof import("@earendil-works/pi-ai") = await import(
 );
 const entry = fileURLToPath(new URL("./index.ts", import.meta.url));
 const proposal = "A concrete proposed answer with a questionable qualification.";
+const LEADS = "Premises:\n- Which observation establishes the qualification across its whole scope?";
+const read: Reading = { status: "read", leads: LEADS };
 
 function text(message: { content: unknown }): string {
 	if (typeof message.content === "string") return message.content;
@@ -51,11 +61,7 @@ test("draft limits preserve combined units without Unicode grapheme segmentation
 		const above = `${at}x`;
 		for (const draft of [below, at]) {
 			assert.equal(compile(DraftSchema).check(draft), true, name);
-			assert.deepEqual(
-				splitDraft({ draft, resource: "inventory" }),
-				{ draft, source: { resource: "inventory" } },
-				name,
-			);
+			assert.deepEqual(splitDraft({ draft }), { draft, source: {} }, name);
 		}
 		assert.throws(
 			() => splitDraft({ draft: above }),
@@ -180,19 +186,43 @@ test("native draft assessment follows source results without a context transform
 		function assessments() {
 			return active().messages.filter((message) => message.role === "custom" && message.customType === "pillars-draft");
 		}
+		/** Providers receive the system prompt as the transcript's leading system message. */
+		function isReading(context: { messages: readonly { role: string; content: unknown }[] }): boolean {
+			const head = context.messages[0];
+			return head?.role === "system" && text(head) === READING_SYSTEM_PROMPT;
+		}
+		/** The fresh reading: a separate request that holds only the request text, the draft and the inventory. */
+		function reading(draft: string, request: string): FauxResponseStep {
+			return (context) => {
+				assert.ok(isReading(context));
+				const head = context.messages[0];
+				assert.ok(head.role === "system" && !head.toolsAdded?.length, "the reading offers no tools");
+				assert.deepEqual(
+					context.messages.map((message) => message.role),
+					["system", "user"],
+				);
+				const body = text(context.messages[1]);
+				assert.ok(body.includes(`Newest user message:\n\n${request}`));
+				assert.ok(body.includes(`Draft (agent-authored):\n\n${draft}`));
+				assert.ok(body.includes("Pillars inventory:\n\n# Inventory"));
+				return ai.fauxAssistantMessage(LEADS);
+			};
+		}
+		/** A conversation request carries the session context; the reading carries its own. */
+		function checkContext(context: Parameters<typeof isReading>[0], failures: unknown[]): void {
+			if (isReading(context)) return;
+			try {
+				assert.deepEqual(context.messages, sdk.convertToLlm(active().sessionManager.buildSessionContext().messages));
+			} catch (error) {
+				failures.push(error);
+			}
+		}
 		function responses(...steps: FauxResponseStep[]) {
 			const before = faux.state.callCount;
 			const failures: unknown[] = [];
 			faux.setResponses(
 				steps.map((step) => async (context, options, state, model) => {
-					try {
-						assert.deepEqual(
-							context.messages,
-							sdk.convertToLlm(active().sessionManager.buildSessionContext().messages),
-						);
-					} catch (error) {
-						failures.push(error);
-					}
+					checkContext(context, failures);
 					try {
 						return typeof step === "function" ? await step(context, options, state, model) : step;
 					} catch (error) {
@@ -226,8 +256,18 @@ test("native draft assessment follows source results without a context transform
 				const prepare = definition.prepareArguments;
 				assert.ok(prepare);
 				assert.deepEqual(prepare({}), { resource: "inventory", offset: 0 });
-				const valid = { resource: "principle-example", draft: "😀".repeat(MAX_DRAFT_CHARACTERS) };
-				assert.deepEqual(prepare(valid), { ...valid, offset: 0 });
+				const valid = { draft: "😀".repeat(MAX_DRAFT_CHARACTERS) };
+				assert.deepEqual(prepare(valid), valid);
+				assert.throws(
+					() => prepare({ resource: "principle-example", draft: proposal }),
+					(error: unknown) => {
+						assert.ok(error instanceof Error);
+						const result = JSON.parse(error.message);
+						assert.equal(result.code, "invalid_input");
+						assert.match(result.message, /a draft call takes no other field; received resource/);
+						return true;
+					},
+				);
 				for (const draft of [
 					"",
 					" \n",
@@ -294,21 +334,24 @@ test("native draft assessment follows source results without a context transform
 			assert.equal(sourceJSON, JSON.stringify(expected));
 			assert.equal(assessments().length, 0);
 		});
+		let inventoryJSON = "";
 		await t.test("a draft task reaches the actual next request after every result in a tool batch", async () => {
 			const done = responses(
 				ai.fauxAssistantMessage([
-					ai.fauxToolCall("pillars", { resource: "principle-example", draft: proposal }, { id: "draft-read" }),
+					ai.fauxToolCall("pillars", { draft: proposal }, { id: "draft-read" }),
 					ai.fauxToolCall("fixture_echo", {}, { id: "other-call" }),
 				]),
+				reading(proposal, "Prepare the authorized answer."),
 				(context) => {
 					const tail = context.messages.slice(-3);
 					assert.deepEqual(
 						tail.map((message) => message.role),
 						["toolResult", "toolResult", "user"],
 					);
-					assert.equal(text(tail[0]), sourceJSON);
+					inventoryJSON = text(tail[0]);
+					assert.equal(JSON.parse(inventoryJSON).resource, "inventory");
 					assert.equal(text(tail[1]), "Other result.");
-					assert.equal(text(tail[2]), draftAssessment(proposal, { resource: "principle-example" }));
+					assert.equal(text(tail[2]), draftAssessment(proposal, read, "model"));
 					return ai.fauxAssistantMessage("The corrected work is the answer.");
 				},
 			);
@@ -324,16 +367,15 @@ test("native draft assessment follows source results without a context transform
 			const draft = "e\u0301".repeat(MAX_DRAFT_CHARACTERS);
 			const before = assessments().length;
 			const done = responses(
-				ai.fauxAssistantMessage(
-					ai.fauxToolCall("pillars", { resource: "principle-example", draft }, { id: "combined-draft" }),
-				),
+				ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { draft }, { id: "combined-draft" })),
+				reading(draft, "Check a draft with combined characters."),
 				(context) => {
 					const result = context.messages.at(-2);
 					assert.ok(result?.role === "toolResult" && !result.isError);
-					assert.equal(text(result), sourceJSON);
+					assert.equal(text(result), inventoryJSON);
 					const task = text(context.messages.at(-1) as { content: unknown });
-					assert.equal(task, draftAssessment(draft, { resource: "principle-example" }));
-					assert.ok(task.length < 2000, "the task names the call instead of repeating the draft");
+					assert.equal(task, draftAssessment(draft, read, "model"));
+					assert.ok(task.length < 3000, "the task names the call instead of repeating the draft");
 					return ai.fauxAssistantMessage("The combined-character draft is intact.");
 				},
 			);
@@ -349,15 +391,16 @@ test("native draft assessment follows source results without a context transform
 					ai.fauxToolCall(
 						"codemode",
 						{
-							code: `await tools.pillars({ resource: "principle-example", draft: ${JSON.stringify(nested)} }); return "checked";`,
+							code: `await tools.pillars({ draft: ${JSON.stringify(nested)} }); return "checked";`,
 						},
 						{ id: "script-draft" },
 					),
 				),
+				reading(nested, "Check a draft from a script."),
 				(context) => {
 					const result = context.messages.at(-2);
 					assert.ok(result?.role === "toolResult" && !result.isError);
-					assert.equal(text(context.messages.at(-1) as { content: unknown }), draftAssessment(nested));
+					assert.equal(text(context.messages.at(-1) as { content: unknown }), draftAssessment(nested, read, "nested"));
 					return ai.fauxAssistantMessage("The script draft was checked.");
 				},
 			);
@@ -365,7 +408,7 @@ test("native draft assessment follows source results without a context transform
 			done();
 			assert.equal(assessments().length, before + 1);
 		});
-		await t.test("source errors and already-cancelled access send no assessment", async () => {
+		await t.test("refused drafts and already-cancelled access send no reading or assessment", async () => {
 			const before = assessments().length;
 			const done = responses(
 				ai.fauxAssistantMessage(
@@ -378,17 +421,18 @@ test("native draft assessment follows source results without a context transform
 				(context) => {
 					const result = context.messages.at(-1);
 					assert.ok(result?.role === "toolResult" && result.isError);
-					assert.equal(JSON.parse(text(result)).code, "source_changed");
-					return ai.fauxAssistantMessage("Source error received.");
+					assert.equal(JSON.parse(text(result)).code, "invalid_input");
+					assert.match(text(result), /a draft call takes no other field/);
+					return ai.fauxAssistantMessage("Refusal received.");
 				},
 			);
-			await active().prompt("Check a source with a stale digest.");
+			await active().prompt("Check a draft against a chosen source.");
 			done();
 			const controller = new AbortController();
 			controller.abort();
 			const refusal = await tool().execute(
 				"cancelled-read",
-				{ resource: "governance", draft: proposal },
+				{ draft: proposal },
 				controller.signal,
 				undefined,
 				active().extensionRunner.createToolContext("cancelled-read", controller.signal),
@@ -413,10 +457,11 @@ test("native draft assessment follows source results without a context transform
 						ai.fauxAssistantMessage(
 							ai.fauxToolCall(
 								"pillars",
-								{ resource: "principle-example", draft: "A draft admitted before cancellation." },
+								{ draft: "A draft admitted before cancellation." },
 								{ id: "cancel-after-admission" },
 							),
 						),
+						reading("A draft admitted before cancellation.", "Read and submit a draft before cancellation."),
 					);
 					await active().prompt("Read and submit a draft before cancellation.");
 					await aborted;
@@ -444,11 +489,7 @@ test("native draft assessment follows source results without a context transform
 			assert.equal(faux.state.callCount, before);
 			assert.equal(assessments().length, count);
 			const done = responses((context) => {
-				assert.ok(
-					context.messages.some(
-						(message) => text(message) === draftAssessment(proposal, { resource: "principle-example" }),
-					),
-				);
+				assert.ok(context.messages.some((message) => text(message) === draftAssessment(proposal, read, "model")));
 				return ai.fauxAssistantMessage("Resume completed.");
 			});
 			await active().prompt("Continue the reopened task.");

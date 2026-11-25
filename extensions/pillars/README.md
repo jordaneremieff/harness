@@ -150,8 +150,8 @@ validation, as well as at their execution boundary. They report the first invali
 field. For source and usage fields, numbers and booleans are shown directly. Arbitrary
 strings and unsupported field names are described by type and length, not echoed;
 object and array contents are withheld. Draft validation names the failed
-condition: non-string value, blank text, malformed Unicode, or excessive character
-count. String diagnostics report the combined-character count and UTF-8 byte size,
+condition: non-string value, blank text, malformed Unicode, excessive character
+count, or another field beside the draft. String diagnostics report the combined-character count and UTF-8 byte size,
 never the draft text. The source tool echoes only a known identifier with its
 `.md` suffix.
 These rules prevent control characters, paths, credentials, and arbitrary input
@@ -218,11 +218,19 @@ it is not stored in the aggregate telemetry directory.
 
 ## Assess an agent-authored draft
 
-The agent can include an optional `draft` in an ordinary `pillars` source read:
+The agent checks a proposal before delivery by sending it alone:
 
 ```json
-{"resource":"heuristic-verification-reach","draft":"The test confirms source delivery, not whether the agent applied the guidance."}
+{"draft":"The test confirms source delivery, not whether the agent applied the guidance."}
 ```
+
+A draft call takes no other field and reads the inventory. The entries that
+judge a draft therefore come from the whole inventory, not from an entry that
+its author chose while writing it. A draft beside `resource`, `offset` or
+`referenceBodyDigest` is refused before execution with an `invalid_input`
+diagnostic that names the known fields it received and the corrected call; it
+describes any other field without echoing its name. Neither the source read
+nor the assessment runs.
 
 The tool's description and prompt guidance ask the agent to submit a concrete
 proposal before a consequential decision, action, or answer without waiting for
@@ -252,22 +260,70 @@ the same call with at most 32768 characters, with a longer document checked in
 sections, one call per section, or reduced to the passages that carry the
 decision or claims.
 
-After a successful source read, the extension sends a native assessment task for
-the ordinary model continuation. Pi delivers that task after the tool results
-in the current batch. The source JSON, digest, pagination, and error contract
-remain unchanged; the task is a separate message. It applies the same
+### Fresh reading
+
+An author that checks its own draft shares the frame that produced it: the
+same investigation, the same reasons, and the entries it chose while writing.
+After a successful draft call, the extension therefore makes one model request
+in a fresh context. The session's selected model (in a Durable agent, the
+conversation's model) receives a fixed reading prompt and one user message
+that holds the conversation's first and newest user messages, clipped to 3,000
+and 6,000 code points, the draft, and the inventory page. The request offers no
+tools and carries nothing else from the conversation.
+
+The reading returns at most eight one-line leads under four headings:
+
+- premises that the draft relies on to admit, exclude or rank an option, above
+  all claims that something cannot be done, does not exist or does not work;
+- routes that the request names or implies, or that the draft mentions, which
+  the draft sets aside, demotes or narrows;
+- places where the draft answers a narrower question than the request asks;
+- identifiers of inventory entries whose recognition matches the request and
+  the draft.
+
+The extension keeps at most 4,000 code points of the answer. Leads are
+questions for the author, not findings: the reader has no tools and cannot
+verify them. The request uses low reasoning, at most 4,096 output tokens and a
+90-second limit, and the tool call waits for it. Cancellation of the call
+cancels the reading. A missing model, a provider failure, a timeout or an empty
+answer does not fail the call; the assessment task states that the reading was
+unavailable and why, and the check continues without leads. The reading counts
+against the session model's provider like any other request of the session.
+
+### Assessment task
+
+After the reading, the extension sends a native assessment task for the
+ordinary model continuation. Pi delivers that task after the tool results in
+the current batch. The inventory JSON, digest and error contract remain
+unchanged; the task is a separate message. It carries the leads, or the reason
+that the reading was unavailable, and asks the agent to:
+
+- select the applicable Pillars from the inventory: the entries that the leads
+  name and the entries whose recognition matches the request and the draft's
+  claims, not only the entries read while the draft was written;
+- test the premises that carry the decision before its wording: each lead,
+  each claim that something cannot be done or does not exist, each route that
+  the request named and the draft sets aside, and any narrowing of the
+  request's question, against evidence from the layer that defines it and
+  across the claim's scope;
+- verify a premise that decides the proposal when it can, or narrow the claim
+  and name the check that would settle it, and develop a route that the request
+  named to its strongest form before comparing it.
+
+It applies the same
 [correction and authority boundaries](#check-work-derive-candidates-or-review-guidance)
-as `/pillars check`. Existing consultation rules still apply, including use of
-relevant bodies already in context when sufficient. The task requests no separate
-verdict or doctrine recital unless the operator asks for one. It labels the draft
-as agent-authored data, not an operator request, new doctrine, or permission.
+as `/pillars check`. The task names no corpus entry, requests no separate
+verdict or doctrine recital unless the operator asks for one, and labels the
+draft and the leads as data, not an operator request, new doctrine, or
+permission.
 
 The task does not repeat a draft that already stands in the transcript. For a
-model-issued call, it names the call's resource, the draft's size in the
-character unit above, and its opening words, at most 60 code points, and asks
-the agent to assess the draft in that call. A nested call, such as one from a
-Codemode script, keeps its arguments outside the transcript, so its task carries
-the draft as a JSON-escaped string. Pi gives a nested call the id
+model-issued call, it names the call by the draft's size in the character unit
+above and its opening words, at most 60 code points, and asks the agent to
+assess the draft in that call. A nested call, such as one from a Codemode
+script, keeps its arguments and its inventory result outside the transcript, so
+its task carries the draft as a JSON-escaped string and tells the agent to read
+the inventory when it is not in context. Pi gives a nested call the id
 `<calling id>/<n>`; an ordinary call whose id has that form also receives the
 copy, which costs context but loses nothing. In Durable sessions, the
 model-issued form rides the tool result and the nested form is a conversation
@@ -275,7 +331,8 @@ entry, as [Durable agents](#durable-agents) describes.
 
 The task uses `sendMessage` with `triggerTurn:false`; the extension starts no
 additional model turn and owns no assessment queue, pending state, or context
-transform. Source errors and cancellation before admission send no task.
+transform. Source errors and cancellation before admission send no reading and
+no task.
 Cancellation after admission leaves the task in native history without requesting
 another turn. Reload and session resume do not replay or duplicate it. This is
 not an action gate: other tools in the same batch still execute before the
@@ -285,17 +342,21 @@ The terminal call line marks an agent draft assessment but does not display the
 draft. The task has `display:false`, so it stays outside the ordinary message
 display while remaining model-visible. **A draft is not private scratch.** Both
 the tool input and assessment task enter native session history, and provider
-requests include the draft. Do not submit secrets. The aggregate access store
+requests include the draft. The reading sends the clipped user messages, the
+draft and the inventory to the provider of the session's model in a separate
+request. Do not submit secrets. The aggregate access store
 retains no draft text, and its counts remain source-access evidence rather than
 assessment or application evidence.
 
-Context cost consists of the tool's static guidance plus an assessment task for
-each successful call that includes a draft. For a model-issued call the task's
-size does not grow with the draft, because the draft costs context once, in the
-call itself. For a nested call the task adds the JSON-escaped copy, at
-most the character limit plus its escapes. The extension has no automatic retry or review loop. Agent selection
-and the quality of the resulting correction remain model judgments, not a
-compliance verdict computed by the extension.
+Context cost consists of the tool's static guidance plus, for each successful
+draft call, the inventory page and an assessment task with at most 4,000 code
+points of leads. For a model-issued call the task's size does not grow with the
+draft, because the draft costs context once, in the call itself. For a nested
+call the task adds the JSON-escaped copy, at most the character limit plus its
+escapes. The reading request itself stays outside the conversation. The
+extension makes one reading per call and has no automatic retry or review loop.
+Agent selection and the quality of the resulting correction remain model
+judgments, not a compliance verdict computed by the extension.
 
 ## Discovery and activation
 
@@ -553,7 +614,10 @@ and readback functions with the ordinary entrypoint; no ordinary session API
 runs inside the Durable form.
 
 The tools declare replay class `safe`. A corpus read and an in-memory page
-capture repeat no external effect. Attribution writes are deduplicated with
+capture repeat no external effect. A draft call keeps its reading in a task
+memo, so a replay after the memo is written reuses the reading; a replay after
+process loss before that point requests a new reading, which changes no
+external state. Attribution writes are deduplicated with
 stable task memo keys, so a replay after process loss does not silently count
 another access. Native `details` equal the ordinary tool details. Native tools
 return bounded model text through `output` and declare no structured output
@@ -577,6 +641,11 @@ ordinary entrypoint.
 
 Documented differences from the ordinary entrypoint:
 
+- The reading uses the conversation's model through the host's model catalog,
+  and its request text comes from the conversation's model context: user
+  messages of every entry except this extension's own `pillars-draft` entries.
+  Inputs that a host places under an application entry kind count when their
+  model contribution is a user message.
 - A draft assessment arrives as an `info` diagnostic attached to the tool
   result for a model-issued call; it names the call and does not repeat the
   draft. For a nested call, `afterTool` submits a `pillars-draft` entry with a
@@ -807,9 +876,10 @@ corruption, quotas, full-capacity pagination, memory refusal, export
 publication, free-text command parsing, native argument-completion insertion,
 help rendering at narrow widths, and actual Pi discovery/callback/command/shutdown
 integration with a synthetic provider. Draft tests cover Unicode and byte bounds,
-private diagnostics, unchanged source output, native batch ordering, ordinary
-transcript preservation, cancellation, reload, disk resume, and source-only
-aggregate evidence. Controlled Pi Durable Harness tests use the public native
+the draft-alone contract, private diagnostics, the reading request's isolated
+context and its failure reasons, unchanged inventory output, native batch
+ordering, ordinary transcript preservation, cancellation, reload, disk resume,
+and source-only aggregate evidence. Controlled Pi Durable Harness tests use the public native
 code mode extension and a real sandbox. They check bounded source and usage
 strings, source-error rejection, argument rejection, nested draft delivery in the
 next provider request, and `afterTool` replacement of the text result. Provider

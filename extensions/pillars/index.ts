@@ -13,7 +13,16 @@ import { InputError } from "./input.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import { Collector, utcDay, type DiagnosticNotice } from "./collector.ts";
 import { COMMAND_HELP, commandCompletions, judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
-import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, DraftSchema, splitDraft } from "./draft.ts";
+import {
+	DRAFT_GUIDANCE,
+	DraftInputError,
+	draftAssessment,
+	DraftSchema,
+	freshReading,
+	type Reading,
+	requestText,
+	splitDraft,
+} from "./draft.ts";
 import { toolDisplay } from "./display.ts";
 import { pillarsDurableContribution } from "./durable.ts";
 import {
@@ -263,15 +272,46 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			});
 		}
 	}
-	function sendAssessment(toolCallId: string, draft: string, resource: string): void {
+	function sendAssessment(toolCallId: string, draft: string, reading: Reading): void {
 		pi.sendMessage(
 			{
 				customType: "pillars-draft",
-				content: draftAssessment(draft, nestedCall(toolCallId) ? undefined : { resource }),
+				content: draftAssessment(draft, reading, nestedCall(toolCallId) ? "nested" : "model"),
 				display: false,
 			},
 			{ triggerTurn: false },
 		);
+	}
+	/** The session's own model reads the request, the draft and the inventory without this conversation. */
+	function readDraft(
+		ctx: ExtensionContext,
+		draft: string,
+		inventory: string,
+		signal: AbortSignal | undefined,
+	): Promise<Reading> {
+		const model = ctx.model;
+		const messages = ctx.sessionManager
+			.getBranch()
+			.flatMap((entry) => (entry.type === "message" && entry.message.role === "user" ? [entry.message] : []));
+		return freshReading(
+			model === undefined
+				? "the session has no selected model"
+				: (context, streamOptions) => ctx.modelRegistry.streamSimple(model, context, streamOptions).result(),
+			{ request: requestText(messages), draft, inventory },
+			signal,
+		);
+	}
+	/** The assessment task follows the result; cancellation before it is sent leaves none. */
+	async function assessDraft(
+		ctx: ExtensionContext,
+		toolCallId: string,
+		draft: string,
+		inventory: string,
+		signal: AbortSignal | undefined,
+	): Promise<void> {
+		if (signal?.aborted) return;
+		const reading = await readDraft(ctx, draft, inventory, signal);
+		if (!signal?.aborted) sendAssessment(toolCallId, draft, reading);
 	}
 	pi.on("tool_call", async (event, ctx) => {
 		await observe(event, ctx, "tool_request");
@@ -294,12 +334,9 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		prepareArguments(input) {
 			try {
 				const { source, draft } = splitDraft(input);
+				if (draft !== undefined) return { draft };
 				const { referenceBodyDigest, ...args } = parseAccess(source, catalog);
-				return {
-					...args,
-					...(referenceBodyDigest === undefined ? {} : { referenceBodyDigest }),
-					...(draft === undefined ? {} : { draft }),
-				};
+				return { ...args, ...(referenceBodyDigest === undefined ? {} : { referenceBodyDigest }) };
 			} catch (error) {
 				if (!(error instanceof InputError) && !(error instanceof DraftInputError)) throw error;
 				throw new Error(
@@ -307,7 +344,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 				);
 			}
 		},
-		async execute(id, args: Static<typeof PillarsParameters>, signal) {
+		async execute(id, args: Static<typeof PillarsParameters>, signal, _onUpdate, ctx) {
 			let input: ReturnType<typeof splitDraft>;
 			try {
 				input = splitDraft(args);
@@ -324,7 +361,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			}
 			if (result.schema === "pillars-source-error")
 				return { content: [{ type: "text", text: JSON.stringify(result) }], details: result, isError: true };
-			if (input.draft !== undefined && !signal?.aborted) sendAssessment(id, input.draft, result.resource);
+			if (input.draft !== undefined) await assessDraft(ctx, id, input.draft, result.text, signal);
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 		},
 	});

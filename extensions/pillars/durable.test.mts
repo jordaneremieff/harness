@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { compile, obj } from "@earendil-works/pi-schema";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
-import { draftAssessment, MAX_DRAFT_CHARACTERS } from "./draft.ts";
+import { draftAssessment, MAX_DRAFT_CHARACTERS, READING_SYSTEM_PROMPT, type Reading } from "./draft.ts";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -23,6 +23,34 @@ import { type DurableContributionHost, pillarsDurableContribution } from "./dura
 import { PillarsStore } from "./store.ts";
 
 const ENTRY_SOURCE = fileURLToPath(new URL("./index.ts", import.meta.url));
+const LEAD_TEXT = "Premises:\n- Which observation shows that the change is safe without the check?";
+const LEADS: Reading = { status: "read", leads: LEAD_TEXT };
+
+function plainText(content: unknown): string {
+	if (typeof content === "string") return content;
+	return Array.isArray(content)
+		? content
+				.map((block: { type?: string; text?: string }) => (block.type === "text" ? (block.text ?? "") : ""))
+				.join("")
+		: "";
+}
+
+/** The fresh reading: one request whose leading system message is the reading prompt and holds no conversation. */
+function readingStep(draft: string, request: string) {
+	return (context: { messages: readonly { role: string; content: unknown; toolsAdded?: readonly unknown[] }[] }) => {
+		assert.deepEqual(
+			context.messages.map((message) => message.role),
+			["system", "user"],
+		);
+		assert.equal(plainText(context.messages[0].content), READING_SYSTEM_PROMPT);
+		assert.ok(!context.messages[0].toolsAdded?.length, "the reading offers no tools");
+		const body = plainText(context.messages[1].content);
+		assert.ok(body.includes(`Newest user message:\n\n${request}`), body.slice(0, 400));
+		assert.ok(body.includes(`Draft (agent-authored):\n\n${draft}`));
+		assert.ok(body.includes("Pillars inventory:\n\n# Inventory"));
+		return fauxAssistantMessage(LEAD_TEXT);
+	};
+}
 
 interface Fixture {
 	root: string;
@@ -512,9 +540,10 @@ test("a draft returns one assessment diagnostic beside the unchanged source page
 	const draft = `Ship the change unchecked. ${"The report repeats this claim. ".repeat(300)}`;
 	try {
 		faux.setResponses([
-			fauxAssistantMessage([fauxToolCall("pillars", { resource: "principle-one", draft }, { id: "draft-call" })], {
+			fauxAssistantMessage([fauxToolCall("pillars", { draft }, { id: "draft-call" })], {
 				stopReason: "toolUse",
 			}),
+			readingStep(draft, "Check this plan."),
 			fauxAssistantMessage("Corrected."),
 		]);
 		const settled = await (await root.submit({ type: "input", content: "Check this plan." }, BACKGROUND_CONTEXT)).wait(
@@ -523,10 +552,14 @@ test("a draft returns one assessment diagnostic beside the unchanged source page
 		assert.equal(settled.status, "done");
 		const [result] = toolResults((await root.context(BACKGROUND_CONTEXT)).messages);
 		assert.equal(result.isError, false);
-		assert.equal(JSON.parse(textOf(result).split("<harness>")[0]).schema, "pillars-source");
+		const page = JSON.parse(textOf(result).split("<harness>")[0]);
+		assert.equal(page.schema, "pillars-source");
+		assert.equal(page.resource, "inventory");
 		assert.match(textOf(result), /Pillars extension assessment task/u);
-		assert.ok(textOf(result).includes(draftAssessment(draft, { resource: "principle-one" })));
-		assert.match(textOf(result), /draft argument of your pillars call for "principle-one"/u);
+		assert.ok(textOf(result).includes(draftAssessment(draft, LEADS, "model")));
+		assert.match(textOf(result), /the draft in your pillars call \(/u);
+		assert.ok(textOf(result).includes(LEAD_TEXT));
+		assert.equal(faux.state.callCount, 3, "one turn, one reading, one continuation");
 		assert.match(textOf(result), /beginning "Ship the change unchecked\./u);
 		assert.ok(!textOf(result).includes(draft), "the model-issued call already holds the draft");
 		assert.equal(detailsSchema(result), "pillars-source");
@@ -754,12 +787,14 @@ test("native codemode receives bounded JSON text and rejects source errors while
 	t.after(() => opened.controller.abort());
 	const draft = "e\u0301".repeat(MAX_DRAFT_CHARACTERS);
 	const code = [
-		`const source = await tools.pillars({resource:"principle-one", draft:${JSON.stringify(draft)}});`,
+		`const source = await tools.pillars({draft:${JSON.stringify(draft)}});`,
 		'if (typeof source !== "string") throw new Error("source text contract");',
 		"const page = JSON.parse(source);",
-		'if (page.schema !== "pillars-source" || !page.text.includes("Checked evidence.")) throw new Error("source contract");',
-		'let sourceError; try { await tools.pillars({resource:"governance",offset:1,referenceBodyDigest:"0".repeat(64),draft:"Do not deliver this failed draft."}); } catch(error) { sourceError = JSON.parse(error.message); }',
+		'if (page.schema !== "pillars-source" || page.resource !== "inventory" || !page.text.includes("Principle one")) throw new Error("source contract");',
+		'let sourceError; try { await tools.pillars({resource:"governance",offset:1,referenceBodyDigest:"0".repeat(64)}); } catch(error) { sourceError = JSON.parse(error.message); }',
 		'if (sourceError?.schema !== "pillars-source-error" || sourceError.code !== "source_changed") throw new Error("source error rejection contract");',
+		'let chosen=false; try { await tools.pillars({resource:"principle-one",draft:"Do not deliver this failed draft."}); } catch(error) { chosen=error.message.includes("a draft call takes no other field"); }',
+		'if (!chosen) throw new Error("draft companion contract");',
 		'let rejected=false; try { await tools.pillars({draft:""}); } catch(error) { rejected=error.message.includes("invalid_input"); }',
 		'if (!rejected) throw new Error("invalid input contract");',
 		"const usageText = await tools.pillars_usage({});",
@@ -771,6 +806,7 @@ test("native codemode receives bounded JSON text and rejects source errors while
 	let next: readonly import("@earendil-works/pi-ai").Message[] = [];
 	opened.faux.setResponses([
 		fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
+		readingStep(draft, "Check a draft through code mode."),
 		(context) => {
 			next = context.messages;
 			return fauxAssistantMessage("Corrected.");
@@ -781,36 +817,40 @@ test("native codemode receives bounded JSON text and rejects source errors while
 			await opened.root.submit({ type: "input", content: "Check a draft through code mode." }, BACKGROUND_CONTEXT)
 		).wait(BACKGROUND_CONTEXT);
 		assert.equal(settled.status, "done");
-		assert.equal(opened.faux.state.callCount, 2, "assessment starts no extra turn");
+		assert.equal(opened.faux.state.callCount, 3, "one turn, one reading, and no extra turn for the assessment");
 		const results = toolResults(next);
 		assert.equal(results.length, 1, "nested results stay outside the transcript");
 		assert.equal(results[0].isError, false, textOf(results[0]));
 		assert.match(textOf(results[0]), /source_changed/);
-		const assessments = next.filter((message) => message.role === "user" && message.content === draftAssessment(draft));
+		const assessments = next.filter(
+			(message) => message.role === "user" && message.content === draftAssessment(draft, LEADS, "nested"),
+		);
 		assert.equal(assessments.length, 1);
 		assert.equal(next.at(-1), assessments[0], "assessment follows the parent result");
 		assert.ok(
 			!JSON.stringify(next.filter((message) => message.role === "user")).includes("Do not deliver this failed draft."),
 		);
-		assert.equal(calls.length, 4, "invalid preparation reaches afterTool as a host-written result");
+		assert.equal(calls.length, 5, "invalid preparation reaches afterTool as a host-written result");
 		assert.ok(calls.every((call) => call.parent));
 		const rejected = calls.filter((call) => call.codes.includes("invalid_arguments"));
-		assert.equal(rejected.length, 1);
-		assert.equal(rejected[0].isError, true);
-		assert.equal(rejected[0].structuredOutput, undefined);
+		assert.equal(rejected.length, 2);
+		for (const call of rejected) {
+			assert.equal(call.isError, true);
+			assert.equal(call.structuredOutput, undefined);
+		}
 		for (const call of calls.filter((call) => !call.codes.includes("invalid_arguments"))) {
 			assert.ok(Array.isArray(call.output));
 			const output = call.output as Array<{ type: string; text: string }>;
 			assert.equal(call.structuredOutput, undefined, "the tool adds no program-output contract");
 			assert.equal(typeof JSON.parse(output[0].text).schema, "string");
 		}
-		assert.equal(calls.filter((call) => call.isError).length, 2);
+		assert.equal(calls.filter((call) => call.isError).length, 3);
 		const cells = await storedCells(fixture.store);
 		assert.equal(sumCounter(cells, "bodyVerifiedAtObservation"), 1);
 		assert.equal(sumCounter(cells, "readResults"), 2);
 		assert.deepEqual(opened.reports, []);
 		await opened.harness.waitForIdle(BACKGROUND_CONTEXT);
-		assert.equal(opened.faux.state.callCount, 2);
+		assert.equal(opened.faux.state.callCount, 3);
 	} finally {
 		await opened.harness.close(BACKGROUND_CONTEXT);
 		await opened.closeAll();
@@ -848,10 +888,11 @@ test("native afterTool replacement rejects the nested text result without admitt
 	opened.faux.setResponses([
 		fauxAssistantMessage(
 			fauxToolCall("codemode", {
-				code: 'const result=await tools.pillars({resource:"principle-one",draft:"Do not deliver a replaced result."}); text(result);',
+				code: 'const result=await tools.pillars({draft:"Do not deliver a replaced result."}); text(result);',
 			}),
 			{ stopReason: "toolUse" },
 		),
+		readingStep("Do not deliver a replaced result.", "Use the guarded corpus."),
 		fauxAssistantMessage("Guarded."),
 	]);
 	try {
