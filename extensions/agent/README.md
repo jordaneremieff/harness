@@ -4723,7 +4723,15 @@ and tries again on the next pass. A watcher that closes during a broadcast
 records nothing for it either: the copies that it gave stay recorded with their
 recipients, and the next watcher of the storage gives the rest. One pass reads the endpoint directory once
 for all its parked rows, and a candidate that refuses a connection is not
-tried again for the other rows of that pass. Other owners of the same answer
+tried again for the other rows of that pass. Limit: `fallbackBroadcast` is an
+optional field of the stored row, and a host of an earlier source release does
+not read it. Such a host runs when a Pi process of that release starts the
+storage. Its watcher then offers a parked row again to each registered primary
+that holds no copy, as every host did before the field existed, and it keeps
+the field on the row, so a current host skips the row again afterwards. This
+ends once every Pi process of the earlier release has restarted. No stored
+version marks the field: a version change would make each earlier host refuse
+the whole storage, which costs more than one more informational copy. Other owners of the same answer
 receive their normal delivery rather than a fallback substitute. A partial scan still attempts the discovered recipients and reports its incomplete coverage.
 Fallback discovery never makes an unavailable owner active.
 
