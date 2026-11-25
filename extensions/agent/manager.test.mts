@@ -1803,6 +1803,24 @@ it("records a roster listener that throws on a catalogue notice and keeps the no
 	assert.ok(overview.failures.some(({ error }) => error.includes("roster callback failed")));
 });
 
+it("a roster listener that throws stops neither the listeners after it nor the change that tells them", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory }));
+	t.after(() => manager.close());
+	await manager.registerPrimary("primary", fakePrimary(new AbortController().signal).client);
+	let later = 0;
+	t.after(
+		manager.subscribeRoster(() => {
+			throw new Error("roster callback failed");
+		}),
+	);
+	t.after(manager.subscribeRoster(() => void later++));
+	assert.doesNotThrow(() => manager.setPrimaryWorkRefs("primary", []), "the change is applied before its listeners");
+	assert.equal(later, 1, "the listener after the failed one runs");
+	const overview = (await manager.status()) as { failures: Array<{ error: string }> };
+	assert.ok(overview.failures.some(({ error }) => error.includes("roster callback failed")));
+});
+
 it("opens a roster subscription when catalog observation cannot start and records the failure", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root));

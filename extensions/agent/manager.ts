@@ -483,12 +483,7 @@ export class AgentManager {
 	}
 	private catalogChanged(change: CatalogChange): void {
 		this.inventory.invalidate(change);
-		try {
-			this.rosterChanged();
-		} catch (error) {
-			// A notice arrives from a socket; a roster listener that throws must not end the process.
-			this.failures.set("footer", errorText(error));
-		}
+		this.rosterChanged();
 		this.scheduleFooterProjection();
 		// A changed recipient can wake a parked delivery in any source storage.
 		this.recoverCatalogueChanges();
@@ -554,8 +549,18 @@ export class AgentManager {
 			this.observationOwnerEnded();
 		};
 	}
+	/**
+	 * Tell every roster listener. A listener that throws is recorded: it stops neither the listeners after it nor
+	 * the change that tells them, which is already applied.
+	 */
 	private rosterChanged(): void {
-		for (const listener of this.rosterListeners) listener();
+		for (const listener of this.rosterListeners) {
+			try {
+				listener();
+			} catch (error) {
+				this.failures.set("footer", errorText(error));
+			}
+		}
 	}
 	readonly catalog: AgentCatalog;
 	private readonly locations: PrimaryLocationResolver;
@@ -2997,11 +3002,7 @@ export class AgentManager {
 		} catch (error) {
 			this.failures.set("footer", errorText(error));
 		}
-		try {
-			this.rosterChanged();
-		} catch (error) {
-			this.failures.set("footer", errorText(error));
-		}
+		this.rosterChanged();
 	}
 
 	/** Exact successful task admissions, for presentation-side relationship joins only. */
