@@ -443,7 +443,7 @@ test("an oversized word comparison yields plain versions, not guessed highlights
 	assert.equal(logic.diffWords(`${prefix}one`, `${prefix}two`)?.[0].text, prefix);
 });
 
-test("the ask card floats beside its anchor inside the pane and never covers it", () => {
+test("the ask card stays beside its anchor when a side has room for the controls", () => {
 	const pane = { width: 452, height: 880, top: 46 };
 	const card = { width: 428, height: 300 };
 	const overlaps = (p: { top: number; maxHeight: number }, height: number, a: { top: number; bottom: number }) =>
@@ -471,6 +471,18 @@ test("the ask card floats beside its anchor inside the pane and never covers it"
 	assert.equal(wide.left, 800 - 360 - 12);
 	const offscreen = logic.cardPlacement({ top: -400, bottom: -360, left: 60 }, card, pane);
 	assert.ok(offscreen.top >= pane.top && offscreen.top + card.height <= pane.height - 12);
+});
+
+test("the ask card covers its anchor rather than crowding out its controls", () => {
+	const pane = { width: 420, height: 254, top: 46 };
+	const placement = logic.cardPlacement(
+		{ top: 90, bottom: 103, left: 12 },
+		{ width: 396, height: 300, minHeight: 155 },
+		pane,
+	);
+	assert.equal(placement.side, "over");
+	assert.equal(placement.top, pane.top + 6);
+	assert.ok(placement.maxHeight >= 155 && placement.top + placement.maxHeight <= pane.height - 12);
 });
 
 const target = (partial: Partial<ReaderMenuTarget>): ReaderMenuTarget => ({

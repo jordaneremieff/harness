@@ -195,9 +195,11 @@ when known, not a highlight on matching words elsewhere. A batch sends the rende
 for a passage it cannot locate. Open review items and pending
 comments can keep marks even after the person dismisses their cards.
 A plain click on a mark in Reading, or the mark's item in the page menu, opens its card
-again; where marks overlap, each further click opens the next card.
-A send that does not leave the page always says why, and the text stays where the person wrote it:
-under the composer of the open card, in the batch list when it is open, and otherwise in a notice.
+again; where marks overlap, each further click opens the next card. In a short pane the
+card scrolls its contents without scrolling the composer out of view. If a batch is
+pending, the card stays above the tray so both Send buttons remain accessible.
+A send that does not leave the page always says why. The reason appears in the open card,
+in the batch list when it is open, or in a notice. The text stays where the person wrote it.
 The page names the reason, such as an earlier message that is still on its way, a batch without
 a comment on a passage, a document that has not finished showing, or a batch that changed while the
 reader saved it. A message that never left the page returns to its composer. The Send button of a

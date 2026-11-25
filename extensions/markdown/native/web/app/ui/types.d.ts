@@ -199,7 +199,7 @@ declare global {
 		): { left: number; top: number; side: "above" | "below" };
 		cardPlacement(
 			anchor: { top: number; bottom: number; left: number },
-			card: { width: number; height: number },
+			card: { width: number; height: number; minHeight?: number },
 			pane: { width: number; height: number; top: number },
 		): { left: number; top: number; maxHeight: number; side: "below" | "above" | "over" };
 		zoomStep(current: number, steps: readonly number[], direction: number | null): number;

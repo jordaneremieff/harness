@@ -137,17 +137,16 @@
 		if (direction > 0) return valid.find((step) => step > current) ?? valid.at(-1) ?? 1;
 		return valid.findLast((step) => step < current) ?? valid[0] ?? 1;
 	}
-	// Places the ask card beside its anchor inside the pane without covering the anchor: below it
-	// when the card fits, otherwise above it, otherwise on the larger side with a capped height.
-	// Coordinates are relative to the pane; top is the bottom edge of the bar.
+	// Prefer a side that fits the card. Cover the anchor if neither side has room for the controls.
+	// The pane bounds exclude the bar and any space reserved for the batch tray.
 	function cardPlacement(
 		anchor: { top: number; bottom: number; left: number },
-		card: { width: number; height: number },
+		card: { width: number; height: number; minHeight?: number },
 		pane: { width: number; height: number; top: number },
 	) {
 		const gap = 10,
 			margin = 12,
-			minHeight = 120,
+			minHeight = Math.max(120, card.minHeight ?? 0),
 			low = pane.top + 6,
 			high = pane.height - margin;
 		const top = Math.min(Math.max(anchor.top, low), high),

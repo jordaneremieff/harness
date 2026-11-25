@@ -299,8 +299,9 @@
     position: absolute; z-index: 21; width: min(360px, calc(100cqw - 24px));
     background: var(--raised); border-radius: var(--r-l);
     box-shadow: var(--shadow-l), var(--edge);
-    padding: var(--sp-3); display: none; flex-direction: column; gap: var(--sp-2);
+    padding: var(--sp-3); display: none; flex-direction: column; gap: var(--sp-2); overflow: clip;
     &[data-open] { display: flex; }
+    > :is(.ask-head, .composer) { flex: none; }
     opacity: 1; translate: 0 0; transition: opacity .14s, translate .16s var(--ease);
     @starting-style { opacity: 0; translate: 0 6px; }
   }
@@ -577,19 +578,29 @@
   .back { display:flex; align-items:center; gap:5px; height:var(--ctl); padding:0 12px; border-radius:var(--r); background:var(--raised); box-shadow:var(--shadow),var(--edge); color:var(--ink-2); font:500 12.5px/1.2 var(--font); }
   .back:hover { color:var(--heading); background:color-mix(in oklch,var(--hover) 50%,var(--raised)); }
   .back .i { width:14px; height:14px; }
-  .ask-card { max-height:calc(100cqh - 70px); overflow:auto; }
+  .ask-body {
+    display:flex; flex-direction:column; gap:inherit; min-height:0; overflow:auto; overscroll-behavior:contain;
+    > :not(.ask-messages) { flex:none; }
+  }
   /* A card with an answer widens toward a reading measure, so Markdown answers do not wrap at every
      few words. */
   .ask-card:has(.reply) { width:min(520px, calc(100cqw - 24px)); }
   .ask-status { display:flex;gap:7px;align-items:center;font:550 12px/1.4 var(--font);color:var(--agent-text); }
   .ask-status .i { width:15px;height:15px; }
   .ask-status.fail { color:var(--err); }
-  .ask-messages { display:grid;gap:10px;max-height:min(440px, 48cqh);overflow:auto;overscroll-behavior:contain; }
+  .ask-messages { display:grid;gap:10px;min-height:36px;max-height:min(440px, 48cqh);overflow:auto;overscroll-behavior:contain; }
   .ask-question { font:13.5px/1.45 var(--font);white-space:pre-wrap; }
   .ask-question .from { display:block;font-size:11.5px;font-weight:600;color:var(--ink-3); }
   .ask-actions { display:flex; gap:16px; }
   .send-failure { margin:0;color:var(--err);font:12.5px/1.45 var(--font); }
   .follow-up textarea { min-height:2lh; }
+  @container app (height <= 400px) {
+    .ask-card { padding:8px; gap:4px; }
+    .ask-card .quote { padding-block:4px; }
+    .ask-card .quote span { -webkit-line-clamp:1; }
+    .ask-card .composer textarea { min-height:calc(2lh + 6px); max-height:calc(2lh + 6px); padding-top:6px; }
+    .ask-card .composer .foot { gap:4px 8px; padding-block:4px; }
+  }
   #b-ask { position:relative; }
   #b-ask .dot { position:absolute;right:4px;top:4px;width:5px;height:5px;border-radius:50%;background:var(--agent); }
   .change-count { font:600 10px/1 var(--font);color:var(--agent-text); }

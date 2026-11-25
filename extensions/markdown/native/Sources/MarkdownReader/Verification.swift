@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry", "wide-code-and-tables", "layout-fits-every-pane-size",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-batch-sends-one-prompt", "ask-marks-reopen-cards-and-command-d", "text-fields-keep-editing-keys", "ask-from-open-block-and-let-it", "ask-sends-from-stored-live-pane", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-card-and-tray-fit-together", "ask-batch-sends-one-prompt", "ask-marks-reopen-cards-and-command-d", "text-fields-keep-editing-keys", "ask-from-open-block-and-let-it", "ask-sends-from-stored-live-pane", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "code-syntax-and-rendered-markdown", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -79,6 +79,7 @@ struct Verification {
                 await run("escape-layers-notices-and-focus") { await context.escapeLayers(keep: &keep) }
                 await run("agent-hold-change-panel-find-and-code") { await context.agentPanels(keep: &keep) }
                 await run("ask-card-keeps-newest-exchange-in-view") { await context.askCardLatest(keep: &keep) }
+                await run("ask-card-and-tray-fit-together") { await context.askCardAndTray(keep: &keep) }
                 await run("ask-batch-sends-one-prompt") { await context.askBatch(keep: &keep) }
                 await run("ask-marks-reopen-cards-and-command-d") { await context.askMarks(keep: &keep) }
                 await run("text-fields-keep-editing-keys") { await context.textFieldKeys(keep: &keep) }
@@ -968,6 +969,101 @@ struct Context {
             await model.close()
             return .init(name: name, pass: opened && first && second && prompts.count == 2 && geometry == "visible",
                          detail: "card open \(opened); question sent \(first); follow-up sent \(second); prompts \(prompts.count); newest answer \(geometry)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    func askCardAndTray(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "ask-card-and-tray-fit-together"
+        do {
+            let file = workspace.appendingPathComponent("ask-layout.md")
+            try Data("# Ask layout\n\nA passage with a pending comment.\n".utf8).write(to: file)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: ReadingStateStore(directory: nil))
+            var prompts: [(request: String, thread: String)] = []
+            model.page.onMessage = { message in CheckRunner.answerExportReply(message) { prompts.append($0) } }
+            let window = CheckRunner.offscreenWindow(page: model.page, width: 898)
+            keep.append(window)
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            let answer = (1...50).map { "Paragraph \($0) of an answer long enough to require scrolling." }.joined(separator: "\n\n")
+            try await CheckRunner.showAnswer(answer, model: model) { prompts.first }
+            let added = await js(model, """
+            document.querySelector('.ask-card .ask-head button').click();
+            const passage = document.querySelector('[data-role="document"] p');
+            const range = document.createRange(); range.selectNodeContents(passage);
+            getSelection().removeAllRanges(); getSelection().addRange(range);
+            document.dispatchEvent(new Event('selectionchange'));
+            passage.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+            await new Promise(r => setTimeout(r, 60));
+            const ask = [...document.querySelectorAll('[data-role="selection-strip"] button')].find(b => b.textContent.trim() === 'Ask');
+            if (!ask) return false;
+            ask.click();
+            const card = document.querySelector('.ask-card[data-open]');
+            const field = card?.querySelector('textarea');
+            if (!field) return false;
+            field.value = 'Clarify this passage.';
+            field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: field.value }));
+            card.querySelector('.ask-secondary')?.click();
+            return !document.getElementById('ask-batch-tray').hidden;
+            """) as? Bool == true
+            guard added else { throw CheckRunner.CheckError.unavailable("The pending comment did not reach the tray.") }
+            let reopened = await js(model, """
+            document.getElementById('b-ask').click();
+            const item = [...document.querySelectorAll('#activity button')].find(b => b.textContent.includes('Summarise the document.'));
+            item?.click();
+            return !!document.querySelector('.ask-card[data-open] .reply');
+            """) as? Bool == true
+            guard reopened else { throw CheckRunner.CheckError.unavailable("The answered card did not reopen.") }
+            var findings: [String] = []
+            let sizes = Self.layoutSizes.reversed().filter { $0 != (320, 260) } + [(898, 1000), (600, 400), (420, 300), (320, 260)]
+            for (width, height) in sizes {
+                window.setContentSize(NSSize(width: width, height: height))
+                window.contentView?.layoutSubtreeIfNeeded()
+                _ = await js(model, CheckRunner.settleFrame)
+                let failures = await js(model, """
+                if (innerWidth !== width || innerHeight !== height) return [`viewport ${innerWidth}×${innerHeight}`];
+                const card = document.querySelector('.ask-card[data-open]');
+                const log = card?.querySelector('.ask-messages');
+                if (!log?.querySelector('.reply') || log.scrollHeight <= log.clientHeight) return ['no long answer'];
+                const field = card.querySelector('textarea');
+                if (!field) return ['no composer'];
+                field.value = 'Follow-up question.';
+                field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: field.value }));
+                const tray = document.getElementById('ask-batch-tray');
+                const controls = [
+                    ['composer', card.querySelector('.composer'), card], ['field', field, card],
+                    ['card Send', card.querySelector('.send'), card],
+                    ['card Close', card.querySelector('.ask-head button'), card],
+                    ['tray Open', document.getElementById('ask-batch-open'), tray],
+                    ['tray Send', document.getElementById('ask-batch-send'), tray],
+                ];
+                return controls.flatMap(([label, node, container]) => {
+                    if (!node || node.disabled) return [`${label} unavailable`];
+                    const r = node.getBoundingClientRect(), c = container.getBoundingClientRect();
+                    const issues = [];
+                    if (!r.width || !r.height || r.left < Math.max(0, c.left) || r.top < Math.max(0, c.top)
+                        || r.right > Math.min(innerWidth, c.right) || r.bottom > Math.min(innerHeight, c.bottom))
+                        issues.push(`${label} clipped`);
+                    const target = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+                    if (!node.contains(target)) issues.push(`${label} misses its centre`);
+                    return issues;
+                });
+                """, ["width": width, "height": height]) as? [String] ?? ["probe did not run"]
+                if !failures.isEmpty { findings.append("\(Int(width))×\(Int(height)): \(failures.joined(separator: ", "))") }
+            }
+            let hitSend = await js(model, """
+            const button = document.getElementById('ask-batch-send');
+            const r = button.getBoundingClientRect();
+            const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest('button');
+            if (hit !== button) return false;
+            hit.click();
+            return true;
+            """) as? Bool == true
+            let sent = hitSend ? await wait(seconds: 3) { prompts.count == 2 } : false
+            if !sent { findings.append("The tray Send centre did not submit a batch prompt.") }
+            await model.close()
+            return .init(name: name, pass: findings.isEmpty, detail: findings.isEmpty
+                         ? "Card and tray controls received centre hits across \(sizes.count) sizes; the smallest tray sent a batch prompt."
+                         : findings.joined(separator: "; "))
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 

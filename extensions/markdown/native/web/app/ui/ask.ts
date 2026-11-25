@@ -324,23 +324,34 @@
 			const anchor = rangeFor(threadRange());
 			return anchor?.getBoundingClientRect() ?? get("#b-ask").getBoundingClientRect();
 		}
-		// The card floats beside its passage at every width and follows it while the page scrolls;
-		// opening it, redraws and agent changes never scroll the page.
 		function position() {
 			if (!session.visible) return;
+			const body = card.querySelector<HTMLElement>(".ask-body");
+			if (!body) return;
 			const box = app.getBoundingClientRect(),
-				bar = get(".bar").getBoundingClientRect();
+				bar = get(".bar").getBoundingClientRect(),
+				log = body.querySelector<HTMLElement>(".ask-messages"),
+				bodyScroll = body.scrollTop,
+				logScroll = log?.scrollTop ?? 0;
 			const rect = cardAnchorRect();
+			// Measure before the placement cap shrinks the body. Restore its scroll offsets after layout.
 			card.style.maxHeight = "";
+			const height = card.offsetHeight;
 			const place = api.uiLogic.cardPlacement(
 				{ top: rect.top - box.top, bottom: rect.bottom - box.top, left: rect.left - box.left },
-				{ width: card.offsetWidth, height: card.scrollHeight },
-				{ width: box.width, height: box.height, top: bar.bottom - box.top },
+				{ width: card.offsetWidth, height, minHeight: height - Math.max(0, body.offsetHeight - 64) },
+				{
+					width: box.width,
+					height: tray.hidden ? box.height : tray.getBoundingClientRect().top - box.top,
+					top: bar.bottom - box.top,
+				},
 			);
 			card.style.maxHeight = `${place.maxHeight}px`;
 			card.style.left = `${place.left}px`;
 			card.style.top = `${place.top}px`;
 			card.dataset.side = place.side;
+			body.scrollTop = bodyScroll;
+			if (log) log.scrollTop = logScroll;
 		}
 		function passageRanges(items: ReaderComment[]) {
 			return items.flatMap((item) => {
@@ -1358,10 +1369,10 @@
 			}
 			return log;
 		}
-		function deliveryMessage(message: ReaderAskMessage) {
+		function deliveryMessage(body: HTMLElement, message: ReaderAskMessage) {
 			const batch = retryBatch.get(message);
 			if (message.state === "failed" && !batch)
-				card.append(
+				body.append(
 					el(
 						"p",
 						{ class: "send-failure" },
@@ -1370,7 +1381,7 @@
 					action("Retry", () => void sendMessage(message)),
 				);
 			if (message.state !== "unknown") return;
-			card.append(
+			body.append(
 				el(
 					"p",
 					{ class: "send-failure" },
@@ -1379,17 +1390,17 @@
 						: "Delivery is not confirmed. Your text is kept. The reader will not send it twice.",
 				),
 			);
-			if (message.retryable) card.append(action("Retry", () => void (batch ? batch() : sendMessage(message))));
+			if (message.retryable) body.append(action("Retry", () => void (batch ? batch() : sendMessage(message))));
 		}
-		function drawConversation(thread: ReaderThread) {
+		function drawConversation(body: HTMLElement, thread: ReaderThread) {
 			const message = activeMessage(thread);
 			if (!message) return;
 			const ops = operations(thread),
 				changeCount = ops.reduce((n, op) => n + op.edits.length, 0),
 				latest = ops.at(-1);
-			card.append(drawStatus(message, changeCount), drawMessages(thread));
+			body.append(drawStatus(message, changeCount), drawMessages(thread));
 			if (latest)
-				card.append(
+				body.append(
 					el(
 						"div",
 						{ class: "ask-actions" },
@@ -1397,7 +1408,7 @@
 						action(undoLabel(latest, ops.length > 1), () => undo(latest.operationId)),
 					),
 				);
-			deliveryMessage(message);
+			deliveryMessage(body, message);
 		}
 		function focusedComposer() {
 			const field = document.activeElement;
@@ -1411,10 +1422,8 @@
 			const latest = `${thread.threadId}:${thread.messages.length}:${message?.state}:${message?.detail?.length ?? 0}`;
 			if (latest === shownLatest) return;
 			shownLatest = latest;
-			// The message list scrolls on its own inside the card; both end at the newest exchange.
 			const messages = card.querySelector<HTMLElement>(".ask-messages");
 			if (messages) showNewest(messages);
-			card.scrollTop = card.scrollHeight;
 		}
 		// The newest exchange ends the list. An answer taller than the list shows from its start, so it
 		// reads from the top.
@@ -1425,9 +1434,9 @@
 				return;
 			log.scrollTop += last.getBoundingClientRect().top - log.getBoundingClientRect().top;
 		}
-		function drawQuote(thread: ReaderThread) {
+		function drawQuote(body: HTMLElement, thread: ReaderThread) {
 			if (!thread.comments)
-				card.append(
+				body.append(
 					el(
 						"div",
 						{ class: "quote" },
@@ -1435,21 +1444,35 @@
 					),
 				);
 		}
-		function drawComposer(thread: ReaderThread) {
+		function drawCardBody(thread: ReaderThread) {
+			const body = el("div", { class: "ask-body" });
+			drawQuote(body, thread);
+			drawConversation(body, thread);
 			if (!thread.comments)
-				card.append(
+				body.append(
 					thread.pendingComment
 						? action("Close pending comment", () => park(thread.pendingComment))
 						: el("div", { class: "single-comment-state" }, stateControl(thread, 0)),
 				);
-			if (thread.messages.length || !closed(thread, 0)) card.append(composer(thread, !!activeMessage(thread)));
-			else card.append(el("p", { class: "review-text" }, thread.draft));
+			if (!thread.messages.length && closed(thread, 0)) body.append(el("p", { class: "review-text" }, thread.draft));
 			if (refusal?.thread === thread)
-				card.append(el("p", { class: "send-failure ask-refused", role: "alert" }, refusal.text));
+				body.append(el("p", { class: "send-failure ask-refused", role: "alert" }, refusal.text));
+			return body;
 		}
 		function cardIsComposing() {
 			const target = controller.compositionTarget;
 			return target instanceof Node && card.contains(target);
+		}
+		function renderCard(thread: ReaderThread) {
+			const message = activeMessage(thread);
+			const body = drawCardBody(thread);
+			card.dataset.state = message?.state ?? "draft";
+			card.setAttribute("data-open", "");
+			card.replaceChildren(drawHead(thread), body);
+			if (message || !closed(thread, 0)) card.append(composer(thread, !!message));
+			position();
+			revealLatest(thread);
+			if (refusal?.thread === thread) body.scrollTop = body.scrollHeight;
 		}
 		function draw() {
 			if (!session.current || !session.visible) {
@@ -1458,17 +1481,8 @@
 				return;
 			}
 			if (cardIsComposing()) return;
-			const thread = session.current,
-				focused = focusedComposer();
-			card.replaceChildren();
-			card.dataset.state = activeMessage(thread)?.state ?? "draft";
-			card.setAttribute("data-open", "");
-			card.append(drawHead(thread));
-			drawQuote(thread);
-			drawConversation(thread);
-			drawComposer(thread);
-			revealLatest(thread);
-			position();
+			const focused = focusedComposer();
+			renderCard(session.current);
 			paintPassage();
 			if (focused) {
 				const field = card.querySelector("textarea");
@@ -2112,6 +2126,7 @@
 		const observer = new ResizeObserver(position);
 		observer.observe(app);
 		observer.observe(card);
+		observer.observe(tray);
 		ask.refresh();
 		return ask;
 	};
