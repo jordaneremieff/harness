@@ -93,6 +93,12 @@ The tool and transcript cards follow the [emission grammar](../../docs/conventio
 
 ## Read the corpus
 
+The tool's description and prompt guidance name when to consult as moments in
+the agent's own work, while a judgment can still change. The agent settles on
+an approach, rules an option out, reframes what was asked, builds or accepts a
+set of options, or gets ready to recommend. Routine execution needs no
+consultation, and nothing runs Pillars on every turn.
+
 Agents use `pillars` with no arguments to read the inventory and discover
 resource identifiers. Read `resource:"governance"` for the consultation
 procedure, then read the relevant full entries. The tool returns current source
@@ -271,19 +277,16 @@ that holds the conversation's first and newest user messages, clipped to 3,000
 and 6,000 code points, the draft, and the inventory page. The request offers no
 tools and carries nothing else from the conversation.
 
-The reading returns at most eight one-line leads under four headings:
-
-- premises that the draft relies on to admit, exclude or rank an option, above
-  all claims that something cannot be done, does not exist or does not work;
-- routes that the request names or implies, or that the draft mentions, which
-  the draft sets aside, demotes or narrows;
-- places where the draft answers a narrower question than the request asks;
-- identifiers of inventory entries whose recognition matches the request and
-  the draft.
-
-The extension keeps at most 4,000 code points of the answer. Leads are
-questions for the author, not findings: the reader has no tools and cannot
-verify them. The request uses low reasoning, at most 4,096 output tokens and a
+The reader treats the draft's statements as claims, because it cannot see what
+the author verified. Each inventory line pairs a recognition with a move; the
+reader names the entries whose recognition the draft shows and whose move the
+draft does not visibly make, only where that move could change what the draft
+concludes or recommends. It names at most six, one line each, with the entry
+identifier and what in the draft calls for the move, or answers "none". The
+corpus supplies what each moment needs; the reading prompt names no entry and
+no failure class. The extension keeps at most 4,000 code points of the answer.
+The lines are leads and not findings, because the reader has no tools and
+cannot verify them. The request uses low reasoning, at most 4,096 output tokens and a
 90-second limit, and the tool call waits for it. Cancellation of the call
 cancels the reading. A missing model, a provider failure, a timeout or an empty
 answer does not fail the call; the assessment task states that the reading was
@@ -296,21 +299,11 @@ After the reading, the extension sends a native assessment task for the
 ordinary model continuation. Pi delivers that task after the tool results in
 the current batch. The inventory JSON, digest and error contract remain
 unchanged; the task is a separate message. It carries the leads, or the reason
-that the reading was unavailable, and asks the agent to:
-
-- select the applicable Pillars from the inventory: the entries that the leads
-  name and the entries whose recognition matches the request and the draft's
-  claims, not only the entries read while the draft was written;
-- test the premises that carry the decision before its wording: each lead,
-  each claim that something cannot be done or does not exist, each route that
-  the request named and the draft sets aside, and any narrowing of the
-  request's question, against evidence from the layer that defines it and
-  across the claim's scope;
-- verify a premise that decides the proposal when it can, or narrow the claim
-  and name the check that would settle it, and develop a route that the request
-  named to its strongest form before comparing it.
-
-It applies the same
+that the reading was unavailable. It asks the agent to take the entries that
+the reading names and any other entries whose recognition matches, from the
+whole inventory and not only those read while the draft was written. A lead
+that evidence already in the agent's context settles is skipped; the agent
+reads each remaining body that is not in context and applies it to the draft. It applies the same
 [correction and authority boundaries](#check-work-derive-candidates-or-review-guidance)
 as `/pillars check`. The task names no corpus entry, requests no separate
 verdict or doctrine recital unless the operator asks for one, and labels the

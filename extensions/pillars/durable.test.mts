@@ -23,7 +23,7 @@ import { type DurableContributionHost, pillarsDurableContribution } from "./dura
 import { PillarsStore } from "./store.ts";
 
 const ENTRY_SOURCE = fileURLToPath(new URL("./index.ts", import.meta.url));
-const LEAD_TEXT = "Premises:\n- Which observation shows that the change is safe without the check?";
+const LEAD_TEXT = "heuristic-proof-burden: the draft ships the change without the check it names.";
 const LEADS: Reading = { status: "read", leads: LEAD_TEXT };
 
 function plainText(content: unknown): string {
@@ -425,7 +425,7 @@ test("a model-issued call reaches each tool and both declare safe replay", async
 			(message) => message.role === "system" && typeof message.sections?.pillars === "string",
 		);
 		assert.ok(system && system.role === "system");
-		assert.match(system.sections?.pillars ?? "", /Call pillars at judgment moments/u);
+		assert.match(system.sections?.pillars ?? "", /Reach for pillars when you notice a judgment forming/u);
 		assert.equal(
 			results.some((result) => textOf(result).includes("<harness>")),
 			false,

@@ -31,7 +31,7 @@ const ai: typeof import("@earendil-works/pi-ai") = await import(
 );
 const entry = fileURLToPath(new URL("./index.ts", import.meta.url));
 const proposal = "A concrete proposed answer with a questionable qualification.";
-const LEADS = "Premises:\n- Which observation establishes the qualification across its whole scope?";
+const LEADS = "principle-example: the draft qualifies its answer without the request's evidence.";
 const read: Reading = { status: "read", leads: LEADS };
 
 function text(message: { content: unknown }): string {

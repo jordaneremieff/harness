@@ -18,7 +18,15 @@ import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ToolCall } from "@earendil-works/pi-ai";
 import { int, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
-import { ACCESS_DESCRIPTION, access, type AccessPage, parseAccess } from "./access.ts";
+import {
+	ACCESS_DESCRIPTION,
+	access,
+	type AccessPage,
+	CONSULT_GUIDANCE,
+	GOVERNANCE_GUIDANCE,
+	parseAccess,
+	PROMPT_SNIPPET,
+} from "./access.ts";
 import { browserEntries } from "./inventory.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import { readPanelRequest, type PillarsPanelAnswer } from "./panel-protocol.ts";
@@ -554,12 +562,7 @@ export function pillarsDurableContribution(
 				],
 				sections: [
 					section("pillars", () =>
-						[
-							"Read Pillars and assess an agent-authored draft before delivery.",
-							"Call pillars at judgment moments: design or architecture decisions, trade-offs, option menus, verification depth, information placement, and prose tells.",
-							'Read resource:"governance" before applying any corpus entry.',
-							DRAFT_GUIDANCE,
-						].join("\n"),
+						[`${PROMPT_SNIPPET}.`, CONSULT_GUIDANCE, GOVERNANCE_GUIDANCE, DRAFT_GUIDANCE].join("\n"),
 					),
 				],
 				hooks: [

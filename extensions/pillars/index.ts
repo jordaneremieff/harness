@@ -5,7 +5,14 @@ import { publishSettings, readSettings, type ReadOptions } from "./settings.ts";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import { int, obj, opt, str, type Schema, type Static } from "@earendil-works/pi-schema";
-import { ACCESS_DESCRIPTION, access, parseAccess } from "./access.ts";
+import {
+	ACCESS_DESCRIPTION,
+	access,
+	CONSULT_GUIDANCE,
+	GOVERNANCE_GUIDANCE,
+	parseAccess,
+	PROMPT_SNIPPET,
+} from "./access.ts";
 import type { Frame } from "./frame.ts";
 import { browserEntries } from "./inventory.ts";
 import type { PillarsViewState } from "./operator-view.ts";
@@ -323,12 +330,8 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		name: "pillars",
 		label: "Pillars",
 		description: `${ACCESS_DESCRIPTION} ${DRAFT_GUIDANCE}`,
-		promptSnippet: "Read Pillars and assess an agent-authored draft before delivery",
-		promptGuidelines: [
-			"Call pillars at judgment moments: design or architecture decisions, trade-offs, option menus, verification depth, information placement, and prose tells.",
-			'Read resource:"governance" before applying any corpus entry.',
-			DRAFT_GUIDANCE,
-		],
+		promptSnippet: PROMPT_SNIPPET,
+		promptGuidelines: [CONSULT_GUIDANCE, GOVERNANCE_GUIDANCE, DRAFT_GUIDANCE],
 		parameters: PillarsParameters,
 		...displayRecords.get("pillars"),
 		prepareArguments(input) {
