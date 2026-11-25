@@ -151,7 +151,6 @@ export type FinalReportRead = Static<typeof FinalReportReadSchema>;
 const ReportDeliverySchema = union([
 	lit("active"),
 	lit("parked"),
-	lit("fallback"),
 	lit("terminal"),
 	lit("delivered"),
 	lit("absent"),

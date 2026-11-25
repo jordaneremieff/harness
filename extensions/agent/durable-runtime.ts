@@ -57,13 +57,7 @@ import { stopForeignReferences } from "./run-control.ts";
 import { createDurableServices, type DurableServices, type CreateDurableServicesOptions } from "./durable-services.ts";
 import { publishAgentControlDispatch, type AgentControlDispatch } from "./durable-agents.ts";
 import { projectConversationIntents } from "./durable-controls.ts";
-import {
-	DeliveryArchiveDoc,
-	DeliveryStoreDoc,
-	deliveryPendingCount,
-	migrateDeliveryStore,
-	pendingDeliveryPage,
-} from "./delivery-store.ts";
+import { deliveryPendingCount, migrateDeliveryStore, pendingDeliveryPage } from "./delivery-store.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import type { ModelChoicesSchema } from "./observation-schema.ts";
 import type { Static } from "@earendil-works/pi-schema";
@@ -74,10 +68,8 @@ import {
 	type DurableDelivery,
 	type NativeTargetFailure,
 } from "./durable-delivery.ts";
-import { writeDeliveryWake } from "./delivery-wake.ts";
 import { RecipientHintWriter, recipientStorage } from "./recipient-hints.ts";
-import type { ColdDeliveryResult, ColdIndexResult } from "./cold-delivery.ts";
-import type { AgentDeliveryState } from "./durable-controls.ts";
+import type { ColdDeliveryResult } from "./cold-delivery.ts";
 import { AgentTimerDoc } from "./durable-timers.ts";
 import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 
@@ -217,23 +209,6 @@ function addDemand(demand: Map<string, boolean>, owner: string, source: string, 
 	demand.set(recipient, demand.get(recipient) === true || execution);
 }
 
-function archiveDemand(
-	demand: Map<string, boolean>,
-	archive: AgentDeliveryState | undefined,
-	source: string,
-	working: boolean,
-): void {
-	if (archive === undefined) return;
-	for (const intent of archive.intents)
-		if (
-			intent.delivery?.state !== "terminal" &&
-			(intent.submissionId === null || archive.receipts[String(intent.submissionId)] === undefined)
-		)
-			addDemand(demand, intent.ownerId, source, working);
-	for (const row of [...Object.values(archive.receipts), ...archive.reports])
-		if (!row.acknowledged && row.delivery?.state !== "terminal") addDemand(demand, row.ownerId, source, false);
-}
-
 /** Owners of waiting timers: each holds unfinished work for its owner until the timer fires and settles. */
 async function timerDemand(
 	harness: Pick<Harness, "snapshot">,
@@ -258,11 +233,6 @@ async function retainedDemand(
 	context: Context,
 ): Promise<Map<string, boolean>> {
 	const demand = working ? await timerDemand(harness, source, context) : new Map<string, boolean>();
-	// A store that an earlier release left unmigrated keeps every row in its archive document.
-	if ((await harness.snapshot(DeliveryStoreDoc, context))?.ready !== true) {
-		archiveDemand(demand, await harness.snapshot(DeliveryArchiveDoc, context), source, working);
-		return demand;
-	}
 	let cursor: string | undefined;
 	for (;;) {
 		const page = await pendingDeliveryPage(harness, context, cursor);
@@ -344,22 +314,6 @@ export async function stopColdRuntime(metadata: HostMetadata, sessionId: string,
 		} finally {
 			await writer.close(BACKGROUND_CONTEXT);
 		}
-	});
-}
-
-/**
- * Publish the recipient hints of a storage that an earlier release left without them. It reads through the
- * read-only Harness under the writer lease: a writer open recovers retained tasks, which belongs to an execution
- * host, so the build changes no storage.
- */
-export async function indexColdRuntime(metadata: HostMetadata): Promise<ColdIndexResult> {
-	return withColdServices(metadata, async (_services, reader) => {
-		const demand = await publishColdHints(reader, metadata);
-		return {
-			routes: Object.fromEntries(
-				[...demand].sort().map(([recipient, execution]) => [recipient, execution ? "execution" : "delivery"] as const),
-			),
-		};
 	});
 }
 
@@ -715,25 +669,6 @@ export async function createDurableRuntime(
 		return (await deliveryPendingCount(host.harness, BACKGROUND_CONTEXT)) > 0;
 	}
 
-	/** Publish the parked recipients a later process wakes for; a storage without its record publishes none. */
-	function writeParkedWake(summary: NonNullable<ReturnType<DurableDelivery["summary"]>>): void {
-		if (recordRemoved) return;
-		const wake = writeDeliveryWake(
-			dirname(dirname(metadata.storagePath)),
-			metadata.storageId,
-			summary.parkedRecipients,
-			(recipient) => unavailableDeliveryTargets.get(storageIdOf(recipient))?.availability ?? null,
-			summary.parkedOmitted,
-			summary.parkedRows,
-		);
-		if (wake.changed && wake.omitted > 0)
-			host.reportDeliveryError(
-				new Error(
-					`parked: delivery wake metadata omits ${wake.omitted} recipient rows at its bound; retained rows require explicit acquisition`,
-				),
-			);
-	}
-
 	/** Native work plus pending delivery state used by the marker and transient monitors. */
 	async function recoveryState(validateRecipients = false): Promise<{
 		readonly workPending: boolean;
@@ -751,7 +686,6 @@ export async function createDurableRuntime(
 		const pending = summary?.fresh ? summary.pendingCount > 0 : await deliveriesPending();
 		if (generation === activityGeneration) {
 			if (summary?.fresh) {
-				writeParkedWake(summary);
 				publishRouteHints(summary, !idle, timers);
 			}
 			markRecoveryDue(activeAdmissions > 0 || !idle || deliveriesActive);

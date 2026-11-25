@@ -56,13 +56,13 @@ type PausedWatch = { readonly input: DeadlineInput; readonly pausedAt: number };
  * created; any other check-in task of the request is superseded and creates no deadline. A watch that no re-arm
  * replaced has none.
  */
-type PauseState = { watch: PausedWatch | null; watcher?: number };
+type PauseState = { watch: PausedWatch | null; watcher: number | null };
 export const CheckInPauseDoc = defineDocFamily<PauseState, null>({
 	kind: "agent.check-in-pause",
 	version: 1,
 	scope: "session",
 	family: true,
-	initial: () => ({ watch: null }),
+	initial: () => ({ watch: null, watcher: null }),
 	checkpointWhen: () => true,
 });
 export function checkInPauseKey(owner: string, conversationId: number, requestId: string): string {
@@ -95,7 +95,7 @@ async function ownPause(tx: Tx, input: CheckInInput, task: TaskId): Promise<Paus
 		checkInPauseKey(input.ownerId, input.conversationId, input.requestId),
 		null,
 	);
-	return doc.watcher === undefined || doc.watcher === task ? doc : undefined;
+	return doc.watcher === null || doc.watcher === task ? doc : undefined;
 }
 /**
  * A closed request keeps no pause state: call in the commit that established that it is closed. Retirement reads no

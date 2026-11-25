@@ -28,7 +28,6 @@ after(() => {
 });
 import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { CALLER_ANSWER_WAIT_MS, stopColdStorage } from "./cold-stop.ts";
-import { writeDeliveryWake } from "./delivery-wake.ts";
 import { recipientHintPath, RecipientHintWriter } from "./recipient-hints.ts";
 import { publishCatalogChange, subscribeCatalogChanges } from "./catalog-events.ts";
 import { dashboardText } from "./dashboard-roster.ts";
@@ -1683,30 +1682,15 @@ it("refuses another owner's delivery and an informational copy before the replay
 		);
 		const refusal = (kind: string) => (error: unknown) => primaryRefusalKind(error) === kind;
 		assert.throws(() => secondChannel.options.deliver(delivery), refusal("misaddressed"));
-		const copy = {
-			sourceId: "report:owned:informational:digest",
-			text: "copy",
-			details: { originalOwnerId: "owner-1", deliveryRecipient: "owner-2", fallback: true },
-		};
-		assert.throws(() => secondChannel.options.deliver(copy), refusal("copy"));
 		assert.throws(
-			() =>
-				secondChannel.options.deliver({
-					sourceId: "report:labelled",
-					text: "labelled copy",
-					details: {
-						originalOwnerId: "owner-2",
-						deliveryRecipient: "owner-2",
-						fallbackLabel: "no live owning session",
-					},
-				}),
-			refusal("copy"),
+			() => secondChannel.options.deliver(addressedTo("owner-1", "wrong-owner", "wrong owner")),
+			refusal("misaddressed"),
 		);
 		assert.throws(() => secondChannel.options.deliver({ sourceId: "bare", text: "bare" }), refusal("misaddressed"));
 		assert.equal(second.sent.length, 0, "no refused delivery reaches the session");
 		assert.equal(replays.length, 0, "no refused delivery reaches the replay path");
 		await secondChannel.options.deliver(addressedTo("owner-2", "report:owned", "same source for its own owner"));
-		// A source ID carries a request ID of any text; only the details mark a copy.
+		// A source ID carries a request ID of any text.
 		await secondChannel.options.deliver(addressedTo("owner-2", "report:quarter:informational:totals", "totals"));
 		assert.deepEqual(
 			second.sent.map((message) => message.text),
@@ -1962,7 +1946,7 @@ for (const scope of ["creation", "sent-work"] as const)
 			...(scope === "sent-work" ? { sentWork: new Set([record.storageId]) } : {}),
 		});
 		const idle = scope === "creation" ? "agents: 0/2+ · ~$0.75" : "agents: 0/1+";
-		assert.equal(primary.statuses.at(-1), idle);
+		await primary.statuses.waitFor((items) => items.at(-1) === idle);
 		const notices = eventLog<void>();
 		const off = manager.subscribeRoster(() => notices.push(undefined));
 		t.after(off);
@@ -2025,7 +2009,7 @@ it("shares catalog observation across primary reload, replacement, and roster te
 	const reloadAbort = new AbortController();
 	const reload = fakePrimary(reloadAbort.signal);
 	await manager.registerPrimary("primary", reload.client);
-	assert.equal(reload.statuses.at(-1), "agents: 0/1+", "reload qualifies the current published state");
+	await reload.statuses.waitFor((items) => items.at(-1) === "agents: 0/1+");
 	assert.equal(registrations().length, 1);
 	publish("idle");
 	await reload.statuses.waitFor((items) => items.at(-1) === "agents: 0/1+");
@@ -3181,12 +3165,11 @@ it("keeps unrelated registrations cold and delivers only for the exact primary",
 	const unrelated = randomUUID();
 	const control = createRecord(manager, root);
 	manager.catalog.markRecoveryDue(control.storageId, true);
-	writeDeliveryWake(root, control.storageId, [unrelated]);
 	await catalogNoticesSent(manager, root);
 	const register = (id: string) => manager.registerPrimary(id, fakePrimary(new AbortController().signal).client);
 	await register(unrelated);
 	await settleCatalogueRecovery(manager);
-	assert.deepEqual(attempts, [], "neither another party's hint nor a marker or sidecar grants recovery");
+	assert.deepEqual(attempts, [], "neither another party's hint nor a marker grants recovery");
 	assert.deepEqual(deliveries, []);
 	await register(owner);
 	await settleCatalogueRecovery(manager);
@@ -3294,6 +3277,7 @@ it("delivery-only attempts repeat after a hint or registration change, not an un
 	await catalogNoticesSent(manager, root);
 	const register = () => manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	await register();
+	await settleCatalogueRecovery(manager);
 	assert.equal(deliveries.length, 1);
 	for (let index = 0; index < 2; index++) {
 		recoveryNotice(manager, source.storageId);

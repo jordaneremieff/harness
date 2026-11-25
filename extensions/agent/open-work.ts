@@ -391,12 +391,12 @@ export function withDependencyMarks(
 }
 
 export function reportDelivery(
-	report: Pick<DeliveryReport, "acknowledged" | "delivery" | "fallbackRecipients"> | undefined,
+	report: Pick<DeliveryReport, "acknowledged" | "delivery"> | undefined,
 ): FinalReportDelivery {
 	if (report === undefined) return "absent";
 	if (report.acknowledged) return "delivered";
 	if (report.delivery !== undefined) return report.delivery.state;
-	return (report.fallbackRecipients?.length ?? 0) > 0 ? "fallback" : "active";
+	return "active";
 }
 
 // ─── Committed reads ────────────────────────────────────────────────────────

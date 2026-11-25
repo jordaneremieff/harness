@@ -259,10 +259,6 @@ export type DeliveryReceipt = {
 	readonly reason: string | null;
 	readonly providerBlock?: ProviderBlockFact;
 	readonly recoveryOf?: string;
-	/** Informational primary copies accepted before owner delivery; retained across host reopen. */
-	readonly fallbackRecipients?: string[];
-	/** Every registered primary of one complete discovery has its copy; a primary that registers later gets none. */
-	readonly fallbackBroadcast?: true;
 	readonly acknowledged: boolean;
 };
 
@@ -292,10 +288,6 @@ export type DeliveryReport = {
 	readonly threadFrameRevision?: number;
 	readonly threadEventKind?: string;
 	readonly operatorMessage?: string;
-	/** Informational primary copies accepted before owner delivery; retained across host reopen. */
-	readonly fallbackRecipients?: string[];
-	/** Every registered primary of one complete discovery has its copy; a primary that registers later gets none. */
-	readonly fallbackBroadcast?: true;
 	readonly acknowledged: boolean;
 	readonly createdAt: number;
 	readonly providerRetry?: ProviderRetryNotice;
@@ -306,7 +298,6 @@ export type DeliveryReport = {
 		readonly cost: number | null;
 		readonly conversationId: number;
 		readonly requestId: string;
-		readonly fallbackBroadcast?: boolean;
 	};
 };
 
@@ -1906,6 +1897,7 @@ export async function settleDeliveries(
 	harness: Harness,
 	context: Context,
 	automaticCursor?: string | null,
+	acceptOwner?: (ownerId: string) => boolean,
 ): Promise<string | null> {
 	await migrateDeliveryStore(harness, context);
 	const reports =
@@ -1913,14 +1905,17 @@ export async function settleDeliveries(
 			? { reports: [], next: null }
 			: await automaticDeliveryPage(harness, context, automaticCursor);
 	await harness.commit(async (tx) => {
-		const state = await readDeliveryDraft(tx, false, "intent");
+		const state = await readDeliveryDraft(tx, false, "intent", false, acceptOwner);
 		for (const [index, intent] of state.intents.entries()) await finalizeReceipt(tx, state, intent, index);
 		for (const conversationId of new Set(
 			state.intents.filter((intent) => intent.delivery?.state !== "terminal").map((intent) => intent.conversationId),
 		)) {
 			if ((await tx.conversation(conversationId)) !== undefined) await cleanupRequestContexts(tx, conversationId);
 		}
-		await retireAutomaticReports(tx, reports.reports);
+		await retireAutomaticReports(
+			tx,
+			acceptOwner ? reports.reports.filter((report) => acceptOwner(report.ownerId)) : reports.reports,
+		);
 		await writeDeliveryDraft(tx, state);
 	}, context);
 	return reports.next;

@@ -478,7 +478,7 @@ it("fires at the exact deadline, repeats, and resumes without duplicate or misse
 						sourceId: "other-owner-accepted",
 						ownerId: "another-owner",
 						acknowledged: true,
-						checkIn: { ...firstCheckIn, fallbackBroadcast: true },
+						checkIn: firstCheckIn,
 					});
 				}),
 			BACKGROUND_CONTEXT,
@@ -499,7 +499,7 @@ it("fires at the exact deadline, repeats, and resumes without duplicate or misse
 	}
 });
 
-it("replaces a pending check-in without its stored copy marker and prunes it at settlement", {
+it("replaces a pending check-in and prunes it at settlement", {
 	timeout: 60000,
 }, async (t) => {
 	const epoch = Date.now();
@@ -518,23 +518,11 @@ it("replaces a pending check-in without its stored copy marker and prunes it at 
 		const conversation = await f.conversation();
 		now = epoch + 60000;
 		await f.reopen();
-		const first = await waitForReport(f, `check-in:${conversation.id}:fallback-repeat:1`);
-		await f.host.harness.commit(
-			async (tx) =>
-				editDeliveryFixture(tx, async (deliveryFixtureState) => {
-					const state = deliveryFixtureState;
-					const index = state.reports.findIndex((row) => row.sourceId === first.sourceId);
-					const report = state.reports[index];
-					assert.ok(report.checkIn);
-					state.reports[index] = { ...report, checkIn: { ...report.checkIn, fallbackBroadcast: true } };
-				}),
-			BACKGROUND_CONTEXT,
-		);
+		await waitForReport(f, `check-in:${conversation.id}:fallback-repeat:1`);
 		now = epoch + 120000;
 		await f.reopen();
 		const next = await waitForReport(f, `check-in:${conversation.id}:fallback-repeat:2`);
 		assert.equal(next.acknowledged, false);
-		assert.equal(next.checkIn?.fallbackBroadcast, undefined, "a stored copy marker is not carried forward");
 		assert.equal((await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT))?.reports.length, 1);
 		f.releaseAnswer();
 		await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);

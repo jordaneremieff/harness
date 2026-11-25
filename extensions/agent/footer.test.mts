@@ -506,6 +506,7 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 	const writes = new Map<string, number>();
 	const changes = new EventEmitter();
 	const nextStatus = (ownerId: string) => once(changes, ownerId, { signal: AbortSignal.timeout(2000) });
+	const firstStatuses = Promise.all(["primary-a", "primary-b", "empty-primary"].map(nextStatus));
 	for (const ownerId of ["primary-a", "primary-b", "empty-primary"]) {
 		await manager.registerPrimary(ownerId, {
 			signal: new AbortController().signal,
@@ -517,6 +518,7 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 			},
 		});
 	}
+	await firstStatuses;
 	assert.equal(statuses.get("primary-a"), "agents: 0/3 · ~$6.00");
 	assert.equal(statuses.get("primary-b"), "agents: 0/1 · ~$8.00");
 	assert.equal(statuses.has("empty-primary"), true, "the empty primary receives an explicit status clear");
@@ -632,6 +634,7 @@ test("projects the footer once for a burst of catalogue notices and shows the la
 	publish(1);
 	const texts: (string | undefined)[] = [];
 	const changes = new EventEmitter();
+	const initial = once(changes, "status");
 	await manager.registerPrimary("burst-primary", {
 		signal: new AbortController().signal,
 		send: () => {},
@@ -640,6 +643,7 @@ test("projects the footer once for a burst of catalogue notices and shows the la
 			changes.emit("status", text);
 		},
 	});
+	await initial;
 	assert.deepEqual(texts, ["agents: 0/1 · ~$1.00"]);
 	const internals = manager as unknown as { priorityPage(...input: unknown[]): Promise<unknown> };
 	const project = internals.priorityPage.bind(manager);
@@ -712,11 +716,17 @@ test("the footer text of a first send keeps the mark of an incomplete page", asy
 	create("sending-primary", false, 1);
 	const reused = create("another-session", true, 2);
 	const texts: (string | undefined)[] = [];
+	const changes = new EventEmitter();
+	const initial = once(changes, "status");
 	await manager.registerPrimary("sending-primary", {
 		signal: new AbortController().signal,
 		send: () => {},
-		status: (text) => texts.push(text),
+		status: (text) => {
+			texts.push(text);
+			changes.emit("status");
+		},
 	});
+	await initial;
 	assert.deepEqual(texts, ["agents: 0/1+ · ~$1.00"]);
 	// A first task admission to an agent of another session adds it to this session's figures at once.
 	(manager as unknown as { rememberSentWork(owner: string, target: unknown): void }).rememberSentWork(

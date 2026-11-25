@@ -299,7 +299,6 @@ it("derives dependency states, labels and report delivery states", () => {
 	assert.equal(reportDelivery(undefined), "absent");
 	assert.equal(reportDelivery({ acknowledged: true }), "delivered");
 	assert.equal(reportDelivery({ acknowledged: false, delivery: { state: "parked", reason: "r" } }), "parked");
-	assert.equal(reportDelivery({ acknowledged: false, fallbackRecipients: ["primary"] }), "fallback");
 	assert.equal(reportDelivery({ acknowledged: false }), "active");
 });
 

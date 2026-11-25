@@ -13,7 +13,7 @@ import { it } from "node:test";
 import { AgentManager } from "./manager.ts";
 import { catalogChange, publishCatalogChange, subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
-import { writeDeliveryWake } from "./delivery-wake.ts";
+import { RecipientHintWriter } from "./recipient-hints.ts";
 
 /** Failure reports name the failed wait and carry bounded publisher evidence. */
 const PUBLISHER_STDERR_BYTES = 8192;
@@ -158,7 +158,7 @@ it("accumulates concurrent identity notices and makes unknown or overflowing cha
 	await notices.waitFor((events) => events.slice(genericCount).some((event) => event === undefined));
 });
 
-it("names the source storage on delivery-wake publication and removal", async (t) => {
+it("names the source storage on recipient hint publication and removal", async (t) => {
 	const f = fixture(t);
 	const notices = eventLog<CatalogChange>();
 	const off = subscribeCatalogChanges(
@@ -171,10 +171,11 @@ it("names the source storage on delivery-wake publication and removal", async (t
 	t.after(off);
 	const source = randomUUID();
 	const recipient = randomUUID();
-	assert.equal(writeDeliveryWake(f.root, source, [recipient]).changed, true);
+	const hints = new RecipientHintWriter(f.root, source);
+	hints.publish(new Map([[recipient, false]]));
 	await notices.waitForCount(1);
 	assert.deepEqual(notices[0], [source]);
-	assert.equal(writeDeliveryWake(f.root, source, []).changed, true);
+	hints.publish(new Map());
 	await notices.waitForCount(2);
 	assert.deepEqual(notices[1], [source]);
 });
@@ -237,6 +238,7 @@ it("shares footer and roster reads and rereads only the published storage", asyn
 			);
 		},
 	});
+	await statuses.waitFor((events) => events.some((value) => value.includes("Initial")));
 	const reads = t.mock.method(f.manager.catalog, "observeRecord");
 	await Promise.all([
 		f.manager.dashboardPage({ ownerId }),

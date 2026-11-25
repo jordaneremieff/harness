@@ -91,8 +91,7 @@ the source's scheduler, through the running host or a cold writer. An exact
 registration, the first saved transcript of a current receiver, a catalogue
 notice and a paced read act on these hints. Unrelated registration launches no
 runner, opens no writer and starts no scheduler. Hints stay outside the
-catalogue directory; only their source writer changes them. The parked-recipient
-sidecar and the recovery marker remain for managers of earlier releases.
+catalogue directory; only their source writer changes them. A launch requires an outstanding input or timer for the registered recipient. The runner checks the same request under the writer lease before resume.
 
 Delivery is at-least-once. The cross-host boundary has no shared transaction or
 general exactly-once promise. The manager does not poll receipts, and footer

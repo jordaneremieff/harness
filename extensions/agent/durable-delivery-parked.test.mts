@@ -267,13 +267,13 @@ it("parks only the row whose content a primary refused, and tries it again after
 		deliver: (message) => {
 			const submissions = (message.details as { submissions?: { requestId?: string }[] }).submissions ?? [];
 			if (refuse && submissions.some((item) => item.requestId === "refused-row"))
-				throw primaryRefusal("copy", "this row carries a copy marker");
+				throw primaryRefusal("misaddressed", "the row names a different recipient");
 		},
 	});
 	const counter = passCounter();
 	const { delivery } = watch(t, host, root, { onIdle: counter.onIdle });
 	const [reason] = await parkedReasons(host, [refused]);
-	assert.match(reason, /refused the row \(copy\)/u);
+	assert.match(reason, /refused the row \(misaddressed\)/u);
 	const accepted = await settledResult(host, owner, "valid-row");
 	assert.equal(await eventually(() => acknowledged(host, accepted)), true, "a later valid row still reaches the owner");
 	const attempts = primary.received.length;
@@ -377,12 +377,12 @@ it("keeps a refused answer group parked when a later delivery page holds the res
 		sessionFile: saveTranscript(join(root, "owner.jsonl"), owner),
 		deliver: (message) => {
 			sources.push(message.sourceId);
-			throw primaryRefusal("copy", "this answer carries a copy marker");
+			throw primaryRefusal("misaddressed", "the answer names a different recipient");
 		},
 	});
 	const { delivery } = watch(t, host, root, { onIdle: counter.onIdle });
 	const reasons = await parkedReasons(host, inputs);
-	assert.ok(reasons.every((reason) => /refused the row \(copy\)/u.test(reason)));
+	assert.ok(reasons.every((reason) => /refused the row \(misaddressed\)/u.test(reason)));
 	const answers = new Set(
 		Object.values((await deliveryState(host.harness, BACKGROUND_CONTEXT, true))?.receipts ?? {}).map(
 			(receipt) => receipt.answerEntryId,

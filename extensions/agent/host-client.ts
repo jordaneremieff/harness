@@ -116,6 +116,7 @@ export interface HostLaunchOptions {
 	readonly requestTimeoutMs?: number;
 	/** Revalidate demand immediately before a new runner starts. */
 	readonly launchNeeded?: () => boolean;
+	readonly recoveryRecipients?: () => readonly string[];
 	/** Ends local launch/attach observation only; never signals the native owner. */
 	readonly signal?: AbortSignal;
 }
@@ -445,6 +446,8 @@ function transportClosed(client: TransportClient, waitMs: number, signal?: Abort
 	});
 }
 
+export class HostDeliveryOnly extends Error {}
+
 export class HostLaunchDemandEnded extends HostError {
 	constructor() {
 		super("Host launch demand ended", "unavailable");
@@ -534,7 +537,12 @@ function detachChild(child: ChildProcess): void {
 	child.stderr?.on("data", () => {});
 }
 
-function startOwnedLaunch(metadata: HostMetadata, options: HostLaunchOptions, deadline: number): OwnedLaunch {
+function startOwnedLaunch(
+	metadata: HostMetadata,
+	options: HostLaunchOptions,
+	deadline: number,
+	sponsor?: string,
+): OwnedLaunch {
 	options.signal?.throwIfAborted();
 	const timeout = remaining(deadline);
 	const paths = hostPaths(metadata);
@@ -548,12 +556,21 @@ function startOwnedLaunch(metadata: HostMetadata, options: HostLaunchOptions, de
 			`The running Node executable is no longer available: ${process.execPath}. Restart Pi, then retry the agent control.`,
 			"invalid",
 		);
-	const child = spawn(process.execPath, [runner, ...(options.runnerArgs ?? []), JSON.stringify(metadata)], {
-		cwd: metadata.cwd,
-		detached: true,
-		stdio: ["ignore", "pipe", "pipe"],
-		env: { ...process.env, ...options.env },
-	});
+	const child = spawn(
+		process.execPath,
+		[
+			runner,
+			...(options.runnerArgs ?? []),
+			JSON.stringify(metadata),
+			...(sponsor === undefined ? [] : ["recover", sponsor]),
+		],
+		{
+			cwd: metadata.cwd,
+			detached: true,
+			stdio: ["ignore", "pipe", "pipe"],
+			env: { ...process.env, ...options.env },
+		},
+	);
 	let resolveExit!: (outcome: OwnedHostExit) => void;
 	const exited = new Promise<OwnedHostExit>((resolveValue) => {
 		resolveExit = resolveValue;
@@ -612,7 +629,7 @@ async function launchAttempt(
 	metadata: HostMetadata,
 	options: HostLaunchOptions,
 	deadline: number,
-): Promise<OwnedLaunch | undefined> {
+): Promise<OwnedLaunch | Link | undefined> {
 	const paths = hostPaths(metadata);
 	let attempt = ownedLaunches.get(paths.socket);
 	if (attempt?.state === "uncertain")
@@ -637,6 +654,7 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions, 
 	const attempt = await launchAttempt(metadata, options, deadline);
 	// Another process is starting this storage's runner; its endpoint is the one to reach.
 	if (attempt === undefined) return attachForeignLaunch(metadata, deadline, options.signal);
+	if ("client" in attempt) return attempt;
 	try {
 		await withinBudget(attempt.ready, deadline, options.signal);
 	} catch (error) {
@@ -662,20 +680,50 @@ function reserveLaunch(metadata: HostMetadata): NativeWriterLease | undefined {
 	return attempt.kind === "held" ? attempt.lease : undefined;
 }
 
+async function launchSponsor(metadata: HostMetadata, options: HostLaunchOptions): Promise<string | undefined> {
+	if (!options.recoveryRecipients) return undefined;
+	const { recoveryProof } = await import("./recovery-proof.ts");
+	const { recipientStorage } = await import("./recipient-hints.ts");
+	const proof = await recoveryProof(metadata.storagePath, options.recoveryRecipients());
+	if (proof === "delivery") throw new HostDeliveryOnly();
+	if (!proof || !options.recoveryRecipients().includes(recipientStorage(proof.ownerId) ?? ""))
+		throw new HostLaunchDemandEnded();
+	return JSON.stringify(proof);
+}
+
 /** Start an owned runner under the launch reservation, or undefined when another launcher holds it. */
-function reservedLaunch(metadata: HostMetadata, options: HostLaunchOptions, deadline: number): OwnedLaunch | undefined {
+async function reservedLaunch(
+	metadata: HostMetadata,
+	options: HostLaunchOptions,
+	deadline: number,
+): Promise<OwnedLaunch | Link | undefined> {
 	const reservation = reserveLaunch(metadata);
 	if (reservation === undefined) return undefined;
 	let attempt: OwnedLaunch;
 	try {
-		attempt = startOwnedLaunch(metadata, options, deadline);
+		if (lstatSync(hostPaths(metadata).socket, { throwIfNoEntry: false })) {
+			try {
+				const link = await attachLink(metadata, deadline, options.signal);
+				reservation.release();
+				return link;
+			} catch (error) {
+				if (
+					options.signal?.aborted ||
+					error instanceof HostError ||
+					isChordError(error) ||
+					error instanceof PluginError
+				)
+					throw error;
+			}
+		}
+		if (options.launchNeeded?.() === false) throw new HostLaunchDemandEnded();
+		const sponsor = await launchSponsor(metadata, options);
+		attempt = startOwnedLaunch(metadata, options, deadline, sponsor);
 	} catch (error) {
 		reservation.release();
 		throw error;
 	}
-	void Promise.race([attempt.ready.then(undefined, () => undefined), attempt.exited]).finally(() =>
-		reservation.release(),
-	);
+	void Promise.race([attempt.ready.catch(() => attempt.exited), attempt.exited]).finally(() => reservation.release());
 	return attempt;
 }
 

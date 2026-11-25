@@ -105,6 +105,7 @@ import {
 	connectHost,
 	HostBusyEndpointUnavailableError,
 	HostLaunchDemandEnded,
+	HostDeliveryOnly,
 	HostEndpointUnavailableError,
 	type HostConnection,
 	type HostObservationListener,
@@ -221,6 +222,8 @@ export interface AgentManagerOptions {
 	superviseHosts?: boolean | Omit<SupervisionOptions, "agentDir" | "stuckMs" | "idleMs" | "reported">;
 }
 interface PrimaryClient {
+	/** A fresh session has no earlier agents to project. */
+	freshSession?: boolean;
 	sentWork?: Set<string>;
 	retainSentWork?(sessionId: string): void;
 	retainContinuity?(fact: ContinuityFact): void;
@@ -661,7 +664,7 @@ export class AgentManager {
 	private readonly supervisionActs: SupervisionAct[] = [];
 	private readonly supervisionReported = new Set<string>();
 	/** The hint and party state of each source's last delivery-only attempt, so unchanged state is not tried again. */
-	private readonly deliveryAttempts = new BoundedMap<string>(DEFAULT_FAILURE_LIMIT);
+	private readonly deliveryAttempts = new BoundedMap<{ state: string; retryAt: number }>(DEFAULT_FAILURE_LIMIT);
 	/** Durable storages that act on their own hints while their host runs, beside the registered primaries. */
 	private readonly recoveryParties = new Map<string, RecoveryOwner>();
 	/** Changes when a party registers or a primary first saves its transcript: a new chance to deliver. */
@@ -2520,7 +2523,7 @@ export class AgentManager {
 		primary.resumeInbox?.();
 		this.partyEpochs.set(ownerId, randomUUID());
 		this.startRecoveryReconcile();
-		await this.refreshFooter();
+		if (!primary.freshSession) this.scheduleFooterProjection();
 		// This session's own hints are read before this returns, and their recovery joins the recovery queue
 		// without holding the registration; a closed or replaced registration starts no launch from it.
 		void this.scanRecovery(primary, ownerId).catch((error) => {
@@ -2614,16 +2617,21 @@ export class AgentManager {
 
 	/** True while a registered party still holds an execution hint from the storage: the only automatic launch demand. */
 	private executionDemand(storageId: string): boolean {
+		return this.executionRecipients(storageId).length > 0;
+	}
+
+	private executionRecipients(storageId: string): string[] {
+		const recipients: string[] = [];
 		for (const party of this.recoveryPartyIds()) {
 			const recipient = this.hintRecipient(party);
 			if (recipient === undefined || recipient === storageId) continue;
 			try {
-				if (readRecipientHint(this.options.root, recipient, storageId)?.execution === true) return true;
+				if (readRecipientHint(this.options.root, recipient, storageId)?.execution === true) recipients.push(recipient);
 			} catch {
 				/* A malformed hint grants no launch; the demand read reports it. */
 			}
 		}
-		return false;
+		return recipients;
 	}
 
 	private recoverCatalogueChanges(): void {
@@ -2931,16 +2939,17 @@ export class AgentManager {
 		storageId: string,
 		primary: RecoveryOwner,
 		launchNeeded: () => boolean,
+		recoveryRecipients?: () => readonly string[],
 	): Promise<HostConnection> {
 		let outcome = true;
 		try {
 			return await (this.options.acquire ?? acquireHost)(
 				hostMetadata(this.catalog.read(storageId), this.options.packageDir),
-				{ ...MANAGED_LINK, launchNeeded },
+				{ ...MANAGED_LINK, launchNeeded, recoveryRecipients },
 			);
 		} catch (error) {
 			// A launch that this read no longer needs says nothing about what another read needs.
-			outcome = !(error instanceof HostLaunchDemandEnded);
+			outcome = !(error instanceof HostLaunchDemandEnded || error instanceof HostDeliveryOnly);
 			throw error;
 		} finally {
 			// A stopped owner's acquisition proves nothing for the reads of other owners.
@@ -2968,6 +2977,11 @@ export class AgentManager {
 		// A launch that keeps failing waits for its window; a registration is an explicit act and tries at once.
 		if (registeringParty === undefined && this.launchWaits(record.storageId)) return;
 		if (!demand.execution) return this.recoverDelivery(demand, primary);
+		return this.recoverExecution(demand, primary);
+	}
+
+	private async recoverExecution(demand: RecoveryDemand, primary: RecoveryOwner): Promise<void> {
+		const { record } = demand;
 		this.recovering.add(record.storageId);
 		try {
 			const launchNeeded = () => this.recoveryLaunchNeeded(record.storageId, primary);
@@ -2975,10 +2989,19 @@ export class AgentManager {
 				this.recovering.delete(record.storageId);
 				return;
 			}
-			const client = await this.acquireRecovery(record.storageId, primary, launchNeeded);
+			const client = await this.acquireRecovery(record.storageId, primary, launchNeeded, () =>
+				this.stopping(primary)
+					? []
+					: demand.recipients.filter(
+							(party) =>
+								this.recoveryPartyIds().includes(party) &&
+								readRecipientHint(this.options.root, party, record.storageId)?.execution === true,
+						),
+			);
 			await this.monitorAcquired(record.storageId, client, primary);
 		} catch (error) {
 			this.recovering.delete(record.storageId);
+			if (error instanceof HostDeliveryOnly && !this.stopping(primary)) return this.recoverDelivery(demand, primary);
 			if (error instanceof HostLaunchDemandEnded) return;
 			this.recoveryFailed(record.storageId, error);
 		}
@@ -3016,18 +3039,13 @@ export class AgentManager {
 	private async recoverDelivery(demand: RecoveryDemand, primary: RecoveryOwner): Promise<void> {
 		const { storageId } = demand.record;
 		const state = this.deliveryState(demand);
-		if (this.deliveryAttempts.get(storageId) === state) return;
-		this.deliveryAttempts.set(storageId, state);
+		const previous = this.deliveryAttempts.get(storageId);
+		if (previous?.state === state && Date.now() < previous.retryAt) return;
+		this.deliveryAttempts.set(storageId, { state, retryAt: Infinity });
 		this.recovering.add(storageId);
 		try {
 			for (let attempt = 0; attempt < 2; attempt++) {
-				try {
-					const client = await this.acquireRecovery(storageId, primary, () => false);
-					await this.monitorAcquired(storageId, client, primary);
-					return;
-				} catch (error) {
-					if (!(error instanceof HostLaunchDemandEnded)) throw error;
-				}
+				if (await this.attachDeliveryHost(storageId, primary)) return;
 				if (this.stopping(primary)) break;
 				const outcome = await (this.options.deliverCold ?? deliverColdStorage)(
 					hostMetadata(demand.record, this.options.packageDir),
@@ -3035,8 +3053,11 @@ export class AgentManager {
 					{ signal: primary.signal },
 				);
 				// A host took the writer lease meanwhile: it delivers once it reads its recovery state.
-				if ("busy" in outcome) continue;
-				this.coldDelivered(storageId, outcome.result);
+				if ("busy" in outcome) {
+					if (attempt === 0) continue;
+					throw new HostBusyEndpointUnavailableError(storageId, "The cold writer lease is held");
+				}
+				this.coldDelivered(storageId, state, outcome.result);
 				break;
 			}
 			this.recovering.delete(storageId);
@@ -3044,15 +3065,35 @@ export class AgentManager {
 			this.recovering.delete(storageId);
 			this.deliveryAttempts.delete(storageId);
 			this.recoveryFailed(storageId, error);
+			this.launchReplay.arm(this.launchFailures.waitsUntil(storageId) ?? Date.now() + 1000);
 		}
 	}
 
-	private coldDelivered(storageId: string, result: ColdDeliveryResult): void {
+	private async attachDeliveryHost(storageId: string, primary: RecoveryOwner): Promise<boolean> {
+		try {
+			const client = await this.acquireRecovery(storageId, primary, () => false);
+			await this.monitorAcquired(storageId, client, primary);
+			return true;
+		} catch (error) {
+			if (!(error instanceof HostLaunchDemandEnded)) throw error;
+			return false;
+		}
+	}
+
+	private coldDelivered(storageId: string, state: string, result: ColdDeliveryResult): void {
 		this.launchFailures.clear(storageId);
+		this.recoveryErrors.delete(storageId);
 		const note =
 			result.interrupted === true
 				? "Holds work that its host stopped while it ran, so rows for this session wait for that work to resume: its owner's next registration resumes it, or agent_attach resumes it now."
-				: undefined;
+				: result.remaining.length
+					? `Delivery waits for ${result.remaining.join(", ")}.`
+					: undefined;
+		if (!result.interrupted && result.remaining.length) {
+			const retryAt = Date.now() + RECOVERY_RECONCILE_MS;
+			this.deliveryAttempts.set(storageId, { state, retryAt });
+			this.launchReplay.arm(retryAt);
+		}
 		if (this.recoveryNotes.get(storageId) === note) return;
 		if (note === undefined) this.recoveryNotes.delete(storageId);
 		else this.recoveryNotes.set(storageId, note);
@@ -3147,7 +3188,8 @@ export class AgentManager {
 			if (!primary || this.queuedRecovery.has(storageId)) return;
 			try {
 				const record = this.catalog.read(storageId);
-				if (!this.executionDemand(storageId) || this.crashes.get(storageId)?.stopped) return;
+				const recipients = this.executionRecipients(storageId);
+				if (!recipients.length || this.crashes.get(storageId)?.stopped) return;
 				const now = Date.now();
 				const times = (this.crashes.get(storageId)?.times ?? []).filter((time) => now - time < CRASH_WINDOW_MS);
 				times.push(now);
@@ -3163,7 +3205,7 @@ export class AgentManager {
 				this.recoveryHolds.delete(storageId);
 				this.queuedRecovery.add(storageId);
 				const order = this.recoveryOrder.begin();
-				void this.enqueueRecovery([{ record, execution: true, recipients: [] }], primary, order.at)
+				void this.enqueueRecovery([{ record, execution: true, recipients }], primary, order.at)
 					.catch((error) => {
 						this.queuedRecovery.delete(storageId);
 						this.recordRecoveryError(storageId, errorText(error));

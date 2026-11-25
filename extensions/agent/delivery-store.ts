@@ -71,14 +71,6 @@ const DeliveryPointerDoc = defineDocFamily<{ key: string | null }, null>({
 	initial: () => ({ key: null }),
 	checkpointWhen: () => true,
 });
-const CheckInFallbackDoc = defineDocFamily<{ accepted: boolean }, null>({
-	kind: "agent.check-in-fallback",
-	version: 1,
-	scope: "session",
-	family: true,
-	initial: () => ({ accepted: false }),
-	checkpointWhen: () => true,
-});
 const DeliveryListDoc = defineDocFamily<List, null>({
 	kind: "agent.delivery-list",
 	version: 1,
@@ -291,7 +283,6 @@ async function indexReport(tx: Tx, report: DeliveryReport, key: string, created:
 	if (!report.checkIn) return;
 	const checkIn = JSON.stringify([report.ownerId, report.checkIn.conversationId, report.checkIn.requestId]);
 	if (created) (await tx.doc(DeliveryPointerDoc, `check-in:${checkIn}`, null)).key = key;
-	if (report.checkIn.fallbackBroadcast) (await tx.doc(CheckInFallbackDoc, checkIn, null)).accepted = true;
 }
 
 type ReferenceField = "pendingPage" | "kindPage" | "terminalPage" | "terminalKindPage" | "automaticPage";
@@ -372,6 +363,7 @@ export async function readDeliveryDraft(
 	history = false,
 	kind?: Kind,
 	includeTerminal = false,
+	acceptOwner?: (ownerId: string) => boolean,
 ): Promise<AgentDeliveryState> {
 	const kinds: readonly Kind[] = kind ? [kind] : ["intent", "receipt", "report"];
 	const refs = history
@@ -384,6 +376,7 @@ export async function readDeliveryDraft(
 		const kind = JSON.parse(key)[0] as Kind;
 		const stored = await tx.doc(DeliveryRowDoc, key, kind);
 		if (stored.value === null) throw new Error("Delivery reference has no retained row");
+		if (acceptOwner && !acceptOwner(stored.value.ownerId)) continue;
 		const value = copy(stored.value);
 		originals.set(key, { kind, value: copy(value) });
 		includeDeliveryRow(state, kind, value);

@@ -100,7 +100,7 @@ import { resolveSessionConversationId } from "./durable-observation.ts";
 import { acquireHost, hostAttempt, type HostConnection } from "./host-client.ts";
 import { HostError, HostLeaseBusyError, type HostMetadata } from "./host-protocol.ts";
 import { isChordError } from "@earendil-works/chord";
-import { DELIVERY_WAKE_RECIPIENT_LIMIT, nativeRecipientAvailability } from "./delivery-wake.ts";
+import { DELIVERY_WAKE_RECIPIENT_LIMIT, nativeRecipientAvailability } from "./recipient-availability.ts";
 import { recipientStorage } from "./recipient-hints.ts";
 import {
 	connectPrimaryChannel,
@@ -2184,14 +2184,25 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			demand = new Map();
 			started++;
 		}
-		automaticCursor = await settleDeliveries(host.harness, BACKGROUND_CONTEXT, automaticCursor);
+		automaticCursor = await settleDeliveries(
+			host.harness,
+			BACKGROUND_CONTEXT,
+			automaticCursor,
+			options.recipients && routed,
+		);
 		const page =
 			pendingCursor === null
 				? { state: { intents: [], receipts: {}, reports: [] } as AgentDeliveryState, keys: [], next: null }
 				: await pendingDeliveryPage(host.harness, BACKGROUND_CONTEXT, pendingCursor);
 		pendingCursor = page.next;
 		if (pendingCursor !== null || automaticCursor !== null) dirty = true;
-		const state = page.state;
+		const state = options.recipients
+			? {
+					intents: page.state.intents.filter((row) => routed(row.ownerId)),
+					receipts: Object.fromEntries(Object.entries(page.state.receipts).filter(([, row]) => routed(row.ownerId))),
+					reports: page.state.reports.filter((row) => routed(row.ownerId)),
+				}
+			: page.state;
 		const observed = await observeDeliveryEligibility(host.harness, eligibilityOptions, state);
 		eligibility = new Map(observed.map((item) => [item.key, item.eligibility]));
 		const rows: DeliveryRow[] = [

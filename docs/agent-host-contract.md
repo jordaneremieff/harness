@@ -290,11 +290,11 @@ The host owns its lifetime independently of its clients. Construction of a servi
 
 The existing `runtime-contract` member returns the required current hello `{format:"pi.agent.host-hello/1",writerId,contract:RuntimeContract}`. The server publishes its own per-run random identity from memory, not from diagnostic metadata. The static operation contract does not carry that changing identity. Missing or malformed hello evidence refuses negotiation; a bare operation descriptor is not a hello. The connected hello must match the exact owned launch's validated READY identity before the connection receives its owned-child exit source. A compatible foreign writer remains attachable without that authority. Sources: `extensions/agent/{host-protocol,host-process,host-client}.ts`.
 
-A manager records each known link-loss epoch before hint recovery runs. An execution hint does not override a foreign, clean, positively released, or pending-exit refusal. Only the matching failed-child outcome releases that loss hold; a newer successful attachment supersedes older callbacks. Automatic acquisition needs a registered party's execution hint from the source: the registering primary's at its registration, and any registered party's at a catalogue notice, a launch-wait replay, an ended host or the paced read. The `recoveryDue` marker and the parked-recipient sidecar grant no launch to this manager. Delivery-only demand acquires an existing endpoint only and otherwise runs the cold delivery writer. `agent_attach` retains explicit acquisition. Source: `extensions/agent/manager.ts`.
+A manager records each known link-loss epoch before hint recovery runs. An execution hint does not override a foreign, clean, positively released, or pending-exit refusal. Only the matching failed-child outcome releases that loss hold; a newer successful attachment supersedes older callbacks. Automatic acquisition needs a registered party's execution hint from the source: the registering primary's at its registration, and any registered party's at a catalogue notice, a launch-wait replay, an ended host or the paced read. Under the launch reservation, the launcher checks for an existing endpoint and verifies an outstanding request for the registered recipient. The runner verifies the same owner, conversation and request under the writer lease before opening the execution host. Delivery-only demand acquires an existing endpoint only and otherwise runs the cold delivery writer. `agent_attach` retains explicit acquisition. Source: `extensions/agent/manager.ts`.
 
 Before it spawns a runner, a launcher takes the storage's nonblocking launch reservation (`launchReservationPath`) and holds it until that runner reports readiness or exits. A launcher that finds the reservation held starts no runner: it attaches to the endpoint of the runner that the holder starts, and reports unavailable when that launch ended without one. The reservation is separate from the start gate and the writer leases, which still exclude a second writer. Source: `extensions/agent/{host-protocol,host-client}.ts`.
 
-The cold writer also delivers and indexes. Its `deliver` mode takes the writer lease, opens the storage only when no task is `running` or `completing` and no live task carries an abort mark, and never resumes the scheduler. Its delivery driver routes only the named recipient storages' rows, signals no task and submits nothing to the source; it ends after its first complete traversal and publishes the source's recipient hints. A storage with such a task reports `interrupted` and is left unopened, because a writer open recovers that task. Its `index` mode publishes the hints of a storage that an earlier release wrote, from a read-only Harness under the writer lease, and changes no storage. Source: `extensions/agent/{cold-delivery,cold-stop,durable-runner,durable-runtime}.ts`.
+The cold writer also delivers. Its `deliver` mode takes the writer lease, opens the storage only when no task is `running` or `completing` and no live task carries an abort mark, and never resumes the scheduler. Its delivery driver routes only the named recipient storages' rows, signals no task and submits nothing to the source; it ends after its first complete traversal and publishes the source's recipient hints. A storage with such a task reports `interrupted` and is left unopened, because a writer open recovers that task. Source: `extensions/agent/{cold-delivery,cold-stop,durable-runner,durable-runtime}.ts`.
 
 ### Durable MCP connection lifetime
 
@@ -442,17 +442,13 @@ defaulting to true. Source-ledger rows use `deliver` with `requireRetained:true`
 and go only to the owner's registered channel. Their `details` name that owner
 as both `deliveryRecipient` and `originalOwnerId`, with `liveOwner:true`. The
 receiver checks both recipient fields before consulting its replay cache. The
-registration's context must still hold that session, including on replay. A
-copy flag (`fallback:true`) or a copy label (`fallbackLabel`) in `details`
-causes refusal even if both recipient fields match. The source ID is not
-inspected for copy markers: it carries the sender's request ID, which can be any
-text.
+registration's context must still hold that session, including on replay.
 
 Fresh delivery requires this user's regular session file, opened without
 following a symbolic link, with a header that names the registered session.
 A receiver that keeps no transcript (`--no-session`) refuses every source-ledger
 row. Typed refusals are Chord `PluginError`s with `code: "primary_refused"` and
-`details.refusal` set to `misaddressed` or `copy` (the row's content), or
+`details.refusal` set to `misaddressed` (the row's recipient), or
 `unsaved`, `no-transcript` or `not-held` (the session; `not-held` is a
 registration whose process no longer holds that session).
 These refusals do not change provider-block state, request continuity, the
@@ -462,10 +458,7 @@ queued call to Pi's void `sendMessage`. The source ledger retains retry ownershi
 while bounded file verification is incomplete. The reader streams past unrelated
 records without a record-size limit or general transcript validation. If the
 session file does not exist yet, the row waits at the source. Pi saves the file
-with the first user or assistant message. A current receiver's first observation
-of that file starts recovery for the exact registered recipient. An earlier
-receiver announces no first save; the compatibility rules in the agent extension
-README state when its waiting rows arrive.
+with the first user or assistant message. The receiver's first observation of that file starts recovery for the registered recipient.
 
 Direct ordinary-primary submit and report use `admit` with
 `requireRetained:false`. They require a saved session file and accept a

@@ -4,14 +4,14 @@
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { buildRecipientHints, deliverColdStorage, type ColdDeliveryResult } from "./cold-delivery.ts";
+import { deliverColdStorage, type ColdDeliveryResult } from "./cold-delivery.ts";
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
@@ -23,7 +23,7 @@ import { AgentManager } from "./manager.ts";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { subscribeCatalogChanges } from "./catalog-events.ts";
 import { savedTranscript } from "./primary-transcript-fixture.mts";
-import { readRecipientHint, readRecipientHints, recipientHintPath, RecipientHintWriter } from "./recipient-hints.ts";
+import { readRecipientHint, recipientHintPath, RecipientHintWriter } from "./recipient-hints.ts";
 
 /** Runner launches by kind: a serving host through acquisition, a cold writer through delivery. */
 interface Counts {
@@ -75,7 +75,7 @@ function fixture(t: TestContext, idleMinutes = "60", mode: "answer" | "request" 
 	return { ...f, env, counts, delivered, manager, cleanup: (close: () => void | Promise<void>) => cleanup.push(close) };
 }
 
-/** Write retained rows into the storage without a runtime, so no hint is published: an earlier release's state. */
+/** Seed a retained report independently of the hint under test. */
 async function seedReport(f: ReturnType<typeof fixture>, recipient: string, text: string): Promise<void> {
 	const host = await DurableHost.open(
 		{
@@ -193,12 +193,21 @@ it("launches nothing for registrations that hold no hint, though the storage is 
 	assert.equal(existsSync(hostPaths(f.metadata).socket), false, "no scheduler start");
 	const ownerManager = f.manager();
 	await ownerManager.registerPrimary(owner, primary(f, owner, []));
-	await f.counts.launches.waitForCount(1, 15000);
-	assert.deepEqual(
-		f.counts.acquisitions.map((metadata) => metadata.storageId),
-		[f.metadata.storageId],
-		"the exact owner's execution hint launches the storage once",
-	);
+	await (ownerManager as unknown as { recoveryQueue: Promise<void> }).recoveryQueue;
+	assert.equal(f.counts.launches.length, 0, "an execution hint without its retained request starts no runner");
+	assert.equal(existsSync(f.metadata.storagePath), false);
+});
+
+it("delivers without a scheduler when an execution hint outlives the owner's input", async (t) => {
+	const f = fixture(t),
+		owner = randomUUID();
+	await seedReport(f, owner, "retained result");
+	new RecipientHintWriter(f.root, f.metadata.storageId).publish(new Map([[owner, true]]));
+	const received: string[] = [];
+	await f.manager().registerPrimary(owner, primary(f, owner, received));
+	await f.delivered.waitForCount(1, 15000);
+	assert.equal(f.counts.launches.length, 0);
+	assert.equal(received.length, 1);
 });
 
 it("delivers a waiting report through a cold writer that leaves another owner's waiting work unchanged", {
@@ -252,36 +261,6 @@ it("delivers a waiting report through a cold writer that leaves another owner's 
 	assert.equal(await taskRecords(f.metadata), before, "the other owner's task records are unchanged");
 	assert.equal(existsSync(recipientHintPath(f.root, recipient, f.metadata.storageId)), false);
 	assert.equal(readRecipientHint(f.root, absent, f.metadata.storageId)?.execution, true);
-});
-
-it("indexes an earlier release's retained rows on an explicit, repeatable build", { timeout: 60000 }, async (t) => {
-	const f = fixture(t);
-	const recipient = randomUUID();
-	await seedReport(f, recipient, "LEGACY_RESULT");
-	const manager = f.manager();
-	manager.catalog.markRecoveryDue(f.metadata.storageId, true);
-	assert.deepEqual(readRecipientHints(f.root, recipient).hints, []);
-	const options = { packageDir: f.metadata.packageDir, env: f.env } as const;
-	assert.deepEqual(await buildRecipientHints(f.root, options), {
-		candidates: 1,
-		indexed: {},
-		busy: [],
-		failed: {},
-	});
-	const build = await buildRecipientHints(f.root, { ...options, apply: true });
-	assert.deepEqual(build, {
-		candidates: 1,
-		indexed: { [f.metadata.storageId]: { [recipient]: "delivery" } },
-		busy: [],
-		failed: {},
-	});
-	assert.deepEqual(await buildRecipientHints(f.root, { ...options, apply: true }), build, "a repeated build agrees");
-	assert.deepEqual(readRecipientHints(f.root, recipient).hints, [{ source: f.metadata.storageId, execution: false }]);
-	const received: string[] = [];
-	await manager.registerPrimary(recipient, primary(f, recipient, received));
-	await f.delivered.waitForCount(1, 30000);
-	assert.match(received[0] ?? "", /LEGACY_RESULT/u);
-	assert.equal(f.counts.launches.length, 0);
 });
 
 it("keeps a storage with work that its host stopped mid-run closed to cold delivery", { timeout: 60000 }, async (t) => {
@@ -396,6 +375,27 @@ it("starts one runner when launchers in two processes acquire the same cold stor
 	assert.deepEqual(pids, [Number(launches[0]), Number(launches[0])]);
 });
 
+it("refuses a vanished sponsor under the runner's writer lease without scheduling other work", async (t) => {
+	const f = fixture(t);
+	const ownerId = randomUUID();
+	await seedReport(f, ownerId, "retained");
+	const before = await taskRecords(f.metadata);
+	const runner = fileURLToPath(new URL("./durable-runner.ts", import.meta.url));
+	const result = spawnSync(
+		process.execPath,
+		[
+			runner,
+			JSON.stringify(f.metadata),
+			"recover",
+			JSON.stringify({ ownerId, conversationId: 1, requestId: "vanished" }),
+		],
+		{ env: { ...process.env, ...f.env }, encoding: "utf8", timeout: 15000 },
+	);
+	assert.match(result.stderr, /no longer owes the sponsored request/u);
+	assert.notEqual(result.status, 0);
+	assert.equal(await taskRecords(f.metadata), before);
+});
+
 it("lets a running Durable host resume a child that holds unfinished work for it", { timeout: 60000 }, async (t) => {
 	const f = fixture(t);
 	const child = hostMetadata(
@@ -413,14 +413,28 @@ it("lets a running Durable host resume a child that holds unfinished work for it
 			"child-of-parent",
 		),
 	);
-	// The child's last publication before its host was lost: unfinished work for the parent storage.
+	const first = await acquireHost(child, { env: f.env });
+	trackHost(t, first.pid);
+	await first.request("timer-schedule", {
+		sessionId: child.storageId,
+		message: "child timer",
+		deliverAt: Date.now() + 3600000,
+		mode: "followUp",
+		origin: "operator",
+		ownerId: f.metadata.storageId,
+		scheduleId: "child-timer",
+		requestId: "child-request",
+	});
+	await first.request("recovery-state");
+	process.kill(first.pid, "SIGKILL");
+	await waitForHostRelease(child, { signal: AbortSignal.timeout(10000) });
 	new RecipientHintWriter(f.root, child.storageId).publish(new Map([[f.metadata.storageId, true]]));
 	const unrelated = f.manager();
 	await unrelated.registerPrimary(randomUUID(), primary(f, randomUUID()));
-	assert.equal(existsSync(hostPaths(child).socket), false, "an unrelated registration leaves the child cold");
+	assert.equal(f.counts.acquisitions.length, 0, "an unrelated registration leaves the child cold");
+	const retired = readFileSync(hostPaths(child).claim, "utf8");
 	const parent = await acquireHost(f.metadata, { env: f.env });
 	trackHost(t, parent.pid);
-	// The child's own host publishes its current demand once it runs; it holds no row, so the hint goes.
-	await untilHint(f, () => readRecipientHint(f.root, f.metadata.storageId, child.storageId) === undefined);
+	await untilHint(f, () => readFileSync(hostPaths(child).claim, "utf8") !== retired);
 	await parent.close();
 });

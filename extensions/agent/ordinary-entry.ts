@@ -475,6 +475,10 @@ function ordinaryThreadSources(ctx: ExtensionContext): ThreadNoticeSource<Contex
 	return sources;
 }
 
+function isFreshPrimary(reason: string, ctx: ExtensionContext): boolean {
+	return (reason === "new" || reason === "startup") && !sessionFileSaved(ctx);
+}
+
 function sessionFileSaved(ctx: ExtensionContext): boolean {
 	const path = ctx.sessionManager.getSessionFile();
 	return path !== undefined && lstatSync(path, { throwIfNoEntry: false })?.isFile() === true;
@@ -1748,7 +1752,6 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		};
 		primaryDeliveries.set(sessionId, { retention, inbox, flush });
 		const admitImmediate = (text: string, details: unknown, sourceId: string) => {
-			// The sending manager can be older code that a reload kept, so the receiver also refuses a session's message to itself.
 			if (isSelfMessage(details, sessionId)) throw new Error(SELF_MESSAGE_REFUSAL);
 			if (retention.hasQueued(sourceId)) throw new Error("Primary delivery awaits its queued source-ledger notice");
 			inbox.admit(sourceId, text, details);
@@ -1780,6 +1783,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		if (ctx.sessionManager.getSessionFile() !== undefined && !sessionFileSaved(ctx)) unsavedSessions.add(sessionId);
 		else unsavedSessions.delete(sessionId);
 		await getManager().registerPrimary(sessionId, {
+			freshSession: isFreshPrimary(_event.reason, ctx),
 			sentWork: retainedSentWork(retained),
 			retainSentWork: (sessionId) => pi.appendEntry(SENT_WORK_ENTRY, { sessionId }),
 			retainContinuity: (fact) => {
@@ -1799,7 +1803,6 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			model: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
 			thinkingLevel: pi.getThinkingLevel(),
 			resumeInbox: flush,
-			// The manager can be older code that a reload kept, so this registration checks the recipient itself.
 			send: (text, details, sourceId, requireRetained) => {
 				// After this extension's shutdown, a manager that still calls the registration gets a refusal
 				// that its source retries, before anything reaches the inbox or the transcript.

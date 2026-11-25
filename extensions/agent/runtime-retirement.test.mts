@@ -8,7 +8,7 @@ import {
 } from "./delivery-store.ts";
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { hostname } from "node:os";
@@ -17,8 +17,8 @@ import { fileURLToPath } from "node:url";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
-import { AgentCatalog, hostMetadata, storageIdOf } from "./catalog.ts";
-import { readDeliveryWake } from "./delivery-wake.ts";
+import { AgentCatalog, storageIdOf } from "./catalog.ts";
+import { readRecipientHint } from "./recipient-hints.ts";
 import { AgentMetaDoc } from "./durable-controls.ts";
 import type { TimerTask } from "./durable-timers.ts";
 import type { ConversationFrame, TasksFrame } from "./live-frames.ts";
@@ -326,13 +326,7 @@ it("publishes the native availability that failed before clearing recovery", { t
 	await parked.waitForCount(1, 5000);
 	await deliverySettled(f.runtime);
 	await f.runtime.request("recovery-state", {}, "publish-failed-availability");
-	const wake = readDeliveryWake(f.root, f.metadata.storageId) as
-		| { failedAvailability?: Readonly<Record<string, string | null>> }
-		| undefined;
-	const expected = createHash("sha256")
-		.update(JSON.stringify(hostMetadata(target, f.metadata.packageDir)))
-		.digest("hex");
-	assert.equal(wake?.failedAvailability?.[target.storageId], expected);
+	assert.equal(readRecipientHint(f.root, target.storageId, f.metadata.storageId)?.execution, false);
 	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
 	writeFileSync(f.catalog.path(target.storageId), JSON.stringify({ ...target, thinkingLevel: "low" }));
 	const changed = (await f.runtime.request("recovery-state", {}, "changed-native-availability")) as {

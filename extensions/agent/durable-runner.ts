@@ -53,19 +53,18 @@ function callerInstallation(input: unknown): string {
 	return packageDir;
 }
 
-const COLD_LABELS = { stop: "Cold stop", deliver: "Cold delivery", index: "Recipient index" } as const;
+const COLD_LABELS = { stop: "Cold stop", deliver: "Cold delivery" } as const;
 
 /** The work of one cold writer mode, with its arguments checked before the writer takes any lease. */
 function coldWork(
 	metadata: import("./host-protocol.ts").HostMetadata,
 	mode: keyof typeof COLD_LABELS,
-	runtime: Pick<typeof import("./durable-runtime.ts"), "stopColdRuntime" | "deliverColdRuntime" | "indexColdRuntime">,
+	runtime: Pick<typeof import("./durable-runtime.ts"), "stopColdRuntime" | "deliverColdRuntime">,
 ): () => Promise<unknown> {
 	if (mode === "deliver") {
 		const recipients = coldRecipients(process.argv[4]);
 		return () => runtime.deliverColdRuntime(metadata, recipients);
 	}
-	if (mode === "index") return () => runtime.indexColdRuntime(metadata);
 	const sessionId = process.argv[4];
 	const background = process.argv[5];
 	if (!sessionId || (background !== "true" && background !== "false"))
@@ -101,12 +100,12 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 	const [
 		{ parseHostMetadata },
 		{ runHost, HostClaimRefusedError },
-		{ createDurableRuntime, stopColdRuntime, deliverColdRuntime, indexColdRuntime },
+		{ createDurableRuntime, stopColdRuntime, deliverColdRuntime },
 	] = await Promise.all([import("./host-protocol.ts"), import("./host-process.ts"), import("./durable-runtime.ts")]);
 	const metadata = parseHostMetadata(input);
 	const mode = process.argv[3];
-	if (mode === "stop" || mode === "deliver" || mode === "index") {
-		const work = coldWork(metadata, mode, { stopColdRuntime, deliverColdRuntime, indexColdRuntime });
+	if (mode === "stop" || mode === "deliver") {
+		const work = coldWork(metadata, mode, { stopColdRuntime, deliverColdRuntime });
 		const { withColdWriter } = await import("./cold-stop.ts");
 		const reply = await withColdWriter(metadata, work, COLD_LABELS[mode]);
 		// Finish even when the invoking process has gone. No scheduler or delivery stays in this process.
@@ -114,6 +113,10 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 		else process.exit(0);
 		return;
 	}
+	if (mode === "recover") {
+		const proof = process.argv[4];
+		if (!proof) throw new Error("Recovery requires an exact sponsor");
+	} else if (mode !== undefined) throw new Error("Unknown Durable runner mode");
 	// A bootstrap step that waits on nothing lets the event loop empty before readiness; say so instead of a silent exit 0.
 	const unsettled = () => {
 		process.stderr.write(
@@ -122,10 +125,20 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 		process.exitCode = 1;
 	};
 	process.once("beforeExit", unsettled);
-	const host = await runHost((bootstrap) => createDurableRuntime(metadata, { decisionWait: bootstrap.decisionWait }), {
-		metadata,
-		exit: (status) => process.exit(status),
-	})
+	const host = await runHost(
+		async (bootstrap) => {
+			if (mode === "recover") {
+				const proof = process.argv[4];
+				const { verifyRecoverySponsor } = await import("./recovery-proof.ts");
+				await verifyRecoverySponsor(metadata.storagePath, proof);
+			}
+			return createDurableRuntime(metadata, { decisionWait: bootstrap.decisionWait });
+		},
+		{
+			metadata,
+			exit: (status) => process.exit(status),
+		},
+	)
 		.catch((error: unknown) => {
 			if (!(error instanceof HostClaimRefusedError) || error.observation !== "busy") throw error;
 			return undefined;

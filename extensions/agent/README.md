@@ -323,7 +323,7 @@ need payload reads; unchanged records retain their facts. A read after final hos
 publication therefore sees the retained costs without waiting for its notice.
 The opened file supplies the retained stamp, not an earlier pathname check.
 
-Catalogue record writers and delivery-wake writers name their storage in the
+Catalogue record writers and recipient hint writers name their storage in the
 change notice. The manager combines these with connected-host notices. After
 initial discovery, the footer checks only the named records and claims. It
 replaces their row and count contributions and revisits dependent ownership
@@ -4052,7 +4052,7 @@ reasons:
 |---|---|
 | Any agent directory: its storage file or catalog record is gone, at least 2 minutes after the process started | SIGTERM; SIGKILL if it still runs 25 s later (the host's own 20 s shutdown deadline and a margin). Nothing it could write can be found again. |
 | Any agent directory: its runner file is gone and no child process of its work runs | The same. A host whose tool child still runs stays. |
-| This agent directory: its catalog record marks pending work (`recoveryDue`), the host says some task can run now (a host that publishes `<storage>.activity` beside its writer lease and holds only sleeping, waiting or completing tasks stays), and for `agent.stuckHostMinutes` (default 120; zero keeps such hosts) its storage file and WAL got no write, the host and its descendants used at most 1% of the window as CPU time, and it had no child process other than its stdio MCP servers and their guardian | The same. The catalog record still marks the work due, and the manager runs its recovery scan at once, so a fresh host resumes the retained work. |
+| This agent directory: its catalog record marks pending work (`recoveryDue`), the host says some task can run now (a host that publishes `<storage>.activity` beside its writer lease and holds only sleeping, waiting or completing tasks stays), and for `agent.stuckHostMinutes` (default 120; zero keeps such hosts) its storage file and WAL got no write, the host and its descendants used at most 1% of the window as CPU time, and it had no child process other than its stdio MCP servers and their guardian | The manager checks registered recipients' hints. A fresh host resumes the storage only if an eligible recipient has unfinished work there. |
 | This agent directory: it runs from a package directory other than the one Pi settings configure for the agent extension, has no pending work, and got no storage write for `agent.idleMinutes` | SIGTERM only, which takes the host's own graceful shutdown. Once per storage and code directory: a host that an older Pi process starts again from the same code stays. |
 
 Before each signal the PID must still hold the listed process: the same start
@@ -4782,9 +4782,7 @@ A row for an ordinary primary goes only to that owner's registered channel.
 The message names the owner in both `originalOwnerId` and `deliveryRecipient`,
 sets `liveOwner:true`, and carries no copy flag, label, or source identity.
 An unavailable owner's row waits at its source and reaches no other session.
-Other owners of the same answer receive only their own rows. The watcher ignores
-legacy `fallbackRecipients` and `fallbackBroadcast` fields in stored rows;
-neither field counts as acknowledgement from the owner.
+Other owners of the same answer receive only their own rows.
 
 One classification controls delivery, status and retirement:
 
@@ -4981,9 +4979,7 @@ request closed retires it too. A stop that closes the request aborts every
 check-in task of it, and the aborted watch retires the document. A watch aborted
 while its request stays open keeps the document and names itself as the
 watcher, so an earlier watch task of the request still creates no deadline. Because acknowledgement and re-arm commit
-together, a crash before or after that commit gives the same outcome. A host of
-an earlier release starts a re-armed watch at its first interval, which gives
-at most one immediate notice.
+together, a crash before or after that commit gives the same outcome.
 
 The headline names the agent and says it is still working, not finished, with
 elapsed time and retained conversation-total cost. The bounded body covers only
@@ -5033,30 +5029,6 @@ places at the next boundary when the conversation is busy. If an idle inbox cont
 A registered primary refreshes its recorded model, reasoning level, and session
 name when the ordinary session changes them, so `agent_status` and endpoint
 discovery report the identity the operator runs.
-
-#### Recipient hint build
-
-Storages that an earlier release wrote hold rows without recipient hints. An
-explicit build indexes them:
-
-```sh
-node extensions/agent/cold-delivery.ts [--apply] [--storage <id>] [--agent-dir <dir>]
-```
-
-It reads the same catalogue as the page transition command, with the same
-`--agent-dir`, `PI_AGENT_SESSIONS_DIR` and agent directory order. A candidate
-is a catalogue record with the recovery marker or a delivery wake sidecar. The
-default run prints the count of candidates. `--apply` indexes each candidate in
-its own runner under that storage's writer lease: it reads the retained rows,
-or the archive of a store that an earlier release did not migrate, through a
-read-only Harness, and publishes the storage's hints. It changes no storage,
-starts no scheduler and calls no model. The JSON result names the routes that
-each storage got (`execution` or `delivery` per recipient storage), the storages
-whose writer lease another process held, and failures; the command exits 2 when
-any storage was busy or failed. A running host keeps its own hints current, so
-a busy storage needs no build. A repeated build gives the same hints. Processes
-of an earlier release keep writing rows without hints, so run the build again
-after they end. Registration never runs it.
 
 ### Current process contracts
 
@@ -5123,20 +5095,7 @@ primary acceptance and carries retry notices, blocked causes, receipt
 associations and exact continuations. Delivered result references travel inside
 the unchanged notice details, so they do not change this identity.
 Endpoints with an incompatible identity refuse delivery until restarted with
-compatible code. Within `primary-delivery/4.0.0`, a current receiver refuses
-informational copies from an earlier sender. The sender records those refusals
-as failures, not acceptance, and still delivers the original row when its owner
-returns. An earlier sender retries a live current owner that lacks a saved file
-until that owner saves. A current sender sends no copies to earlier receivers
-and does not attempt delivery while a live owner's published session file is
-absent or its endpoint publishes none. An earlier receiver does not announce
-its first save. While the source's host runs, it delivers the waiting row at
-its next check of parked owners: its idle retirement check, a `recovery-state`
-request, or a delivery pass that a submission, task, or delivery-document change
-in that storage starts. A source without a running host delivers it only at
-that session's next registration or the source's next start. A current
-extension that a reload loaded into a process whose earlier manager it kept
-behaves the same way. A pair running earlier code has neither protection. Host operation identities are checked
+compatible code. A receiver accepts only its own rows, and only after its transcript exists. Host operation identities are checked
 independently. The Endpoint identity remains separate from both retained
 interfaces.
 
@@ -5311,20 +5270,7 @@ due and block retirement, even between pages when no delivery is in flight.
 The marker clears only after a fresh complete observation finds no native work
 or active delivery. An in-progress admission preserves the marker through its
 pre-input gap. Marker writes occur only when its value changes. Parked and
-terminal rows alone do not keep it true. Before clearing the marker, the source
-writer atomically publishes its
-parked recipients in `sessionsRoot/.delivery-wake/<storageId>.json`. Each source
-owns one file outside the catalog directory. The file contains a bounded set of
-exact recipient identities and an `omitted` count of excluded parked rows;
-omitted rows remain retained and require explicit acquisition. Partial and
-failed passes preserve the previous complete wake projection rather than
-replace it with one page. `failedAvailability` records each recipient's
-last failed native launch fingerprint, or null when no available target was
-attempted. A fingerprint hashes launch metadata and the caller's Pi installation.
-An unchanged recipient set and unchanged fingerprints cause no write. The writer
-removes the file when no parked row remains. Terminal rows never enter this
-projection. Publishing the sidecar first preserves wake discovery if the writer
-crashes before the marker clears.
+terminal rows alone do not keep it true. Supervision and profile discovery consume this marker. It does not authorise recovery.
 
 Recovery acts only for a registered party: an ordinary primary registered in
 this Pi process, or a Durable storage whose host runs here. Each party reads its
@@ -5355,8 +5301,7 @@ one. A cold stop publishes the hints of the rows it leaves.
 
 The decision follows the hints:
 
-- Execution demand, an execution hint for a registered party, acquires the
-  source's host, which resumes its scheduler. The scheduler resumes the whole
+- An execution hint identifies a candidate source. Before spawn, the launcher checks its retained inputs and timers for the registered recipient. Under the writer lease the runner checks that the same owner, conversation and request still have unfinished work before it resumes. The scheduler resumes the whole
   storage; results keep their own routes.
 - Delivery-only demand never starts the source's scheduler. A running source
   delivers once it reads its recovery state. A source without a host gets a
@@ -5366,14 +5311,14 @@ The decision follows the hints:
   exits. A storage that holds a task that a host stopped while it ran is not
   opened: opening it recovers that task, and that recovery belongs to an
   execution host. The party's status then says that the rows wait for that work.
-- A delivery-only attempt is repeated only after its hints or its recipients'
-  registrations change, or after the source's host failed.
+- A changed hint or registration permits a new delivery attempt. Lease contention schedules a retry; rows still pending after a completed attempt retry on the paced recovery read.
+
+Registration does not wait for a footer projection. A fresh primary starts without a catalogue projection; catalogue changes and local work update its footer.
 
 A registration reads the registering party's hints. A catalogue notice, the end
 of a launch wait, an ended host and a paced read every 60 seconds read every
 registered party's hints; the paced read covers a lost notice, a full observer
-and disabled host checks. The `recoveryDue` marker and the wake sidecars stay
-for the managers of earlier releases; this release's managers launch on neither.
+and disabled host checks.
 
 Before it spawns a runner, a launcher takes the storage's nonblocking launch
 reservation, `.leases/<storageId>.sqlite.launching` beside the storage, and
@@ -5415,11 +5360,9 @@ receiver checks the exact recipient before consulting the replay cache. The
 registration's context must still hold that session, including on replay. A
 fresh delivery requires a regular session file owned by the current user,
 opened without following a symbolic link, with a header that names this
-session. The `primary_refused` errors for `misaddressed`, `copy`, `unsaved`,
+session. The `primary_refused` errors for `misaddressed`, `unsaved`,
 `no-transcript` and `not-held` leave request continuity, provider-block state,
-the inbox, the transcript, and the model unchanged. Only `fallback` and
-`fallbackLabel` in the details mark a copy; a source ID can contain any request
-ID text. Sessions started with `--no-session` keep
+the inbox, the transcript, and the model unchanged. Sessions started with `--no-session` keep
 no transcript and refuse every source-ledger row.
 
 The owner acknowledges a fresh delivery only after its session JSONL file

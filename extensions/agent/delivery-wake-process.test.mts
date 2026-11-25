@@ -2,7 +2,7 @@ import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { it, beforeEach, afterEach, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -10,7 +10,6 @@ import { hostMetadata } from "./catalog.ts";
 import { subscribeCatalogChanges } from "./catalog-events.ts";
 import { hostPaths } from "./host-protocol.ts";
 
-import { deliveryWakePath } from "./delivery-wake.ts";
 import { deliverColdStorage, type ColdDeliveryResult } from "./cold-delivery.ts";
 import { readRecipientHint } from "./recipient-hints.ts";
 import { DurableHost } from "./durable-host.ts";
@@ -142,7 +141,6 @@ for (const kind of ["parked", "terminal"] as const)
 			await seed(f, owner);
 			const source = await open(f);
 			assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, false);
-			assert.equal(existsSync(deliveryWakePath(f.root, f.metadata.storageId)), kind === "parked");
 			process.kill(source.pid, signal);
 			await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(5000) });
 			await f.manager.registerPrimary(randomUUID(), {

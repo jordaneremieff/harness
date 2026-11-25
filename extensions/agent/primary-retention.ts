@@ -23,18 +23,11 @@ function parse(bytes: Buffer): unknown {
 
 /**
  * Why one source-ledger delivery does not belong to `recipient`, or undefined when it does. The source names its
- * exact recipient as both `deliveryRecipient` and `originalOwnerId`. An informational copy for another owner
- * carries the copy flag or label in its details, which a source sets only on copies; it is refused even when it
- * names this session. A source ID is not inspected: it can carry a request ID of any text.
+ * exact recipient as both `deliveryRecipient` and `originalOwnerId`.
  */
 export function retainedDeliveryRefusal(details: unknown, recipient: string): PluginError | undefined {
 	if (!object(details))
 		return primaryRefusal("misaddressed", "Primary delivery names no recipient; this session takes no part of it");
-	if (details.fallback === true || details.fallbackLabel !== undefined)
-		return primaryRefusal(
-			"copy",
-			`Primary session ${recipient} takes no informational copy of another owner's delivery; the source keeps it for its owner`,
-		);
 	if (details.deliveryRecipient !== recipient || details.originalOwnerId !== recipient)
 		return primaryRefusal(
 			"misaddressed",

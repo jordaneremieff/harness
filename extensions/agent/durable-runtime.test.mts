@@ -557,7 +557,7 @@ it("retires parked delivery with a clear marker and wakes only for its returning
 			delivered.push(details);
 		},
 	});
-	assert.equal(acquired.length, 1, "a delivered row has no remaining wake sidecar");
+	assert.equal(acquired.length, 1, "a delivered row grants no further recovery");
 	assert.equal(delivered.length, 1);
 });
 

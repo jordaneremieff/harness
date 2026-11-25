@@ -136,7 +136,6 @@ const DELIVERY_LABEL: Record<FinalReportDelivery, string> = {
 	delivered: "delivered",
 	active: "delivering",
 	parked: "delivery parked",
-	fallback: "fallback copies",
 	terminal: "delivery ended",
 	absent: "no report row",
 };
@@ -152,8 +151,6 @@ export function deliveryWords(delivery: FinalReportDelivery | undefined, ownerId
 			return `Delivery to ${ownerId} is in progress.`;
 		case "parked":
 			return `Delivery parked: ${ownerId} cannot be reached now. The report stays retained.`;
-		case "fallback":
-			return `No live owning session: copies went to live sessions, and ${ownerId} has not acknowledged the report.`;
 		case "terminal":
 			return `Delivery to ${ownerId} ended without admission. The report stays readable here.`;
 		case "absent":

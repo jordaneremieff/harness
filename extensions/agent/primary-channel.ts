@@ -201,17 +201,11 @@ export class PrimaryChannelUnavailableError extends Error {
  * saved transcript yet, `no-transcript` keeps none, `not-held` is a registration whose process no longer holds the
  * session. A refusal never establishes acceptance; the source keeps the row.
  */
-export type PrimaryRefusalKind = "misaddressed" | "copy" | "unsaved" | "no-transcript" | "not-held";
+export type PrimaryRefusalKind = "misaddressed" | "unsaved" | "no-transcript" | "not-held";
 
 /** Error code of a recipient refusal on the primary channel; the kind travels in its details. */
 export const PRIMARY_REFUSAL_CODE = "primary_refused";
-const PRIMARY_REFUSAL_KINDS: ReadonlySet<string> = new Set([
-	"misaddressed",
-	"copy",
-	"unsaved",
-	"no-transcript",
-	"not-held",
-]);
+const PRIMARY_REFUSAL_KINDS: ReadonlySet<string> = new Set(["misaddressed", "unsaved", "no-transcript", "not-held"]);
 
 export function primaryRefusal(kind: PrimaryRefusalKind, message: string): PluginError {
 	return new PluginError(PRIMARY_REFUSAL_CODE, message, { refusal: kind });

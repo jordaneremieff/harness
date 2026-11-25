@@ -15,7 +15,7 @@ import {
 } from "./delivery-store.ts";
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import { DELIVERY_PAGE_SIZE, DeliveryRowDoc, storeDeliveryRow } from "./delivery-store.ts";
-import { DELIVERY_WAKE_RECIPIENT_LIMIT, nativeRecipientAvailability } from "./delivery-wake.ts";
+import { DELIVERY_WAKE_RECIPIENT_LIMIT, nativeRecipientAvailability } from "./recipient-availability.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -4077,15 +4077,6 @@ for (const kind of ["receipt", "report"] as const)
 				BACKGROUND_CONTEXT,
 			);
 		await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
-		await source.harness.commit(async (tx) => {
-			await editDeliveryFixture(tx, async (state) => {
-				const evidence = { fallbackRecipients: [other], fallbackBroadcast: true as const };
-				if (kind === "receipt") {
-					const key = String(submissionId);
-					state.receipts[key] = { ...state.receipts[key], ...evidence };
-				} else state.reports[0] = { ...state.reports[0], ...evidence };
-			});
-		}, BACKGROUND_CONTEXT);
 		const row = async () => {
 			const state = await deliveryState(source);
 			return kind === "receipt" ? state?.receipts[String(submissionId)] : state?.reports[0];

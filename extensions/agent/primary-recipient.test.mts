@@ -224,7 +224,7 @@ async function source(t: TestContext, root: string, sessionsRoot: string) {
 	};
 }
 
-function addressed(sourceId: string, owner: string, recipient: string, copy = false) {
+function addressed(sourceId: string, owner: string, recipient: string) {
 	return {
 		sourceId,
 		text: "RESULT_FOR_OWNER",
@@ -233,8 +233,7 @@ function addressed(sourceId: string, owner: string, recipient: string, copy = fa
 			sourceId,
 			originalOwnerId: owner,
 			deliveryRecipient: recipient,
-			wake: !copy,
-			...(copy ? { fallback: true, fallbackLabel: "no live owning session" } : {}),
+			wake: true,
 		},
 	};
 }
@@ -300,19 +299,14 @@ it("keeps an absent owner's result from an empty and a busy session and delivers
 	assert.match(parked?.reports[0]?.delivery?.reason ?? "", /reaches no other session/u);
 	assert.deepEqual(watcher.summary().parkedRecipients, [ownerId]);
 
-	// An informational copy, a misaddressed row and an unsaved recipient's own row all refuse without effect.
 	const sourceId = `${s.host.storageId}:${report.sourceId}`;
-	assert.equal(
-		await refusal(f.sessionsRoot, emptyId, addressed(`${sourceId}:informational:x`, ownerId, emptyId, true)),
-		"copy",
-	);
 	assert.equal(
 		await refusal(
 			f.sessionsRoot,
 			busy.sessionManager.getSessionId(),
-			addressed(sourceId, ownerId, busy.sessionManager.getSessionId(), true),
+			addressed(sourceId, ownerId, busy.sessionManager.getSessionId()),
 		),
-		"copy",
+		"misaddressed",
 	);
 	assert.equal(await refusal(f.sessionsRoot, emptyId, addressed(sourceId, ownerId, emptyId)), "misaddressed");
 	assert.equal(await refusal(f.sessionsRoot, emptyId, addressed("own-row", emptyId, emptyId)), "unsaved");
