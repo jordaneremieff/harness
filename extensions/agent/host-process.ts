@@ -786,6 +786,8 @@ class HostProcessServer implements HostProcess {
 			)
 				return false;
 			this.closing = true;
+			// Admission is sealed now; the deadline covers the observation cleanup that precedes shutdown.
+			this.armShutdownDeadline();
 			if (releasing) this.closeReleaseObservations();
 			return true;
 		};

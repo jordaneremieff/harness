@@ -1050,6 +1050,68 @@ await runHost(() => ({ request: async () => ({}), close: async () => {}, isIdle:
 	assert.equal(code, 1, "the host exits and releases its lease although its diagnostic cannot be written");
 });
 
+it("arms the shutdown deadline when release seals admission, before observation cleanup ends", {
+	timeout: 15000,
+}, async (t) => {
+	const root = fixtureRoot(t),
+		closing = eventLog<void>();
+	let releaseListener: ((requested: boolean) => void) | undefined;
+	let finishObservation: () => void = noop;
+	const observationClosed = new Promise<void>((resolve) => {
+		finishObservation = resolve;
+	});
+	const deadlines: Array<{ cancelled: boolean }> = [];
+	const runtime: HostRuntime = {
+		request: async (method, params) => {
+			if (method === "observe-open") return params;
+			if (method === "observe-close") {
+				closing.push(undefined);
+				await observationClosed;
+				return {};
+			}
+			return {};
+		},
+		isIdle: () => true,
+		close: async () => {},
+		onReleaseRequested: (listener) => {
+			releaseListener = listener;
+			return () => {
+				releaseListener = undefined;
+			};
+		},
+		tryRetire: async (seal) => seal(),
+	};
+	const config = metadata(root);
+	const host = await runHost(() => runtime, {
+		metadata: config,
+		idleMs: 3600000,
+		announceReady: noop,
+		scheduleIdleCheck: () => noop,
+		exit: (() => undefined) as unknown as (status: 0 | 1) => never,
+		scheduleShutdownDeadline: () => {
+			const deadline = { cancelled: false };
+			deadlines.push(deadline);
+			return () => {
+				deadline.cancelled = true;
+			};
+		},
+	});
+	t.after(() => {
+		finishObservation();
+		return host.close().catch(noop);
+	});
+	const client = await connectClient(config);
+	t.after(() => client.dispose());
+	await call(client, config, "observe-open", { token: "watch" });
+	releaseListener?.(true);
+	await closing.waitForCount(1, 5000);
+	assert.equal(deadlines.length, 1, "the sealed host has its deadline while observation cleanup runs");
+	finishObservation();
+	await host.close();
+	assert.equal(deadlines.length, 1);
+	assert.equal(deadlines[0].cancelled, true, "a shutdown that finishes cancels its deadline");
+});
+
 it("a close after the lease file is removed writes nothing and names the lost lease", async (t) => {
 	const config = metadata(fixtureRoot(t));
 	const exits: number[] = [];
