@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as pause } from "node:timers/promises";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
-import { formatDurableFooter, sessionFigures } from "./footer.ts";
+import { formatDurableFooter, sessionFigures, sessionFooter } from "./footer.ts";
 import { AgentManager } from "./manager.ts";
 
 function row(id = "a", overrides: Partial<AgentConversationSummary> = {}): AgentConversationSummary {
@@ -167,6 +167,53 @@ test("sent-work scope keeps exact reused targets and only working creation desce
 	assert.equal(
 		sessionFigures(rows, "primary", (id) => owners.get(id), sent),
 		"agents: 0/2 · ~$0.25",
+	);
+});
+
+test("names the scoped agents that need intervention and the sent-work targets they serve", () => {
+	const rows = [
+		row("lead", { storageId: "lead", state: "working" }),
+		row("delegate", { storageId: "delegate", attention: "provider-blocked" }),
+		row("helper:3", { storageId: "helper", owner: "unavailable", state: "unavailable", unplaced: 1 }),
+		row("quiet", { storageId: "quiet", attention: "failed-turn" }),
+		row("other", { storageId: "other", attention: "provider-blocked" }),
+	];
+	const owners = new Map([
+		["lead", "primary"],
+		["delegate", "lead"],
+		["helper", "primary"],
+		["quiet", "primary"],
+		["other", "another-primary"],
+	]);
+	const sent = new Set(["lead"]);
+	assert.deepEqual(
+		sessionFooter(rows, "primary", (id) => owners.get(id), sent),
+		{
+			text: "agents: 1/4",
+			stuck: ["delegate", "helper", "helper:3", "lead"],
+		},
+	);
+	assert.deepEqual(
+		sessionFooter(
+			rows,
+			"primary",
+			(id) => owners.get(id),
+			sent,
+			(id) => id === "quiet",
+		).stuck,
+		["delegate", "helper", "helper:3", "lead", "quiet"],
+		"a storage whose recovery waits after failed launches needs intervention",
+	);
+	assert.equal(
+		sessionFigures(rows, "primary", (id) => owners.get(id), sent),
+		"agents: 1/4",
+	);
+	rows[1].attention = undefined;
+	rows[2].unplaced = 0;
+	assert.deepEqual(
+		sessionFooter(rows, "primary", (id) => owners.get(id), sent).stuck,
+		[],
+		"a terminal failure is history",
 	);
 });
 

@@ -3,6 +3,7 @@
  * Durable usage; the footer holds no local checkpoint and adds no deltas.
  */
 import type { AgentConversationSummary } from "./dashboard-types.ts";
+import { sentWorkIdentity } from "./session-work.ts";
 
 const MAX_OWNER_DEPTH = 64;
 const MAX_OWNER_READS = 1024;
@@ -17,6 +18,17 @@ function actionableAttention(row: AgentConversationSummary): boolean {
 	);
 }
 
+/** The footer figures of one primary session and the agents in its scope that need intervention. */
+export interface SessionFooter {
+	readonly text: string;
+	/**
+	 * Every scoped agent that needs intervention, and every sent-work target that such an agent works under through
+	 * its creating owners, in the form of `sentWorkIdentity`. Work sent to one of these waits in vain until someone
+	 * intervenes.
+	 */
+	readonly stuck: readonly string[];
+}
+
 /** Creation lineage owns cost; sent-work descendants count while working or in need of intervention. */
 export function sessionFigures(
 	rows: readonly AgentConversationSummary[],
@@ -25,6 +37,17 @@ export function sessionFigures(
 	sentWork: ReadonlySet<string> = new Set(),
 	recoveryBlocked: (storageId: string) => boolean = () => false,
 ): string {
+	return sessionFooter(rows, ownerId, readOwner, sentWork, recoveryBlocked).text;
+}
+
+/** The figures of `sessionFigures`, with the scoped agents that need intervention. */
+export function sessionFooter(
+	rows: readonly AgentConversationSummary[],
+	ownerId: string,
+	readOwner: (storageId: string) => string | undefined,
+	sentWork: ReadonlySet<string> = new Set(),
+	recoveryBlocked: (storageId: string) => boolean = () => false,
+): SessionFooter {
 	const needsAttention = (row: AgentConversationSummary) =>
 		actionableAttention(row) || ((row.id === row.storageId || sentWork.has(row.id)) && recoveryBlocked(row.storageId));
 	const owners = new Map<string, string | undefined>();
@@ -35,20 +58,23 @@ export function sessionFigures(
 		owners.set(storageId, owner);
 		return owner;
 	};
-	const inLineage = (storageId: string, roots: ReadonlySet<string>): boolean => {
+	/** The first creating owner of a storage, walking up its owners, that is one of `roots`. */
+	const lineageRoot = (storageId: string, roots: ReadonlySet<string>): string | undefined => {
 		let identity = storageId;
 		const visited = new Set<string>();
 		for (let depth = 0; depth < MAX_OWNER_DEPTH; depth++) {
 			const storageId = identity.split(":", 1)[0];
-			if (visited.has(storageId)) return false;
+			if (visited.has(storageId)) return undefined;
 			visited.add(storageId);
 			const owner = ownerOf(storageId);
-			if (owner !== undefined && roots.has(owner)) return true;
-			if (!owner) return false;
+			if (owner !== undefined && roots.has(owner)) return owner;
+			if (!owner) return undefined;
 			identity = owner;
 		}
-		return false;
+		return undefined;
 	};
+	const inLineage = (storageId: string, roots: ReadonlySet<string>): boolean =>
+		lineageRoot(storageId, roots) !== undefined;
 	const creationRoots = new Set([ownerId]);
 	const creationRows: AgentConversationSummary[] = [];
 	const scopedRows = rows.filter((row) => {
@@ -62,7 +88,13 @@ export function sessionFigures(
 				(sentWork.has(row.storageId) || inLineage(row.storageId, sentWork)))
 		);
 	});
-	return formatDurableFooter(scopedRows, creationRows);
+	const stuck = new Set<string>();
+	for (const row of scopedRows) {
+		if (!needsAttention(row)) continue;
+		for (const identity of [row.id, row.storageId, lineageRoot(row.storageId, sentWork)])
+			if (identity !== undefined) stuck.add(sentWorkIdentity(identity) ?? identity);
+	}
+	return { text: formatDurableFooter(scopedRows, creationRows), stuck: [...stuck].sort() };
 }
 
 /** Working and scoped agents with the recorded-pricing estimate; costs below half a cent are hidden. */

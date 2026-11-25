@@ -1749,20 +1749,30 @@ that every request settled. No catalog schema or host protocol carries this scop
 
 The status says `● agents: <working>/<total> · ~$<cost>`. The leading dot shows
 whether work that this session sent with the agent tools will still come back
-and start one of its turns: a filled dot (`●`, accent colour) while an answer-bearing
-request routed to this session has no delivered result or refusal, a scheduled
-send has not delivered, or a question that this session asked has no reply or
-non-reply notice; a hollow dot (`○`, muted) when none is out. The dot describes
-only that work, also while the session itself works, so when the session is idle
-a filled dot means that it starts again by itself and a hollow dot means that
-the next step is the operator's. The dot follows the
+and start one of its turns. Work is out while an answer-bearing request routed
+to this session has no delivered result or refusal, a scheduled send has not
+delivered, or a question that this session asked has no reply or non-reply
+notice. The dot is:
+
+- yellow and filled (`●`, theme colour `warning`) while work is out;
+- red and filled (`●`, theme colour `error`) while a request of that open work
+  targets an agent that needs intervention, or an agent that works under such a
+  target through its creating owners: a provider block, a blocked task, a
+  failure on a live host, an unavailable host with unplaced input or open work,
+  or recovery that waits after failed launches; the roster names the cause;
+- grey and hollow (`○`, theme colour `muted`) when no work is out.
+
+The dot describes only that work, also while the session itself works, so when
+the session is idle a yellow dot means that it starts again by itself, a red dot
+means that it waits on an agent that will not answer without help, and a grey
+dot means that the next step is the operator's. A stuck agent that no open work
+waits on leaves the dot as the open work makes it. The dot follows the
 [footer status convention](../../docs/conventions/status-keys.md); only the
 interactive terminal draws its colours, and other hosts receive the plain glyphs. The entry disappears when no
 session-scoped rows are found and no work is out; with work out and no rows it
 reads `● agents`. A scheduled send stays open from its schedule until the result
 of its delivery, which carries the same request ID, or until a cancellation that
-stops its timer. A row's need for intervention only scopes it into the count;
-the roster names the cause. The numerator counts displayed `working` rows
+stops its timer. A row's need for intervention scopes it into the count. The numerator counts displayed `working` rows
 with a verified current-host publication; the denominator includes every scoped
 row. Each registered primary receives its own caller-prioritized page and
 figures. A `+` after the denominator marks unresolved selected claims, unseen

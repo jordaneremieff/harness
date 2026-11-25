@@ -62,7 +62,7 @@ import {
 import type { CatalogView } from "./catalog-view.ts";
 import type { NativeOwnerEvidence } from "./host-changes.ts";
 import { CatalogObservationCapacityError, subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
-import { sessionFigures } from "./footer.ts";
+import { sessionFooter, type SessionFooter } from "./footer.ts";
 import { sentWorkIdentity } from "./session-work.ts";
 import type { ContinuityFact } from "./continuity-facts.ts";
 import { recordAdmission } from "./ordinary-continuity.ts";
@@ -224,7 +224,8 @@ interface PrimaryClient {
 	/** A confirmed body needs no new message, but a replay can carry new request results. */
 	receiveRetainedReplay?(details: unknown): void;
 	resumeInbox?(): void;
-	status?(text: string | undefined): void;
+	/** The footer figures, and the agents in the primary's scope that need intervention (see `SessionFooter`). */
+	status?(text: string | undefined, stuck?: readonly string[]): void;
 	signal: AbortSignal;
 	cwd?: string;
 	sessionFile?: string;
@@ -359,6 +360,11 @@ function compactStatus(value: unknown): unknown {
 		},
 		...(ordinaryOnly.length === 0 ? {} : { limits: { ordinaryOnly } }),
 	};
+}
+
+/** One value for a footer's text and its stuck agents, so an unchanged footer is not written again. */
+function footerKey(footer: SessionFooter): string {
+	return JSON.stringify([footer.text, footer.stuck]);
 }
 
 function claimOwner(claim: ClaimObservation): AgentConversationSummary["owner"] {
@@ -3138,9 +3144,9 @@ export class AgentManager {
 		try {
 			// The page of this primary's last projection gives the same text as that projection, marker included.
 			const page = this.footerPages.get(ownerId);
-			const figures = page ? this.figuresForPage(ownerId, page) : this.figuresForRows(ownerId, this.toolCardRows);
-			this.footerFigures.set(ownerId, figures);
-			primary.status?.(figures || undefined);
+			const footer = page ? this.footerForPage(ownerId, page) : this.footerForRows(ownerId, this.toolCardRows);
+			this.footerFigures.set(ownerId, footerKey(footer));
+			primary.status?.(footer.text || undefined, footer.stuck);
 		} catch (error) {
 			this.failures.set("footer", errorText(error));
 		}
@@ -3154,17 +3160,17 @@ export class AgentManager {
 
 	/** UI-local session totals reuse the roster and the primary's retained sent-work identities. */
 	async sessionFigures(ownerId: string, page?: AgentConversationPage): Promise<string> {
-		return this.figuresForPage(ownerId, page ?? (await this.dashboardPage({ ownerId })));
+		return this.footerForPage(ownerId, page ?? (await this.dashboardPage({ ownerId }))).text;
 	}
 
-	/** The figures of one page; a `+` after the count marks a page that does not cover every row. */
-	private figuresForPage(ownerId: string, page: AgentConversationPage): string {
-		const text = this.figuresForRows(ownerId, page.rows);
-		return !page.coverage.complete ? text.replace(/^(agents: \d+\/\d+)/u, "$1+") : text;
+	/** The footer of one page; a `+` after the count marks a page that does not cover every row. */
+	private footerForPage(ownerId: string, page: AgentConversationPage): SessionFooter {
+		const footer = this.footerForRows(ownerId, page.rows);
+		return page.coverage.complete ? footer : { ...footer, text: footer.text.replace(/^(agents: \d+\/\d+)/u, "$1+") };
 	}
 
-	private figuresForRows(ownerId: string, rows: readonly AgentConversationSummary[]): string {
-		return sessionFigures(
+	private footerForRows(ownerId: string, rows: readonly AgentConversationSummary[]): SessionFooter {
+		return sessionFooter(
 			rows,
 			ownerId,
 			(storageId) => this.inventory.ownerId(storageId),
@@ -3183,12 +3189,13 @@ export class AgentManager {
 		const page = await this.priorityPage({ ownerId }, { reconcileAfterMs: BACKGROUND_RECONCILE_MS });
 		this.observeToolCardRows(page);
 		if (this.primaries.get(ownerId) === primary) this.footerPages.set(ownerId, page);
-		const text = this.figuresForPage(ownerId, page);
+		const footer = this.footerForPage(ownerId, page);
 		// Each status write requests a terminal render, and notices arrive far more often than
-		// the figures change, so an unchanged text writes nothing.
-		if (!primary.signal.aborted && this.footerFigures.get(ownerId) !== text) {
-			this.footerFigures.set(ownerId, text);
-			primary.status?.(text || undefined);
+		// the figures change, so an unchanged footer writes nothing.
+		const key = footerKey(footer);
+		if (!primary.signal.aborted && this.footerFigures.get(ownerId) !== key) {
+			this.footerFigures.set(ownerId, key);
+			primary.status?.(footer.text || undefined, footer.stuck);
 		}
 	}
 

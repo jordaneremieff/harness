@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import {
 	SessionManager,
 	type ExtensionAPI,
@@ -14,7 +14,11 @@ import register from "./index.ts";
 import { ORDINARY_CONTINUITY_ENTRY } from "./continuity-facts.ts";
 import { AgentManager } from "./manager.ts";
 
-test("the footer cell marks a scheduled send as open work until its timer is cancelled", async (t) => {
+/**
+ * One ordinary session with one created agent whose row the catalog view supplies, and a scripted control path.
+ * A provider-blocked agent carries the view's intervention hint.
+ */
+async function cellFixture(t: TestContext, providerBlocked = false) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-cell-")));
 	const saved = new Map(
 		["PI_AGENT_SESSIONS_DIR", "PI_CODING_AGENT_DIR", "PI_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [
@@ -94,6 +98,14 @@ test("the footer cell marks a scheduled send as open work until its timer is can
 				partial: false,
 			},
 		],
+		...(providerBlocked
+			? {
+					attention: {
+						rows: [{ identity: target, kind: "provider-blocked" as const, blockId: "usage-limit" }],
+						coverage: { complete: true, omitted: 0 },
+					},
+				}
+			: {}),
 	});
 	const controls: string[] = [];
 	manager.control = async (method: string) => {
@@ -131,12 +143,15 @@ test("the footer cell marks a scheduled send as open work until its timer is can
 		modelRegistry: { getAll: () => [], find: () => undefined },
 	} as unknown as ExtensionContext;
 	for (const handler of events.get("session_start") ?? []) await handler({ reason: "startup" }, ctx);
-	assert.equal(statuses.at(-1), "\u25cb agents: 0/1", "no work out shows the hollow dot");
-
 	const call = (name: string, id: string, input: Record<string, unknown>) =>
 		tools.get(name)?.execute(id, input, new AbortController().signal, undefined, ctx as ExtensionToolContext);
-	await call("agent_send", "wake", { sessionId: target, message: "Check the run", deliverAt: "2030-01-01T00:00:00Z" });
-	assert.equal(statuses.at(-1), "\u25cf agents: 0/1", "a scheduled send is open work although no agent works");
+	/** Other turn_end handlers expect a full boundary event; only the cell refresh matters here. */
+	const terminalTurnEnd = async () => {
+		for (const handler of events.get("turn_end") ?? [])
+			await Promise.resolve()
+				.then(() => handler({ entries: [] }, { ...ctx, mode: "tui" } as ExtensionContext))
+				.catch(() => undefined);
+	};
 	const facts = () =>
 		session
 			.getEntries()
@@ -145,6 +160,15 @@ test("the footer cell marks a scheduled send as open work until its timer is can
 					? [entry.data as Record<string, unknown>]
 					: [],
 			);
+	return { session, target, controls, statuses, call, terminalTurnEnd, facts };
+}
+
+test("the footer cell marks a scheduled send as open work until its timer is cancelled", async (t) => {
+	const { session, target, controls, statuses, call, terminalTurnEnd, facts } = await cellFixture(t);
+	assert.equal(statuses.at(-1), "\u25cb agents: 0/1", "no work out shows the hollow dot");
+
+	await call("agent_send", "wake", { sessionId: target, message: "Check the run", deliverAt: "2030-01-01T00:00:00Z" });
+	assert.equal(statuses.at(-1), "\u25cf agents: 0/1", "a scheduled send is open work although no agent works");
 	assert.deepEqual(facts(), [
 		{
 			phase: "requested",
@@ -155,19 +179,31 @@ test("the footer cell marks a scheduled send as open work until its timer is can
 		},
 	]);
 
-	// Other turn_end handlers expect a full boundary event; only the cell refresh matters here.
-	for (const handler of events.get("turn_end") ?? [])
-		await Promise.resolve()
-			.then(() => handler({ entries: [] }, { ...ctx, mode: "tui" } as ExtensionContext))
-			.catch(() => undefined);
+	await terminalTurnEnd();
 	assert.equal(
 		statuses.at(-1),
-		"<accent>\u25cf agents: 0/1",
-		"the interactive terminal draws the open dot in the accent colour",
+		"<warning>\u25cf agents: 0/1",
+		"the interactive terminal draws open work in yellow, the theme's warning colour",
 	);
 
 	await call("agent_abort", "cancel", { sessionId: target, timerId: 7 });
 	assert.deepEqual(controls, ["timer-schedule", "timer-cancel"]);
 	assert.equal(facts().at(-1)?.phase, "refused", "a cancelled timer closes the send that it carried");
 	assert.equal(statuses.at(-1), "\u25cb agents: 0/1");
+	await terminalTurnEnd();
+	assert.equal(statuses.at(-1), "<muted>\u25cb agents: 0/1", "the hollow dot is grey");
+});
+
+test("the footer cell turns red while open work waits on an agent that needs intervention", async (t) => {
+	const { target, statuses, call, terminalTurnEnd } = await cellFixture(t, true);
+	await terminalTurnEnd();
+	assert.equal(statuses.at(-1), "<muted>\u25cb agents: 0/1", "a stuck agent that nothing waits on leaves the dot grey");
+
+	await call("agent_send", "wake", { sessionId: target, message: "Check the run", deliverAt: "2030-01-01T00:00:00Z" });
+	await terminalTurnEnd();
+	assert.equal(statuses.at(-1), "<error>\u25cf agents: 0/1", "open work that waits on the stuck agent is red");
+
+	await call("agent_abort", "cancel", { sessionId: target, timerId: 7 });
+	await terminalTurnEnd();
+	assert.equal(statuses.at(-1), "<muted>\u25cb agents: 0/1");
 });

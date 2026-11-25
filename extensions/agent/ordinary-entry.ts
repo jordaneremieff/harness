@@ -703,6 +703,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		);
 	});
 	let agentFigures = "";
+	/** Agents in this session's scope that need intervention, with the sent-work targets they serve. */
+	let stuckAgents: ReadonlySet<string> = new Set();
 	const initialPreferences = readPreferenceViews();
 	let registrationPreferences = initialPreferences.snapshot;
 	let currentPreferences = registrationPreferences;
@@ -723,21 +725,31 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	/** Whether work that this session sent with the agent tools will still come back and start a turn. */
 	const workOut = (sessionId: string): boolean =>
 		continuity.open(sessionId).length > 0 || (peerQuestions.get(sessionId)?.questions.open().asked.length ?? 0) > 0;
+	/** Grey without open work, red while open work waits on an agent that needs intervention, yellow otherwise. */
+	const dotColour = (sessionId: string, out: boolean): "muted" | "error" | "warning" => {
+		if (!out) return "muted";
+		const stuck = continuity
+			.open(sessionId)
+			.some((fact) => stuckAgents.has(sentWorkIdentity(fact.sessionId) ?? fact.sessionId));
+		return stuck ? "error" : "warning";
+	};
 	/**
-	 * The footer cell: a filled dot while work of this session is out, a hollow dot when none is, then the figures.
-	 * The cell stays while the session has agents or work out; only the interactive terminal draws colour.
+	 * The footer cell, then the figures: a yellow dot while work of this session is out, a red dot while that work
+	 * waits on an agent that needs intervention, and a hollow grey dot when no work is out. The cell stays while the
+	 * session has agents or work out; only the interactive terminal draws colour.
 	 */
 	const showAgentCell = (ctx: ExtensionContext) => {
 		// Over a retained manager of another protocol, agent events change nothing, the footer included.
 		const retained = owners.managers.get(sessionsRoot());
 		if (retained !== undefined && retained.managerProtocol !== MANAGER_PROTOCOL) return;
-		const out = workOut(ctx.sessionManager.getSessionId());
+		const sessionId = ctx.sessionManager.getSessionId();
+		const out = workOut(sessionId);
 		if (!agentFigures && !out) {
 			ctx.ui.setStatus("agent", undefined);
 			return;
 		}
 		const glyph = out ? "●" : "○";
-		const mark = ctx.mode === "tui" ? ctx.ui.theme.fg(out ? "accent" : "muted", glyph) : glyph;
+		const mark = ctx.mode === "tui" ? ctx.ui.theme.fg(dotColour(sessionId, out), glyph) : glyph;
 		ctx.ui.setStatus("agent", `${mark} ${agentFigures || "agents"}`);
 	};
 	/** A scheduled send is open from its schedule until the result of its delivery, which carries the same request ID. */
@@ -1647,6 +1659,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		selfCompaction.clear();
 		refreshPreferences(ctx);
 		agentFigures = "";
+		stuckAgents = new Set();
 		const retainedProtocol = owners.managers.get(sessionsRoot())?.managerProtocol;
 		if (retainedProtocol !== undefined && retainedProtocol !== MANAGER_PROTOCOL) {
 			ctx.ui.notify(
@@ -1769,8 +1782,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				continuity.delivered(sessionId, deliveredResults(details));
 				showAgentCell(ctx);
 			},
-			status: (text) => {
+			status: (text, stuck) => {
 				agentFigures = text ?? "";
+				stuckAgents = new Set(stuck);
 				showAgentCell(ctx);
 			},
 			promptTrust: (cwd) =>
