@@ -1,7 +1,7 @@
 /**
  * Statusline: a quiet two-line session footer.
  *
- * Line 1: provider/model [<level>] (<outcome>) │ context bar │ tokens │ cost │ duration │ cache telemetry
+ * Line 1: provider/model [<level>] [(failed)] │ context bar │ tokens │ cost │ duration │ cache telemetry
  * Line 2: folder (branch) │ extension statuses │ +N
  *
  * The footer carries status only; it adds no navigation labels. In fullscreen the model, the
@@ -54,29 +54,16 @@ interface Line1Spans {
 	level?: { x: number; width: number };
 }
 
-/** How the session's last run ended, when it ended without an answer: Esc stopped it, or Pi gave up on an error. */
-type RunOutcome = "stopped" | "failed";
-
-/** The outcome that the newest assistant message of the current branch records, read back from the leaf. */
-function branchOutcome(
-	session: Pick<ExtensionContext["sessionManager"], "getLeafId" | "getEntry">,
-): RunOutcome | undefined {
+/** Read the newest assistant message of the current branch, starting at the leaf. */
+function branchFailed(session: Pick<ExtensionContext["sessionManager"], "getLeafId" | "getEntry">): boolean {
 	let id = session.getLeafId();
 	for (let steps = 0; id && steps < 64; steps++) {
 		const entry = session.getEntry(id);
-		if (!entry) return undefined;
-		if (entry.type === "message" && entry.message.role === "assistant") {
-			const reason = entry.message.stopReason;
-			return reason === "aborted" ? "stopped" : reason === "error" ? "failed" : undefined;
-		}
+		if (!entry) return false;
+		if (entry.type === "message" && entry.message.role === "assistant") return entry.message.stopReason === "error";
 		id = entry.parentId;
 	}
-	return undefined;
-}
-
-/** The outcome follows the level and stays until the next run starts. */
-function outcomeText(fg: Fg, outcome: RunOutcome | undefined): string {
-	return outcome ? fg(outcome === "failed" ? "error" : "muted", ` (${outcome})`) : "";
+	return false;
 }
 
 /** The exact route identity: provider and model id, with no label. */
@@ -93,7 +80,7 @@ function buildLine1(
 	attachedAt: number,
 	metrics: SessionMetrics,
 	usage: ReturnType<ExtensionContext["getContextUsage"]>,
-	outcome?: RunOutcome,
+	failed: boolean,
 ): { line: string; spans: Line1Spans } {
 	const model = ctx.model;
 	const identity = modelIdentity(ctx);
@@ -108,7 +95,7 @@ function buildLine1(
 		spans.level = { x: spans.model.width + 1, width: visibleWidth(bracket) - 1 };
 		modelSeg += fg(thinkingColorKey(level), bracket);
 	}
-	modelSeg += outcomeText(fg, outcome);
+	if (failed) modelSeg += fg("error", " (failed)");
 
 	const parts: Line1Parts = { model: modelSeg };
 	if (usage) {
@@ -226,7 +213,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	const metrics = new MetricsCache();
 	let contextUsage: ReturnType<ExtensionContext["getContextUsage"]>;
 	let requestRender = () => {};
-	let runOutcome: RunOutcome | undefined;
+	let runFailed = false;
 	let composerPresent = false;
 	let stopPresence: (() => void) | undefined;
 	function observePresence(payload: unknown): void {
@@ -364,7 +351,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 				const next =
 					renderedWidth < 0
 						? undefined
-						: buildLine1(session(), fg, sep, renderedWidth, attachedAt, metrics.value, contextUsage, runOutcome).line;
+						: buildLine1(session(), fg, sep, renderedWidth, attachedAt, metrics.value, contextUsage, runFailed).line;
 				if (next === undefined || next !== renderedLine1) requestRender();
 			}, TICK_MS);
 			tick.unref?.();
@@ -384,7 +371,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 					if (composerPresent) return [];
 					renderedWidth = width;
 					layout = buildLine2(session(), footerData, fg, sep, width);
-					const first = buildLine1(session(), fg, sep, width, attachedAt, metrics.value, contextUsage, runOutcome);
+					const first = buildLine1(session(), fg, sep, width, attachedAt, metrics.value, contextUsage, runFailed);
 					renderedLine1 = first.line;
 					spans = first.spans;
 					return [truncateToWidth(first.line, width), layout.line];
@@ -406,7 +393,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		attachedAt = Date.now();
 		if (ctx.mode !== "tui") return;
-		runOutcome = branchOutcome(ctx.sessionManager);
+		runFailed = branchFailed(ctx.sessionManager);
 		composerPresent = false;
 		stopPresence ??= pi.events.on(PRESENCE_EVENT, observePresence);
 		if (enabled) install(ctx);
@@ -434,20 +421,19 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		}
 	};
 	pi.on("turn_end", (_event, ctx) => observe(ctx));
-	/** A changed outcome renders at once; the metrics refresh renders only when its own figures change. */
-	const settleOutcome = (next: RunOutcome | undefined) => {
-		if (next === runOutcome) return;
-		runOutcome = next;
+	const setRunFailed = (failed: boolean) => {
+		if (failed === runFailed) return;
+		runFailed = failed;
 		requestRender();
 	};
 	pi.on("agent_start", (_event, ctx) => {
 		observe(ctx);
-		settleOutcome(undefined);
+		setRunFailed(false);
 	});
 	pi.on("agent_end", (_event, ctx) => observe(ctx));
 	pi.on("agent_settled", (event, ctx) => {
 		observe(ctx);
-		settleOutcome(event.aborted ? "stopped" : branchOutcome(ctx.sessionManager));
+		setRunFailed(!event.aborted && branchFailed(ctx.sessionManager));
 	});
 	pi.on("model_select", (_event, ctx) => observe(ctx));
 	pi.on("thinking_level_select", (_event, ctx) => observe(ctx));
@@ -457,7 +443,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		current = ctx;
 		metrics.reset(ctx.sessionManager);
 		contextUsage = ctx.getContextUsage();
-		runOutcome = branchOutcome(ctx.sessionManager);
+		runFailed = branchFailed(ctx.sessionManager);
 		requestRender();
 	});
 

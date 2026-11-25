@@ -1361,7 +1361,7 @@ describe("Model view", () => {
 	});
 });
 
-describe("run outcome", () => {
+describe("run failure label", () => {
 	const assistant = (stopReason: string) =>
 		({
 			type: "message",
@@ -1373,41 +1373,47 @@ describe("run outcome", () => {
 		};
 	const firstLine = (footer: ReturnType<typeof installFooter>) => strip(footer.render(140)[0]);
 
-	it("follows the level after Esc or an unretried error until the next run starts", async () => {
+	it("shows an unretried error until the next run starts, but shows no label after an abort", async () => {
 		const { handlers } = makePi();
 		const mocks = makeCtx();
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		try {
-			assert.match(firstLine(footer), /^test\/test-model \[high\] │/u, "an answered or fresh session shows no outcome");
-			await handlers.get("agent_settled")({ type: "agent_settled", aborted: true } as never, mocks.ctx);
-			assert.match(firstLine(footer), /^test\/test-model \[high\] \(stopped\) │/u);
-			await handlers.get("agent_start")({ type: "agent_start" }, mocks.ctx);
-			assert.match(firstLine(footer), /^test\/test-model \[high\] │/u, "a new run clears the outcome");
+			const unlabelled = /^test\/test-model \[high\] │/u;
+			assert.match(firstLine(footer), unlabelled, "a fresh session shows no label");
 			mocks.ctx.sessionManager.getLeafId = () => "last";
 			mocks.ctx.sessionManager.getEntry = () => assistant("error");
 			await handlers.get("agent_settled")({ type: "agent_settled", aborted: false } as never, mocks.ctx);
 			assert.match(firstLine(footer), /^test\/test-model \[high\] \(failed\) │/u);
+			await handlers.get("agent_start")({ type: "agent_start" }, mocks.ctx);
+			assert.match(firstLine(footer), unlabelled, "a new run clears the label");
+			await handlers.get("agent_settled")({ type: "agent_settled", aborted: true } as never, mocks.ctx);
+			assert.match(firstLine(footer), unlabelled, "an abort is silent even without a newer assistant message");
 			mocks.ctx.sessionManager.getEntry = () => assistant("stop");
 			await handlers.get("agent_start")({ type: "agent_start" }, mocks.ctx);
 			await handlers.get("agent_settled")({ type: "agent_settled", aborted: false } as never, mocks.ctx);
-			assert.doesNotMatch(firstLine(footer), /\((stopped|failed)\)/u, "an answer clears it");
+			assert.match(firstLine(footer), unlabelled, "a successful answer shows no label");
 		} finally {
 			footer.dispose();
 		}
 	});
 
-	it("reads the outcome of a resumed session from its newest assistant message", async () => {
-		const { handlers } = makePi();
-		const mocks = makeCtx({
-			sessionManager: { getEntries: () => [], getLeafId: () => "last", getEntry: () => assistant("aborted") },
+	for (const [reason, expected] of [
+		["aborted", /^test\/test-model \[high\] │/u],
+		["error", /^test\/test-model \[high\] \(failed\) │/u],
+	] as const) {
+		it(`restores the correct failure label after resuming a session that ended with ${reason}`, async () => {
+			const { handlers } = makePi();
+			const mocks = makeCtx({
+				sessionManager: { getEntries: () => [], getLeafId: () => "last", getEntry: () => assistant(reason) },
+			});
+			await handlers.get("session_start")({ type: "session_start", reason: "resume" }, mocks.ctx);
+			const footer = installFooter(mocks);
+			try {
+				assert.match(firstLine(footer), expected);
+			} finally {
+				footer.dispose();
+			}
 		});
-		await handlers.get("session_start")({ type: "session_start", reason: "resume" }, mocks.ctx);
-		const footer = installFooter(mocks);
-		try {
-			assert.match(firstLine(footer), /^test\/test-model \[high\] \(stopped\) │/u);
-		} finally {
-			footer.dispose();
-		}
-	});
+	}
 });

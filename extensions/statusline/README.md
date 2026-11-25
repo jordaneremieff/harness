@@ -125,13 +125,11 @@ Segments join with a dim `│` separator:
    `[high]`) in the per-level theme color.
    The bracket appears only when the model declares `reasoning: true` and a
    thinking level is present; it does not depend on the provider name.
-   After a run that ended without an answer, the outcome follows: `(stopped)`
-   in the muted colour when the operator stopped the run (Pi's `agent_settled`
-   reports `aborted`), or `(failed)` in the error colour when the newest
-   assistant message of the branch ended with an error that Pi did not retry.
-   The outcome clears when the next run starts. On session start and tree
-   navigation it is read back from the newest assistant message of the branch,
-   within a bounded walk from the leaf.
+   `(failed)` follows in the error colour when the run ends with an error
+   that Pi did not retry. An abort shows no label. The failure label clears
+   when the next run starts. On session start and tree navigation the footer
+   reads the newest assistant message of the branch within a bounded walk
+   from the leaf.
 2. **Context bar + tokens.** A ten-cell block bar (`██████░░░░ 62%`) rendered
    with theme foregrounds so it works in dark and light terminals, plus
    `tokens/contextWindow`. Zero usage shows `0%`. Unknown usage after compaction
