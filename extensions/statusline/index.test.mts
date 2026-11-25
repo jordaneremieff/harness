@@ -784,16 +784,16 @@ describe("metrics invalidation", () => {
 		try {
 			for (let frame = 0; frame < 100; frame += 1) footer.render(120);
 			assert.equal(scans, 1);
-			assert.equal(points, 0);
+			assert.equal(points, 1, "session start reads back from the leaf once for the last run's outcome");
 			assert.equal(contextReads, 1);
 			for (const tick of liveTicks) tick.callback();
 			assert.equal(scans, 1);
-			assert.equal(points, 0);
+			assert.equal(points, 1);
 			entries.push({ ...entries[0], id: "b", parentId: "a" });
 			for (const tick of liveTicks) tick.callback();
 			assert.match(footer.render(120)[0], /~\$0\.50/);
 			assert.equal(scans, 1);
-			assert.equal(points, 1);
+			assert.equal(points, 2);
 			await handlers.get("session_tree")({ type: "session_tree" }, mocks.ctx);
 			assert.equal(scans, 2);
 			assert.match(footer.render(120)[0], /~\$0\.50/);
@@ -1286,5 +1286,56 @@ describe("Model view", () => {
 		await done;
 		footer.dispose();
 		assert.deepEqual(levels, []);
+	});
+});
+
+describe("run outcome", () => {
+	const assistant = (stopReason: string) =>
+		({
+			type: "message",
+			id: "last",
+			parentId: null,
+			message: { role: "assistant", stopReason },
+		}) as unknown as SessionEntryLike & {
+			parentId: string | null;
+		};
+	const firstLine = (footer: ReturnType<typeof installFooter>) => strip(footer.render(140)[0]);
+
+	it("follows the level after Esc or an unretried error until the next run starts", async () => {
+		const { handlers } = makePi();
+		const mocks = makeCtx();
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const footer = installFooter(mocks);
+		try {
+			assert.match(firstLine(footer), /^test\/test-model \[high\] │/u, "an answered or fresh session shows no outcome");
+			await handlers.get("agent_settled")({ type: "agent_settled", aborted: true } as never, mocks.ctx);
+			assert.match(firstLine(footer), /^test\/test-model \[high\] \(stopped\) │/u);
+			await handlers.get("agent_start")({ type: "agent_start" }, mocks.ctx);
+			assert.match(firstLine(footer), /^test\/test-model \[high\] │/u, "a new run clears the outcome");
+			mocks.ctx.sessionManager.getLeafId = () => "last";
+			mocks.ctx.sessionManager.getEntry = () => assistant("error");
+			await handlers.get("agent_settled")({ type: "agent_settled", aborted: false } as never, mocks.ctx);
+			assert.match(firstLine(footer), /^test\/test-model \[high\] \(failed\) │/u);
+			mocks.ctx.sessionManager.getEntry = () => assistant("stop");
+			await handlers.get("agent_start")({ type: "agent_start" }, mocks.ctx);
+			await handlers.get("agent_settled")({ type: "agent_settled", aborted: false } as never, mocks.ctx);
+			assert.doesNotMatch(firstLine(footer), /\((stopped|failed)\)/u, "an answer clears it");
+		} finally {
+			footer.dispose();
+		}
+	});
+
+	it("reads the outcome of a resumed session from its newest assistant message", async () => {
+		const { handlers } = makePi();
+		const mocks = makeCtx({
+			sessionManager: { getEntries: () => [], getLeafId: () => "last", getEntry: () => assistant("aborted") },
+		});
+		await handlers.get("session_start")({ type: "session_start", reason: "resume" }, mocks.ctx);
+		const footer = installFooter(mocks);
+		try {
+			assert.match(firstLine(footer), /^test\/test-model \[high\] \(stopped\) │/u);
+		} finally {
+			footer.dispose();
+		}
 	});
 });
