@@ -1906,3 +1906,47 @@ it("a framed Threads view adds the z size action before Escape and hides it whil
 		f.ui.dispose();
 	}
 });
+
+it("an unchanged exchange frame reads each sender once and returns the assembled rows", async () => {
+	const senders = ["aaaaaaaa-0000-4000-8000-000000000001", "aaaaaaaa-0000-4000-8000-000000000002"];
+	const events = Array.from({ length: 20 }, (_, index) =>
+		event(index + 1, { sender: senders[index % 2], message: `Post ${index + 1}` }),
+	);
+	let lookups = 0;
+	const state = { selected: undefined as string | undefined, drafts: new Map() };
+	const view = new ThreadsView({
+		tui: { terminal: { rows: 40, columns: 140 }, requestRender() {} } as unknown as TUI,
+		theme,
+		keys: new KeybindingsManager(TUI_KEYBINDINGS),
+		state,
+		collaborate: async (input) =>
+			input.action === "list"
+				? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+				: page("t1", events),
+		nameFor: (id) => id,
+		modelFor: () => {
+			lookups++;
+			return undefined;
+		},
+		exactTime: () => false,
+		toggleTime() {},
+		redraw() {},
+		onExit() {},
+	});
+	try {
+		view.open();
+		await settle();
+		const first = stripVTControlCharacters(view.render(140, 38, 60).join("\n"));
+		assert.match(first, /Post 20/u);
+		lookups = 0;
+		const frames = 10;
+		for (let frame = 0; frame < frames; frame++)
+			assert.equal(stripVTControlCharacters(view.render(140, 38, 60).join("\n")), first);
+		assert.ok(
+			lookups <= frames * senders.length,
+			`${frames} unchanged frames read a sender's model ${lookups} times for ${events.length} posts`,
+		);
+	} finally {
+		view.dispose();
+	}
+});

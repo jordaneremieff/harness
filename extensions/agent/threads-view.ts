@@ -238,7 +238,20 @@ export class ThreadsView {
 		key: string;
 		value: { lines: string[]; blocks: Array<{ id: string; start: number; size: number }>; disclosure?: number };
 	};
-	private exchangeCache?: { key: string; lines: Map<number, EventRows> };
+	private exchangeCache?: {
+		key: string;
+		lines: Map<number, EventRows>;
+		/** The assembled rows of an unchanged exchange; a frame without a change returns them. */
+		document?: { lines: string[]; spans: ExchangeSpan[] };
+	};
+	/** The distinct senders and the sequences of the loaded events, read once for each loaded range. */
+	private exchangeEvents?: {
+		events: readonly CollaborationEvent[];
+		first: number | undefined;
+		last: number | undefined;
+		senders: string[];
+		sequences: string;
+	};
 	/** Long posts the operator opened or closed against the view's default; Ctrl+O flips the default. */
 	private readonly postChoices = new Set<string>();
 	private postsOpen = false;
@@ -1675,6 +1688,7 @@ export class ThreadsView {
 		const spans: ExchangeSpan[] = [];
 		const cacheKey = this.exchangeKey(read, width);
 		if (this.exchangeCache?.key !== cacheKey) this.exchangeCache = { key: cacheKey, lines: new Map() };
+		if (this.exchangeCache.document) return this.exchangeCache.document;
 		const cache = this.exchangeCache.lines;
 		for (const event of read.events) {
 			lines.push("");
@@ -1692,7 +1706,8 @@ export class ThreadsView {
 		}
 		if (!read.events.length) lines.push("", theme.fg("muted", `${pad}No messages yet.`));
 		lines.push("");
-		return { lines, spans };
+		this.exchangeCache.document = { lines, spans };
+		return this.exchangeCache.document;
 	}
 
 	/** A click on a post's header replies to it; a click on a long post's control opens or closes it. */
@@ -1866,10 +1881,29 @@ export class ThreadsView {
 		return { lines: [...shown, `${pad}${controlRow}`], toggle: shown.length };
 	}
 
-	/** Event identities, width, lead, names, post disclosure, exact time and the minute. */
+	/** The distinct senders and the sequences of the loaded events; a loaded range is read once. */
+	private loadedEvents(read: ThreadRead): { senders: string[]; sequences: string } {
+		const events = read.events;
+		const first = events[0]?.sequence;
+		const last = events.at(-1)?.sequence;
+		const known = this.exchangeEvents;
+		if (known?.events === events && known.first === first && known.last === last && known.sequences.length > 0)
+			return known;
+		this.exchangeEvents = {
+			events,
+			first,
+			last,
+			senders: [...new Set(events.map((event) => event.sender))],
+			sequences: `${events.length}:${events.map((event) => event.sequence).join(",")}`,
+		};
+		return this.exchangeEvents;
+	}
+
+	/** Event identities, the earlier-page mark, width, lead, names, post disclosure, exact time and the minute. */
 	private exchangeKey(read: ThreadRead, width: number): string {
-		const names = read.events
-			.map((event) => `${this.name(event.sender)}:${this.options.modelFor?.(event.sender) ?? ""}`)
+		const { senders, sequences } = this.loadedEvents(read);
+		const names = senders
+			.map((sender) => `${sender}=${this.name(sender)}:${this.options.modelFor?.(sender) ?? ""}`)
 			.join("|");
 		return [
 			read.page.thread.id,
@@ -1880,7 +1914,8 @@ export class ThreadsView {
 			this.postsOpen,
 			[...this.postChoices].join(","),
 			Math.floor(Date.now() / 60_000),
-			read.events.map((event) => event.sequence).join(","),
+			read.nextBefore ? "earlier" : "start",
+			sequences,
 		].join("#");
 	}
 
