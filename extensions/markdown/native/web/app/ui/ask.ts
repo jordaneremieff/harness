@@ -14,6 +14,9 @@
 			disposed = false,
 			localSource = false;
 		const receiptJobs = new Set<Promise<void>>();
+		// The reason the last send from the open card did not leave the page. The card shows it under
+		// the composer until the person types, sends or opens another card.
+		let refusal: { thread: ReaderThread; text: string } | null = null;
 		function revision() {
 			const value = controller.payload?.meta.revision;
 			return typeof value === "number" && value > 0 ? value : undefined;
@@ -695,8 +698,9 @@
 			const remove = comment
 				? button("Remove", "", () => removeComment(comment), { className: "batch-secondary batch-remove" })
 				: null;
+			// A send that waits for an earlier message stays enabled, so a click explains the wait.
 			function updateButtons() {
-				primary.disabled = !comment && (!field.value.trim() || pending(thread));
+				primary.disabled = !comment && !field.value.trim();
 				if (secondary) secondary.disabled = !field.value.trim();
 			}
 			updateButtons();
@@ -708,14 +712,15 @@
 					if (!hasText(thread.draft) && hasText(field.value)) thread.draftRevision = revision();
 					thread.draft = field.value;
 				}
+				if (refusal?.thread === thread) clearRefusal();
 				updateButtons();
 			});
 			field.addEventListener("keydown", (event) => {
-				if (event.key === "Enter" && event.metaKey && !event.altKey && !event.ctrlKey && !event.isComposing) {
-					event.preventDefault();
-					event.stopPropagation();
-					(event.shiftKey ? secondary : primary)?.click();
-				}
+				if (event.key !== "Enter" || !event.metaKey || event.altKey || event.ctrlKey || event.isComposing) return;
+				event.preventDefault();
+				event.stopPropagation();
+				if (event.shiftKey) pressKey(thread, field, secondary, alternative);
+				else pressKey(thread, field, primary, label);
 			});
 			return el(
 				"div",
@@ -723,6 +728,17 @@
 				field,
 				el("div", { class: "foot" }, remove, el("span", { class: "hint" }, hint), secondary, primary),
 			);
+		}
+		// A shortcut for a button that is not available yet says why instead of doing nothing.
+		function pressKey(
+			thread: ReaderThread,
+			field: HTMLTextAreaElement,
+			target: HTMLButtonElement | null,
+			name?: string,
+		) {
+			if (!target) return;
+			if (target.disabled) refuse(textProblem(field.value, name === "Add to batch"), thread);
+			else target.click();
 		}
 		function threadTitle(thread: ReaderThread) {
 			if (thread.comments) return `Batch of ${commentCount(thread.comments.length)}`;
@@ -760,16 +776,20 @@
 			rows: "2",
 		});
 		const listBody = el("ol", { class: "batch-list-body", role: "list" }),
-			listFoot = el("div", { class: "batch-list-foot" });
+			listFoot = el("div", { class: "batch-list-foot" }),
+			listRefusal = el("p", { class: "send-failure ask-refused", role: "alert" });
+		listRefusal.hidden = true;
 		const parkOverall = action("Close overall comment", () => park());
 		batchList.replaceChildren(
 			el("h2", {}, "Pending batch"),
 			el("label", { class: "batch-overall" }, el("span", {}, "Overall comment"), overallField),
 			parkOverall,
 			listBody,
+			listRefusal,
 			listFoot,
 		);
 		overallField.addEventListener("input", () => {
+			listRefusal.hidden = true;
 			// Input that arrives while the list is closed, such as a late paste after a document
 			// switch, belongs to no visible batch.
 			if (!batchList.matches(":popover-open")) {
@@ -919,14 +939,23 @@
 				owner,
 				() => controller.payload?.presentation === presentation,
 				() => removedBatch(owner),
+				() => {
+					if (owner === session && !warnings.has(owner))
+						ctx.toast("The batch did not change. Check the pending comments before you try again.");
+				},
 			);
 		}
-		async function prepareBatch(owner: ReaderAskDocument, current: () => boolean, commit: () => void) {
+		async function prepareBatch(
+			owner: ReaderAskDocument,
+			current: () => boolean,
+			commit: () => void,
+			refused: () => void,
+		) {
 			const stillCurrent = () => !disposed && session === owner && !controller.compositionTarget && current();
 			const completed = await recovering.prepare(owner, sessions.snapshot(owner, true), stillCurrent, commit);
-			if (completed || disposed || owner !== session) return;
-			if (warnings.has(owner)) showRecoveryWarning(owner);
-			else ctx.toast("The batch did not change. Check the pending comments before you try again.");
+			if (completed || disposed) return;
+			if (owner === session && warnings.has(owner)) showRecoveryWarning(owner);
+			refused();
 		}
 		function removedBatch(owner: ReaderAskDocument) {
 			const removed = owner.comments.splice(0),
@@ -972,25 +1001,43 @@
 			pendingChanged(owner);
 			if (owner === session) ask.refresh();
 		}
-		function quoteFits(quote?: string) {
-			if (quote && utf8.encode(quote).length > 8192) {
-				ctx.notice("Select a shorter passage. The quote is too long.", "warn");
+		// Every refused send says why: in the open card when it belongs to that card, otherwise in a
+		// notice. The text the person wrote stays where it was.
+		function refuse(text: string, thread = session.visible ? session.current : null): false {
+			if (disposed) return false;
+			// The open batch list lies above the card, so a refusal from it shows in the list.
+			if (batchList.matches(":popover-open")) {
+				listRefusal.textContent = text;
+				listRefusal.hidden = false;
 				return false;
 			}
-			return true;
-		}
-		function sendableText(text: string) {
-			if (utf8.encode(text).length <= 64 * 1024) return hasText(text);
-			ctx.notice("Shorten the comment before sending it. Your text is kept.", "warn");
+			if (thread && thread === session.current && session.visible) {
+				refusal = { thread, text };
+				ctx.removeNotice("ask-refused");
+				draw();
+			} else ctx.notice(text, "warn", [], "ask-refused");
 			return false;
 		}
+		function clearRefusal() {
+			refusal = null;
+			card.querySelector(".ask-refused")?.remove();
+		}
+		function quoteProblem(quote?: string) {
+			return quote && utf8.encode(quote).length > 8192 ? "Select a shorter passage. The quote is too long." : "";
+		}
+		function textProblem(text: string, adding = false) {
+			if (utf8.encode(text).length > 64 * 1024) return "Shorten the comment before sending it. Your text is kept.";
+			if (hasText(text)) return "";
+			return adding ? "Write a comment before you add it to the batch." : "Write a message before you send it.";
+		}
 		function addComment(thread: ReaderThread) {
-			if (thread !== session.current || !session.threads.includes(thread)) return false;
-			if (!sendableText(thread.draft) || !quoteFits(thread.quote)) return false;
-			if (session.comments.length >= batchLimit) {
-				ctx.notice("The batch is full. Send it before adding another comment.", "warn");
-				return false;
-			}
+			if (thread !== session.current || !session.threads.includes(thread))
+				return refuse("This comment is no longer open. Select the passage and ask again.");
+			const problem =
+				textProblem(thread.draft, true) ||
+				quoteProblem(thread.quote) ||
+				(session.comments.length >= batchLimit ? "The batch is full. Send it before adding another comment." : "");
+			if (problem) return refuse(problem, thread);
 			session.comments.push({
 				text: thread.draft,
 				quote: thread.quote,
@@ -1036,47 +1083,61 @@
 					"warn",
 				);
 		}
-		const sendingBatches = new Set<ReaderAskDocument>();
+		const sendingBatches = new Set<ReaderAskDocument>(),
+			preparingBatches = new Set<ReaderAskDocument>();
 		const retryBatch = new WeakMap<ReaderAskMessage, () => Promise<void>>();
-		function batchReady() {
+		function batchProblem() {
 			if (session.current?.pendingComment && !session.current.pendingComment.text.trim()) ask.close();
-			if (!session.comments.length) return false;
-			if (sendingBatches.has(session)) {
-				ctx.notice("Wait for the current batch to reach the conversation before sending another.", "warn");
-				return false;
-			}
-			if (session.comments.length > batchLimit) {
-				ctx.notice("Remove comments until the batch fits, then send it.", "warn");
-				return false;
-			}
-			return batchTextFits();
+			if (!session.comments.length)
+				return hasText(session.overall)
+					? "Add a comment on a passage before you send the batch. The overall comment goes with it."
+					: "The batch has no comments to send.";
+			if (sendingBatches.has(session) || preparingBatches.has(session))
+				return "Wait for the current batch to reach the conversation before sending another.";
+			return batchSizeProblem();
 		}
-		function batchTextFits() {
-			if (utf8.encode(session.overall).length > 64 * 1024) {
-				ctx.notice("Shorten the overall comment before sending the batch.", "warn");
-				return false;
-			}
+		function batchSizeProblem() {
+			if (session.comments.length > batchLimit) return "Remove comments until the batch fits, then send it.";
+			if (utf8.encode(session.overall).length > 64 * 1024)
+				return "Shorten the overall comment before sending the batch.";
 			const long = session.comments.findIndex(({ text }) => utf8.encode(text).length > 64 * 1024);
-			if (long < 0) return true;
-			ctx.notice(`Shorten comment ${long + 1} before sending the batch.`, "warn");
-			return false;
+			return long < 0 ? "" : `Shorten comment ${long + 1} before sending the batch.`;
 		}
 		async function sendBatch() {
-			if (!currentVersion() || !batchReady() || !releaseEditor()) return;
+			if (!currentVersion()) return refuse(notShown);
+			const problem = batchProblem();
+			if (problem) return refuse(problem);
+			if (!releaseEditor()) return;
 			const owner = session,
 				base = version(),
 				thread = batchThread(owner),
 				message = thread.messages[0];
 			const packet = sessions.packet(thread, message, base);
-			if (utf8.encode(JSON.stringify(packet)).length > 256 * 1024 - 128) {
-				ctx.notice("The batch is too long. Shorten or remove comments before sending it.", "warn");
-				return;
+			if (utf8.encode(JSON.stringify(packet)).length > 256 * 1024 - 128)
+				return refuse("The batch is too long. Shorten or remove comments before sending it.");
+			preparingBatches.add(owner);
+			try {
+				await prepareBatch(
+					owner,
+					() => sameVersion(owner, base),
+					() => submitBatch(owner, thread, message),
+					() => batchNotSent(owner),
+				);
+			} finally {
+				preparingBatches.delete(owner);
 			}
-			await prepareBatch(
-				owner,
-				() => sameVersion(owner, base),
-				() => submitBatch(owner, thread, message),
-			);
+		}
+		function batchNotSent(owner: ReaderAskDocument) {
+			if (owner !== session)
+				ctx.notice("The batch was not sent because another document opened. Its comments stay with it.", "warn");
+			else if (warnings.has(owner))
+				refuse(
+					"The batch was not sent because the reader could not confirm its saved copy. Your comments are kept. Check the saved batch, then send again.",
+				);
+			else
+				refuse(
+					"The batch was not sent because the document or its comments changed while the reader prepared it. Your comments are kept. Send it again.",
+				);
 		}
 		function batchThread(owner: ReaderAskDocument): ReaderThread {
 			const id = crypto.randomUUID();
@@ -1105,17 +1166,37 @@
 				return job.finally(() => receiptJobs.delete(job));
 			};
 			retryBatch.set(message, attempt);
-			void attempt();
 			openThread(thread, false);
+			void attempt();
+		}
+		// A batch that never left the page returns its comments; a retry that cannot start says why.
+		function batchUnsent(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage, detail: string) {
+			if (message.state !== "sending") {
+				refuse(detail, thread);
+				return;
+			}
+			message.state = "failed";
+			message.detail = detail;
+			retryBatch.delete(message);
+			restoreBatch(owner, thread, message);
+			if (owner === session) ask.refresh();
 		}
 		async function deliverBatch(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
-			if (disposed || owner !== session || sendingBatches.has(owner)) return;
+			if (disposed) return;
+			const unsent = (detail: string) => batchUnsent(owner, thread, message, detail);
+			if (owner !== session) return unsent("Another document opened before the batch was sent.");
+			if (sendingBatches.has(owner)) return unsent("The batch is already on its way to the conversation.");
 			sendingBatches.add(owner);
+			let outcome: ReaderAskSubmission;
 			try {
-				await sendAttempt(owner, thread, message);
+				outcome = await sendAttempt(owner, thread, message);
 			} finally {
 				sendingBatches.delete(owner);
 			}
+			if (outcome !== "attempted") unsent(submissionProblem(outcome, message));
+			else batchReceipt(owner, thread, message);
+		}
+		function batchReceipt(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
 			if (!(message.state === "unknown" && message.retryable)) retryBatch.delete(message);
 			if (message.state === "failed") restoreBatch(owner, thread, message);
 			if (owner === session) ask.refresh();
@@ -1363,6 +1444,8 @@
 				);
 			if (thread.messages.length || !closed(thread, 0)) card.append(composer(thread, !!activeMessage(thread)));
 			else card.append(el("p", { class: "review-text" }, thread.draft));
+			if (refusal?.thread === thread)
+				card.append(el("p", { class: "send-failure ask-refused", role: "alert" }, refusal.text));
 		}
 		function cardIsComposing() {
 			const target = controller.compositionTarget;
@@ -1428,28 +1511,80 @@
 			sessions.register(session, thread, message);
 			return message;
 		}
-		function releaseEditor() {
+		function releaseEditor(thread?: ReaderThread) {
 			// Closing an open block can commit an edit. Capture its generation only afterwards.
 			if (!controller.compositionTarget && (!controller.doc?.active || editor.close())) return true;
-			ctx.notice("Finish the composition before sending the question.", "warn");
-			return false;
+			return refuse("Finish typing in the document first, then send again. Your text is kept.", thread);
 		}
-		function canSend(thread: ReaderThread, retry?: ReaderAskMessage) {
-			if (retry) return retry === activeMessage(thread);
-			return !pending(thread) && sendableText(thread.draft) && quoteFits(thread.quote);
+		const notShown =
+			"The reader did not send this because the page has not finished showing the document. Your text is kept. Send it again.";
+		function sendProblem(thread: ReaderThread, retry?: ReaderAskMessage) {
+			const last = activeMessage(thread);
+			if (retry) return retry === last ? "" : "A newer message follows this one, so the reader does not retry it.";
+			return (last && waitProblem(last)) || textProblem(thread.draft) || quoteProblem(thread.quote);
+		}
+		function waitProblem(last: ReaderAskMessage) {
+			if (last.state === "sending")
+				return "Your last message is still on its way. Send this one after it arrives. Your text is kept.";
+			if (last.state !== "unknown") return "";
+			return last.retryable
+				? "The reader has not confirmed your last message. Retry it before you send another. Your text is kept."
+				: "The reader has not confirmed your last message and will not send it twice. Send this one after the conversation answers. Your text is kept.";
+		}
+		function submissionProblem(outcome: ReaderAskSubmission, message: ReaderAskMessage) {
+			if (outcome === "inFlight") return "The reader is already sending this message.";
+			if (outcome === "stale") return notShown;
+			if (outcome === "unregistered")
+				return "This question is no longer in the Ask list, so the reader did not send it. Ask again.";
+			return message.state === "unknown"
+				? "The reader will not send this message twice while its delivery is not confirmed."
+				: "This message already reached the conversation.";
+		}
+		// A message that never left the page goes back into the composer as it was.
+		function takeBack(thread: ReaderThread, message: ReaderAskMessage) {
+			const index = thread.messages.indexOf(message);
+			if (index < 0 || message.state !== "sending") return;
+			thread.messages.splice(index, 1);
+			sessions.forget(message);
+			if (!thread.messages.length && thread.threadId === message.requestId) thread.threadId = "";
+			thread.draft = message.text + thread.draft;
+			thread.draftRevision = message.authoredRevision;
+		}
+		function readyToSend(owner: ReaderAskDocument, thread: ReaderThread, retry?: ReaderAskMessage) {
+			const problem = sendProblem(thread, retry);
+			if (problem) return refuse(problem, thread);
+			if (!releaseEditor(thread)) return false;
+			if (owner !== session || session.current !== thread)
+				return refuse("Another card opened before your message was sent. Your text is kept in its own card.");
+			return !!currentVersion() || refuse(notShown, thread);
 		}
 		async function sendMessage(retry?: ReaderAskMessage) {
 			const owner = session,
 				thread = owner.current;
-			if (!thread || !canSend(thread, retry) || !releaseEditor()) return;
-			if (owner !== session || session.current !== thread || !currentVersion()) return;
-			await sendAttempt(owner, thread, retry ?? newMessage(thread));
+			if (!thread) {
+				refuse("Open the question again, then send it.");
+				return;
+			}
+			if (!readyToSend(owner, thread, retry)) return;
+			const message = retry ?? newMessage(thread);
+			const outcome = await sendAttempt(owner, thread, message);
+			if (outcome !== "attempted") stayedInPage(thread, message, outcome, !retry);
 			if (thread === session.current) ask.refresh();
 		}
+		function stayedInPage(
+			thread: ReaderThread,
+			message: ReaderAskMessage,
+			outcome: ReaderAskSubmission,
+			created: boolean,
+		) {
+			if (created) takeBack(thread, message);
+			refuse(submissionProblem(outcome, message), thread);
+		}
 		async function sendAttempt(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
+			if (refusal?.thread === thread) refusal = null;
 			const pending = delivery.submit(owner, thread, message);
 			if (owner === session) ask.refresh();
-			await pending;
+			return pending;
 		}
 		// The held request belongs to the document where the passage was open.
 		function noteHeld() {
@@ -1481,7 +1616,12 @@
 			};
 			thread.messages.push(message);
 			sessions.register(session, thread, message);
-			void sendAttempt(session, thread, message).then(() => {
+			void sendAttempt(session, thread, message).then((outcome) => {
+				if (outcome !== "attempted") {
+					thread.messages.splice(thread.messages.indexOf(message), 1);
+					sessions.forget(message);
+					refuse(submissionProblem(outcome, message), thread);
+				}
 				if (thread === session.current) ask.refresh();
 			});
 		}
@@ -1524,6 +1664,7 @@
 			if (session.current !== thread) {
 				discardEmptyComment();
 				discardEmptyQuestion();
+				refusal = null;
 			}
 			session.current = thread;
 			session.visible = true;
@@ -1727,6 +1868,7 @@
 					return true;
 				}
 				if (!session.visible) return false;
+				refusal = null;
 				discardEmptyComment();
 				discardEmptyQuestion();
 				if (session.current?.pendingComment) session.current = null;
@@ -1912,6 +2054,7 @@
 		const onBatchToggle = (event: ToggleEvent) => {
 			const open = event.newState === "open";
 			trayOpen.setAttribute("aria-expanded", String(open));
+			listRefusal.hidden = true;
 			if (open) drawBatchList();
 		};
 		batchList.addEventListener("beforetoggle", onBatchToggle);

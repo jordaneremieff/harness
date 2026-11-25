@@ -132,3 +132,18 @@ test("admission, progress and answers survive delayed negative states, receipts 
 		}
 	}
 });
+
+test("submit names why a message stayed in the page", async () => {
+	const f = fixture(() => ({ accepted: true }));
+	const pending = f.send();
+	assert.equal(await f.send(), "inFlight");
+	assert.equal(await pending, "attempted");
+	assert.equal(await f.send(), "settled");
+	const b = f.sessions.show("B", "", "two");
+	assert.equal(await f.send(), "stale");
+	assert.equal(await f.delivery.submit(b, f.thread, f.message), "unregistered");
+	f.sessions.show("A", "", "one");
+	f.owner.threads.splice(0);
+	assert.equal(await f.send(), "unregistered");
+	assert.equal(f.packets.length, 1);
+});

@@ -63,11 +63,28 @@
 			}
 			receiveReceipt(message, receipt, replay);
 		}
-		async function submit(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
+		function registeredDelivery(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
 			const registered = sessions.delivery(message.requestId, thread.threadId);
-			if (registered?.owner !== owner || registered.thread !== thread || registered.message !== message) return;
+			const same = registered?.owner === owner && registered.thread === thread && registered.message === message;
+			return same && owner.threads.includes(thread) ? registered : undefined;
+		}
+		// The result names why a message stayed in the page, so the card can say so.
+		async function submit(
+			owner: ReaderAskDocument,
+			thread: ReaderThread,
+			message: ReaderAskMessage,
+		): Promise<ReaderAskSubmission> {
+			const registered = registeredDelivery(owner, thread, message);
+			if (!registered) return "unregistered";
 			const base = current(owner);
-			if (!base || !ready(message) || inFlight.has(message) || !owner.threads.includes(thread)) return;
+			if (!base) return "stale";
+			if (inFlight.has(message)) return "inFlight";
+			if (!ready(message)) return "settled";
+			await start(registered, base);
+			return "attempted";
+		}
+		async function start(registered: ReaderAskDelivery, base: ReaderPromptVersion) {
+			const { message } = registered;
 			inFlight.add(message);
 			const replay = message.state === "unknown";
 			message.state = "sending";

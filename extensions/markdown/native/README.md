@@ -196,6 +196,12 @@ for a passage it cannot locate. Open review items and pending
 comments can keep marks even after the person dismisses their cards.
 A plain click on a mark in Reading, or the mark's item in the page menu, opens its card
 again; where marks overlap, each further click opens the next card.
+A send that does not leave the page always says why, and the text stays where the person wrote it:
+under the composer of the open card, in the batch list when it is open, and otherwise in a notice.
+The page names the reason, such as an earlier message that is still on its way, a batch without
+a comment on a passage, a document that has not finished showing, or a batch that changed while the
+reader saved it. A message that never left the page returns to its composer. The Send button of a
+follow-up stays enabled while an earlier message waits, so a click explains the wait.
 A definite refusal restores the batch with its overall comment. For an unconfirmed request, native returns
 `accepted: false`, `uncertain: true` and a `retryable` boolean. The page shows Retry only
 when `retryable` is true. Retry sends the original request ID and contents so the bridge

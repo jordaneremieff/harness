@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry", "wide-code-and-tables", "layout-fits-every-pane-size",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-batch-sends-one-prompt", "ask-marks-reopen-cards-and-command-d", "text-fields-keep-editing-keys", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-batch-sends-one-prompt", "ask-marks-reopen-cards-and-command-d", "text-fields-keep-editing-keys", "ask-from-open-block-and-let-it", "ask-sends-from-stored-live-pane", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "code-syntax-and-rendered-markdown", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -83,6 +83,7 @@ struct Verification {
                 await run("ask-marks-reopen-cards-and-command-d") { await context.askMarks(keep: &keep) }
                 await run("text-fields-keep-editing-keys") { await context.textFieldKeys(keep: &keep) }
                 await run("ask-from-open-block-and-let-it") { await context.askFromOpenBlock(keep: &keep) }
+                await run("ask-sends-from-stored-live-pane") { await context.askStoredPane(keep: &keep) }
                 await run("narrow-writing-bar-keeps-save-icon") { await context.narrowWritingBar(keep: &keep) }
                 await run("agent-change-keeps-reading-position") { await context.agentChangeKeepsPlace(keep: &keep) }
                 await run("context-menu-ask-floats-beside-selection") { await context.contextMenuAsk(keep: &keep) }
