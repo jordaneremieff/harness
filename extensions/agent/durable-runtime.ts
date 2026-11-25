@@ -407,6 +407,22 @@ export async function createDurableRuntime(
 		return true;
 	}
 
+	/**
+	 * A fork adds a conversation and no run, so it takes no recovery marker; without the catalog record that
+	 * conversation would have no route, so it is refused like an admission.
+	 */
+	function refuseOrphanFork(): void {
+		if (!recordRemoved && lstatSync(catalog.path(metadata.storageId), { throwIfNoEntry: false }) === undefined)
+			catalogRecordRemoved(Object.assign(new Error("catalog record missing"), { code: "ENOENT" }));
+		if (recordRemoved) throw new Error("The storage's catalog record was removed; this host admits no new work.");
+	}
+
+	/** Mark recovery before an admission, and refuse new conversations in a storage without its record. */
+	function admitNewWork(method: string): void {
+		if (ADMITTING_METHODS.has(method)) markAdmissionDue();
+		else if (method === "fork") refuseOrphanFork();
+	}
+
 	/** Write the recovery marker; a failed write blocks the admitting request. A removed record takes no marker. */
 	function markRecoveryDue(due: boolean): void {
 		if (recordRemoved) return;
@@ -1379,7 +1395,7 @@ export async function createDurableRuntime(
 		if (method === "recovery-state") {
 			return recoveryState(true);
 		}
-		if (ADMITTING_METHODS.has(method)) markAdmissionDue();
+		admitNewWork(method);
 		switch (method) {
 			case "spawn":
 			case "resolve-agent":

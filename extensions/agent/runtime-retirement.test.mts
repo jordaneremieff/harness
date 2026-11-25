@@ -373,6 +373,11 @@ it("retires and closes after its catalog record is removed, without recreating i
 		),
 		/catalog record was removed; this host admits no new work/,
 	);
+	await assert.rejects(
+		f.runtime.request("fork", {}, "no-record-fork"),
+		/catalog record was removed; this host admits no new work/,
+		"a fork would add a conversation that no route reaches",
+	);
 	assert.ok(f.runtime.tryRetire);
 	let sealed = false;
 	assert.equal(
