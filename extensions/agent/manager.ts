@@ -455,6 +455,8 @@ export class AgentManager {
 	private readonly rosterListeners = new Set<() => void>();
 	/** The figures text last written to each primary's footer cell. */
 	private readonly footerFigures = new Map<string, string>();
+	/** The page of each primary's last footer projection. */
+	private readonly footerPages = new Map<string, AgentConversationPage>();
 	private stopCatalogObservation?: () => void;
 	private observeCatalogChanges(): void {
 		if (this.stopCatalogObservation) return;
@@ -2462,6 +2464,7 @@ export class AgentManager {
 		this.primaryClosures.set(signal, ownedClosures);
 		this.closingPrimaries.set(ownerId, closing);
 		this.footerFigures.delete(ownerId);
+		this.footerPages.delete(ownerId);
 		try {
 			if (!this.reloadedSignals.has(signal)) primary.status?.(undefined);
 		} catch (error) {
@@ -2949,7 +2952,9 @@ export class AgentManager {
 			);
 		}
 		try {
-			const figures = this.figuresForRows(ownerId, this.toolCardRows);
+			// The page of this primary's last projection gives the same text as that projection, marker included.
+			const page = this.footerPages.get(ownerId);
+			const figures = page ? this.figuresForPage(ownerId, page) : this.figuresForRows(ownerId, this.toolCardRows);
 			this.footerFigures.set(ownerId, figures);
 			primary.status?.(figures || undefined);
 		} catch (error) {
@@ -2969,9 +2974,13 @@ export class AgentManager {
 
 	/** UI-local session totals reuse the roster and the primary's retained sent-work identities. */
 	async sessionFigures(ownerId: string, page?: AgentConversationPage): Promise<string> {
-		const observed = page ?? (await this.dashboardPage({ ownerId }));
-		const text = this.figuresForRows(ownerId, observed.rows);
-		return !observed.coverage.complete ? text.replace(/(agents: \d+\/\d+)( active)/u, "$1+$2") : text;
+		return this.figuresForPage(ownerId, page ?? (await this.dashboardPage({ ownerId })));
+	}
+
+	/** The figures of one page; a `+` after the count marks a page that does not cover every row. */
+	private figuresForPage(ownerId: string, page: AgentConversationPage): string {
+		const text = this.figuresForRows(ownerId, page.rows);
+		return !page.coverage.complete ? text.replace(/(agents: \d+\/\d+)( active)/u, "$1+$2") : text;
 	}
 
 	private figuresForRows(ownerId: string, rows: readonly AgentConversationSummary[]): string {
@@ -2989,6 +2998,20 @@ export class AgentManager {
 		await this.projectFooter();
 	}
 
+	private async projectPrimaryFooter(ownerId: string, primary: PrimaryClient): Promise<void> {
+		// Footer refreshes follow catalogue notices, so they reconcile claims on the background bound.
+		const page = await this.priorityPage({ ownerId }, { reconcileAfterMs: BACKGROUND_RECONCILE_MS });
+		this.observeToolCardRows(page);
+		if (this.primaries.get(ownerId) === primary) this.footerPages.set(ownerId, page);
+		const text = this.figuresForPage(ownerId, page);
+		// Each status write requests a terminal render, and notices arrive far more often than
+		// the figures change, so an unchanged text writes nothing.
+		if (!primary.signal.aborted && this.footerFigures.get(ownerId) !== text) {
+			this.footerFigures.set(ownerId, text);
+			primary.status?.(text || undefined);
+		}
+	}
+
 	/** Project the roster once for each primary and write the footer texts that changed. */
 	private async projectFooter(): Promise<void> {
 		if (this.shuttingDown || !this.primaries.size) return;
@@ -3000,18 +3023,7 @@ export class AgentManager {
 		try {
 			do {
 				this.refreshAgain = false;
-				for (const [ownerId, primary] of this.primaries) {
-					// Footer refreshes follow catalogue notices, so they reconcile claims on the background bound.
-					const page = await this.priorityPage({ ownerId }, { reconcileAfterMs: BACKGROUND_RECONCILE_MS });
-					this.observeToolCardRows(page);
-					const text = await this.sessionFigures(ownerId, page);
-					// Each status write requests a terminal render, and notices arrive far more often than
-					// the figures change, so an unchanged text writes nothing.
-					if (!primary.signal.aborted && this.footerFigures.get(ownerId) !== text) {
-						this.footerFigures.set(ownerId, text);
-						primary.status?.(text || undefined);
-					}
-				}
+				for (const [ownerId, primary] of this.primaries) await this.projectPrimaryFooter(ownerId, primary);
 			} while (this.refreshAgain && !this.shuttingDown && this.primaries.size);
 		} catch (error) {
 			this.failures.set("footer", errorText(error));

@@ -571,3 +571,66 @@ test("projects the footer once for a burst of catalogue notices and shows the la
 	assert.ok(projections <= 3, `39 notices ran ${projections} footer projections`);
 	assert.equal(texts.at(-1), "agents: 0/1 active · ~$40.00");
 });
+
+test("the footer text of a first send keeps the mark of an incomplete page", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-footer-sent-")));
+	const manager = new AgentManager({
+		root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
+		createPrimary: async (options) => ({
+			id: options.id,
+			socketPath: "unused",
+			info: () => ({
+				id: options.id,
+				cwd: root,
+				hostname: "test-host",
+				pid: process.pid,
+				socketPath: "unused",
+				startedAt: new Date().toISOString(),
+			}),
+			update: () => {},
+			publishIntent: () => {},
+			touch: () => {},
+			setObservedPurpose: () => {},
+			setWorkRefs: () => {},
+			close: async () => {},
+		}),
+	});
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const create = (ownerId: string, complete: boolean, cost: number) => {
+		const record = manager.catalog.create({
+			cwd: "/work",
+			agentDir: "/agent",
+			packageDir: "/package",
+			model: { provider: "test", modelId: "model" },
+			thinkingLevel: "off",
+			ownerId,
+		});
+		manager.catalog.updateView(record.storageId, {
+			updatedAt: new Date().toISOString(),
+			coverage: { complete, omitted: complete ? 0 : 1 },
+			rows: [row(record.storageId, { storageId: record.storageId, cost })],
+		});
+		return record.storageId;
+	};
+	create("sending-primary", false, 1);
+	const reused = create("another-session", true, 2);
+	const texts: (string | undefined)[] = [];
+	await manager.registerPrimary("sending-primary", {
+		signal: new AbortController().signal,
+		send: () => {},
+		status: (text) => texts.push(text),
+	});
+	assert.deepEqual(texts, ["agents: 0/1+ active · ~$1.00"]);
+	// A first task admission to an agent of another session adds it to this session's figures at once.
+	(manager as unknown as { rememberSentWork(owner: string, target: unknown): void }).rememberSentWork(
+		"sending-primary",
+		reused,
+	);
+	assert.equal(texts.at(-1), "agents: 0/2+ active · ~$1.00");
+	assert.equal(texts.at(-1), await manager.sessionFigures("sending-primary"));
+});
