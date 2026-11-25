@@ -579,3 +579,32 @@ it("ends a real stuck host, and the next host resumes its retained work", { time
 	const receipt = await waitForReceipt(second, f.ownerId, submitted.submissionId);
 	assert.equal(receipt.status, "done");
 });
+
+it("hands a real idle host on other code over through its own graceful shutdown", { timeout: 60_000 }, async (t) => {
+	const f = runtimeFixture(t);
+	const client = await acquireHost(f.metadata, { env: { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: "60" } });
+	trackHost(t, client.pid);
+	t.after(() => client.close());
+	const current = join(f.root, "current");
+	mkdirSync(join(current, "extensions", "agent"), { recursive: true });
+	writeFileSync(join(current, "extensions", "agent", "durable-runner.ts"), "");
+	const run = await superviseHosts({
+		agentDir: f.agentDir,
+		stuckMs: 0,
+		idleMs: 1_000,
+		activeRoot: current,
+		now: () => Date.now() + 10 * MINUTE,
+		scope: (row) => row.pid === client.pid,
+	});
+	assert.deepEqual(
+		run.acts.map((act) => [act.pid, act.act]),
+		[[client.pid, "handed-over"]],
+	);
+	assert.ok(await waitForProcessGone(client.pid, 1_000));
+	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10_000) });
+	assert.equal(
+		new AgentCatalog(f.root).read(f.metadata.storageId).recoveryDue,
+		false,
+		"a clean shutdown leaves no work due",
+	);
+});
