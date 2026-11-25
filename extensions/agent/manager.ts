@@ -508,9 +508,21 @@ export class AgentManager {
 	private readonly observationOwnerEnded = (): void => {
 		void this.releaseObservation().catch((error) => this.failures.set("cold-observation", errorText(error)));
 	};
+	/** Start catalogue observation. A failed start is recorded; a later owner tries again. */
+	private startCatalogObservation(): void {
+		try {
+			this.observeCatalogChanges();
+		} catch (error) {
+			this.failures.set(
+				"catalog-observation",
+				`Catalog updates are unavailable: ${errorText(error)}. Restart this Pi process.`,
+			);
+		}
+	}
+	/** A roster view without catalogue updates still opens; it shows what its own reads return. */
 	subscribeRoster(listener: () => void): () => void {
 		if (this.shuttingDown) throw new Error("Agent manager is closed");
-		this.observeCatalogChanges();
+		this.startCatalogObservation();
 		this.rosterListeners.add(listener);
 		this.retainColdObservations();
 		let subscribed = true;
@@ -2295,14 +2307,7 @@ export class AgentManager {
 			},
 			{ once: true },
 		);
-		try {
-			this.observeCatalogChanges();
-		} catch (error) {
-			this.failures.set(
-				"catalog-observation",
-				`Catalog updates are unavailable: ${errorText(error)}. Restart this Pi process.`,
-			);
-		}
+		this.startCatalogObservation();
 		this.rosterChanged();
 		primary.resumeInbox?.();
 		await this.refreshFooter();

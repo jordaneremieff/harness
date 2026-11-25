@@ -1771,6 +1771,28 @@ it("shares catalog observation across primary reload, replacement, and roster te
 	assert.deepEqual(registrations(), [], "repeated teardown leaves no observation registration");
 });
 
+it("opens a roster subscription when catalog observation cannot start and records the failure", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	mkdirSync(manager.catalog.root, { recursive: true });
+	const observers = join(manager.catalog.root, ".observers");
+	writeFileSync(observers, "blocked");
+	const off = manager.subscribeRoster(() => {});
+	const failures = async () =>
+		((await manager.status()) as { failures: Array<{ storageId: string; error: string }> }).failures;
+	assert.ok(
+		(await failures()).some(
+			(failure) =>
+				failure.storageId === "catalog-observation" && failure.error.includes("Catalog updates are unavailable"),
+		),
+	);
+	off();
+	rmSync(observers);
+	t.after(manager.subscribeRoster(() => {}));
+	assert.equal(readdirSync(observers).length, 1, "a later subscription starts the observation");
+});
+
 it("clears a catalog observation startup failure after a successful subscription", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory }));
