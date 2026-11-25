@@ -5462,7 +5462,10 @@ rows remain. Direct retries use the transport source ID to avoid a second
 placement, including after reopen.
 
 A primary registration reads its own hints, so an unrelated registration
-launches no runner, opens no writer and starts no scheduler. Pi saves the
+launches no runner, opens no writer and starts no scheduler. The registration
+returns once its channel and inbox are ready and its footer is projected; the
+acquisitions and cold deliveries that its hints need run in the recovery queue
+afterwards, and a closed or replaced registration starts none of them. Pi saves the
 session file with the first user or assistant message. When the extension
 observes the file's first appearance at message end, turn end, or settlement,
 the registration reads its hints again, and its delivery-only sources get a new

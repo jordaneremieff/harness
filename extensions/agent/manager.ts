@@ -2521,7 +2521,11 @@ export class AgentManager {
 		this.partyEpochs.set(ownerId, randomUUID());
 		this.startRecoveryReconcile();
 		await this.refreshFooter();
-		await this.scanRecovery(primary, ownerId);
+		// This session's own hints are read before this returns, and their recovery joins the recovery queue
+		// without holding the registration; a closed or replaced registration starts no launch from it.
+		void this.scanRecovery(primary, ownerId).catch((error) => {
+			if (!this.stopping(primary)) this.failures.set(`primary:${ownerId}`, errorText(error));
+		});
 		this.startHostSupervision();
 	}
 

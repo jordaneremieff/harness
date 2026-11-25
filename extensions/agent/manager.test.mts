@@ -2827,6 +2827,7 @@ for (const cached of [false, true])
 			]),
 		);
 		await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
+		await settleCatalogueRecovery(manager);
 		const crashes = (manager as unknown as { crashes: { entries: Iterable<unknown> } }).crashes;
 		assert.equal([...crashes.entries].length, 0, "an operation refusal is not a host loss");
 		assert.equal(openings, 1);
@@ -3359,6 +3360,36 @@ it("a registered Durable party recovers only its own sources until its signal ab
 	assert.equal(delivered.length, 1);
 });
 
+it("returns from a primary registration while the launch for its own execution hint still runs", {
+	timeout: 10000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	let release = (): void => {};
+	const opened = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const started = eventLog<string>();
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata) => {
+				started.push(metadata.storageId);
+				await opened;
+				return fakeConnection(metadata, async () => ({ workPending: false, deliveriesActive: false }));
+			},
+		}),
+	);
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	const owner = randomUUID();
+	recoveryHint(root, record.storageId, owner);
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
+	await started.waitForCount(1);
+	release();
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual([...started], [record.storageId]);
+});
+
 it("refreshes an existing recovery link at another primary registration", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	let connection: FakeConnection | undefined;
@@ -3398,6 +3429,7 @@ it("refreshes an existing recovery link at another primary registration", { time
 	const prior = reads;
 	active = false;
 	await manager.registerPrimary(other, fakePrimary(new AbortController().signal).client);
+	await settleCatalogueRecovery(manager);
 	assert.ok(reads > prior, "registration refreshes delivery even without a native commit");
 	assert.equal(connection?.closed, true);
 	assert.equal(acquisitions, 1, "both registrations use the same link");
@@ -4914,6 +4946,7 @@ it("a clean exact foreign retirement does not report a recovery fault", { timeou
 		{ metadata: hostMetadata(record), idleMs: 0, announceReady() {} },
 	);
 	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
+	await settleCatalogueRecovery(manager);
 	await connections.waitForCount(1);
 	await host.close();
 	await waitForConnectionClose(connections[0]);
