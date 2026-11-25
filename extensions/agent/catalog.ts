@@ -19,7 +19,7 @@ import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { type CatalogView, parseCatalogView } from "./catalog-view.ts";
 import { parseCollaborationProjection, type CollaborationProjection } from "./collaboration-contract.ts";
-import { CLAIM_BYTES, observeClaim, observeClaimAsync, type ClaimObservation } from "./claims.ts";
+import { CLAIM_BYTES, claimFilePresent, observeClaimAsync, type ClaimObservation } from "./claims.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { type HostMetadata, hostPaths, parseHostMetadata } from "./host-protocol.ts";
 
@@ -551,8 +551,9 @@ export class AgentCatalog {
 	/**
 	 * Remove a record this call created when its host never opened. The record
 	 * must be byte-identical at the same inode, no storage file may exist, and
-	 * the native writer claim must be absent. An ended diagnostic record does
-	 * not exclude a new holder before its metadata write. Any present claim,
+	 * no native writer claim file may exist. An ended diagnostic record does
+	 * not exclude a new holder before its metadata write, and a starting host's
+	 * file is empty between its truncation and its record. Any claim file,
 	 * reused record, or changed path is kept.
 	 * Call this only for a `created: true` result.
 	 */
@@ -561,9 +562,7 @@ export class AgentCatalog {
 		const before = this.readRaw(record.storageId);
 		if (before === undefined || before.raw !== `${JSON.stringify(record)}\n`) return "record-changed";
 		if (lstatSync(record.storagePath, { throwIfNoEntry: false }) !== undefined) return "storage-present";
-		const paths = hostPaths(record);
-		const observation = observeClaim(paths.claim, paths.identity);
-		if (observation.kind !== "absent") return "writer-present";
+		if (claimFilePresent(hostPaths(record).claim)) return "writer-present";
 		const current = lstatSync(path, { throwIfNoEntry: false });
 		if (current === undefined || current.dev !== before.dev || current.ino !== before.ino) return "record-changed";
 		unlinkSync(path);

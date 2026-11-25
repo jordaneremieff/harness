@@ -1,4 +1,3 @@
-import { lstatSync } from "node:fs";
 import { opendir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
@@ -483,21 +482,6 @@ async function visitPrimaries(
 		markPartial(page, "directory-unreadable");
 	}
 }
-/**
- * A serving host truncates its lease file and writes its record when it takes the lease, and a clean end adds
- * an end marker. One-shot writers, such as a cold stop, take the lease without writing a record. An empty lease
- * file therefore records no serving host, and presence treats it as a missing one. A starting host leaves the
- * file empty only between its truncation and its write.
- */
-function servingHost(observation: ClaimObservation, path: string): ClaimObservation {
-	if (observation.kind !== "unknown") return observation;
-	try {
-		return lstatSync(path).size === 0 ? { kind: "absent" } : observation;
-	} catch {
-		return observation;
-	}
-}
-
 async function nativeRow(
 	record: EffortRecord,
 	id: string,
@@ -526,7 +510,7 @@ async function nativeRow(
 	let ownership = claims.get(record.storageId);
 	if (ownership === undefined) {
 		const paths = hostPaths(record);
-		ownership = servingHost(observeClaim(paths.claim, paths.identity), paths.claim);
+		ownership = observeClaim(paths.claim, paths.identity);
 		claims.set(record.storageId, ownership);
 	}
 	if (ownership.kind === "absent" || ownership.kind === "dead") {

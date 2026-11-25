@@ -29,9 +29,6 @@ import {
 	primaryEndpointPath,
 	primaryEndpointStatus,
 	readPrimaryEndpointDescriptor,
-	ownerStartReused,
-	processStartToken,
-	type ProcessStartSource,
 	readVerifiedPrimaryEndpointDescriptor,
 	removeDeadPrimaryEndpoint,
 	PrimaryChannelConflictError,
@@ -40,6 +37,7 @@ import {
 	type PrimaryChannelOptions,
 	type PrimaryDelivery,
 } from "./primary-channel.ts";
+import { ownerStartReused, processStartToken, type ProcessStartSource } from "./process-start.ts";
 
 interface Fixture {
 	readonly root: string;

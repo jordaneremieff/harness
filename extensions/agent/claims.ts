@@ -1,9 +1,10 @@
 /** Bounded native diagnostic records and separate process-lock observations. */
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type Stats } from "node:fs";
 import { open } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { localProcessStart, startedAfter, type ProcessStartSource } from "./process-start.ts";
 
 /** Largest claim file a bounded read accepts. */
 export const CLAIM_BYTES = 16 * 1024;
@@ -17,15 +18,20 @@ export interface ClaimIdentity {
 
 /** A claim file's parsed content and the file identity it was read from. */
 export interface ClaimFile {
+	/** Undefined for an empty file, which holds no writer record. */
 	claim: unknown;
 	dev: number;
 	ino: number;
 }
 
 /**
- * Native `dead` ends only the recorded generation; `unknown` establishes no
- * current holder. The separate process-lock classifier also returns `live`
- * for a present same-host process. None of these observations owns a lease.
+ * Native `absent` records no serving host: no file, or an empty one. A serving
+ * host writes its record as soon as it takes the lease, while a cold stop or a
+ * page adoption takes the lease without writing one. Native `dead` ends only
+ * the recorded generation. Native `unknown` establishes no current holder; for
+ * a running writer process it names that process. The separate process-lock
+ * classifier also returns `live` for a present same-host process. None of these
+ * observations owns a lease or permits a takeover.
  */
 export type ClaimObservation =
 	| { kind: "absent" }
@@ -75,7 +81,11 @@ function checkClaimFile(stat: Stats): void {
 }
 function parseClaimFile(buffer: Buffer, bytes: number, stat: Stats): ClaimFile {
 	if (bytes > CLAIM_BYTES) throw new Error("Writer claim exceeds its read bound");
-	return { claim: JSON.parse(buffer.toString("utf8", 0, bytes)), dev: stat.dev, ino: stat.ino };
+	return {
+		claim: bytes === 0 ? undefined : JSON.parse(buffer.toString("utf8", 0, bytes)),
+		dev: stat.dev,
+		ino: stat.ino,
+	};
 }
 async function readClaimFileAsync(path: string): Promise<ClaimFile> {
 	const file = await open(path, CLAIM_FLAGS);
@@ -99,13 +109,23 @@ function unreadableClaim(error: unknown): ClaimObservation {
 		? { kind: "absent" }
 		: { kind: "unknown", error: `Writer claim is unreadable: ${reason(error)}` };
 }
-/** The async reader uses the same claim bounds and classification as control paths. */
-export async function observeClaimAsync(path: string, identity: ClaimIdentity): Promise<ClaimObservation> {
+/**
+ * The async reader uses the same claim bounds and classification as control paths. When a process holds the
+ * recorded PID, it also compares that process's start with the record's creation, so a reused PID reads as dead.
+ */
+export async function observeClaimAsync(
+	path: string,
+	identity: ClaimIdentity,
+	source: ProcessStartSource = localProcessStart,
+): Promise<ClaimObservation> {
+	let classified: Classified;
 	try {
-		return classifyClaim((await readClaimFileAsync(path)).claim, identity);
+		classified = classifyRecord((await readClaimFileAsync(path)).claim, identity);
 	} catch (error) {
 		return unreadableClaim(error);
 	}
+	if (classified.kind !== "present") return classified;
+	return presentWriter(classified, await writerProcess(classified, source));
 }
 export function validClaim(
 	claim: unknown,
@@ -134,8 +154,55 @@ export function validNativeWriterId(value: unknown): value is string {
 	);
 }
 
-/** Diagnostic metadata can end its recorded generation, never establish a current lease holder. */
-export function classifyClaim(claim: unknown, identity: ClaimIdentity): ClaimObservation {
+/** A record without an end whose PID some process holds: the writer, or a later process that reuses the PID. */
+type PresentWriter = { kind: "present"; label: string; pid: number; createdAt: string; writerId: string };
+type Classified = ClaimObservation | PresentWriter;
+/** Whether the process that holds the PID is the writer, a later process, or not yet compared. */
+type PidHolder = "writer" | "reused" | "unproven";
+
+/** How long a start comparison stands for a process that is the writer; a reused PID stays reused. */
+const WRITER_PROOF_TTL_MS = 10_000;
+const WRITER_PROOF_LIMIT = 1024;
+const writerProofs = new Map<string, { readonly reused: boolean; readonly at: number }>();
+const proofKey = (writer: PresentWriter) => `${writer.pid}\u0000${writer.createdAt}\u0000${writer.writerId}`;
+
+/** Compare the start of the PID's current process with the record's creation, at most once per interval. */
+async function writerProcess(writer: PresentWriter, source: ProcessStartSource): Promise<PidHolder> {
+	const key = proofKey(writer);
+	const known = writerProofs.get(key);
+	if (known !== undefined && (known.reused || Date.now() - known.at < WRITER_PROOF_TTL_MS))
+		return known.reused ? "reused" : "writer";
+	let reused: boolean | undefined;
+	try {
+		reused = await startedAfter(writer.pid, writer.createdAt, source);
+	} catch {
+		return "unproven";
+	}
+	if (reused === undefined) return "unproven";
+	writerProofs.delete(key);
+	writerProofs.set(key, { reused, at: Date.now() });
+	for (const oldest of writerProofs.keys()) {
+		if (writerProofs.size <= WRITER_PROOF_LIMIT) break;
+		writerProofs.delete(oldest);
+	}
+	return reused ? "reused" : "writer";
+}
+
+function presentWriter(writer: PresentWriter, holder: PidHolder): ClaimObservation {
+	const { label, pid, writerId } = writer;
+	if (holder === "reused") return { kind: "dead", label, writerId };
+	return {
+		kind: "unknown",
+		label,
+		error:
+			holder === "writer"
+				? `The writer process (PID ${pid}) is still running; no answer from its host confirmed it`
+				: `A process with the writer's PID ${pid} is running; no answer from its host confirmed it`,
+	};
+}
+
+function classifyRecord(claim: unknown, identity: ClaimIdentity): Classified {
+	if (claim === undefined) return { kind: "absent" };
 	if (!validClaim(claim, identity) || !validNativeWriterId(claim.token))
 		return { kind: "unknown", error: "Writer claim is invalid" };
 	if (claim.host !== hostname())
@@ -150,11 +217,27 @@ export function classifyClaim(claim: unknown, identity: ClaimIdentity): ClaimObs
 		process.kill(claim.pid, 0);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ESRCH") return { kind: "dead", label, writerId: claim.token };
-		if (code !== "EPERM")
-			return { kind: "unknown", label, error: `Writer process check failed (${code ?? "unknown"})` };
+		// A writer runs as the owner of its private lease file, which is also this reader, so a process that this
+		// reader may not signal belongs to another user and is not the writer.
+		if (code === "ESRCH" || code === "EPERM") return { kind: "dead", label, writerId: claim.token };
+		return { kind: "unknown", label, error: `Writer process check failed (${code ?? "unknown"})` };
 	}
-	return { kind: "unknown", label, error: "Native claim metadata does not establish a live writer" };
+	return { kind: "present", label, pid: claim.pid, createdAt: String(claim.createdAt), writerId: claim.token };
+}
+
+/**
+ * Diagnostic metadata can end its recorded generation, never establish a current lease holder. This synchronous
+ * reader starts no process; it uses a start comparison that the async reader already made.
+ */
+export function classifyClaim(claim: unknown, identity: ClaimIdentity): ClaimObservation {
+	const classified = classifyRecord(claim, identity);
+	if (classified.kind !== "present") return classified;
+	const known = writerProofs.get(proofKey(classified));
+	if (known?.reused) return presentWriter(classified, "reused");
+	return presentWriter(
+		classified,
+		known !== undefined && Date.now() - known.at < WRITER_PROOF_TTL_MS ? "writer" : "unproven",
+	);
 }
 
 /** Process presence remains the distinct contract of non-native process locks. */
@@ -173,6 +256,15 @@ export function classifyProcessClaim(claim: unknown, identity: ClaimIdentity): C
 			return { kind: "unknown", label, error: `Writer process check failed (${code ?? "unknown"})` };
 	}
 	return { kind: "live", label };
+}
+
+/** Whether a claim file exists at `path`; a path that cannot be checked counts as present. */
+export function claimFilePresent(path: string): boolean {
+	try {
+		return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+	} catch {
+		return true;
+	}
 }
 
 /** Read and classify one claim path; a missing file is `absent`, any read failure is `unknown`. */

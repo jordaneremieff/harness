@@ -799,6 +799,14 @@ it("keeps a record while a live or unknown writer claim exists", (t) => {
 	writeFileSync(paths.claim, JSON.stringify({ token: "bad" }));
 	assert.equal(catalog.discardUnopened(invalid), "writer-present");
 	assert.equal(existsSync(catalog.path(invalid.storageId)), true);
+
+	// A starting host's lease file is empty between its truncation and its record.
+	const starting = catalog.createTracked(input, "starting").record;
+	const startingPaths = hostPaths(starting);
+	mkdirSync(dirname(startingPaths.claim), { recursive: true });
+	writeFileSync(startingPaths.claim, "");
+	assert.equal(catalog.discardUnopened(starting), "writer-present");
+	assert.equal(existsSync(catalog.path(starting.storageId)), true);
 });
 
 it("retains a record when an exited PID does not prove native writer release", (t) => {

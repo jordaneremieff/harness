@@ -3912,9 +3912,17 @@ a token request after close.
   the old descriptor does not exclude a new inode at that pathname. A new
   holder rewrites the record without `endedAt`. The bounded JSON record is
   diagnostic metadata, not ownership or current process-liveness evidence. Its
-  PID, hostname, age and continued existence grant no takeover. An unopened
-  catalogue record remains retained for every present claim, including dead
-  evidence for a previous generation; only absence reaches guarded cleanup.
+  PID, hostname, age and continued existence grant no takeover. Status and
+  presence read it this way: an empty file records no serving host, because a
+  cold stop and the adoption of delivery pages hold the lease without writing a
+  record; an end marker, a missing PID, or a PID that this user may not signal
+  ends the recorded generation; a PID whose current process started more than
+  two seconds after the record was written is reused and also ends it; any
+  other running PID leaves the owner unavailable and names the writer process
+  (the [host contract](../../docs/agent-host-contract.md) has the full rules).
+  An unopened catalogue record remains retained for every present claim file,
+  including an empty one and dead evidence for a previous generation; only a
+  missing file reaches guarded cleanup.
   This contract supports cooperating processes on a private local macOS
   filesystem, not shared/network filesystems or uncooperative writers. The
   adapter rejects unsafe files and other platforms. A rejected runtime factory
