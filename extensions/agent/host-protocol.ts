@@ -10,7 +10,7 @@
  */
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { unixSocketPath } from "../../transport/index.ts";
 import { type ClaimIdentity, claimPath } from "./claims.ts";
 import { parseRuntimeContract, contractRefusal, type RuntimeContract } from "./version-contract.ts";
@@ -232,18 +232,26 @@ export function hostPaths(metadata: Pick<HostMetadata, "agentDir" | "storageId" 
 }
 
 /**
+ * The writer lease and start gate of each storage sit in a hidden directory of the storage's own directory, so the
+ * catalog listing does not grow with them and a removal of the host directory leaves them in place.
+ */
+function storageLockPath(storagePath: string, suffix: string): string {
+	return join(dirname(storagePath), ".leases", `${basename(storagePath)}.${suffix}`);
+}
+
+/**
  * Every writer of one storage holds both leases, in this order: the lease under the host directory, which earlier
- * hosts also take, and the lease beside the storage file, which a removal of the host directory leaves in place.
+ * hosts also take, and the lease beside the storage.
  */
 export function writerLeasePaths(
 	metadata: Pick<HostMetadata, "agentDir" | "storageId" | "cwd" | "storagePath">,
 ): string[] {
-	return [hostPaths(metadata).claim, `${metadata.storagePath}.writer`];
+	return [hostPaths(metadata).claim, storageLockPath(metadata.storagePath, "writer")];
 }
 
-/** Runners of one storage queue here until the winner's endpoint listens; the file beside the storage is never removed. */
+/** Runners of one storage queue here until the winner's endpoint listens; the file is never removed. */
 export function startGatePath(metadata: Pick<HostMetadata, "storagePath">): string {
-	return `${metadata.storagePath}.starting`;
+	return storageLockPath(metadata.storagePath, "starting");
 }
 
 export function formatHostReady(ready: HostReady): string {

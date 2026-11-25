@@ -3839,7 +3839,8 @@ a token request after close.
   runner takes one nonblocking Darwin lock before it opens SQLite or resumes the
   Durable scheduler. A busy lease prevents a second runtime from opening. Every
   writer (serving host, cold stop, delivery-page adoption) holds two lease files:
-  the one under `durable-hosts` and `<storage file>.writer` beside the storage,
+  the one under `durable-hosts` and `.leases/<storage file>.writer` in the storage's
+  own directory,
   so removing the `durable-hosts` directory does not admit a second writer, and
   an older host that takes only the first file still excludes a newer one. A host
   checks that both pathnames still name its descriptors before each request, at
@@ -4307,7 +4308,8 @@ endpoint answers, it starts one runner contender; only the runner takes the
 writer lease. A peer's contract refusal does not start another host.
 A busy contender opens no runtime and reports a typed busy outcome. Dedicated
 runners of one storage first queue on a start gate beside the storage file
-(`<storage file>.starting`); the winner holds it until its endpoint listens, so a
+(`.leases/<storage file>.starting` in the storage's directory); the winner holds it
+until its endpoint listens, so a
 contender reports BUSY only once that endpoint can answer, and concurrent first
 uses of one storage all attach to the winner. A cold stop queues on the same
 gate for at most 30 s, or until its caller withdraws; until it passes the gate it
@@ -4549,8 +4551,8 @@ records sit in its `durable` directory. `--agent-dir` selects the catalogue
 only. Each record names its storage file and its agent directory by absolute
 path, and those are the targets that the command changes: the storage file,
 the writer lease file under `durable-hosts` in the record's agent
-directory, which may lie outside the catalogue, and the lease file beside the
-storage file. The catalogue refuses a record
+directory, which may lie outside the catalogue, and the lease file in the
+catalogue's `.leases` directory. The catalogue refuses a record
 whose storage file is not in its own directory, so a copied catalogue with
 unchanged records stops the command before it reads or changes any storage. To
 try the command on a copy, rewrite `storagePath` and `agentDir` in each copied

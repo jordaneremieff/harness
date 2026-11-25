@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { after, it } from "node:test";
 import { PluginError } from "@earendil-works/chord";
 import { connectTransport, type TransportClient, type TransportRequest } from "../../transport/index.ts";
@@ -1044,6 +1044,28 @@ it("a close after the lease file is removed writes nothing and names the lost le
 	assert.equal(runtimeCloses, 0, "the runtime that would write again is never closed");
 	assert.deepEqual(exits, [1]);
 	assert.equal(lstatSync(hostPaths(config).socket, { throwIfNoEntry: false }), undefined, "its endpoint is gone");
+});
+
+it("keeps writer lease and start gate files out of the storage directory listing", async (t) => {
+	const root = fixtureRoot(t);
+	const config = metadata(root);
+	const host = await runHost(echoRuntime, {
+		metadata: config,
+		idleMs: 0,
+		announceReady: noop,
+		exit: (() => undefined) as unknown as (status: 0 | 1) => never,
+	});
+	await host.close();
+	const storageDirectory = dirname(config.storagePath);
+	assert.deepEqual(
+		readdirSync(storageDirectory).filter((name) => name.startsWith(`${basename(config.storagePath)}.`)),
+		[],
+		"no per-storage lock file sits beside the storage",
+	);
+	assert.deepEqual(readdirSync(join(storageDirectory, ".leases")).sort(), [
+		`${basename(config.storagePath)}.starting`,
+		`${basename(config.storagePath)}.writer`,
+	]);
 });
 
 it("excludes a new host while either writer lease is held elsewhere", async (t) => {
