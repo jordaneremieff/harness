@@ -231,6 +231,78 @@ it("checks file stamps on every read and observes only changed records without n
 	assert.equal(stats.mock.callCount(), 21);
 });
 
+it("drains only named records without mutating an earlier inventory", async (t) => {
+	const { catalog, input } = fixture(t);
+	const [a, b, c] = Array.from({ length: 3 }, () => catalog.create(input));
+	const observation = new CatalogObservation(catalog);
+	const earlier = await observation.read();
+	assert.equal((await observation.readChanges()).size, 3);
+	const listings = t.mock.method(catalog, "identities");
+	const stamps = t.mock.method(catalog, "recordStamp");
+	const reads = t.mock.method(catalog, "observeRecord");
+	catalog.markRecoveryDue(a.storageId, true);
+	unlinkSync(catalog.path(b.storageId));
+	const added = catalog.create(input);
+	observation.invalidate([a.storageId, a.storageId, b.storageId, added.storageId]);
+	const delta = await observation.readChanges();
+	assert.deepEqual([...delta.keys()], [a.storageId, b.storageId, added.storageId]);
+	assert.equal(delta.get(a.storageId)?.record.recoveryDue, true);
+	assert.equal(delta.get(b.storageId), undefined);
+	assert.equal(delta.get(added.storageId)?.record.storageId, added.storageId);
+	assert.equal(listings.mock.callCount(), 0);
+	assert.deepEqual(
+		stamps.mock.calls.map(({ arguments: args }) => args[0]),
+		[...delta.keys()],
+	);
+	assert.equal(reads.mock.callCount(), 2);
+	assert.equal(earlier.facts.get(a.storageId)?.record.recoveryDue, undefined);
+	assert.ok(earlier.facts.has(b.storageId) && earlier.facts.has(c.storageId));
+	assert.equal(earlier.facts.has(added.storageId), false);
+	assert.equal((await observation.readChanges()).size, 0);
+	observation.invalidate();
+	await observation.readChanges();
+	assert.equal(listings.mock.callCount(), 1, "a notice without IDs reconciles the catalogue");
+	assert.equal(stamps.mock.callCount(), 6);
+	assert.equal(reads.mock.callCount(), 2);
+});
+
+it("does not drain a late notice or lose explicit changes during reconciliation", async (t) => {
+	const { catalog, input } = fixture(t);
+	const a = catalog.create(input);
+	const b = catalog.create(input);
+	const observation = new CatalogObservation(catalog);
+	await observation.readChanges();
+	const observe = catalog.observeRecord.bind(catalog);
+	let enter = () => {};
+	let resume = () => {};
+	const entered = new Promise<void>((done) => {
+		enter = done;
+	});
+	const blocked = new Promise<void>((done) => {
+		resume = done;
+	});
+	t.after(resume);
+	t.mock.method(catalog, "observeRecord", async (id: string) => {
+		const fact = await observe(id);
+		if (id === a.storageId) {
+			enter();
+			await blocked;
+		}
+		return fact;
+	});
+	catalog.markRecoveryDue(a.storageId, true);
+	const inventory = observation.read({ reconcileAfterMs: Infinity });
+	await entered;
+	observation.invalidate([b.storageId]);
+	resume();
+	await inventory;
+	const stamps = t.mock.method(catalog, "recordStamp");
+	const delta = await observation.readChanges();
+	assert.deepEqual(new Set(delta.keys()), new Set([a.storageId, b.storageId]));
+	assert.equal(stamps.mock.callCount(), 1);
+	assert.equal(stamps.mock.calls[0].arguments[0], b.storageId);
+});
+
 it("observes every claim on the explicit bound and on the longer background bound for notice-driven reads", async (t) => {
 	const { catalog, input } = fixture(t);
 	for (let index = 0; index < 3; index++) catalog.create(input);
@@ -322,7 +394,14 @@ it("retains dirty identities during observation and retries a failed reconciliat
 	const second = catalog.create(input);
 	observation.invalidate([second.storageId]);
 	release();
-	assert.ok((await pending).facts.has(second.storageId));
+	const inventory = await pending;
+	assert.equal(
+		inventory.facts.has(second.storageId),
+		false,
+		"the in-flight read keeps its captured directory snapshot",
+	);
+	assert.ok((await observation.readChanges()).get(second.storageId));
+	assert.equal(inventory.facts.has(second.storageId), false);
 	const identities = t.mock.method(
 		catalog,
 		"identities",

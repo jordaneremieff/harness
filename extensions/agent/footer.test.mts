@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as pause } from "node:timers/promises";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
-import { formatDurableFooter, sessionFigures, sessionFooter } from "./footer.ts";
+import { FooterProjection, formatDurableFooter, sessionFigures, sessionFooter } from "./footer.ts";
 import { AgentManager } from "./manager.ts";
 
 function row(id = "a", overrides: Partial<AgentConversationSummary> = {}): AgentConversationSummary {
@@ -22,6 +22,57 @@ function row(id = "a", overrides: Partial<AgentConversationSummary> = {}): Agent
 		...overrides,
 	};
 }
+
+test("notice totals replace one group and follow changed ancestor and sent-work routes", () => {
+	const parent = "parent-storage";
+	const child = "child-storage";
+	const owners = new Map([
+		[parent, "first"],
+		[child, `${parent}:2`],
+	]);
+	const reads: string[] = [];
+	const ownerOf = (id: string) => {
+		reads.push(id);
+		return owners.get(id);
+	};
+	const cache = new FooterProjection();
+	cache.updateOwner("first");
+	cache.updateOwner("second");
+	cache.updateOwner("sender", new Set([`${parent}:2`]));
+	const group = (id: string, cost: number, working = false) => ({
+		rows: [row(id, { storageId: id, cost, state: working ? "working" : "idle" })],
+		incomplete: false,
+		blocked: false,
+	});
+	cache.apply(
+		new Map([
+			[parent, group(parent, 1)],
+			[child, group(child, 2, true)],
+		]),
+		ownerOf,
+	);
+	assert.deepEqual(cache.figures("first"), { text: "agents: 1/2 · ~$3.00", stuck: [] });
+	assert.equal(cache.figures("sender").text, "agents: 1/1");
+	const initialRows = cache.rows();
+	reads.length = 0;
+	const changed = cache.apply(new Map([[parent, group(parent, 3)]]), ownerOf);
+	assert.deepEqual([...changed], ["first"]);
+	assert.ok(!reads.includes(child), "a view-only change does not walk child ownership again");
+	assert.equal(cache.figures("first").text, "agents: 1/2 · ~$5.00");
+	assert.equal(initialRows[0].cost, 1);
+	owners.set(parent, "second");
+	assert.deepEqual(
+		new Set(cache.apply(new Map([[parent, group(parent, 3)]]), ownerOf)),
+		new Set(["first", "second", "sender"]),
+	);
+	assert.equal(cache.figures("first").text, "");
+	assert.equal(cache.figures("second").text, "agents: 1/2 · ~$5.00");
+	cache.apply(new Map([[child, { ...group(child, 2), incomplete: true, blocked: true }]]), ownerOf);
+	assert.deepEqual(cache.figures("sender"), { text: "agents: 0/1+", stuck: [child, `${parent}:2`] });
+	cache.apply(new Map([[child, undefined]]), ownerOf);
+	assert.deepEqual(cache.figures("sender"), { text: "", stuck: [] });
+	assert.equal(cache.figures("second").text, "agents: 0/1 · ~$3.00");
+});
 
 test("cost always uses a two-decimal recorded-pricing estimate", () => {
 	for (const partial of [false, true]) {

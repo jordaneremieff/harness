@@ -62,7 +62,7 @@ import {
 import type { CatalogView } from "./catalog-view.ts";
 import type { NativeOwnerEvidence } from "./host-changes.ts";
 import { CatalogObservationCapacityError, subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
-import { sessionFooter, type SessionFooter } from "./footer.ts";
+import { FooterProjection, sessionFooter, type FooterStorage, type SessionFooter } from "./footer.ts";
 import { sentWorkIdentity } from "./session-work.ts";
 import type { ContinuityFact } from "./continuity-facts.ts";
 import { recordAdmission } from "./ordinary-continuity.ts";
@@ -515,17 +515,21 @@ export class AgentManager {
 
 	/** Latest roster facts already observed for the primary footer; this lookup performs no I/O. */
 	observedToolCardRows(): readonly AgentConversationSummary[] {
+		if (this.toolCardRowsDirty) {
+			this.toolCardRows = this.footerProjection.rows();
+			this.toolCardRowsDirty = false;
+		}
 		return this.toolCardRows;
 	}
 
-	private observeToolCardRows(page: AgentConversationPage): void {
-		this.toolCardRows = page.rows;
+	private observeToolCardRows(): void {
+		this.toolCardRowsDirty = true;
 	}
 	private readonly rosterListeners = new Set<() => void>();
 	/** The figures text last written to each primary's footer cell. */
 	private readonly footerFigures = new Map<string, string>();
-	/** The page of each primary's last footer projection. */
-	private readonly footerPages = new Map<string, AgentConversationPage>();
+	/** Registrations with a footer projection, cleared when that primary leaves. */
+	private readonly footerPages = new Map<string, "projected">();
 	private stopCatalogObservation?: () => void;
 	private observeCatalogChanges(): void {
 		if (this.stopCatalogObservation) return;
@@ -3179,8 +3183,12 @@ export class AgentManager {
 		return this.footerForPage(ownerId, page ?? (await this.dashboardPage({ ownerId }))).text;
 	}
 
-	/** The footer of one page; a `+` after the count marks a page that does not cover every row. */
-	private footerForPage(ownerId: string, page: AgentConversationPage): SessionFooter {
+	/** Explicit pages retain their own coverage; the primary's notice projection owns its totals. */
+	private footerForPage(ownerId: string, page: AgentConversationPage | "projected"): SessionFooter {
+		if (page === "projected") {
+			this.footerProjection.updateOwner(ownerId, this.primaries.get(ownerId)?.sentWork);
+			return this.footerProjection.figures(ownerId);
+		}
 		const footer = this.footerForRows(ownerId, page.rows);
 		return page.coverage.complete ? footer : { ...footer, text: footer.text.replace(/^(agents: \d+\/\d+)/u, "$1+") };
 	}
@@ -3195,27 +3203,95 @@ export class AgentManager {
 		);
 	}
 
+	private readonly footerProjection = new FooterProjection();
+	private footerSeeded = false;
+	private toolCardRowsDirty = false;
+	private footerLocal = new Set<string>();
+	private readonly footerLocalDirty = new Set<string>();
+
 	private async refreshFooter(): Promise<void> {
+		// Local launch and recovery state can change without a catalogue write.
+		const current = new Set([
+			...this.launchRows.keys(),
+			...this.clients.keys(),
+			...this.recoveryClients.keys(),
+			...[...this.recoveryErrors.entries].map(([id]) => id),
+			...[...this.recoveryNotes.entries].map(([id]) => id),
+		]);
+		for (const id of this.footerLocal) this.footerLocalDirty.add(id);
+		for (const id of current) this.footerLocalDirty.add(id);
+		this.footerLocal = current;
 		this.rosterChanged();
 		await this.projectFooter();
 	}
 
-	private async projectPrimaryFooter(ownerId: string, primary: PrimaryClient): Promise<void> {
-		// Footer refreshes follow catalogue notices, so they reconcile claims on the background bound.
-		const page = await this.priorityPage({ ownerId }, { reconcileAfterMs: BACKGROUND_RECONCILE_MS });
-		this.observeToolCardRows(page);
-		if (this.primaries.get(ownerId) === primary) this.footerPages.set(ownerId, page);
-		const footer = this.footerForPage(ownerId, page);
-		// Each status write requests a terminal render, and notices arrive far more often than
-		// the figures change, so an unchanged footer writes nothing.
+	private projectFooterStorage(fact: CatalogFact | null | undefined): FooterStorage | undefined {
+		if (fact === undefined) return undefined;
+		if (fact === null) return { rows: [], incomplete: true, blocked: false };
+		const { record, claim, observedAt } = fact;
+		if (isThreadStorage(record, this.catalog.root)) return undefined;
+		const projection = this.catalogRows(record, claim, observedAt);
+		const error = this.recoveryErrors.get(record.storageId);
+		const note = this.recoveryNotes.get(record.storageId);
+		return {
+			rows: projection.rows.map((row) => ({
+				...row,
+				...(record.ownerId ? { creatingOwnerId: record.ownerId } : {}),
+				...(note === undefined ? {} : { ownerLabel: `${note} ${row.ownerLabel ?? ""}`.trim() }),
+				...(error === undefined ? {} : { health: { ...row.health, lastError: error } }),
+			})),
+			incomplete: projection.skipped > 0 || projection.omitted > 0 || !projection.resolvedClaim,
+			blocked: error !== undefined,
+		};
+	}
+
+	private publishFooter(ownerId: string): void {
+		const primary = this.primaries.get(ownerId);
+		if (!primary || primary.signal.aborted) return;
+		const footer = this.footerProjection.figures(ownerId);
+		// Do not render again when the figures and intervention targets did not change.
 		const key = footerKey(footer);
-		if (!primary.signal.aborted && this.footerFigures.get(ownerId) !== key) {
+		if (this.footerFigures.get(ownerId) !== key) {
 			this.footerFigures.set(ownerId, key);
 			primary.status?.(footer.text || undefined, footer.stuck);
 		}
 	}
 
-	/** Project the roster once for each primary and write the footer texts that changed. */
+	private async refreshFooterProjection(): Promise<void> {
+		const registrations = new Map<string, PrimaryClient>();
+		for (const [id, primary] of this.primaries) if (!this.footerPages.has(id)) registrations.set(id, primary);
+		// A new primary needs the current inventory even if a writer's notice is still in flight.
+		if (registrations.size && this.footerSeeded)
+			await this.inventory.read({ reconcileAfterMs: BACKGROUND_RECONCILE_MS });
+		const facts = await this.inventory.readChanges();
+		if (this.shuttingDown) return;
+		this.footerSeeded = true;
+		this.footerProjection.retainOwners(this.primaries);
+		const complete = this.footerProjection.complete;
+		const affected = this.applyFooterFacts(facts);
+		const coverageChanged = complete !== this.footerProjection.complete;
+		for (const [ownerId, primary] of this.primaries) {
+			const newOwner = !this.footerPages.has(ownerId);
+			if (newOwner) {
+				if (registrations.get(ownerId) !== primary) continue;
+				this.footerProjection.updateOwner(ownerId, primary.sentWork, true);
+				this.footerPages.set(ownerId, "projected");
+			}
+			if (newOwner || affected.has(ownerId) || coverageChanged) this.publishFooter(ownerId);
+		}
+	}
+
+	private applyFooterFacts(facts: ReadonlyMap<string, CatalogFact | null | undefined>): ReadonlySet<string> {
+		const updates = new Map<string, FooterStorage | undefined>();
+		for (const [id, fact] of facts) updates.set(id, this.projectFooterStorage(fact));
+		for (const id of this.footerLocalDirty)
+			if (!updates.has(id)) updates.set(id, this.projectFooterStorage(this.inventory.currentFact(id)));
+		this.footerLocalDirty.clear();
+		if (updates.size) this.observeToolCardRows();
+		return this.footerProjection.apply(updates, (id) => this.inventory.ownerId(id));
+	}
+
+	/** Apply one catalogue batch and write only affected primary footers. */
 	private async projectFooter(): Promise<void> {
 		if (this.shuttingDown || !this.primaries.size) return;
 		if (this.refreshing) {
@@ -3226,7 +3302,7 @@ export class AgentManager {
 		try {
 			do {
 				this.refreshAgain = false;
-				for (const [ownerId, primary] of this.primaries) await this.projectPrimaryFooter(ownerId, primary);
+				await this.refreshFooterProjection();
 			} while (this.refreshAgain && !this.shuttingDown && this.primaries.size);
 		} catch (error) {
 			this.failures.set("footer", errorText(error));

@@ -13,6 +13,7 @@ import { it } from "node:test";
 import { AgentManager } from "./manager.ts";
 import { catalogChange, publishCatalogChange, subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
+import { writeDeliveryWake } from "./delivery-wake.ts";
 
 /** Failure reports name the failed wait and carry bounded publisher evidence. */
 const PUBLISHER_STDERR_BYTES = 8192;
@@ -157,6 +158,27 @@ it("accumulates concurrent identity notices and makes unknown or overflowing cha
 	await notices.waitFor((events) => events.slice(genericCount).some((event) => event === undefined));
 });
 
+it("names the source storage on delivery-wake publication and removal", async (t) => {
+	const f = fixture(t);
+	const notices = eventLog<CatalogChange>();
+	const off = subscribeCatalogChanges(
+		f.manager.catalog.root,
+		(change) => notices.push(change),
+		(error) => {
+			throw error;
+		},
+	);
+	t.after(off);
+	const source = randomUUID();
+	const recipient = randomUUID();
+	assert.equal(writeDeliveryWake(f.root, source, [recipient]).changed, true);
+	await notices.waitForCount(1);
+	assert.deepEqual(notices[0], [source]);
+	assert.equal(writeDeliveryWake(f.root, source, []).changed, true);
+	await notices.waitForCount(2);
+	assert.deepEqual(notices[1], [source]);
+});
+
 it("shares footer and roster reads and rereads only the published storage", async (t) => {
 	const f = fixture(t);
 	const ownerId = randomUUID();
@@ -222,9 +244,29 @@ it("shares footer and roster reads and rereads only the published storage", asyn
 		f.manager.sessionFigures(ownerId),
 	]);
 	assert.equal(reads.mock.callCount(), 0, "footer facts also serve both caller-specific roster views");
+	const internals = f.manager as unknown as {
+		recoverCatalogueChanges(): void;
+		catalogRows(record: { storageId: string }): unknown;
+	};
+	// Isolate the footer consumer from the separately scheduled recovery consumer of the same notice.
+	t.mock.method(internals, "recoverCatalogueChanges", () => {});
+	const projections = t.mock.method(internals, "catalogRows");
+	const listings = t.mock.method(f.manager.catalog, "identities");
+	const stamps = t.mock.method(f.manager.catalog, "recordStamp");
+	const priorRows = f.manager.observedToolCardRows();
 	// The cost changes the footer text; the footer writes its status only when that text changes.
 	publish(records[0].storageId, "Updated", 1);
 	await statuses.waitFor((events) => events.some((value) => value.includes("Updated")));
+	assert.equal(listings.mock.callCount(), 0);
+	assert.deepEqual(
+		stamps.mock.calls.map(({ arguments: args }) => args[0]),
+		[records[0].storageId],
+	);
+	assert.deepEqual(
+		projections.mock.calls.map(({ arguments: args }) => args[0].storageId),
+		[records[0].storageId],
+	);
+	assert.ok(priorRows.every((row) => row.name === "Initial"));
 	const page = await f.manager.dashboardPage({ ownerId });
 	assert.equal(page.rows.find((row) => row.storageId === records[0].storageId)?.name, "Updated");
 	assert.ok(reads.mock.callCount() > 0);

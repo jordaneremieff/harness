@@ -236,7 +236,10 @@ export class CatalogObservation {
 	private full = true;
 	private reconciledAt = 0;
 	private observedAt = "";
+	private queued = Promise.resolve();
 	private pending?: Promise<CatalogInventory>;
+	private explicitBound = Infinity;
+	private changes?: Map<string, CatalogFact | null | undefined>;
 	private readonly catalog: AgentCatalog;
 	constructor(catalog: AgentCatalog) {
 		this.catalog = catalog;
@@ -249,76 +252,113 @@ export class CatalogObservation {
 			this.dirty.clear();
 			return;
 		}
-		if (this.full) return;
 		for (const id of identities) this.dirty.add(id);
-		if (!catalogChange([...this.dirty])) {
-			this.full = true;
-			this.dirty.clear();
-		}
 	}
 
 	ownerId(storageId: string): string | undefined {
 		return this.facts.get(storageId)?.record.ownerId;
 	}
 
-	/**
-	 * Every read checks all record stamps. Explicit reads (dashboard, status, list) also observe every
-	 * claim when the last full pass is two seconds old, which reveals silent host deaths. Background
-	 * readers that react to change notices pass a longer bound, so a busy host elsewhere does not make
-	 * every ordinary session observe every claim in the catalogue every two seconds.
-	 */
+	/** Cached fact for an observer-local change, without another storage read. */
+	currentFact(storageId: string): CatalogFact | null | undefined {
+		return this.facts.get(storageId);
+	}
+
+	/** Explicit inventory checks silent file changes and periodically refreshes all claims. */
 	read(options: { reconcileAfterMs?: number } = {}): Promise<CatalogInventory> {
-		// A stricter reader that joins a read in flight still gets a full pass before it resolves.
-		if (Date.now() - this.reconciledAt >= (options.reconcileAfterMs ?? EXPLICIT_RECONCILE_MS)) this.full = true;
+		this.explicitBound = Math.min(this.explicitBound, options.reconcileAfterMs ?? EXPLICIT_RECONCILE_MS);
 		if (this.pending) return this.pending;
-		this.pending = this.refresh().finally(() => {
+		this.pending = this.enqueue(async () => {
+			const full = await this.reconcile();
+			// A stricter explicit read may have joined while a stamp-only pass was in progress.
+			if (!full && this.claimsDue()) await this.reconcile(true);
+			return { facts: new Map(this.facts), observedAt: this.observedAt };
+		}).finally(() => {
+			this.explicitBound = Infinity;
 			this.pending = undefined;
 		});
 		return this.pending;
 	}
 
-	private async refresh(): Promise<CatalogInventory> {
-		try {
-			do {
-				const full = this.full;
-				this.full = false;
-				const changed = new Set(this.dirty);
-				this.dirty.clear();
-				const started = Date.now();
-				// A full pass in progress already satisfies readers that join it; a failed pass forces another.
-				if (full) this.reconciledAt = started;
-				const identities = await this.catalog.identities();
-				const facts = new Map<string, CatalogFact | null>();
-				for (const id of identities) await this.refreshRecord(facts, id, full || changed.has(id));
-				this.facts = facts;
-				if (full) this.observedAt = new Date(started).toISOString();
-			} while (this.full || this.dirty.size);
-			return { facts: this.facts, observedAt: this.observedAt };
-		} catch (error) {
-			this.full = true;
-			throw error;
+	/** One notice consumer drains changes. Its first read seeds the consumer; undefined means removal. */
+	readChanges(): Promise<ReadonlyMap<string, CatalogFact | null | undefined>> {
+		return this.enqueue(async () => {
+			this.changes ??= new Map(this.facts);
+			if (this.full) await this.reconcile(true);
+			else await this.refreshChanges(this.takeDirty());
+			const changes = this.changes;
+			this.changes = new Map();
+			return changes;
+		});
+	}
+
+	private enqueue<T>(work: () => Promise<T>): Promise<T> {
+		const result = this.queued.then(work);
+		this.queued = result.then(
+			() => {},
+			() => {
+				this.full = true;
+			},
+		);
+		return result;
+	}
+
+	private takeDirty(): Set<string> {
+		const changed = this.dirty;
+		this.dirty = new Set();
+		return changed;
+	}
+
+	private claimsDue(): boolean {
+		return Date.now() - this.reconciledAt >= this.explicitBound;
+	}
+
+	private async reconcile(forceClaims = false): Promise<boolean> {
+		const wholeNotice = this.full;
+		this.full = false;
+		const changed = this.takeDirty();
+		const identities = await this.catalog.identities();
+		const full = wholeNotice || forceClaims || this.claimsDue();
+		const facts = new Map<string, CatalogFact | null>();
+		for (const id of identities) {
+			const fact = await this.refreshRecord(id, full || changed.has(id));
+			if (fact !== undefined) facts.set(id, fact);
+			this.noteChange(id, fact, changed.has(id));
+		}
+		for (const id of this.facts.keys()) if (!facts.has(id)) this.noteChange(id, undefined);
+		for (const id of changed) if (!facts.has(id)) this.noteChange(id, undefined, true);
+		this.facts = facts;
+		if (full) {
+			this.reconciledAt = Date.now();
+			this.observedAt = new Date(this.reconciledAt).toISOString();
+		}
+		return full;
+	}
+
+	private async refreshChanges(ids: ReadonlySet<string>): Promise<void> {
+		const current = new Map<string, CatalogFact | null | undefined>();
+		for (const id of ids) current.set(id, await this.refreshRecord(id, true));
+		for (const [id, fact] of current) {
+			this.noteChange(id, fact, true);
+			if (fact === undefined) this.facts.delete(id);
+			else this.facts.set(id, fact);
 		}
 	}
 
-	private async refreshRecord(facts: Map<string, CatalogFact | null>, id: string, dirty: boolean): Promise<void> {
+	private noteChange(id: string, fact: CatalogFact | null | undefined, named = false): void {
+		if (named || this.facts.get(id) !== fact) this.changes?.set(id, fact);
+	}
+
+	private async refreshRecord(id: string, dirty: boolean): Promise<CatalogFact | null | undefined> {
 		try {
 			const stamp = this.catalog.recordStamp(id);
 			const previous = this.facts.get(id);
-			if (previous?.fileStamp !== stamp) facts.set(id, await this.catalog.observeRecord(id));
-			else
-				facts.set(
-					id,
-					dirty
-						? {
-								...previous,
-								claim: await this.catalog.observeClaim(previous.record),
-								observedAt: new Date().toISOString(),
-							}
-						: previous,
-				);
+			if (!previous || previous.fileStamp !== stamp) return await this.catalog.observeRecord(id);
+			return dirty
+				? { ...previous, claim: await this.catalog.observeClaim(previous.record), observedAt: new Date().toISOString() }
+				: previous;
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") facts.delete(id);
-			else facts.set(id, null);
+			return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null;
 		}
 	}
 }

@@ -151,7 +151,7 @@ export function writeDeliveryWake(
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { changed: false, omitted: 0 };
 			throw error;
 		}
-		publishCatalogChange(join(sessionsRoot, "durable"));
+		publishCatalogChange(join(sessionsRoot, "durable"), storageId);
 		return { changed: true, omitted: 0 };
 	}
 	const value = boundedWake(identities, lastFailed, omitted, rowsPerRecipient);
@@ -171,6 +171,6 @@ export function writeDeliveryWake(
 		}
 		throw error;
 	}
-	publishCatalogChange(join(sessionsRoot, "durable"));
+	publishCatalogChange(join(sessionsRoot, "durable"), storageId);
 	return { changed: true, omitted: value.omitted };
 }

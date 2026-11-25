@@ -316,24 +316,23 @@ Fleet status and collaboration-awareness are distinct evidence views. Their
 readers use separate bounded `AgentCatalog.page()` discovery and retain their
 own coverage and evidence qualifications; they do not use the roster observation.
 
-Each shared read lists the current directory snapshot and checks record file
+Each explicit inventory read lists the current directory snapshot and checks record file
 stamps without following symlinks. Device, inode, size, modification time and
 change time identify replacements and updates. Only changed or unreadable records
 need payload reads; unchanged records retain their facts. A read after final host
 publication therefore sees the retained costs without waiting for its notice.
 The opened file supplies the retained stamp, not an earlier pathname check.
 
-Namespace notices carry bounded changed storage identities. The manager combines
-these with connected-host notices and refreshes the affected claim facts.
-Concurrent changes accumulate; an unknown, identity-free or oversized notice
-invalidates claims across the namespace. The next explicit read (dashboard,
-status, list) also refreshes all claims when the last full observation is two
-seconds old, without reopening unchanged record payloads. The footer and recovery
-refreshes that follow notices use a 30-second bound instead, so one busy host does
-not make every ordinary session observe every claim every two seconds; a stricter
-reader that joins a read in flight still receives a full pass. The dashboard's
-existing reconciliation demand uses this same owner; no
-extra polling service or persistent catalog copy exists. Reconciliation discovers
+Catalogue record writers and delivery-wake writers name their storage in the
+change notice. The manager combines these with connected-host notices. After
+initial discovery, the footer checks only the named records and claims. It
+replaces their row and count contributions and revisits dependent ownership
+scopes only when their lineage changes. A notice that lacks valid identities
+reconciles the whole inventory. The next explicit read (dashboard, status, list)
+also refreshes all claims when the last full pass is two seconds old, without
+reopening unchanged record payloads. Explicit reads return independent snapshots.
+Changes that arrive during a pass remain pending for the next batch. No extra
+polling service or persistent catalogue copy exists. Reconciliation discovers
 missed publications, deletions, unreadable records and silent process death.
 Rows label claim observation time. A cached claim is not a fresh liveness check,
 and a cached page keeps the inventory observation time rather than its render time.
