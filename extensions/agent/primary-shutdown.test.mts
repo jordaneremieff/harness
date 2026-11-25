@@ -555,3 +555,36 @@ test("a message to an ordinary primary that quits during its reload fails at onc
 	assert.ok(Date.now() - started < 5000, "the sender stops before the reload wait ends");
 	assert.deepEqual(delivered, []);
 });
+
+test("a message withdrawn while its ordinary primary reloads is not delivered after the reload", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-reload-abort-")));
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const sender = randomUUID();
+	const target = randomUUID();
+	await manager.registerPrimary(sender, { signal: new AbortController().signal, cwd: root, send() {} });
+	const first = new AbortController();
+	await manager.registerPrimary(target, { signal: first.signal, cwd: root, send() {} });
+	assert.equal(manager.suspendPrimary(target, first), true);
+	const withdrawn = new AbortController();
+	const call = manager.control(
+		"submit",
+		{ sessionId: target, message: "withdrawn during the reload", origin: "model" },
+		{ id: sender, cwd: root },
+		{ signal: withdrawn.signal },
+	);
+	setTimeout(() => withdrawn.abort(), 300);
+	await assert.rejects(call, { name: "AbortError" });
+	const delivered: string[] = [];
+	await manager.registerPrimary(target, {
+		signal: new AbortController().signal,
+		cwd: root,
+		send: (text) => delivered.push(text),
+	});
+	// The retry interval is 200 ms; three intervals give a retry that survived the abort time to arrive.
+	await new Promise((done) => setTimeout(done, 600));
+	assert.deepEqual(delivered, []);
+});

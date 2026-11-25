@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { storageStatusPageInput, type StorageStatusPageInput } from "./storage-status.ts";
 import { PluginError, isChordError } from "@earendil-works/chord";
 import { createColdObservationCache } from "./cold-observation.ts";
@@ -1210,7 +1211,7 @@ export class AgentManager {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 			if (!readPrimaryEndpointDescriptor(this.options.root, sessionId).info)
 				throw new Error(unknownTargetRefusal(sessionId));
-			return this.primaryControl(method, input, sessionId, caller);
+			return this.primaryControl(method, input, sessionId, caller, options?.signal);
 		}
 		({ method, input } = durableTargetInput(method, input, caller.id, caller.name));
 		if (isThreadStorage(record, this.catalog.root) && !threadStorageServes(method, input))
@@ -1473,6 +1474,7 @@ export class AgentManager {
 		input: Record<string, unknown>,
 		sessionId: string,
 		caller: AgentCaller,
+		signal?: AbortSignal,
 	): Promise<unknown> {
 		if (method === "status" || method === "inspect")
 			return this.observePrimary(sessionId, method === "status" ? { view: "status" } : input);
@@ -1480,7 +1482,7 @@ export class AgentManager {
 			throw new Error(
 				"Threads of an ordinary primary live in that primary's own thread storage; repeat agent_collaborate create without sessionId to create the thread in your own thread storage",
 			);
-		return this.primaryMessage(method, input, sessionId, caller);
+		return this.primaryMessage(method, input, sessionId, caller, signal);
 	}
 
 	private async primaryMessage(
@@ -1488,6 +1490,7 @@ export class AgentManager {
 		input: Record<string, unknown>,
 		sessionId: string,
 		caller: AgentCaller,
+		signal?: AbortSignal,
 	): Promise<unknown> {
 		const channel = await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root });
 		if (method !== "submit" && method !== "report") {
@@ -1528,7 +1531,7 @@ export class AgentManager {
 			},
 			...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}),
 		};
-		await this.deliverPrimaryMessage(sessionId, channel, message);
+		await this.deliverPrimaryMessage(sessionId, channel, message, signal);
 		return {
 			sessionId,
 			admitted: true,
@@ -1542,17 +1545,19 @@ export class AgentManager {
 	/**
 	 * Deliver one message through `channel` and close every connection it used. A reloading primary refuses until
 	 * it registers again, so the message waits for that registration within a bound; its source identity makes
-	 * a retry arrive once.
+	 * a retry arrive once. An aborted `signal` starts no further attempt.
 	 */
 	private async deliverPrimaryMessage(
 		sessionId: string,
 		channel: PrimaryChannelConnection,
 		message: Parameters<PrimaryChannelConnection["deliver"]>[0],
+		signal?: AbortSignal,
 	): Promise<void> {
 		const deadline = Date.now() + PRIMARY_RELOAD_WAIT_MS;
 		let open: PrimaryChannelConnection | undefined = channel;
 		try {
 			for (let connection = channel; ; ) {
+				signal?.throwIfAborted();
 				try {
 					await connection.deliver(message);
 					return;
@@ -1561,7 +1566,7 @@ export class AgentManager {
 				}
 				open = undefined;
 				await connection.close();
-				connection = await this.reconnectReloadingPrimary(sessionId, deadline);
+				connection = await this.reconnectReloadingPrimary(sessionId, deadline, signal);
 				open = connection;
 			}
 		} finally {
@@ -1570,14 +1575,18 @@ export class AgentManager {
 	}
 
 	/** A new connection to a primary that reloads, after a short wait; past the deadline the message is not delivered. */
-	private async reconnectReloadingPrimary(sessionId: string, deadline: number): Promise<PrimaryChannelConnection> {
+	private async reconnectReloadingPrimary(
+		sessionId: string,
+		deadline: number,
+		signal?: AbortSignal,
+	): Promise<PrimaryChannelConnection> {
 		let absent = 0;
 		for (;;) {
 			if (Date.now() >= deadline)
 				throw new Error(
 					`Primary session ${sessionId} was still reloading after ${Math.round(PRIMARY_RELOAD_WAIT_MS / 1000)} s; the message was not delivered. Send it again after the reload.`,
 				);
-			await new Promise((resolve) => setTimeout(resolve, PRIMARY_RELOAD_RETRY_MS));
+			await delay(PRIMARY_RELOAD_RETRY_MS, undefined, signal === undefined ? undefined : { signal });
 			try {
 				return await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root });
 			} catch {
