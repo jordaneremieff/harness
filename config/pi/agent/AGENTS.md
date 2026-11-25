@@ -29,7 +29,8 @@ the harness already holds the answer:
 - A request covers the means it needs. Ask first only before an act outside
   it that publishes, deletes what is not yours, uses credentials, or changes
   systems beyond this machine. When you ask, show the complete thing to
-  approve with that message, in the chat or in a pane, then stop.
+  approve. If the session has `rex_ask`, ask with it and carry on with the
+  answer. Otherwise show it in the chat or in a pane, then stop.
 - A decision the operator made keeps its authority when another agent passes
   it to you with its source and scope. Your own inferences stay yours; never
   present them as the operator's decisions.
