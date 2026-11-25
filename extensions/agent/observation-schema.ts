@@ -636,6 +636,23 @@ const toolCoverageProperties = {
 };
 const toolOverviewProperties = {
 	...overviewProperties,
+	/** The latest Durable host check of an ordinary manager and its recent acts, each reported once; hosts run none. */
+	hostSupervision: opt(
+		obj({
+			checkedAt: string,
+			hosts: count,
+			skipped: opt(string),
+			acts: arr(
+				obj({
+					at: string,
+					pid: count,
+					storageId: string,
+					act: union([lit("ended"), lit("killed"), lit("handed-over"), lit("kept")]),
+					reason: string,
+				}),
+			),
+		}),
+	),
 	sessions: arr(ToolOverviewRowSchema),
 	coverage: obj(toolCoverageProperties),
 	summary: obj({

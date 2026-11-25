@@ -680,6 +680,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			root,
 			agentDir: process.env.PI_AGENT_DIR ?? getAgentDir(),
 			packageDir: getPackageDir(),
+			superviseHosts: true,
 		});
 		owners.managers.set(root, manager);
 		observedManager = manager;

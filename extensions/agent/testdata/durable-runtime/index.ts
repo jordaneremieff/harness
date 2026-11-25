@@ -33,6 +33,7 @@
  * "unsafe"`, so an interrupted execution is reported as interrupted and never
  * rerun.
  */
+import { spawn as spawnProcess } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -486,6 +487,11 @@ export default async function registerDurableRuntimeFixture(pi: ExtensionAPI): P
 						replay: "unsafe",
 						execute: async (args) => {
 							appendFileSync(join(controlDir(), "effect.txt"), `${args.tag}\n`);
+							// A tool that runs a program keeps it as a child process of the host while the call waits.
+							if (process.env.DURABLE_TEST_EFFECT_CHILD === "1") {
+								const child = spawnProcess("sleep", ["600"], { stdio: "ignore" });
+								writeFileSync(join(controlDir(), "effect-child.pid"), String(child.pid));
+							}
 							mark("effect");
 							await new Promise(() => {});
 							return {};

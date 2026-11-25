@@ -90,6 +90,8 @@ it("selects each agent field from injected environment, document, or default wit
 			"idleMinutes",
 			"providerProgressIdleMs",
 			"toolCallMaxMinutes",
+			"hostCheckMinutes",
+			"stuckHostMinutes",
 			"checkInMinutes",
 			"presets",
 			"preferences",

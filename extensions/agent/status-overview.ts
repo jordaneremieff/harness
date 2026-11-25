@@ -26,6 +26,20 @@ export interface StatusOverviewFailure {
 	readonly error: string;
 }
 
+/** The latest Durable host check of the manager and its recent acts. */
+export interface HostSupervisionSummary {
+	readonly checkedAt: string;
+	readonly hosts: number;
+	readonly skipped?: string;
+	readonly acts: readonly {
+		readonly at: string;
+		readonly pid: number;
+		readonly storageId: string;
+		readonly act: "ended" | "killed" | "handed-over" | "kept";
+		readonly reason: string;
+	}[];
+}
+
 export interface StatusOverviewCoverage {
 	/** Complete source inventory for this page, with no additional byte omissions of rows or descriptions. */
 	readonly complete: boolean;
@@ -56,6 +70,7 @@ export interface StatusOverview {
 	readonly sessions: readonly ToolOverviewRow[];
 	readonly primaries: readonly StatusOverviewPrimary[];
 	readonly failures: readonly StatusOverviewFailure[];
+	readonly hostSupervision?: HostSupervisionSummary;
 	readonly summary: {
 		readonly sessions: {
 			readonly observed: number;
@@ -206,6 +221,7 @@ function initialOverview(
 	failures: readonly StatusOverviewFailure[],
 	awareness?: EffortAwareness,
 	callerId?: string,
+	hostSupervision?: HostSupervisionSummary,
 ) {
 	const ordered = [...page.rows].sort(
 		(a, b) =>
@@ -237,6 +253,15 @@ function initialOverview(
 			.sort((a, b) => byIdentity(a.storageId, b.storageId))
 			.slice(0, FAILURE_SAMPLE)
 			.map((row) => ({ ...row, error: excerpt(row.error) })),
+		...(hostSupervision === undefined
+			? {}
+			: {
+					hostSupervision: {
+						...hostSupervision,
+						...(hostSupervision.skipped === undefined ? {} : { skipped: excerpt(hostSupervision.skipped) }),
+						acts: hostSupervision.acts.map((item) => ({ ...item })),
+					},
+				}),
 		summary: {
 			sessions: {
 				observed: ordered.length,
@@ -524,8 +549,9 @@ export function buildStatusOverview(
 	failures: readonly StatusOverviewFailure[],
 	awareness?: EffortAwareness,
 	callerId?: string,
+	hostSupervision?: HostSupervisionSummary,
 ): StatusOverview {
-	const value = initialOverview(page, primaries, failures, awareness, callerId);
+	const value = initialOverview(page, primaries, failures, awareness, callerId, hostSupervision);
 	const reasons = sourceReasons(page);
 	const dropped: ByteOmissions = {
 		working: 0,

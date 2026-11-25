@@ -50,6 +50,7 @@ import { projectCatalogAttention } from "./catalog-attention.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import type { HostRuntime } from "./host-process.ts";
 import { DurableHost, readTaskGraph, stopBeforeResume } from "./durable-host.ts";
+import { hostActivityPublisher } from "./host-activity.ts";
 import { onStoredCommit } from "./commit-observation.ts";
 import { stopForeignReferences } from "./run-control.ts";
 import { createDurableServices, type DurableServices, type CreateDurableServicesOptions } from "./durable-services.ts";
@@ -417,6 +418,10 @@ export async function createDurableRuntime(
 		if (recordRemoved) throw new Error("The storage's catalog record was removed; this host admits no new work.");
 	}
 
+	const publishActivity = hostActivityPublisher(metadata.storagePath, (error) =>
+		host.reportDeliveryError(new Error(`host activity: ${error instanceof Error ? error.message : String(error)}`)),
+	);
+
 	/** Mark recovery before an admission, and refuse new conversations in a storage without its record. */
 	function admitNewWork(method: string): void {
 		if (ADMITTING_METHODS.has(method)) markAdmissionDue();
@@ -471,6 +476,7 @@ export async function createDurableRuntime(
 	}> {
 		const generation = activityGeneration;
 		const idle = await host.refreshIdle();
+		publishActivity(host.runnable);
 		const summary = deliveries?.summary(validateRecipients);
 		const deliveriesActive = summary === undefined || !summary.fresh || summary.active;
 		const pending = summary?.fresh ? summary.pendingCount > 0 : await deliveriesPending();

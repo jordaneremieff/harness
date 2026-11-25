@@ -21,7 +21,7 @@ export interface ProcessStartSource {
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 /** Seconds since the epoch of `ps -o lstart=` in UTC: `Tue Nov 24 11:55:00 2026`. */
-function lstartSeconds(text: string): number | undefined {
+export function lstartSeconds(text: string): number | undefined {
 	const match = /^\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})$/u.exec(text.trim());
 	const month = match === null ? -1 : MONTHS.indexOf(match[1]);
 	if (match === null || month < 0) return undefined;

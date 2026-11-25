@@ -4024,6 +4024,31 @@ runs and at the latest 5 s later, with a diagnostic on stderr; a timer, socket
 or child transport that an extension leaves open cannot keep a retired runner
 alive.
 
+A host keeps the code it loaded, so a host that a defect keeps alive cannot
+repair itself. The agent manager of each ordinary Pi process therefore checks
+this user's `durable-runner.ts` processes when its first primary registers and
+then every `agent.hostCheckMinutes` (default 10; zero turns the check off).
+`host-supervision.ts` lists them with `ps` and acts on a host only for these
+reasons:
+
+| Host | Act |
+|---|---|
+| Any agent directory: its storage file or catalog record is gone, at least 2 minutes after the process started | SIGTERM; SIGKILL if it still runs 25 s later (the host's own 20 s shutdown deadline and a margin). Nothing it could write can be found again. |
+| Any agent directory: its runner file is gone and no child process of its work runs | The same. A host whose tool child still runs stays. |
+| This agent directory: its catalog record marks pending work (`recoveryDue`), the host says some task can run now (a host that publishes `<storage>.activity` beside its writer lease and holds only sleeping, waiting or completing tasks stays), and for `agent.stuckHostMinutes` (default 120; zero keeps such hosts) its storage file and WAL got no write, the host and its descendants used at most 1% of the window as CPU time, and it had no child process other than its stdio MCP servers and their guardian | The same. The catalog record still marks the work due, and the manager runs its recovery scan at once, so a fresh host resumes the retained work. |
+| This agent directory: it runs from a package directory other than the one Pi settings configure for the agent extension, has no pending work, and got no storage write for `agent.idleMinutes` | SIGTERM only, which takes the host's own graceful shutdown. Once per storage and code directory: a host that an older Pi process starts again from the same code stays. |
+
+Before each signal the PID must still hold the listed process: the same start
+time, user and command line. For the last two rows the writer claim must also
+name that PID, written after the process started. The check never signals its
+own process or an ancestor, takes one lock so that two Pi processes do not act
+at the same time, and keeps its CPU samples and hand-overs in
+`<agentDir>/durable-hosts/supervision.json`, so the still window survives a Pi
+restart. Missing evidence (an unreadable table, record, claim or storage
+file) keeps the process. The no-target `agent_status` overview shows the latest
+check under `hostSupervision`: when it ran, how many hosts it saw, and its
+recent acts, each reported once; it adds nothing to the chat.
+
 Each native tool call in a Durable host runs at most `agent.toolCallMaxMinutes`
 (default 120; zero removes the limit). `tool-time-limit.ts` wraps every tool
 that an installed Durable extension provides or wraps: at the limit it cancels
@@ -5377,7 +5402,7 @@ on `agent_profile` and the native `agent.profile` document.
 
 The file is strict JSON with a `version: 1` envelope and an optional `agent`
 section. Its fields are `idleMinutes`, `providerProgressIdleMs`, `toolCallMaxMinutes`,
-`checkInMinutes`, `presets`, and `preferences`. All fields are optional. Each field selects a present environment
+`hostCheckMinutes`, `stuckHostMinutes`, `checkInMinutes`, `presets`, and `preferences`. All fields are optional. Each field selects a present environment
 value, then its document value, then its safe default. Structured environment
 values use JSON. An invalid selected field uses its default, not a lower-priority
 file value; other fields remain usable. Diagnostics identify rejected
@@ -5580,6 +5605,8 @@ facts. No new command is required.
 | idleMinutes | `PI_AGENT_IDLE_MINUTES` | number | 5 | reload | min 0; max 35791 | Idle host retirement interval in minutes; zero disables. |
 | providerProgressIdleMs | `PI_AGENT_PROVIDER_PROGRESS_IDLE_MS` | number | 0 | reload | min 0; max 2147483647 | Maximum silence between provider events in milliseconds; zero disables. |
 | toolCallMaxMinutes | `PI_AGENT_TOOL_CALL_MAX_MINUTES` | number | 120 | reload | min 0; max 35791 | Longest time one native tool call may run in a Durable host, in minutes; zero disables the limit. |
+| hostCheckMinutes | `PI_AGENT_HOST_CHECK_MINUTES` | number | 10 | reload | min 0; max 35791 | Interval of the agent manager's check of Durable host processes, in minutes; zero disables the check. |
+| stuckHostMinutes | `PI_AGENT_STUCK_HOST_MINUTES` | number | 120 | next use | min 0; max 35791 | How long a host with work that can run shows no storage write, CPU progress or working child process before the host check ends it, in minutes; zero keeps such hosts. |
 | checkInMinutes | `PI_AGENT_CHECK_IN_MINUTES` | number | 0 | next use | min 0; max 35791 | Automatic owner check-in interval for model tasks in minutes; zero, the default, arms none. |
 | presets | `PI_AGENT_PRESETS` | json | {} | next use | declared schema | Named execution presets with exact model identities and optional creation fields. |
 | preferences | `PI_AGENT_PREFERENCES` | json | {} | next use | declared schema | Delegation preferences, default preset, exclusions, planning budgets, and reporting guidance. |

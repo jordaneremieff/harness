@@ -66,7 +66,14 @@ import { sessionFigures } from "./footer.ts";
 import { sentWorkIdentity } from "./session-work.ts";
 import type { ContinuityFact } from "./continuity-facts.ts";
 import { recordAdmission } from "./ordinary-continuity.ts";
-import { buildStatusOverview } from "./status-overview.ts";
+import { buildStatusOverview, type HostSupervisionSummary } from "./status-overview.ts";
+import {
+	configuredAgentRoot,
+	superviseHosts,
+	type SupervisionAct,
+	type SupervisionOptions,
+} from "./host-supervision.ts";
+import { readSettings } from "./settings.ts";
 import { firstInteractivePurpose, purposeExcerpt } from "./effort-purpose.ts";
 import { readEffortAwareness, type EffortAwareness } from "./effort-awareness.ts";
 import {
@@ -202,6 +209,12 @@ export interface AgentManagerOptions {
 	) => string | void | Promise<string> | Promise<void>;
 	/** Largest recorded-failure memory; the oldest failure evicts first. */
 	failureLimit?: number;
+	/**
+	 * Check this user's Durable host processes while a primary is registered, at `agent.hostCheckMinutes`. Only the
+	 * manager of an ordinary Pi process sets it; Durable hosts and tests leave it off. An object replaces the check's
+	 * process table, signals and clock.
+	 */
+	superviseHosts?: boolean | Omit<SupervisionOptions, "agentDir" | "stuckMs" | "idleMs" | "reported">;
 }
 interface PrimaryClient {
 	sentWork?: Set<string>;
@@ -289,6 +302,9 @@ const PRIMARY_RELOAD_RETRY_MS = 200;
 /** How long a reloading session's channel stays published while its extension registers again. */
 const PRIMARY_RELOAD_GRACE_MS = 60_000;
 const DEFAULT_FAILURE_LIMIT = 256;
+/** Recent host-check acts kept for status; each act appears once. */
+const SUPERVISION_ACT_LIMIT = 8;
+const SUPERVISION_REPORTED_LIMIT = 1024;
 const MAX_ERROR_TEXT = 512;
 const MAX_INVENTORY_PAGES = 16;
 const MAX_LIST_STEPS = 32;
@@ -615,6 +631,11 @@ export class AgentManager {
 	private recoveryQueue: Promise<void> = Promise.resolve();
 	private catalogueScan?: Promise<void>;
 	private catalogueScanAgain = false;
+	private supervisionTimer: ReturnType<typeof setInterval> | undefined;
+	private supervisionRun: Promise<void> | undefined;
+	private supervisionLast: Omit<HostSupervisionSummary, "acts"> | undefined;
+	private readonly supervisionActs: SupervisionAct[] = [];
+	private readonly supervisionReported = new Set<string>();
 	private readonly wakeAttempts = new BoundedMap<ReadonlyMap<string, string>>(MAX_INVENTORY_PAGES * 20);
 	private readonly recoveryClients = new Map<
 		string,
@@ -2313,6 +2334,7 @@ export class AgentManager {
 			failures,
 			awareness,
 			caller?.id,
+			this.hostSupervision(),
 		);
 	}
 
@@ -2465,6 +2487,7 @@ export class AgentManager {
 		primary.resumeInbox?.();
 		await this.refreshFooter();
 		await this.scanRecovery(primary, ownerId);
+		this.startHostSupervision();
 	}
 
 	/** Availability changes, not source view publication, permit another parked wake. */
@@ -2624,7 +2647,10 @@ export class AgentManager {
 		} catch (error) {
 			this.failures.set(`primary-status:${ownerId}`, errorText(error));
 		}
-		if (!this.primaries.size) this.releaseClients();
+		if (!this.primaries.size) {
+			this.stopHostSupervision();
+			this.releaseClients();
+		}
 		this.observationOwnerEnded();
 		await closing;
 	}
@@ -3196,9 +3222,68 @@ export class AgentManager {
 		for (const client of clients) void client.close();
 	}
 
+	/** Start the host check once a primary registers: one check now, then one per interval. */
+	private startHostSupervision(): void {
+		const supervise = this.options.superviseHosts;
+		if (supervise === undefined || supervise === false || this.supervisionTimer !== undefined || this.shuttingDown)
+			return;
+		const minutes = readSettings({ agentDir: this.options.agentDir }).values.hostCheckMinutes;
+		if (!(minutes > 0)) return;
+		this.supervisionTimer = setInterval(() => void this.checkHosts(), minutes * 60_000);
+		this.supervisionTimer.unref?.();
+		void this.checkHosts();
+	}
+
+	private stopHostSupervision(): void {
+		if (this.supervisionTimer !== undefined) clearInterval(this.supervisionTimer);
+		this.supervisionTimer = undefined;
+	}
+
+	/** One host check; its acts join the bounded status record, and an ended host's storage gets a recovery scan. */
+	checkHosts(): Promise<void> {
+		if (this.supervisionRun !== undefined) return this.supervisionRun;
+		const supervise = this.options.superviseHosts;
+		const injected = typeof supervise === "object" ? supervise : {};
+		if (this.supervisionReported.size > SUPERVISION_REPORTED_LIMIT) this.supervisionReported.clear();
+		this.supervisionRun = (async () => {
+			const values = readSettings({ agentDir: this.options.agentDir }).values;
+			const run = await superviseHosts({
+				activeRoot: configuredAgentRoot(this.options.agentDir),
+				...injected,
+				agentDir: this.options.agentDir,
+				stuckMs: values.stuckHostMinutes * 60_000,
+				idleMs: values.idleMinutes * 60_000,
+				reported: this.supervisionReported,
+			});
+			this.supervisionActs.push(...run.acts);
+			this.supervisionActs.splice(0, Math.max(0, this.supervisionActs.length - SUPERVISION_ACT_LIMIT));
+			this.supervisionLast = {
+				checkedAt: run.checkedAt,
+				hosts: run.hosts,
+				...(run.skipped === undefined ? {} : { skipped: run.skipped }),
+			};
+			this.failures.delete("host-check");
+			if (run.ended.length > 0 && !this.shuttingDown) this.recoverCatalogueChanges();
+		})()
+			.catch((error) => {
+				this.failures.set("host-check", errorText(error));
+			})
+			.finally(() => {
+				this.supervisionRun = undefined;
+			});
+		return this.supervisionRun;
+	}
+
+	/** The latest host check and its recent acts, for status. */
+	hostSupervision(): HostSupervisionSummary | undefined {
+		if (this.supervisionLast === undefined) return undefined;
+		return { ...this.supervisionLast, acts: [...this.supervisionActs] };
+	}
+
 	close(): Promise<void> {
 		if (this.closing) return this.closing;
 		this.shuttingDown = true;
+		this.stopHostSupervision();
 		this.cancelFooterProjection();
 		this.launchReplay.close();
 		this.recoveryHolds.clear();

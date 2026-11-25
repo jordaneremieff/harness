@@ -359,6 +359,16 @@ export function sessionIsIdle(graph: TaskGraph, inspection: HarnessInspection): 
 }
 
 /**
+ * Whether some task can run now: pending or running, with a registered definition. Sleeping, waiting and
+ * completing tasks wait for time, a signal or other tasks, so a host that holds only those does nothing by design.
+ */
+export function taskGraphRunnable(graph: TaskGraph): boolean {
+	return Object.values(graph.tasks).some(
+		(task) => (task.state.status === "pending" || task.state.status === "running") && task.blocked === undefined,
+	);
+}
+
+/**
  * Process-local Durable runtime for one storage. `open()` resumes unfinished
  * work by default and creates the root conversation when it is absent.
  */
@@ -386,6 +396,7 @@ export class DurableHost {
 	private closed = false;
 	private sessionClosing = false;
 	private idleValue = false;
+	private runnableValue = false;
 	private idleDirty = true;
 	private commitGeneration = 0;
 	private readonly defaultCwd: string | undefined;
@@ -485,6 +496,11 @@ export class DurableHost {
 		return !this.closed && !this.sessionClosing && !this.idleDirty && this.idleValue;
 	}
 
+	/** Whether the last idle refresh found a task that can run now. */
+	get runnable(): boolean {
+		return this.runnableValue;
+	}
+
 	/** Native Session closure seals host admission, including after a fatal storage error. */
 	get sessionEnded(): boolean {
 		return this.sessionClosing;
@@ -518,8 +534,10 @@ export class DurableHost {
 		if (this.closed || this.sessionClosing) return false;
 		const generation = this.commitGeneration;
 		const inspection = await this.harness.inspect(context);
-		const value = sessionIsIdle(await readTaskGraph(this.harness, context), inspection);
+		const graph = await readTaskGraph(this.harness, context);
+		const value = sessionIsIdle(graph, inspection);
 		this.idleValue = value;
+		this.runnableValue = taskGraphRunnable(graph);
 		if (generation === this.commitGeneration) this.idleDirty = false;
 		return value && !this.idleDirty;
 	}

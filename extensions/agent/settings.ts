@@ -40,6 +40,26 @@ export const settings = {
 			min: 0,
 			max: 35791,
 		},
+		hostCheckMinutes: {
+			apply: "reload",
+			type: "number",
+			env: "PI_AGENT_HOST_CHECK_MINUTES",
+			description:
+				"Interval of the agent manager's check of Durable host processes, in minutes; zero disables the check.",
+			default: 10,
+			min: 0,
+			max: 35791,
+		},
+		stuckHostMinutes: {
+			apply: "use",
+			type: "number",
+			env: "PI_AGENT_STUCK_HOST_MINUTES",
+			description:
+				"How long a host with work that can run shows no storage write, CPU progress or working child process before the host check ends it, in minutes; zero keeps such hosts.",
+			default: 120,
+			min: 0,
+			max: 35791,
+		},
 		checkInMinutes: {
 			apply: "use",
 			type: "number",
@@ -105,6 +125,8 @@ type SettingsValues = {
 	idleMinutes: number;
 	providerProgressIdleMs: number;
 	toolCallMaxMinutes: number;
+	hostCheckMinutes: number;
+	stuckHostMinutes: number;
 	checkInMinutes: number;
 	presets: ExecutionPresets;
 	preferences: DelegationPreferences;

@@ -987,6 +987,16 @@ that target does not migrate the source. Source:
 `extensions/agent/snapshot-capture.ts`. Clean retirement and unexpected host loss
 have different recovery consequences.
 
+A host that a defect keeps alive keeps that defect until it ends, so the Agent
+also supervises hosts from outside: the manager of each ordinary Pi process
+ends hosts whose storage, catalog record or code is gone, ends a host of its
+agent directory that has pending work but stayed still for the stuck window
+(Durable recovery then resumes the retained work on a fresh host), and sends
+SIGTERM once to an idle host that runs other code than the configured package.
+A time limit on each native tool call keeps one call from holding a host. The
+"Runtime and identity" section of the Agent README owns the rules and their
+proofs.
+
 Retained hosts keep loaded code and their selected coding-agent installation.
 Idle retirement does not silently choose a new Pi install. Source and dependency
 updates form one activation unit: an `observeCommits()` or `watchDoc()`
