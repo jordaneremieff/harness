@@ -21,6 +21,7 @@ import {
 } from "./durable-host-fixture.mts";
 import { parseHostMetadata } from "./host-protocol.ts";
 import { createPrimaryChannel } from "./primary-channel.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 
 type TestContext = { after(fn: () => void | Promise<void>): void };
 
@@ -39,8 +40,10 @@ async function fixture(t: TestContext, answers: number, retryDelayMs: number, ac
 	});
 	t.after(() => host.close());
 	const state = { attempts: 0, passes: 0, errors: [] as string[] };
+	const ownerId = randomUUID();
 	const owner = await createPrimaryChannel({
-		id: randomUUID(),
+		id: ownerId,
+		sessionFile: savedTranscript(root, ownerId),
 		cwd: root,
 		sessionsRoot: join(root, "sessions"),
 		deliver: () => {

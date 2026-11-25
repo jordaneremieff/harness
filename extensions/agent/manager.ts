@@ -2405,7 +2405,7 @@ export class AgentManager {
 				primary.send(message.text, message.details, message.sourceId, false);
 				return;
 			}
-			const misaddressed = retainedDeliveryRefusal(message.details, message.sourceId, ownerId);
+			const misaddressed = retainedDeliveryRefusal(message.details, ownerId);
 			if (misaddressed !== undefined) throw misaddressed;
 			const key = `${ownerId}:retained:${message.sourceId}`;
 			if (this.delivered.get(key) === deliveryScope) {

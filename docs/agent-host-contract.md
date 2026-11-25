@@ -439,15 +439,18 @@ and go only to the owner's registered channel. Their `details` name that owner
 as both `deliveryRecipient` and `originalOwnerId`, with `liveOwner:true`. The
 receiver checks both recipient fields before consulting its replay cache. The
 registration's context must still hold that session, including on replay. A
-copy flag (`fallback:true`), a copy label (`fallbackLabel`),
-or a copy source identity (`:informational:`) causes refusal even if both
-recipient fields match.
+copy flag (`fallback:true`) or a copy label (`fallbackLabel`) in `details`
+causes refusal even if both recipient fields match. The source ID is not
+inspected for copy markers: it carries the sender's request ID, which can be any
+text.
 
 Fresh delivery requires this user's regular session file, opened without
 following a symbolic link, with a header that names the registered session.
 A receiver that keeps no transcript (`--no-session`) refuses every source-ledger
 row. Typed refusals are Chord `PluginError`s with `code: "primary_refused"` and
-`details.refusal` set to `misaddressed`, `copy`, `unsaved`, or `no-transcript`.
+`details.refusal` set to `misaddressed` or `copy` (the row's content), or
+`unsaved`, `no-transcript` or `not-held` (the session; `not-held` is a
+registration whose process no longer holds that session).
 These refusals do not change provider-block state, request continuity, the
 inbox, the transcript, or the model. Acceptance requires an exact `agent.peer`
 source identity and matching entry bytes in the session JSONL file, not a

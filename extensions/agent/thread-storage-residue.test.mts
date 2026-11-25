@@ -15,6 +15,7 @@ import { prepareScheduleSettings } from "./durable-schedule-fixture.mts";
 import { createDurableServices } from "./durable-services.ts";
 import { isThreadStorage } from "./identity.ts";
 import { createPrimaryChannel } from "./primary-channel.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 import { withdrawStorageWork } from "./thread-storage-work.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
@@ -193,6 +194,7 @@ for (const [trigger, first] of Object.entries(FIRST_REQUESTS))
 		const outcomes: string[] = [];
 		const channel = await createPrimaryChannel({
 			id: peer,
+			sessionFile: savedTranscript(f.root, peer),
 			cwd: f.cwd,
 			sessionsRoot: f.root,
 			deliver: (message) => {

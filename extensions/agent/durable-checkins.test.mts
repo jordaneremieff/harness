@@ -20,6 +20,7 @@ import { startDurableDelivery } from "./durable-delivery.ts";
 import { AgentCatalog } from "./catalog.ts";
 import { parseHostMetadata } from "./host-protocol.ts";
 import { createPrimaryChannel } from "./primary-channel.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 import { randomUUID } from "node:crypto";
 import {
 	Harness,
@@ -1150,6 +1151,7 @@ it("pauses through the delivery watcher for an absent owner, so the host holds n
 		const received: unknown[] = [];
 		const channel = await createPrimaryChannel({
 			id: owner,
+			sessionFile: savedTranscript(root, owner),
 			cwd: root,
 			sessionsRoot: join(root, "sessions"),
 			deliver: (message) => {

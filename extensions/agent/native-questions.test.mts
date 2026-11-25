@@ -13,6 +13,7 @@ import { runtimeFixture, trackHost } from "./durable-runtime-fixture.mts";
 import { fixtureRegistry, fixtureRuntime, hostOptions } from "./durable-host-fixture.mts";
 import { acquireHost } from "./host-client.ts";
 import { AgentManager } from "./manager.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 import { recordReport } from "./durable-controls.ts";
 import { retainedReportRequest } from "./delivery-store.ts";
 import {
@@ -138,6 +139,7 @@ it("delivers a Durable agent's question to an ordinary primary and returns its r
 	let delivered: () => void = () => {};
 	await manager.registerPrimary(primary, {
 		cwd: f.cwd,
+		sessionFile: savedTranscript(f.root, primary),
 		signal: controller.signal,
 		send(text, details) {
 			const value = details as Record<string, unknown>;
@@ -241,6 +243,7 @@ it("delivers a Durable agent's question to an ordinary primary and returns its r
 	});
 	await manager.registerPrimary(leaving, {
 		cwd: f.cwd,
+		sessionFile: savedTranscript(f.root, leaving),
 		signal: leavingController.signal,
 		send(_text, details) {
 			if ((details as { kind?: unknown }).kind === "report") leavingDelivered();

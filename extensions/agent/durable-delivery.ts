@@ -1008,6 +1008,11 @@ function classifyPrimary(facts: DeliveryFacts): DeliveryEligibility {
 			state: "parked",
 			reason: `primary session ${owner} has ${facts.primaryState === "unknown" ? "an unverified endpoint" : facts.primaryState === "dead" ? "an endpoint whose process ended" : "no live endpoint"}; the row waits at its source for that session and reaches no other session`,
 		};
+	if (facts.primaryTranscript === "none")
+		return {
+			state: "parked",
+			reason: `primary session ${owner} keeps no transcript; the row waits at its source and reaches no other session`,
+		};
 	if (facts.primaryTranscript === "unsaved")
 		return {
 			state: "parked",
@@ -1032,20 +1037,32 @@ interface EligibilityOptions {
 	readonly readTarget?: DurableDeliveryOptions["readTarget"];
 	readonly unavailableTargets?: ReadonlyMap<string, NativeTargetFailure>;
 	readonly packageDir?: string;
-	/** Refusals of primary owners, each with the facts it was given under. */
+	/** Refusals of primary owners that hold for all their rows, each with the facts the refused attempt used. */
 	readonly primaryRefusals?: ReadonlyMap<string, PrimaryRefusalRecord>;
+	/** Refusals of one row's content, by eligibility key, each with the facts the refused attempt used. */
+	readonly rowRefusals?: ReadonlyMap<string, PrimaryRefusalRecord>;
 	readonly activeOnly?: boolean;
 	/** The owner of the observing storage when that storage is itself a thread storage. */
 	readonly threadStorageOwner?: string;
 }
 
-/** A primary owner's refusal; it holds while the owner's facts equal `facts`. */
+/** A primary's refusal; it holds while the owner's facts equal `facts`, the facts of the refused attempt. */
 export interface PrimaryRefusalRecord {
 	readonly reason: string;
 	readonly facts: string;
 }
 
 type PrimaryFacts = Pick<DeliveryFacts, "primaryState" | "primaryVersion" | "primaryTranscript" | "primaryServer">;
+
+/** One comparable form of an owner's primary facts, from any object that carries them. */
+function primaryFactsKey(facts: PrimaryFacts): string {
+	return JSON.stringify({
+		primaryState: facts.primaryState,
+		...(facts.primaryVersion === undefined ? {} : { primaryVersion: facts.primaryVersion }),
+		...(facts.primaryTranscript === undefined ? {} : { primaryTranscript: facts.primaryTranscript }),
+		...(facts.primaryServer === undefined ? {} : { primaryServer: facts.primaryServer }),
+	});
+}
 
 function primaryFacts(sessionsRoot: string, ownerId: string): PrimaryFacts {
 	if (!PRIMARY_ID.test(ownerId)) return { primaryState: "absent" };
@@ -1096,7 +1113,7 @@ function recipientFacts(
 	return {
 		nativeRecord: record !== undefined,
 		...primary,
-		...(refusal !== undefined && refusal.facts === JSON.stringify(primary) ? { primaryRefusal: refusal.reason } : {}),
+		...(refusal !== undefined && refusal.facts === primaryFactsKey(primary) ? { primaryRefusal: refusal.reason } : {}),
 		nativeFailure,
 		...(record !== undefined && isThreadStorage(record, options.catalog.root)
 			? { threadStorageOwner: record.ownerId }
@@ -1131,11 +1148,17 @@ export async function observeDeliveryEligibility(
 	) => {
 		const terminalReason = row.delivery?.state === "terminal" ? row.delivery.reason : undefined;
 		const recipient = recipientFacts(row.ownerId, options);
+		const refused = options.rowRefusals?.get(key);
 		const eligibility = classifyDelivery({
 			ownerId: row.ownerId,
 			originValid,
 			terminalReason,
 			...recipient,
+			...(recipient.primaryRefusal === undefined &&
+			refused !== undefined &&
+			refused.facts === primaryFactsKey(recipient)
+				? { primaryRefusal: refused.reason }
+				: {}),
 			...(intent === undefined
 				? {}
 				: { pendingIntent: true, missingSubmission: missing.has(`${intent.conversationId}:${intent.requestId}`) }),
@@ -1283,10 +1306,12 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let unsubscribe: (() => void) | undefined;
 	const unavailableTargets = options.unavailableTargets ?? new Map<string, NativeTargetFailure>();
 	/**
-	 * A primary owner that refused a row as not retainable, or as not its own, refuses every row until its facts
-	 * change: a saved file, a new registration or another state. Its rows park without a retry timer meanwhile.
+	 * Refusals that park rows without a retry timer until the owner's facts differ from those of the refused attempt
+	 * (a saved file, a new registration or another state), or until an explicit refresh: by owner for a refusal about
+	 * the session, by row for a refusal of one row's content.
 	 */
 	const primaryRefusals = new Map<string, PrimaryRefusalRecord>();
+	const rowRefusals = new Map<string, PrimaryRefusalRecord>();
 	const eligibilityOptions = {
 		catalog,
 		sessionsRoot,
@@ -1295,6 +1320,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		readTarget: options.readTarget,
 		unavailableTargets,
 		primaryRefusals,
+		rowRefusals,
 		...(isThreadStorage(metadata, catalog.root) ? { threadStorageOwner: metadata.ownerId } : {}),
 	};
 	let eligibility = new Map<string, DeliveryEligibility>();
@@ -1728,9 +1754,15 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			details: rowDetails(row, identity, owner, status, facts),
 		};
 		if (!(await reportCurrent(row))) return;
+		// A refusal holds only for the registration that gave it: the facts are read before this attempt and name
+		// the server that the connection verified.
+		const attempt = primaryFacts(sessionsRoot, owner);
 		const connection = await connectPrimaryChannel({ id: owner, sessionsRoot });
 		try {
 			await connection.deliver(message);
+		} catch (error) {
+			notePrimaryRefusal(row, owner, error, primaryFactsKey({ ...attempt, primaryServer: connection.serverId }));
+			throw error;
 		} finally {
 			await connection.close().catch(() => undefined);
 		}
@@ -1829,23 +1861,36 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		return eligibility.get(key) ?? { state: "terminal", reason: "delivery row is absent" };
 	};
 
+	/** Eligibility keys of one row for one owner: a receipt row groups that owner's receipts of one answer. */
+	const rowKeys = (row: DeliveryRow, owner: string): string[] =>
+		row.kind === "report"
+			? [`report:${row.report.sourceId}:${owner}`]
+			: row.receipts.filter((receipt) => receipt.ownerId === owner).map((receipt) => `receipt:${receipt.submissionId}`);
+
 	/**
-	 * A primary that refuses the row as another owner's, or keeps no transcript, parks its rows until its facts
-	 * change. A refusal for a file that the owner had not written yet parks only while the file is still absent:
-	 * a file written since is a reason to try again.
+	 * A refusal of the row's content (`copy`, `misaddressed`) parks that row only. A refusal about the session
+	 * (`no-transcript`, `not-held`) parks all the owner's rows. Each holds while the owner's facts equal those of the
+	 * refused attempt, so the owner's next registration, or an explicit refresh, tries again. A refusal for a file
+	 * that the owner had not written yet parks only while the file is still absent: a file written since is a reason
+	 * to try again.
 	 */
-	const notePrimaryRefusal = (owner: string, error: unknown): void => {
+	const notePrimaryRefusal = (row: DeliveryRow, owner: string, error: unknown, facts: string): void => {
 		const kind = primaryRefusalKind(error);
-		if (kind === undefined || kind === "unsaved" || ownerStorageId(owner) === metadata.storageId) return;
-		primaryRefusals.set(owner, {
-			reason: `primary session ${owner} refused the row (${kind}): ${asError(error).message}`,
-			facts: JSON.stringify(primaryFacts(sessionsRoot, owner)),
-		});
+		if (kind === undefined || kind === "unsaved") return;
+		const refusal = { reason: `primary session ${owner} refused the row (${kind}): ${asError(error).message}`, facts };
+		if (kind === "no-transcript" || kind === "not-held") primaryRefusals.set(owner, refusal);
+		else for (const key of rowKeys(row, owner)) rowRefusals.set(key, refusal);
+	};
+
+	/** True while a refusal of this row's content holds under the owner's current facts. */
+	const rowRefused = (row: DeliveryRow, owner: string): boolean => {
+		const current = primaryFactsKey(primaryFacts(sessionsRoot, owner));
+		return rowKeys(row, owner).some((key) => rowRefusals.get(key)?.facts === current);
 	};
 
 	/** A failed native acquisition or a primary refusal parks the route; a reachable transport retries. */
 	const routeFailure = (row: DeliveryRow, owner: string, error: unknown): Error | undefined => {
-		notePrimaryRefusal(owner, error);
+		if (rowRefused(row, owner)) return undefined;
 		const current = classifyDelivery({
 			ownerId: owner,
 			originValid: true,
@@ -2287,6 +2332,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			unavailableTargets.clear();
 			failedLinks.clear();
 			heldRoutes.clear();
+			primaryRefusals.clear();
+			rowRefusals.clear();
 			schedule(0, true);
 		},
 		sealAdmission,

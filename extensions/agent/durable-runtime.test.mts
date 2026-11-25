@@ -13,6 +13,7 @@ import { spawn } from "node:child_process";
 import { hostname } from "node:os";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
 import { createPrimaryChannel, primaryEndpointPath } from "./primary-channel.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -381,6 +382,7 @@ it("keeps recovery due after a crash with an active transient delivery", { timeo
 		catalog = new AgentCatalog(f.root);
 	const channel = await createPrimaryChannel({
 		id: f.ownerId,
+		sessionFile: savedTranscript(f.root, f.ownerId),
 		cwd: f.cwd,
 		sessionsRoot: f.root,
 		deliver: () => {
@@ -420,6 +422,7 @@ it("tells the requester that retry is off when a transient provider error ends i
 	const received = eventLog<{ text: string }>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(f.root, owner),
 		cwd: f.cwd,
 		sessionsRoot: f.root,
 		deliver: (message) => {
@@ -533,6 +536,7 @@ it("retires parked delivery with a clear marker and wakes only for its returning
 	const delivered = eventLog<unknown>();
 	await manager.registerPrimary(owner, {
 		cwd: f.cwd,
+		sessionFile: savedTranscript(f.root, owner),
 		signal: new AbortController().signal,
 		send: (_text, details) => {
 			delivered.push(details);
@@ -547,6 +551,7 @@ it("retires parked delivery with a clear marker and wakes only for its returning
 	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false);
 	await manager.registerPrimary(owner, {
 		cwd: f.cwd,
+		sessionFile: savedTranscript(f.root, owner),
 		signal: new AbortController().signal,
 		send: (_text, details) => {
 			delivered.push(details);
@@ -609,6 +614,7 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 	try {
 		await manager.registerPrimary(ownerId, {
 			cwd: f.cwd,
+			sessionFile: savedTranscript(f.root, ownerId),
 			signal: controller.signal,
 			send: (_text, details) => {
 				const value = details as Record<string, unknown>;
@@ -681,7 +687,12 @@ for (const steerDuringRun of [false, true])
 			resolveDelivered();
 		};
 		try {
-			await manager.registerPrimary(ownerId, { cwd: f.cwd, signal: controller.signal, send });
+			await manager.registerPrimary(ownerId, {
+				cwd: f.cwd,
+				sessionFile: savedTranscript(f.root, ownerId),
+				signal: controller.signal,
+				send,
+			});
 			const submitted = (await manager.control(
 				"submit",
 				{

@@ -32,6 +32,7 @@ import { eventLog } from "./host-fixture.mts";
 import { parseHostMetadata } from "./host-protocol.ts";
 import { createPrimaryChannel, type PrimaryDelivery } from "./primary-channel.ts";
 import { safeProviderError } from "./primary-observation.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 import { createAgentToolCards, renderInspectResult } from "./tool-cards.ts";
 
 const timestamp = Date.parse("2026-10-11T01:02:03.000Z");
@@ -387,6 +388,7 @@ for (const receiveTime of [timestamp, 8_640_000_000_000_001, Number.MAX_SAFE_INT
 		const received = eventLog<PrimaryDelivery>();
 		channel = await createPrimaryChannel({
 			id: owner,
+			sessionFile: savedTranscript(root, owner),
 			cwd: root,
 			sessionsRoot,
 			deliver: (message) => {

@@ -2,6 +2,7 @@ import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { hostMetadata } from "./catalog.ts";
 import { acquireHost, waitForHostRelease, type HostConnection } from "./host-client.ts";
 import { AgentManager } from "./manager.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 
 const root = process.env.PI_AGENT_SESSIONS_DIR;
 const agentDir = process.env.PI_AGENT_DIR;
@@ -30,6 +31,7 @@ const manager = new AgentManager({
 await manager.registerPrimary(id, {
 	signal: controller.signal,
 	...caller,
+	sessionFile: savedTranscript(cwd, id),
 	send: (text, details) => process.send?.({ event: "notice", text, details }),
 });
 

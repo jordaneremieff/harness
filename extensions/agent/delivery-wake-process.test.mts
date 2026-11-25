@@ -18,6 +18,7 @@ import { acquireHost, waitForHostRelease, type HostConnection } from "./host-cli
 import { AgentManager } from "./manager.ts";
 import { handleStorageId } from "./identity.ts";
 import { createPrimaryChannel } from "./primary-channel.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 import { createColdObservationCache } from "./cold-observation.ts";
 let cold: ReturnType<typeof createColdObservationCache>;
 beforeEach(() => {
@@ -178,6 +179,7 @@ it("resumes retained active delivery after an owned failed exit on the same inod
 		owner = randomUUID();
 	const channelOptions = {
 		id: owner,
+		sessionFile: savedTranscript(f.root, owner),
 		cwd: f.cwd,
 		sessionsRoot: f.root,
 		deliver: () => {
@@ -296,6 +298,7 @@ it("retains wake metadata before a crash between sidecar publication and marker 
 	const delivered = eventLog<string>();
 	await manager.registerPrimary(owner, {
 		cwd: f.cwd,
+		sessionFile: savedTranscript(f.root, owner),
 		signal: new AbortController().signal,
 		send: (text) => delivered.push(text),
 	});

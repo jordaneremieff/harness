@@ -23,6 +23,7 @@ import {
 import { eventLog } from "./host-fixture.mts";
 import { parseHostMetadata } from "./host-protocol.ts";
 import { createPrimaryChannel, type PrimaryDelivery } from "./primary-channel.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 
 const frame = {
 	title: "Parser contract",
@@ -49,6 +50,7 @@ async function fixture(t: TestContext) {
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: primary,
+		sessionFile: savedTranscript(root, primary),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {

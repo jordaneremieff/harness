@@ -4794,10 +4794,15 @@ One classification controls delivery, status and retirement:
   unavailable-host failures retry, including acquisition failures while a live
   writer starts or shuts down.
 - `parked`: a primary with an absent, dead, unverified or incompatible endpoint,
-  a live primary whose published session file does not yet exist, or a primary
-  that refuses the row as `misaddressed`, `copy` or `no-transcript`. The refusal
-  holds while the owner's endpoint state, version, transcript availability and
-  registration server ID stay the same. An unretained native target or a native
+  a live primary whose endpoint publishes no session file (it keeps no
+  transcript) or whose published session file does not yet exist, or a primary
+  that refused the row. A refusal of the row's content (`misaddressed`, `copy`)
+  parks that row only; a refusal about the session (`no-transcript`,
+  `not-held`) parks all the owner's rows. Each refusal holds while the owner's
+  endpoint state, version, transcript availability and registration server ID
+  equal those read before the refused attempt, with the server ID that the
+  attempt's connection verified, so a new registration always gets a fresh
+  attempt. An explicit refresh lifts every refusal. An unretained native target or a native
   host with a persistent launch failure also parks the row. The row stays
   retained without a retry timer and does not block retirement. A fresh watcher
   or explicit refresh permits another native acquisition attempt.
@@ -5090,7 +5095,13 @@ as failures, not acceptance, and still delivers the original row when its owner
 returns. An earlier sender retries a live current owner that lacks a saved file
 until that owner saves. A current sender sends no copies to earlier receivers
 and does not attempt delivery while a live owner's published session file is
-absent. A pair running earlier code has neither protection. Host operation identities are checked
+absent or its endpoint publishes none. An earlier receiver does not announce
+its first save: a current source delivers the waiting row at its next check of
+its owners (any commit in that storage, its idle retirement check, or a
+`recovery-state` request) while its host runs, and otherwise at that session's
+next registration or the source's next start. A current extension that a
+reload loaded into a process whose earlier manager it kept behaves the same
+way. A pair running earlier code has neither protection. Host operation identities are checked
 independently. The Endpoint identity remains separate from both retained
 interfaces.
 
@@ -5321,9 +5332,11 @@ receiver checks the exact recipient before consulting the replay cache. The
 registration's context must still hold that session, including on replay. A
 fresh delivery requires a regular session file owned by the current user,
 opened without following a symbolic link, with a header that names this
-session. The `primary_refused` errors for `misaddressed`, `copy`, `unsaved`, and
-`no-transcript` leave request continuity, provider-block state, the inbox, the
-transcript, and the model unchanged. Sessions started with `--no-session` keep
+session. The `primary_refused` errors for `misaddressed`, `copy`, `unsaved`,
+`no-transcript` and `not-held` leave request continuity, provider-block state,
+the inbox, the transcript, and the model unchanged. Only `fallback` and
+`fallbackLabel` in the details mark a copy; a source ID can contain any request
+ID text. Sessions started with `--no-session` keep
 no transcript and refuse every source-ledger row.
 
 The owner acknowledges a fresh delivery only after its session JSONL file

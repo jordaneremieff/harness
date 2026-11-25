@@ -22,6 +22,7 @@ import { fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime } from
 import { eventLog } from "./host-fixture.mts";
 import { createTestRuntime } from "./test-runtime.mts";
 import { createPrimaryChannel } from "./primary-channel.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 import { createDurableRuntime } from "./durable-runtime.ts";
 import { HostError, HostLeaseBusyError, hostPaths } from "./host-protocol.ts";
 import type { HostConnection } from "./host-client.ts";
@@ -282,6 +283,7 @@ it("replays and delivers a null-linked intent after a crash between intent and i
 		received = eventLog<unknown>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(f.root, owner),
 		cwd: f.root,
 		sessionsRoot: f.root,
 		deliver: (message) => {
@@ -532,6 +534,7 @@ it("keeps a live reachable recipient active after a transient failure and retrie
 	let attempts = 0;
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(f.root, owner),
 		cwd: f.root,
 		sessionsRoot: f.root,
 		deliver: () => {

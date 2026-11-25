@@ -28,6 +28,7 @@ import { runtimeFixture } from "./durable-runtime-fixture.mts";
 import { resolveAgentControlDispatch } from "./durable-agents.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
 import { createPrimaryChannel, primaryEndpointPath } from "./primary-channel.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
 import { connectHost } from "./host-client.ts";
 import { hostPaths, parseHostReadyLine, type HostMetadata } from "./host-protocol.ts";
@@ -468,6 +469,7 @@ it("keeps an active transient delivery due and blocks both retirement and releas
 		errors = eventLog<Error>();
 	const channel = await createPrimaryChannel({
 		id: f.ownerId,
+		sessionFile: savedTranscript(f.root, f.ownerId),
 		cwd: f.cwd,
 		sessionsRoot: f.root,
 		deliver: () => {
@@ -1134,6 +1136,7 @@ it("delivers a parked row when its owner registers before the source host retire
 			await manager.control("attach", { sessionId: f.metadata.storageId }, { id: randomUUID(), cwd: f.cwd });
 			await manager.registerPrimary(f.ownerId, {
 				cwd: f.cwd,
+				sessionFile: savedTranscript(f.root, f.ownerId),
 				signal: new AbortController().signal,
 				send: (text) => notices.push(text),
 			});
@@ -1250,6 +1253,7 @@ it("keeps cached dead-owner delivery cold after clean retirement and wakes at ex
 	const delivered = eventLog<string>();
 	await manager.registerPrimary(f.ownerId, {
 		cwd: f.cwd,
+		sessionFile: savedTranscript(f.root, f.ownerId),
 		signal: new AbortController().signal,
 		send: (text) => delivered.push(text),
 	});
@@ -1804,6 +1808,7 @@ it("retains final costs, drops manager caches without recovery, serves cold read
 	await manager.registerPrimary(observer, {
 		signal: new AbortController().signal,
 		cwd: f.cwd,
+		sessionFile: savedTranscript(f.root, observer),
 		send: (text) => notices.push(text),
 		status: (text) => {
 			if (text) footers.push(text);

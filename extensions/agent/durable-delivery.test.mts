@@ -80,6 +80,7 @@ import {
 	readPrimaryEndpointDescriptor,
 	type PrimaryDelivery,
 } from "./primary-channel.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 
 function fixtureRoot(t: { after(fn: () => void | Promise<void>): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "durable-delivery-"));
@@ -191,6 +192,7 @@ it("delivers one failure summary and native receipt when a delayed primary route
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: async (message) => {
@@ -538,6 +540,7 @@ for (const recipients of ["same", "absent", "distinct"])
 		});
 		const channel = await createPrimaryChannel({
 			id: owner,
+			sessionFile: savedTranscript(root, owner),
 			cwd: root,
 			sessionsRoot,
 			deliver: async (message) => {
@@ -550,6 +553,7 @@ for (const recipients of ["same", "absent", "distinct"])
 		if (recipients === "distinct") {
 			const other = await createPrimaryChannel({
 				id: steerOwner,
+				sessionFile: savedTranscript(root, steerOwner),
 				cwd: root,
 				sessionsRoot,
 				deliver: (message) => {
@@ -745,6 +749,7 @@ for (const route of ["operator", "model"] as const)
 		});
 		const channel = await createPrimaryChannel({
 			id: owner,
+			sessionFile: savedTranscript(root, owner),
 			cwd: root,
 			sessionsRoot,
 			deliver: async (message) => {
@@ -834,6 +839,7 @@ for (const route of ["catalog", "primary"] as const)
 		const received = eventLog<PrimaryDelivery>();
 		const channel = await createPrimaryChannel({
 			id: primary,
+			...(route === "primary" ? { sessionFile: savedTranscript(root, primary) } : {}),
 			cwd: root,
 			sessionsRoot,
 			deliver: (message) => {
@@ -966,6 +972,7 @@ for (const origin of [undefined, "unknown"])
 		const received = eventLog<PrimaryDelivery>();
 		const channel = await createPrimaryChannel({
 			id: owner,
+			sessionFile: savedTranscript(root, owner),
 			cwd: root,
 			sessionsRoot,
 			deliver: (message) => {
@@ -1081,6 +1088,7 @@ for (const route of ["primary", "same-storage", "catalog"] as const)
 			owner = randomUUID();
 			const channel = await createPrimaryChannel({
 				id: owner,
+				sessionFile: savedTranscript(root, owner),
 				cwd: root,
 				sessionsRoot,
 				deliver: (message) => {
@@ -1244,6 +1252,7 @@ for (const [name, answer, complete] of [
 		const received = eventLog<PrimaryDelivery>();
 		const channel = await createPrimaryChannel({
 			id: primary,
+			sessionFile: savedTranscript(root, primary),
 			cwd: root,
 			sessionsRoot,
 			deliver: (message) => {
@@ -1412,6 +1421,7 @@ for (const attempts of [1, 2] as const)
 		const received = eventLog<PrimaryDelivery>();
 		const channel = await createPrimaryChannel({
 			id: owner,
+			sessionFile: savedTranscript(root, owner),
 			cwd: root,
 			sessionsRoot,
 			deliver: (message) => {
@@ -1481,6 +1491,7 @@ it("bounds a check-in digest while retaining the full source", { timeout: 30000 
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -2006,6 +2017,7 @@ it("delivers a noncatalog owner to its registered primary channel with source me
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -2069,6 +2081,7 @@ it("delivers an operator-only answer group without waking the primary", { timeou
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -2125,6 +2138,7 @@ it("keeps a stored admission origin across a host reopen before delivery", { tim
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -2301,6 +2315,7 @@ it("delivers only the recipient's submissions from a shared answer without self 
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -2386,6 +2401,7 @@ it("names the work state of each request of a shared answer and continues a cut 
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -2553,6 +2569,7 @@ it("keeps the final report read as the only result pointer for a cut state note"
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -2632,6 +2649,7 @@ it("reads the final report of a run that completed its work and then ended witho
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -2958,6 +2976,7 @@ it("reports a malformed admission origin without crash-looping and keeps other r
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: goodOwner,
+		sessionFile: savedTranscript(root, goodOwner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -3029,6 +3048,7 @@ it("clears the delivery error after a malformed receipt is corrected", { timeout
 	const owner = randomUUID();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver() {},
@@ -3167,6 +3187,7 @@ it("holds a quiet notice for an older owner, then delivers after that owner rest
 	await exited;
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -3199,6 +3220,7 @@ it("keeps a live owner's row pending when its endpoint is unreachable", { timeou
 	const otherDeliveries: PrimaryDelivery[] = [];
 	const ownerChannel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -3302,6 +3324,7 @@ it("acknowledges a primary-channel row only after the channel accepts it", { tim
 	});
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: async (message) => {
@@ -3962,6 +3985,7 @@ it("preserves the live owner's wake when an absent owner shares its answer", { t
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: live,
+		sessionFile: savedTranscript(root, live),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -4106,6 +4130,7 @@ for (const kind of ["receipt", "report"] as const)
 		const direct = eventLog<PrimaryDelivery>();
 		const ownerChannel = await createPrimaryChannel({
 			id: owner,
+			sessionFile: savedTranscript(root, owner),
 			cwd: root,
 			sessionsRoot,
 			deliver: (message) => {
@@ -4139,6 +4164,7 @@ it("bounds long peer bodies without mutating the retained originals", { timeout:
 	const received = eventLog<PrimaryDelivery>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(root, owner),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -4491,6 +4517,7 @@ for (const evidence of ["handle", "name", "missing", "unresolved"] as const)
 		const received = eventLog<PrimaryDelivery>();
 		const channel = await createPrimaryChannel({
 			id: owner,
+			sessionFile: savedTranscript(root, owner),
 			cwd: root,
 			sessionsRoot,
 			deliver: (message) => {
@@ -4609,6 +4636,7 @@ for (const evidence of ["name", "purpose", "identity", "dead"] as const)
 		const received = eventLog<PrimaryDelivery>();
 		const recipient = await createPrimaryChannel({
 			id: owner,
+			sessionFile: savedTranscript(root, owner),
 			cwd: root,
 			sessionsRoot,
 			deliver: (message) => {
@@ -5019,6 +5047,7 @@ it("delivers a reused agent's report and final answer to its explicit recipient,
 	});
 	const recipientChannel = await createPrimaryChannel({
 		id: recipient,
+		sessionFile: savedTranscript(root, recipient),
 		cwd: root,
 		sessionsRoot,
 		deliver: (message) => {
@@ -5093,6 +5122,7 @@ for (const route of ["primary", "catalog"] as const)
 		if (route === "primary") {
 			const channel = await createPrimaryChannel({
 				id: ownerId,
+				sessionFile: savedTranscript(root, ownerId),
 				cwd: root,
 				sessionsRoot,
 				deliver: (message) => {

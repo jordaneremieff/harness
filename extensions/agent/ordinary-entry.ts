@@ -484,7 +484,7 @@ function sessionFileSaved(ctx: ExtensionContext): boolean {
 function assertCurrentSession(ctx: ExtensionContext, sessionId: string): void {
 	if (ctx.sessionManager.getSessionId() !== sessionId)
 		throw primaryRefusal(
-			"misaddressed",
+			"not-held",
 			`This Pi process no longer holds session ${sessionId}; the delivery stays at its source for that session`,
 		);
 }
@@ -1809,16 +1809,14 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					admitImmediate(text, details, sourceId);
 					return;
 				}
-				const refusal = retainedDeliveryRefusal(details, sourceId, sessionId);
+				const refusal = retainedDeliveryRefusal(details, sessionId);
 				if (refusal !== undefined) throw refusal;
 				deliverRetained(text, details, sourceId);
 			},
 			receiveRetainedReplay: (details) => {
 				if (primaryDeliveries.get(sessionId)?.inbox !== inbox) throw new Error(PRIMARY_RELOADING_REFUSAL);
 				assertCurrentSession(ctx, sessionId);
-				const source =
-					details !== null && typeof details === "object" ? (details as { sourceId?: unknown }).sourceId : undefined;
-				const refusal = retainedDeliveryRefusal(details, typeof source === "string" ? source : "", sessionId);
+				const refusal = retainedDeliveryRefusal(details, sessionId);
 				if (refusal !== undefined) throw refusal;
 				continuity.delivered(sessionId, deliveredResults(details));
 				showAgentCell(ctx);

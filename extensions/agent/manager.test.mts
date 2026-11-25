@@ -1694,9 +1694,11 @@ it("refuses another owner's delivery and an informational copy before the replay
 		assert.equal(second.sent.length, 0, "no refused delivery reaches the session");
 		assert.equal(replays.length, 0, "no refused delivery reaches the replay path");
 		await secondChannel.options.deliver(addressedTo("owner-2", "report:owned", "same source for its own owner"));
+		// A source ID carries a request ID of any text; only the details mark a copy.
+		await secondChannel.options.deliver(addressedTo("owner-2", "report:quarter:informational:totals", "totals"));
 		assert.deepEqual(
 			second.sent.map((message) => message.text),
-			["same source for its own owner"],
+			["same source for its own owner", "totals"],
 			"each recipient keeps its own replay memory",
 		);
 	} finally {
@@ -3155,6 +3157,40 @@ it("keeps unrelated registrations cold and wakes parked delivery only for its ex
 	assert.equal(manager.catalog.read(record.storageId).recoveryDue, false);
 	await manager.registerPrimary(randomUUID(), fakePrimary(new AbortController().signal).client);
 	assert.equal(links.length, 1);
+});
+
+it("wakes the parked source of a registered primary when that session first saves its transcript", {
+	timeout: 15000,
+}, async (t) => {
+	const root = fixtureRoot(t),
+		acquired = eventLog<string>();
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: async (metadata) => {
+				acquired.push(metadata.storageId);
+				return fakeConnection(metadata, async () => ({
+					workPending: false,
+					deliveriesPending: false,
+					deliveriesActive: false,
+				}));
+			},
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+		}),
+	);
+	t.after(() => manager.close());
+	const owner = randomUUID(),
+		record = createRecord(manager, root, owner);
+	manager.catalog.markRecoveryDue(record.storageId, false);
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
+	assert.equal(acquired.length, 0, "no row waited for the session at registration");
+	// The source parks a row while the session has no file; the session then saves its first message.
+	writeDeliveryWake(root, record.storageId, [owner]);
+	manager.primaryRetains(owner);
+	await acquired.waitForCount(1);
+	assert.deepEqual([...acquired], [record.storageId]);
+	manager.primaryRetains(randomUUID());
+	assert.equal(acquired.length, 1, "an unregistered session wakes nothing");
 });
 
 it("wakes a source when its exact native recipient gains a catalogue record", { timeout: 15000 }, async (t) => {

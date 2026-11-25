@@ -83,7 +83,7 @@ function watch(
 async function registerPrimary(
 	t: TestContext,
 	root: string,
-	options: { id?: string; sessionFile?: string; deliver?: (message: PrimaryDelivery) => void } = {},
+	options: { id?: string; sessionFile?: string; deliver?: (message: PrimaryDelivery) => void | Promise<void> } = {},
 ): Promise<{ received: PrimaryDelivery[]; close: () => Promise<void> }> {
 	const received: PrimaryDelivery[] = [];
 	const channel = await createPrimaryChannel({
@@ -93,7 +93,7 @@ async function registerPrimary(
 		...(options.sessionFile === undefined ? {} : { sessionFile: options.sessionFile }),
 		deliver: (message) => {
 			received.push(message);
-			options.deliver?.(message);
+			return options.deliver?.(message);
 		},
 		promptTrust: async () => undefined,
 	});
@@ -185,7 +185,22 @@ it("gives no copy of an ended owner's result to a registered primary, before or 
 	assert.equal(await acknowledged(host, id), false);
 });
 
-it("parks a row for an owner without a saved transcript and delivers it once the file exists", {
+/** Write a saved session header for `id`, as Pi writes it with the first message. */
+function saveTranscript(path: string, id: string): string {
+	writeFileSync(path, `${JSON.stringify({ type: "session", id })}\n`);
+	return path;
+}
+
+/** Wait for a condition while the watcher runs only the passes that its own observations start. */
+async function eventually(check: () => Promise<boolean>): Promise<boolean> {
+	for (let attempt = 0; attempt < 250; attempt++) {
+		if (await check()) return true;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	return false;
+}
+
+it("parks a row for an owner without a saved transcript and delivers it at the watcher's next check of its owners", {
 	timeout: 30000,
 }, async (t) => {
 	const root = fixtureRoot(t);
@@ -202,37 +217,107 @@ it("parks a row for an owner without a saved transcript and delivers it once the
 	assert.equal(primary.received.length, 0, "an unsaved owner receives no attempt");
 	assert.equal(delivery.summary().active, false, "the parked row arms no retry");
 
-	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: owner })}\n`);
+	saveTranscript(sessionFile, owner);
+	// The retirement check and a recovery-state request validate parked recipients this way; no refresh is asked.
 	delivery.summary(true);
-	for (let round = 0; round < 50 && !(await acknowledged(host, id)); round++) await counter.pass(delivery);
-	assert.equal(await acknowledged(host, id), true);
+	assert.equal(await eventually(() => acknowledged(host, id)), true);
 	assert.equal(primary.received.length, 1);
 	const details = primary.received[0].details as Record<string, unknown>;
 	assert.deepEqual([details.originalOwnerId, details.deliveryRecipient, details.fallback], [owner, owner, undefined]);
 });
 
-it("parks the rows of an owner that keeps no transcript after one refusal, until it registers again", {
+it("parks the rows of an owner that keeps no transcript without an attempt, until it registers with one", {
 	timeout: 30000,
 }, async (t) => {
 	const root = fixtureRoot(t);
 	const owner = randomUUID();
 	const host = await openSource(t, root, 1);
 	const id = await settledResult(host, owner, "for-a-no-session-owner");
-	const refuse = () => {
-		throw primaryRefusal("no-transcript", "keeps no transcript");
-	};
-	const first = await registerPrimary(t, root, { id: owner, deliver: refuse });
+	const first = await registerPrimary(t, root, { id: owner });
 	const counter = passCounter();
 	const { delivery } = watch(t, host, root, { onIdle: counter.onIdle });
 	const [reason] = await parkedReasons(host, [id]);
-	assert.match(reason, /refused the row \(no-transcript\)/u);
+	assert.match(reason, /keeps no transcript/u);
 	for (let round = 0; round < 3; round++) await counter.pass(delivery);
-	assert.equal(first.received.length, 1, "one refusal parks the owner's rows");
+	assert.equal(first.received.length, 0, "a session without a transcript receives no attempt");
 
 	await first.close();
-	const second = await registerPrimary(t, root, { id: owner });
+	const second = await registerPrimary(t, root, {
+		id: owner,
+		sessionFile: saveTranscript(join(root, "s.jsonl"), owner),
+	});
 	delivery.summary(true);
-	for (let round = 0; round < 50 && !(await acknowledged(host, id)); round++) await counter.pass(delivery);
-	assert.equal(await acknowledged(host, id), true, "a new registration takes the row");
+	assert.equal(await eventually(() => acknowledged(host, id)), true, "a registration with a transcript takes the row");
 	assert.equal(second.received.length, 1);
+});
+
+it("parks only the row whose content a primary refused, and tries it again after an explicit refresh", {
+	timeout: 30000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	const owner = randomUUID();
+	const host = await openSource(t, root, 4);
+	const refused = await settledResult(host, owner, "refused-row");
+	let refuse = true;
+	const primary = await registerPrimary(t, root, {
+		id: owner,
+		sessionFile: saveTranscript(join(root, "owner.jsonl"), owner),
+		deliver: (message) => {
+			const submissions = (message.details as { submissions?: { requestId?: string }[] }).submissions ?? [];
+			if (refuse && submissions.some((item) => item.requestId === "refused-row"))
+				throw primaryRefusal("copy", "this row carries a copy marker");
+		},
+	});
+	const counter = passCounter();
+	const { delivery } = watch(t, host, root, { onIdle: counter.onIdle });
+	const [reason] = await parkedReasons(host, [refused]);
+	assert.match(reason, /refused the row \(copy\)/u);
+	const accepted = await settledResult(host, owner, "valid-row");
+	assert.equal(await eventually(() => acknowledged(host, accepted)), true, "a later valid row still reaches the owner");
+	const attempts = primary.received.length;
+	// Commits of the source start passes; they do not lift a refusal under unchanged facts.
+	const passes = counter.passes();
+	await settledResult(host, randomUUID(), "unrelated-a");
+	await settledResult(host, randomUUID(), "unrelated-b");
+	assert.equal(await eventually(async () => counter.passes() >= passes + 2), true);
+	assert.equal(await acknowledged(host, refused), false);
+	assert.equal(primary.received.length, attempts, "the refused row is not tried again under the same facts");
+
+	refuse = false;
+	delivery.refresh();
+	assert.equal(await eventually(() => acknowledged(host, refused)), true, "an explicit refresh tries the row again");
+});
+
+it("does not park a replacement registration for a refusal that the previous endpoint gave", {
+	timeout: 30000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	const owner = randomUUID();
+	const host = await openSource(t, root, 1);
+	const id = await settledResult(host, owner, "across-registrations");
+	const sessionFile = saveTranscript(join(root, "owner.jsonl"), owner);
+	const replacement: PrimaryDelivery[] = [];
+	await registerPrimary(t, root, {
+		id: owner,
+		sessionFile,
+		deliver: async () => {
+			// The session registers again while this attempt is in flight; the old registration then refuses.
+			const channel = await createPrimaryChannel({
+				id: owner,
+				cwd: root,
+				sessionsRoot: join(root, "sessions"),
+				sessionFile,
+				replaceOwn: true,
+				deliver: (message) => {
+					replacement.push(message);
+				},
+				promptTrust: async () => undefined,
+			});
+			t.after(() => channel.close());
+			throw primaryRefusal("not-held", "this registration no longer holds the session");
+		},
+	});
+	watch(t, host, root);
+	assert.equal(await eventually(() => acknowledged(host, id)), true, "the replacement takes the row");
+	assert.equal(replacement.length, 1);
 });

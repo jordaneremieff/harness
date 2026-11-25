@@ -10,6 +10,7 @@ import { hostPaths } from "./host-protocol.ts";
 import { observeClaim, readClaimFile } from "./claims.ts";
 import { eventLog } from "./host-fixture.mts";
 import { createPrimaryChannel, type PrimaryDelivery } from "./primary-channel.ts";
+import { savedTranscript } from "./primary-transcript-fixture.mts";
 import type { ProviderBlockFact } from "./provider-block-facts.ts";
 import { runtimeFixture, trackHost, waitForReceipt, type RuntimeFixture } from "./durable-runtime-fixture.mts";
 
@@ -177,6 +178,7 @@ async function requester(t: TestContext, f: RuntimeFixture) {
 	const notices = eventLog<{ at: number; message: PrimaryDelivery }>();
 	const channel = await createPrimaryChannel({
 		id: owner,
+		sessionFile: savedTranscript(f.root, owner),
 		cwd: f.cwd,
 		sessionsRoot: f.root,
 		deliver: (message) => {

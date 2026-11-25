@@ -62,12 +62,14 @@ acknowledges only accepted owner routes, independently of other routes.
 Admission is not model consumption or task acceptance.
 
 A row for an ordinary primary waits at its source when the owner's endpoint is
-absent, dead, unverified, or incompatible, or when its published session file
-does not yet exist. No other session receives the row. The receiver refuses
-misaddressed rows and copies before they affect the session. It also refuses a
-fresh delivery without a valid saved transcript. A stable recipient refusal
-parks the row until the owner's facts change. A transient transport failure
-retries; it is not proof of death.
+absent, dead, unverified, or incompatible, when its endpoint publishes no
+session file, or when its published session file does not yet exist. No other
+session receives the row. The receiver refuses misaddressed rows and copies
+before they affect the session. It also refuses a fresh delivery without a valid
+saved transcript. A refusal of one row's content parks that row; a refusal about
+the session parks the owner's rows. Either holds only while the owner's facts
+equal those of the refused attempt, and an explicit refresh lifts it. A
+transient transport failure retries; it is not proof of death.
 
 Pending delivery and active delivery differ. Parked and terminal rows remain
 durable without a delivery retry timer. Those rows neither retain the recovery

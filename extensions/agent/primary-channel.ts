@@ -196,16 +196,22 @@ export class PrimaryChannelUnavailableError extends Error {
 }
 
 /**
- * Why a primary refuses one retained delivery. `misaddressed`: the message names another recipient or this
- * registration no longer holds the session. `copy`: an informational copy for another owner. `unsaved`: the
- * session has no saved transcript yet. `no-transcript`: the session keeps no transcript at all. A refusal never
- * establishes acceptance; the source keeps the row.
+ * Why a primary refuses one retained delivery. Row refusals describe the message: `misaddressed` names another
+ * recipient, `copy` carries an informational-copy marker. Session refusals describe the receiver: `unsaved` has no
+ * saved transcript yet, `no-transcript` keeps none, `not-held` is a registration whose process no longer holds the
+ * session. A refusal never establishes acceptance; the source keeps the row.
  */
-export type PrimaryRefusalKind = "misaddressed" | "copy" | "unsaved" | "no-transcript";
+export type PrimaryRefusalKind = "misaddressed" | "copy" | "unsaved" | "no-transcript" | "not-held";
 
 /** Error code of a recipient refusal on the primary channel; the kind travels in its details. */
 export const PRIMARY_REFUSAL_CODE = "primary_refused";
-const PRIMARY_REFUSAL_KINDS: ReadonlySet<string> = new Set(["misaddressed", "copy", "unsaved", "no-transcript"]);
+const PRIMARY_REFUSAL_KINDS: ReadonlySet<string> = new Set([
+	"misaddressed",
+	"copy",
+	"unsaved",
+	"no-transcript",
+	"not-held",
+]);
 
 export function primaryRefusal(kind: PrimaryRefusalKind, message: string): PluginError {
 	return new PluginError(PRIMARY_REFUSAL_CODE, message, { refusal: kind });
@@ -274,6 +280,8 @@ export interface PrimaryChannel {
 
 export interface PrimaryChannelConnection {
 	readonly id: string;
+	/** The announced server this connection verified; a later registration of the same session announces another. */
+	readonly serverId: string;
 	/** False once the link to the primary closed; a call that failed then never reached a decision of the primary. */
 	readonly connected: boolean;
 	info(): Promise<PrimaryInfo>;
@@ -1133,6 +1141,7 @@ export async function connectPrimaryChannel(options: {
 		};
 		return {
 			id: endpoint.id,
+			serverId: endpoint.serverId,
 			get connected() {
 				return client.connected;
 			},

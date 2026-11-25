@@ -276,6 +276,12 @@ it("keeps an absent owner's result from an empty and a busy session and delivers
 		{ ownerId, senderIdentity: s.host.storageId, message: "REPORT_FOR_OWNER", requestId: "owner-report" },
 		BACKGROUND_CONTEXT,
 	);
+	// A request ID may contain any text, including the words of a copy marker.
+	await recordReport(
+		s.host.harness,
+		{ ownerId, senderIdentity: s.host.storageId, message: "TOTALS", requestId: "quarter:informational:totals" },
+		BACKGROUND_CONTEXT,
+	);
 	const admitted = (await s.host.request(
 		"submit",
 		{ sessionId: s.host.storageId, message: "task", requestId: "owner-task", ownerId, origin: "model" },
@@ -286,7 +292,7 @@ it("keeps an absent owner's result from an empty and a busy session and delivers
 	await until("both rows parked", async () => {
 		const state = await deliveryState(s.host.harness, BACKGROUND_CONTEXT, true);
 		return (
-			state?.reports[0]?.delivery?.state === "parked" &&
+			state?.reports.every((row) => row.delivery?.state === "parked") === true &&
 			state.receipts[String(admitted.submissionId)]?.delivery?.state === "parked"
 		);
 	});
@@ -331,11 +337,12 @@ it("keeps an absent owner's result from an empty and a busy session and delivers
 		if (!watcher.busy) watcher.refresh();
 		const state = await deliveryState(s.host.harness, BACKGROUND_CONTEXT, true);
 		return (
-			state?.reports[0]?.acknowledged === true && state.receipts[String(admitted.submissionId)]?.acknowledged === true
+			state?.reports.every((row) => row.acknowledged) === true &&
+			state.receipts[String(admitted.submissionId)]?.acknowledged === true
 		);
 	});
 	assert.equal(peerEntries(ownerFile, sourceId).length, 1);
-	assert.equal(peerEntries(ownerFile).length, 2, "the owner holds the report and the result");
+	assert.equal(peerEntries(ownerFile).length, 3, "the owner holds both reports and the result");
 
 	// A lost acknowledgement repeats the same source identity; the owner keeps one entry.
 	const [retained] = peerEntries(ownerFile, sourceId);
