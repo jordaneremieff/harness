@@ -5034,6 +5034,30 @@ A registered primary refreshes its recorded model, reasoning level, and session
 name when the ordinary session changes them, so `agent_status` and endpoint
 discovery report the identity the operator runs.
 
+#### Recipient hint build
+
+Storages that an earlier release wrote hold rows without recipient hints. An
+explicit build indexes them:
+
+```sh
+node extensions/agent/cold-delivery.ts [--apply] [--storage <id>] [--agent-dir <dir>]
+```
+
+It reads the same catalogue as the page transition command, with the same
+`--agent-dir`, `PI_AGENT_SESSIONS_DIR` and agent directory order. A candidate
+is a catalogue record with the recovery marker or a delivery wake sidecar. The
+default run prints the count of candidates. `--apply` indexes each candidate in
+its own runner under that storage's writer lease: it reads the retained rows,
+or the archive of a store that an earlier release did not migrate, through a
+read-only Harness, and publishes the storage's hints. It changes no storage,
+starts no scheduler and calls no model. The JSON result names the routes that
+each storage got (`execution` or `delivery` per recipient storage), the storages
+whose writer lease another process held, and failures; the command exits 2 when
+any storage was busy or failed. A running host keeps its own hints current, so
+a busy storage needs no build. A repeated build gives the same hints. Processes
+of an earlier release keep writing rows without hints, so run the build again
+after they end. Registration never runs it.
+
 ### Current process contracts
 
 The host socket protocol that separate processes consume (service name, request
@@ -5302,29 +5326,77 @@ removes the file when no parked row remains. Terminal rows never enter this
 projection. Publishing the sidecar first preserves wake discovery if the writer
 crashes before the marker clears.
 
-Startup recovery checks the marker and the matching wake sidecar of every
-catalog record in the manager's shared inventory, which reads every record, so
-neither the number of retained storages nor a record's place in the listing
-leaves a due storage unrecovered. It does not enumerate the wake directory or
-open, copy, or status-probe a storage. A record that cannot be read is not
-checked; the status overview then reports a `startup` failure with their count
-until a later scan reads every record. Recovery acquisitions run at most two at
-a time.
-Reads of the due records overlap: a primary registration starts one and each
+Recovery acts only for a registered party: an ordinary primary registered in
+this Pi process, or a Durable storage whose host runs here. Each party reads its
+own directory of recipient hints, `sessionsRoot/.recipient-hints/<storageId>/`,
+and nothing else: no catalogue listing, no wake directory and no other party's
+hints. A source storage keeps one file there, `<sourceStorageId>.json`, for each
+recipient storage that holds a pending row in it. The file says whether that
+recipient also owns unfinished work there: an unsettled admission or a waiting
+timer while the source's work remains. Only the source's exclusive writer
+writes or removes its files. Identities are exact storage identities before
+they become path parts. Files are private (`0600` in `0700` directories),
+written and synced through a rename, and read with a size bound and without
+following a symbolic link. Beside the hints, the writer keeps one list per
+source under `.recipient-hints/.sources/`, so a later writer of that source
+finds and removes each stale hint without reading other directories. A file
+that does not validate grants nothing; the party's status overview names it,
+and the source's next publication replaces it.
+
+The source writer adds a recipient's hint before it admits work routed to that
+recipient: the requester or reply recipient of `submit`, `task-submit`,
+`rewind`, `timer-schedule` and `report`, a message to a registered ordinary
+primary, and, inside the commit that stores them, every recipient of a thread
+notice. A failed hint write refuses the admission. A complete delivery
+traversal replaces the source's hints with its current rows; hints that an
+admission added stay until a traversal that began after that admission ended
+completes. A crash can leave an extra hint, never a committed route without
+one. A cold stop publishes the hints of the rows it leaves.
+
+The decision follows the hints:
+
+- Execution demand, an execution hint for a registered party, acquires the
+  source's host, which resumes its scheduler. The scheduler resumes the whole
+  storage; results keep their own routes.
+- Delivery-only demand never starts the source's scheduler. A running source
+  delivers once it reads its recovery state. A source without a host gets a
+  cold delivery: a runner process takes the writer lease, opens the storage
+  without its scheduler, routes only the rows of the named recipients, signals
+  no task, submits nothing to the source, publishes the source's hints and
+  exits. A storage that holds a task that a host stopped while it ran is not
+  opened: opening it recovers that task, and that recovery belongs to an
+  execution host. The party's status then says that the rows wait for that work.
+- A delivery-only attempt is repeated only after its hints or its recipients'
+  registrations change, or after the source's host failed.
+
+A registration reads the registering party's hints. A catalogue notice, the end
+of a launch wait, an ended host and a paced read every 60 seconds read every
+registered party's hints; the paced read covers a lost notice, a full observer
+and disabled host checks. The `recoveryDue` marker and the wake sidecars stay
+for the managers of earlier releases; this release's managers launch on neither.
+
+Before it spawns a runner, a launcher takes the storage's nonblocking launch
+reservation, `.leases/<storageId>.sqlite.launching` beside the storage, and
+holds it until that runner is ready or has exited. A launcher in another
+process that finds the reservation held waits for that runner's endpoint
+instead of starting another.
+
+Recovery acquisitions run at most two at a time.
+Reads of the hints overlap: a primary registration starts one and each
 catalog notice starts one, and their batches run in turn. An acquisition that
 settled after a read began completes that read's entry for the storage, so reads
 that overlap share one acquisition, whether it connected a host or failed. An
 acquisition that ended because its own read no longer needed a launch completes
 no other read's entry. A
-read that begins later acts on the marker again: a record that is still due
-with no link is acquired again, which tries a failed launch once more. A
+read that begins later acts on the hints again: a source that still holds
+execution demand with no link is acquired again, which tries a failed launch
+once more. A
 storage gets at most three failed recovery acquisitions in 60 seconds from
 catalog notices, so a host that never starts cannot be launched at the rate of
-the notices; a runner that reports the storage busy counts too. While the
-storage waits, a notice read skips it and does not judge its parked wake, so a
-recipient that became available during the wait still reads as new afterwards.
-A failed launch causes no catalog notice, so the manager keeps one timer for
-the earliest end of a wait and reads the catalog again then; the timer does not
+the notices; a runner that reports the storage busy, and a failed cold delivery,
+count too. While the storage waits, a notice read skips it. A failed launch
+causes no catalog notice, so the manager keeps one timer for the earliest end
+of a wait and reads the hints again then; the timer does not
 hold the process open and ends with the manager. A primary registration and
 `agent_attach` are explicit acts and try at once; `agent_attach` and a
 successful acquisition also end the wait. One error text is recorded once in
@@ -5389,16 +5461,14 @@ retains the corresponding `agent.peer` entries. It removes the snapshot when no
 rows remain. Direct retries use the transport source ID to avoid a second
 placement, including after reopen.
 
-Any primary registration runs the bounded recovery scan and wakes parked
-sources whose sidecar names that exact primary. Pi saves the session file with
-the first user or assistant message. When the extension observes the file's
-first appearance at message end, turn end, or settlement, the registration runs
-the same recovery scan for that session. Unrelated registration leaves those
-sources cold. Catalogue-change scans also wake a parked source when a named
-recipient has a native catalog record or a live compatible primary endpoint and
-its current fingerprint differs from the source's recorded failure. This comparison survives manager restarts. A bounded
-manager cache only coalesces attempts before the source records their outcome.
-Explicit acquisition also reopens retained rows. Recovery-state and final
+A primary registration reads its own hints, so an unrelated registration
+launches no runner, opens no writer and starts no scheduler. Pi saves the
+session file with the first user or assistant message. When the extension
+observes the file's first appearance at message end, turn end, or settlement,
+the registration reads its hints again, and its delivery-only sources get a new
+attempt. A running Durable host reads its own storage's hints the same way: it
+resumes children that hold unfinished work for it and collects the rows that
+any source holds for it. Explicit acquisition also reopens retained rows. Recovery-state and final
 retirement checks validate the summary's bounded recipient facts against current
 native availability and primary endpoints. Changed facts schedule the existing
 driver and refuse retirement until it completes, even if the source has no new

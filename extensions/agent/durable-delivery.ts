@@ -101,6 +101,7 @@ import { acquireHost, hostAttempt, type HostConnection } from "./host-client.ts"
 import { HostError, HostLeaseBusyError, type HostMetadata } from "./host-protocol.ts";
 import { isChordError } from "@earendil-works/chord";
 import { DELIVERY_WAKE_RECIPIENT_LIMIT, nativeRecipientAvailability } from "./delivery-wake.ts";
+import { recipientStorage } from "./recipient-hints.ts";
 import {
 	connectPrimaryChannel,
 	primaryEndpointIncompatibleError,
@@ -191,6 +192,11 @@ export interface DurableDeliveryOptions {
 	 * requester otherwise cannot tell a disabled retry from a provider that failed every attempt.
 	 */
 	readonly retriesProviderErrors?: () => boolean;
+	/**
+	 * Route only the rows of these recipient storages, and signal no task: the delivery of a storage whose scheduler
+	 * stays paused. Every pending row still enters the summary.
+	 */
+	readonly recipients?: ReadonlySet<string>;
 }
 
 export interface DeliverySummary {
@@ -204,6 +210,14 @@ export interface DeliverySummary {
 	/** Pending parked rows whose recipient did not fit the bounded set. */
 	readonly parkedOmitted: number;
 	readonly activeRecipients: readonly string[];
+	/**
+	 * Recipient storages with a pending row of the completed traversal, each true when one of its rows is an
+	 * unsettled admission: the source holds unfinished work for it, not only rows to deliver.
+	 */
+	readonly demand: ReadonlyMap<string, boolean>;
+	/** Sequence number of the traversal that produced this summary, and of the latest traversal that began. */
+	readonly traversal: number;
+	readonly started: number;
 }
 
 export interface DurableDelivery {
@@ -1344,6 +1358,9 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		parkedRows: {},
 		parkedOmitted: 0,
 		activeRecipients: [],
+		demand: new Map(),
+		traversal: 0,
+		started: 0,
 	};
 	let observationFailure: string | undefined;
 	let invalidated = true;
@@ -1353,6 +1370,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let active = false;
 	let activeRecipients = new Set<string>();
 	let completedRecipients = new Map<string, string>();
+	let demand = new Map<string, boolean>();
+	let started = 0;
 
 	function recipientRevision(identity: string): string {
 		return JSON.stringify(recipientFacts(identity, eligibilityOptions));
@@ -1381,6 +1400,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			),
 			complete: completed.complete && !traversing,
 			fresh: completed.complete && blocker === undefined,
+			started,
 			...(blocker === undefined ? {} : { blocker }),
 		};
 	}
@@ -1963,10 +1983,15 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	};
 
 	/** Route independent answers and reports even when another route fails; corruption is contained per row. */
+	const routed = (owner: string): boolean => {
+		if (options.recipients === undefined) return true;
+		const recipient = recipientStorage(owner);
+		return recipient !== undefined && options.recipients.has(recipient);
+	};
 	const routeRows = async (rows: readonly DeliveryRow[]): Promise<Error | undefined> => {
 		let failure: Error | undefined;
 		for (const row of rows) {
-			const owners = rowOwners(row);
+			const owners = rowOwners(row).filter(routed);
 			if (owners.length === 0) continue;
 			try {
 				await routeRow(row, owners);
@@ -2003,6 +2028,9 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			parkedRows,
 			parkedOmitted,
 			activeRecipients: [...activeRecipients],
+			demand,
+			traversal: started,
+			started,
 		};
 		completedRecipients = parked;
 		invalidated = false;
@@ -2018,6 +2046,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	}
 	function includeSummaryRow(item: EligibilityRow): void {
 		const identity = item.row.ownerId;
+		includeDemand(item);
 		if (item.eligibility.state === "active") {
 			active = true;
 			if (activeRecipients.size < DELIVERY_WAKE_RECIPIENT_LIMIT) activeRecipients.add(identity);
@@ -2032,6 +2061,12 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (revision !== undefined && revision !== item.recipientRevision) activityPending = true;
 		else parked.set(identity, item.recipientRevision);
 		parkedRows[identity] = (parkedRows[identity] ?? 0) + 1;
+	}
+	function includeDemand(item: EligibilityRow): void {
+		if (item.eligibility.state === "terminal") return;
+		const recipient = recipientStorage(item.row.ownerId);
+		if (recipient === undefined || recipient === metadata.storageId) return;
+		demand.set(recipient, demand.get(recipient) === true || item.kind === "intent");
 	}
 	const firstReceiptGroup = async (row: ReceiptRow) => {
 		// Empty physical pages can precede the first receipt for this recipient. The cursor pins the original tail.
@@ -2114,6 +2149,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	 * notice's source ID, so the graph names it without a stored task reference; at its deadline it pauses anyway.
 	 */
 	const signalParkedCheckIns = async (rows: readonly EligibilityRow[]): Promise<void> => {
+		// A signal starts the scheduler; a paused deadline task pauses its watch at its deadline instead.
+		if (options.recipients !== undefined) return;
 		const keys = new Set(rows.flatMap(newlyParkedCheckIn).filter((key) => !signalledCheckIns.has(key)));
 		if (keys.size === 0) return;
 		try {
@@ -2144,6 +2181,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			parkedRows = {};
 			active = false;
 			activeRecipients = new Set();
+			demand = new Map();
+			started++;
 		}
 		automaticCursor = await settleDeliveries(host.harness, BACKGROUND_CONTEXT, automaticCursor);
 		const page =

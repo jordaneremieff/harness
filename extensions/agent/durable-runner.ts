@@ -53,6 +53,34 @@ function callerInstallation(input: unknown): string {
 	return packageDir;
 }
 
+const COLD_LABELS = { stop: "Cold stop", deliver: "Cold delivery", index: "Recipient index" } as const;
+
+/** The work of one cold writer mode, with its arguments checked before the writer takes any lease. */
+function coldWork(
+	metadata: import("./host-protocol.ts").HostMetadata,
+	mode: keyof typeof COLD_LABELS,
+	runtime: Pick<typeof import("./durable-runtime.ts"), "stopColdRuntime" | "deliverColdRuntime" | "indexColdRuntime">,
+): () => Promise<unknown> {
+	if (mode === "deliver") {
+		const recipients = coldRecipients(process.argv[4]);
+		return () => runtime.deliverColdRuntime(metadata, recipients);
+	}
+	if (mode === "index") return () => runtime.indexColdRuntime(metadata);
+	const sessionId = process.argv[4];
+	const background = process.argv[5];
+	if (!sessionId || (background !== "true" && background !== "false"))
+		throw new Error("Cold stop requires its exact target and background scope");
+	return () => runtime.stopColdRuntime(metadata, sessionId, background === "true");
+}
+
+/** The recipient storages of a cold delivery, as its caller named them. */
+function coldRecipients(text: string | undefined): string[] {
+	const value: unknown = JSON.parse(text ?? "null");
+	if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== "string"))
+		throw new Error("Cold delivery requires its exact recipient storages");
+	return value as string[];
+}
+
 /**
  * A storage host survives its launcher; only this process holds its writer claim.
  * The runner binds Pi package imports to the caller installation for the whole
@@ -70,16 +98,17 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 	EventEmitter.defaultMaxListeners = Math.max(EventEmitter.defaultMaxListeners, EXTENSION_BUS_LISTENER_LIMIT);
 	const input: unknown = JSON.parse(metadataJson);
 	bindInstallationPackages(callerInstallation(input), new URL("./", import.meta.url));
-	const [{ parseHostMetadata }, { runHost, HostClaimRefusedError }, { createDurableRuntime, stopColdRuntime }] =
-		await Promise.all([import("./host-protocol.ts"), import("./host-process.ts"), import("./durable-runtime.ts")]);
+	const [
+		{ parseHostMetadata },
+		{ runHost, HostClaimRefusedError },
+		{ createDurableRuntime, stopColdRuntime, deliverColdRuntime, indexColdRuntime },
+	] = await Promise.all([import("./host-protocol.ts"), import("./host-process.ts"), import("./durable-runtime.ts")]);
 	const metadata = parseHostMetadata(input);
-	if (process.argv[3] === "stop") {
-		const sessionId = process.argv[4];
-		const background = process.argv[5];
-		if (!sessionId || (background !== "true" && background !== "false"))
-			throw new Error("Cold stop requires its exact target and background scope");
+	const mode = process.argv[3];
+	if (mode === "stop" || mode === "deliver" || mode === "index") {
+		const work = coldWork(metadata, mode, { stopColdRuntime, deliverColdRuntime, indexColdRuntime });
 		const { withColdWriter } = await import("./cold-stop.ts");
-		const reply = await withColdWriter(metadata, () => stopColdRuntime(metadata, sessionId, background === "true"));
+		const reply = await withColdWriter(metadata, work, COLD_LABELS[mode]);
 		// Finish even when the invoking process has gone. No scheduler or delivery stays in this process.
 		if (process.connected && process.send) process.send(reply, () => process.exit(0));
 		else process.exit(0);

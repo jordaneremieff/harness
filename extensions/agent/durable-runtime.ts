@@ -57,7 +57,13 @@ import { stopForeignReferences } from "./run-control.ts";
 import { createDurableServices, type DurableServices, type CreateDurableServicesOptions } from "./durable-services.ts";
 import { publishAgentControlDispatch, type AgentControlDispatch } from "./durable-agents.ts";
 import { projectConversationIntents } from "./durable-controls.ts";
-import { deliveryPendingCount, migrateDeliveryStore } from "./delivery-store.ts";
+import {
+	DeliveryArchiveDoc,
+	DeliveryStoreDoc,
+	deliveryPendingCount,
+	migrateDeliveryStore,
+	pendingDeliveryPage,
+} from "./delivery-store.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import type { ModelChoicesSchema } from "./observation-schema.ts";
 import type { Static } from "@earendil-works/pi-schema";
@@ -69,6 +75,10 @@ import {
 	type NativeTargetFailure,
 } from "./durable-delivery.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
+import { RecipientHintWriter, recipientStorage } from "./recipient-hints.ts";
+import type { ColdDeliveryResult, ColdIndexResult } from "./cold-delivery.ts";
+import type { AgentDeliveryState } from "./durable-controls.ts";
+import { AgentTimerDoc } from "./durable-timers.ts";
 import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 
 /** The identity that a control's answer, report or scheduled input is addressed to. */
@@ -201,46 +211,106 @@ async function bootstrap(
 			: {}),
 	});
 }
-/** One writer invocation with the configured task definitions, but without execution, delivery or an endpoint. */
-export async function stopColdRuntime(metadata: HostMetadata, sessionId: string, background: boolean) {
+function addDemand(demand: Map<string, boolean>, owner: string, source: string, execution: boolean): void {
+	const recipient = recipientStorage(owner);
+	if (recipient === undefined || recipient === source) return;
+	demand.set(recipient, demand.get(recipient) === true || execution);
+}
+
+function archiveDemand(
+	demand: Map<string, boolean>,
+	archive: AgentDeliveryState | undefined,
+	source: string,
+	working: boolean,
+): void {
+	if (archive === undefined) return;
+	for (const intent of archive.intents)
+		if (
+			intent.delivery?.state !== "terminal" &&
+			(intent.submissionId === null || archive.receipts[String(intent.submissionId)] === undefined)
+		)
+			addDemand(demand, intent.ownerId, source, working);
+	for (const row of [...Object.values(archive.receipts), ...archive.reports])
+		if (!row.acknowledged && row.delivery?.state !== "terminal") addDemand(demand, row.ownerId, source, false);
+}
+
+/** Owners of waiting timers: each holds unfinished work for its owner until the timer fires and settles. */
+async function timerDemand(
+	harness: Pick<Harness, "snapshot">,
+	source: string,
+	context: Context,
+): Promise<Map<string, boolean>> {
+	const demand = new Map<string, boolean>();
+	const state = await harness.snapshot(AgentTimerDoc, context);
+	for (const timer of state?.timers ?? [])
+		if (timer.status === "pending") addDemand(demand, timer.ownerId, source, true);
+	return demand;
+}
+
+/**
+ * The complete current demand of one storage from its retained rows, read in bounded pages: each recipient storage
+ * with a pending row, true when it also owns an unsettled admission or a waiting timer while work remains.
+ */
+async function retainedDemand(
+	harness: Harness,
+	source: string,
+	working: boolean,
+	context: Context,
+): Promise<Map<string, boolean>> {
+	const demand = working ? await timerDemand(harness, source, context) : new Map<string, boolean>();
+	// A store that an earlier release left unmigrated keeps every row in its archive document.
+	if ((await harness.snapshot(DeliveryStoreDoc, context))?.ready !== true) {
+		archiveDemand(demand, await harness.snapshot(DeliveryArchiveDoc, context), source, working);
+		return demand;
+	}
+	let cursor: string | undefined;
+	for (;;) {
+		const page = await pendingDeliveryPage(harness, context, cursor);
+		for (const intent of page.state.intents) addDemand(demand, intent.ownerId, source, working);
+		for (const receipt of Object.values(page.state.receipts)) addDemand(demand, receipt.ownerId, source, false);
+		for (const report of page.state.reports) addDemand(demand, report.ownerId, source, false);
+		if (page.next === null) return demand;
+		cursor = page.next;
+	}
+}
+
+/** Open the storage file as a Harness, read-only or as its writer. */
+async function openColdHarness(metadata: HostMetadata, services: DurableServices, readOnly: boolean): Promise<Harness> {
+	const storage = await openNodeSqliteStorage(metadata.storagePath);
+	try {
+		return await Harness.open(
+			storage,
+			{
+				models: services.services.modelRuntime,
+				registry: services.registry,
+				settings: services.settings,
+				env: services.env,
+				readOnly,
+			},
+			BACKGROUND_CONTEXT,
+		);
+	} catch (error) {
+		await storage.close(BACKGROUND_CONTEXT);
+		throw error;
+	}
+}
+
+/**
+ * Run one cold writer step with the storage's task definitions installed. A contribution gets only the actual
+ * storage's read-only Harness, so even an eager installer cannot resume it.
+ */
+async function withColdServices<T>(
+	metadata: HostMetadata,
+	work: (services: DurableServices, reader: Harness) => Promise<T>,
+): Promise<T> {
 	const controller = new AbortController();
 	// The normal contributions supply task definitions. MCP and codemode add tools, not task kinds.
 	const services = await bootstrap(metadata, controller, false);
-	const open = async (readOnly: boolean) => {
-		const storage = await openNodeSqliteStorage(metadata.storagePath);
-		try {
-			return await Harness.open(
-				storage,
-				{
-					models: services.services.modelRuntime,
-					registry: services.registry,
-					settings: services.settings,
-					env: services.env,
-					readOnly,
-				},
-				BACKGROUND_CONTEXT,
-			);
-		} catch (error) {
-			await storage.close(BACKGROUND_CONTEXT);
-			throw error;
-		}
-	};
 	let reader: Harness | undefined;
 	try {
-		// A contribution gets only the actual storage's read-only Harness. Even an eager installer cannot resume it.
-		reader = await open(true);
+		reader = await openColdHarness(metadata, services, true);
 		await services.install(reader);
-		const writer = await open(false);
-		try {
-			await migrateDeliveryStore(writer, BACKGROUND_CONTEXT);
-			const stopped = await stopBeforeResume(writer, metadata.storageId, sessionId, background, BACKGROUND_CONTEXT);
-			// Work closure can produce a final report even when no task needed an abort.
-			if (!stopped.settled || (await deliveryPendingCount(writer, BACKGROUND_CONTEXT)) > 0)
-				new AgentCatalog(dirname(dirname(metadata.storagePath))).markRecoveryDue(metadata.storageId, true);
-			return stopped;
-		} finally {
-			await writer.close(BACKGROUND_CONTEXT);
-		}
+		return await work(services, reader);
 	} finally {
 		controller.abort();
 		try {
@@ -249,6 +319,145 @@ export async function stopColdRuntime(metadata: HostMetadata, sessionId: string,
 			await reader?.close(BACKGROUND_CONTEXT);
 		}
 	}
+}
+
+/** Publish the storage's recipient hints from its retained rows; any live task keeps execution demand. */
+async function publishColdHints(harness: Harness, metadata: HostMetadata): Promise<Map<string, boolean>> {
+	const working = (await harness.inspect(BACKGROUND_CONTEXT)).tasks.length > 0;
+	const demand = await retainedDemand(harness, metadata.storageId, working, BACKGROUND_CONTEXT);
+	new RecipientHintWriter(dirname(dirname(metadata.storagePath)), metadata.storageId).publish(demand);
+	return demand;
+}
+
+/** One writer invocation with the configured task definitions, but without execution, delivery or an endpoint. */
+export async function stopColdRuntime(metadata: HostMetadata, sessionId: string, background: boolean) {
+	return withColdServices(metadata, async (services) => {
+		const writer = await openColdHarness(metadata, services, false);
+		try {
+			await migrateDeliveryStore(writer, BACKGROUND_CONTEXT);
+			const stopped = await stopBeforeResume(writer, metadata.storageId, sessionId, background, BACKGROUND_CONTEXT);
+			// Work closure can produce a final report even when no task needed an abort.
+			if (!stopped.settled || (await deliveryPendingCount(writer, BACKGROUND_CONTEXT)) > 0)
+				new AgentCatalog(dirname(dirname(metadata.storagePath))).markRecoveryDue(metadata.storageId, true);
+			await publishColdHints(writer, metadata);
+			return stopped;
+		} finally {
+			await writer.close(BACKGROUND_CONTEXT);
+		}
+	});
+}
+
+/**
+ * Publish the recipient hints of a storage that an earlier release left without them. It reads through the
+ * read-only Harness under the writer lease: a writer open recovers retained tasks, which belongs to an execution
+ * host, so the build changes no storage.
+ */
+export async function indexColdRuntime(metadata: HostMetadata): Promise<ColdIndexResult> {
+	return withColdServices(metadata, async (_services, reader) => {
+		const demand = await publishColdHints(reader, metadata);
+		return {
+			routes: Object.fromEntries(
+				[...demand].sort().map(([recipient, execution]) => [recipient, execution ? "execution" : "delivery"] as const),
+			),
+		};
+	});
+}
+
+/**
+ * A task that its host stopped while it ran or completed, or a stop that no host finished, waits for an execution
+ * host: a writer open would recover or reconcile it.
+ */
+function interruptedWork(reader: Harness): Promise<boolean> {
+	return reader
+		.inspect(BACKGROUND_CONTEXT)
+		.then(({ tasks }) =>
+			tasks.some(
+				({ record }) =>
+					record.state.status === "running" || record.state.status === "completing" || record.abortRequested === true,
+			),
+		);
+}
+
+/** Cold delivery ends after its first complete delivery traversal, and at the latest after this long. */
+const COLD_DELIVERY_WAIT_MS = 60_000;
+
+/**
+ * Deliver one storage's rows to the named recipient storages without its scheduler. The writer opens only when no
+ * task was stopped while it ran: opening recovers such a task, and that recovery belongs to an execution host. The
+ * delivery driver routes only rows of these recipients, signals no task and submits nothing to this storage.
+ */
+export async function deliverColdRuntime(
+	metadata: HostMetadata,
+	recipients: readonly string[],
+): Promise<ColdDeliveryResult> {
+	const only = new Set(recipients.map((recipient) => storageIdOf(recipient)));
+	return withColdServices(metadata, async (services, reader) => {
+		if (await interruptedWork(reader)) return { interrupted: true, scheduling: "paused", remaining: [...only].sort() };
+		const root = dirname(dirname(metadata.storagePath));
+		const catalog = new AgentCatalog(root);
+		const host = await DurableHost.open({
+			storagePath: metadata.storagePath,
+			storageId: metadata.storageId,
+			cwd: metadata.cwd,
+			models: services.services.modelRuntime,
+			registry: services.registry,
+			settings: services.settings,
+			env: services.env,
+			resume: false,
+			...(isThreadStorage(metadata, root) ? { threadStorageOwner: metadata.ownerId } : {}),
+		});
+		const controller = new AbortController();
+		const targets = new AgentManager({ root, agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+		let delivery: DurableDelivery | undefined;
+		try {
+			await migrateDeliveryStore(host.harness, BACKGROUND_CONTEXT);
+			let settle = (): void => {};
+			const settled = new Promise<void>((resolveSettled) => {
+				settle = resolveSettled;
+			});
+			delivery = startDurableDelivery({
+				host,
+				metadata,
+				catalog,
+				sessionsRoot: root,
+				signal: controller.signal,
+				recipients: only,
+				// The first complete traversal attempted every route of these recipients once.
+				onIdle: () => {
+					if (delivery?.summary().complete) settle();
+				},
+				readTarget: (identity) => {
+					try {
+						return targets.nativeTarget(identity);
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+						return undefined;
+					}
+				},
+				connectTarget: (record) => targets.connectNative(record.storageId),
+				onError: (error) => {
+					process.stderr.write(`Cold delivery: ${error.message}\n`);
+				},
+			});
+			const timer = setTimeout(() => settle(), COLD_DELIVERY_WAIT_MS);
+			try {
+				await settled;
+			} finally {
+				clearTimeout(timer);
+			}
+			await delivery.close();
+			const demand = await publishColdHints(host.harness, metadata);
+			return {
+				scheduling: (await host.harness.inspect(BACKGROUND_CONTEXT)).scheduling,
+				remaining: [...demand.keys()].filter((recipient) => only.has(recipient)).sort(),
+			};
+		} finally {
+			controller.abort();
+			await delivery?.close().catch(() => undefined);
+			await targets.close();
+			await host.close();
+		}
+	});
 }
 
 function configuredModel(value: unknown): unknown {
@@ -445,6 +654,62 @@ export async function createDurableRuntime(
 		if (recordRemoved) throw new Error("The storage's catalog record was removed; this host admits no new work.");
 	}
 
+	const routeHints = new RecipientHintWriter(dirname(dirname(metadata.storagePath)), metadata.storageId);
+	/** Recipients staged by admissions that are still in progress. */
+	let openStages = new Map<string, boolean>();
+	/**
+	 * Recipients staged by admissions that have ended, each kept until a delivery traversal that began after that
+	 * end completes: only such a traversal reads the rows those admissions committed.
+	 */
+	const endedStages: { readonly recipients: Map<string, boolean>; readonly after: number }[] = [];
+
+	function mergeDemand(into: Map<string, boolean>, from: ReadonlyMap<string, boolean>): void {
+		for (const [recipient, execution] of from) into.set(recipient, into.get(recipient) === true || execution);
+	}
+
+	/**
+	 * Publish discovery for the recipients of work that is about to commit, before it commits. A failed write
+	 * refuses the work: a route committed without its hint could be found by no recipient.
+	 */
+	function stageRoutes(identities: readonly string[], execution: boolean): void {
+		if (recordRemoved) return;
+		const recipients = new Map<string, boolean>();
+		for (const identity of identities) {
+			const recipient = recipientStorage(identity);
+			if (recipient !== undefined && recipient !== metadata.storageId) recipients.set(recipient, execution);
+		}
+		if (recipients.size === 0) return;
+		routeHints.stage(recipients);
+		mergeDemand(openStages, recipients);
+	}
+
+	/** The last admission ended; its staged recipients stay until a traversal reads what it committed. */
+	function endStages(): void {
+		if (activeAdmissions > 0 || openStages.size === 0) return;
+		endedStages.push({ recipients: openStages, after: deliveries?.summary().started ?? 0 });
+		openStages = new Map();
+	}
+
+	/**
+	 * Replace the storage's recipient hints with its current demand, from a fresh delivery summary. Work that
+	 * remains keeps execution demand for the owners of its admissions and timers.
+	 */
+	function publishRouteHints(
+		summary: NonNullable<ReturnType<DurableDelivery["summary"]>>,
+		working: boolean,
+		timers: ReadonlyMap<string, boolean>,
+	): void {
+		if (recordRemoved) return;
+		for (let index = endedStages.length - 1; index >= 0; index--)
+			if (summary.traversal > (endedStages[index]?.after ?? 0)) endedStages.splice(index, 1);
+		const demand = new Map<string, boolean>();
+		for (const [recipient, execution] of summary.demand) demand.set(recipient, working && execution);
+		if (working) mergeDemand(demand, timers);
+		mergeDemand(demand, openStages);
+		for (const staged of endedStages) mergeDemand(demand, staged.recipients);
+		routeHints.publish(demand);
+	}
+
 	/** Pending delivery rows: unsettled intents, unacknowledged receipts, and unacknowledged reports. */
 	async function deliveriesPending(): Promise<boolean> {
 		return (await deliveryPendingCount(host.harness, BACKGROUND_CONTEXT)) > 0;
@@ -478,11 +743,17 @@ export async function createDurableRuntime(
 		const generation = activityGeneration;
 		const idle = await host.refreshIdle();
 		publishActivity(host.runnable);
+		const timers = idle
+			? new Map<string, boolean>()
+			: await timerDemand(host.harness, metadata.storageId, BACKGROUND_CONTEXT);
 		const summary = deliveries?.summary(validateRecipients);
 		const deliveriesActive = summary === undefined || !summary.fresh || summary.active;
 		const pending = summary?.fresh ? summary.pendingCount > 0 : await deliveriesPending();
 		if (generation === activityGeneration) {
-			if (summary?.fresh) writeParkedWake(summary);
+			if (summary?.fresh) {
+				writeParkedWake(summary);
+				publishRouteHints(summary, !idle, timers);
+			}
 			markRecoveryDue(activeAdmissions > 0 || !idle || deliveriesActive);
 		} else recoveryDirty = true;
 		return { workPending: !idle, deliveriesPending: pending, deliveriesActive };
@@ -770,6 +1041,7 @@ export async function createDurableRuntime(
 		});
 		try {
 			markAdmissionDue();
+			stageRoutes([sessionId], false);
 			// A message names its recipient: if that session ends first, the message waits for it and never
 			// reaches another session as an informational copy.
 			const report = (await host.request("report", { ...params, ownerId: sessionId, direct: true })) as {
@@ -921,7 +1193,10 @@ export async function createDurableRuntime(
 		const work = Promise.resolve()
 			.then(() => foreignControl(method, params, sessionId, context))
 			.finally(() => {
-				if (ADMITTING_METHODS.has(method)) activeAdmissions--;
+				if (ADMITTING_METHODS.has(method)) {
+					activeAdmissions--;
+					endStages();
+				}
 				activeRequests--;
 				scheduleRecoveryMarker();
 				notifyActivity();
@@ -1031,6 +1306,7 @@ export async function createDurableRuntime(
 		const install = async (setup: Harness): Promise<void> => {
 			await services.install(setup);
 			host = opened;
+			opened.setNoticeRouteStaging((recipients) => stageRoutes(recipients, false));
 			opened.setForeignStop(async (references, context) => {
 				const manager = new AgentManager({
 					root: dirname(dirname(metadata.storagePath)),
@@ -1131,6 +1407,8 @@ export async function createDurableRuntime(
 			agentDir: metadata.agentDir,
 			packageDir: metadata.packageDir,
 		});
+		// A running host recovers the work that its children hold for it and collects the rows held for it.
+		if (threadStorageOwner === undefined) targets.registerRecoveryParty(metadata.storageId, controller.signal);
 		const readDeliveryTarget = (identity: string) => {
 			try {
 				return targets.nativeTarget(identity);
@@ -1261,7 +1539,10 @@ export async function createDurableRuntime(
 
 	function finishRequest(method: string, counted: boolean, reload: boolean, passive: boolean): void {
 		if (counted) activeRequests--;
-		if (ADMITTING_METHODS.has(method)) activeAdmissions--;
+		if (ADMITTING_METHODS.has(method)) {
+			activeAdmissions--;
+			endStages();
+		}
 		if (reload) reloading = false;
 		if (passive) return;
 		scheduleRecoveryMarker();
@@ -1405,6 +1686,7 @@ export async function createDurableRuntime(
 			return recoveryState(true);
 		}
 		admitNewWork(method);
+		if (recipient !== undefined && ADMITTING_METHODS.has(method)) stageRoutes([recipient], method !== "report");
 		switch (method) {
 			case "spawn":
 			case "resolve-agent":

@@ -249,6 +249,14 @@ export function writerLeasePaths(
 	return [hostPaths(metadata).claim, storageLockPath(metadata.storagePath, "writer")];
 }
 
+/**
+ * A launcher holds this lease from before it spawns a runner until that runner is ready or has exited, so
+ * launchers in different processes start one runner of a storage. The file is never removed.
+ */
+export function launchReservationPath(metadata: Pick<HostMetadata, "storagePath">): string {
+	return storageLockPath(metadata.storagePath, "launching");
+}
+
 /** Runners of one storage queue here until the winner's endpoint listens; the file is never removed. */
 export function startGatePath(metadata: Pick<HostMetadata, "storagePath">): string {
 	return storageLockPath(metadata.storagePath, "starting");

@@ -1,4 +1,7 @@
-/** A single stop under the same writer lease as the serving process. No endpoint or recovery driver is started. */
+/**
+ * One-shot writers under the same writer lease as the serving process: a single stop, and the other cold writer
+ * modes that the runner offers. No endpoint or recovery driver is started.
+ */
 import { fork } from "node:child_process";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -8,17 +11,17 @@ import { tryNativeWriterLeases, waitNativeWriterLease } from "./native-lease.ts"
 import type { stopBeforeResume } from "./durable-host.ts";
 
 export type ColdStopResult = Awaited<ReturnType<typeof stopBeforeResume>>;
-type Reply = { busy: true } | { result: ColdStopResult };
+type Reply<T = ColdStopResult> = { busy: true } | { result: T };
 /** The writer's own answer when its caller did not confirm the passed gate in time; it changed nothing. */
 type Unconfirmed = { unconfirmed: true };
 /**
  * The writer reports passing the start gate and takes the writer leases only after the caller answers that it will not
  * withdraw, or after the caller has gone. Until then it has changed nothing.
  */
-const GATE_PASSED = { phase: "gate-passed" } as const;
-const PROCEED = { phase: "proceed" } as const;
+export const GATE_PASSED = { phase: "gate-passed" } as const;
+export const PROCEED = { phase: "proceed" } as const;
 
-function isPhase(value: unknown, phase: string): boolean {
+export function isPhase(value: unknown, phase: string): boolean {
 	return value !== null && typeof value === "object" && (value as { phase?: unknown }).phase === phase;
 }
 
@@ -58,10 +61,11 @@ function confirmGatePassed(): Promise<boolean> {
 export const COLD_STOP_GATE_WAIT_MS = 30_000;
 
 /** Only the winner opens storage. A busy lease requests attachment to its actual writer, never another launch. */
-export async function withColdWriter(
+export async function withColdWriter<T>(
 	metadata: HostMetadata,
-	stop: () => Promise<ColdStopResult>,
-): Promise<Reply | Unconfirmed> {
+	work: () => Promise<T>,
+	label = "Cold stop",
+): Promise<Reply<T> | Unconfirmed> {
 	// The caller that reads these diagnostics can exit first. A closed pipe must not end the stop or hold its lease.
 	for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
 	const leases = writerLeasePaths(metadata);
@@ -75,14 +79,14 @@ export async function withColdWriter(
 	const writer = tryNativeWriterLeases(leases);
 	gate.release();
 	if (writer.kind === "busy") return { busy: true };
-	// Bound this one-shot writer, including configured setup and teardown. An incomplete stop has no success reply.
+	// Bound this one-shot writer, including configured setup and teardown. Incomplete work has no success reply.
 	const lifetime = setTimeout(() => {
-		process.stderr.write("Cold stop writer exceeded its two-minute lifetime.\n");
+		process.stderr.write(`${label} writer exceeded its two-minute lifetime.\n`);
 		process.exit(1);
 	}, 120_000);
 	lifetime.unref();
 	// If construction or close fails, process death releases the lease after the partial runtime is gone.
-	const result = await stop();
+	const result = await work();
 	writer.lease.release();
 	clearTimeout(lifetime);
 	return { result };

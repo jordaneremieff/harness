@@ -454,8 +454,8 @@ type ClaimVerdict = { kind: "owned"; pid: number } | { kind: "excluded" } | { ki
  * Classify one claim. Owned: this host, a pid other than 1 or the test process, a working
  * directory under the fixture root, a creation time within the fixture's lifetime, and a
  * process that still exists. Excluded: provably another host's, outside the root, older than
- * the fixture, or already gone. Unresolved: a claim that cannot be read or parsed as a claim
- * record; its owner is unknown and it receives no signal.
+ * the fixture, already gone, or an empty lease that names no process. Unresolved: a claim that
+ * cannot be read or parsed as a claim record; its owner is unknown and it receives no signal.
  */
 function classifyOwnedClaim(path: string, rootPrefix: string, createdAt: number): ClaimVerdict {
 	let claim: Record<string, unknown>;
@@ -464,6 +464,8 @@ function classifyOwnedClaim(path: string, rootPrefix: string, createdAt: number)
 	} catch (error) {
 		return { kind: "unresolved", reason: error instanceof Error ? error.message : String(error) };
 	}
+	// A cold writer holds the claim lease without writing a record; an empty file names no process.
+	if (claim === undefined) return { kind: "excluded" };
 	if (
 		claim === null ||
 		typeof claim !== "object" ||

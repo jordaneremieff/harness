@@ -2,14 +2,17 @@ import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { it, beforeEach, afterEach, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { hostMetadata } from "./catalog.ts";
+import { subscribeCatalogChanges } from "./catalog-events.ts";
 import { hostPaths } from "./host-protocol.ts";
 
-import { deliveryWakePath, readDeliveryWake } from "./delivery-wake.ts";
+import { deliveryWakePath } from "./delivery-wake.ts";
+import { deliverColdStorage, type ColdDeliveryResult } from "./cold-delivery.ts";
+import { readRecipientHint } from "./recipient-hints.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { runtimeFixture, trackHost } from "./durable-runtime-fixture.mts";
@@ -174,7 +177,9 @@ for (const kind of ["parked", "terminal"] as const)
 		assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, false);
 	});
 
-it("resumes retained active delivery after an owned failed exit on the same inode", { timeout: 20000 }, async (t) => {
+it("resumes execution and retains active delivery after an owned failed exit on the same inode", {
+	timeout: 20000,
+}, async (t) => {
 	const f = fixture(t, "60"),
 		owner = randomUUID();
 	const channelOptions = {
@@ -196,6 +201,19 @@ it("resumes retained active delivery after an owned failed exit on the same inod
 	f.cleanup(() => channel.close());
 	await seed(f, owner);
 	const source = await open(f);
+	await source.request("timer-schedule", {
+		sessionId: f.metadata.storageId,
+		ownerId: owner,
+		message: "Waiting work owned by the recipient",
+		deliverAt: Date.now() + 3_600_000,
+		mode: "followUp",
+		origin: "operator",
+		scheduleId: "waiting-work",
+		requestId: "waiting-work-delivery",
+	});
+	await source.request("recovery-state");
+	assert.equal(readRecipientHint(f.root, owner, f.metadata.storageId)?.execution, true);
+	await f.manager.registerPrimary(owner, { ...channelOptions, signal: new AbortController().signal, send: () => {} });
 	assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, true);
 	const inode = statSync(hostPaths(f.metadata).claim).ino;
 	const originalPid = source.pid;
@@ -212,6 +230,11 @@ it("resumes retained active delivery after an owned failed exit on the same inod
 		(events) => events.slice(beforeKill).some((client) => client.pid > 0 && client.pid !== originalPid),
 		10000,
 	);
+	const replacement = f.connections.slice(beforeKill).find((client) => client.pid > 0 && client.pid !== originalPid);
+	assert.ok(replacement);
+	assert.ok(replacement.ownedExit, "the manager owns the replacement process");
+	const recovery = (await replacement.request("recovery-state")) as { workPending: boolean };
+	assert.equal(recovery.workPending, true);
 	assert.equal(statSync(hostPaths(f.metadata).claim).ino, inode);
 	const retained = (await observeDurableStorage(f.metadata, "receipts", { ownerId: owner })) as {
 		reports: Array<{ requestId: string }>;
@@ -221,13 +244,20 @@ it("resumes retained active delivery after an owned failed exit on the same inod
 	await channel.close();
 });
 
-it("wakes a retired source after its native recipient becomes available", { timeout: 30000 }, async (t) => {
+it("a running Durable recipient collects a retired source's report without launching that source", {
+	timeout: 30000,
+}, async (t) => {
 	const f = fixture(t, "0.01"),
 		targetId = handleStorageId("wake-recipient", f.manager.catalog.root);
 	await seed(f, targetId);
 	await open(f);
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(5000) });
-	assert.deepEqual(readDeliveryWake(f.root, f.metadata.storageId)?.recipients, [targetId]);
+	assert.deepEqual(readRecipientHint(f.root, targetId, f.metadata.storageId), {
+		source: f.metadata.storageId,
+		execution: false,
+	});
+	const claim = hostPaths(f.metadata).claim;
+	const retiredClaim = readFileSync(claim, "utf8");
 	const target = f.manager.catalog.createHandled(
 		{
 			cwd: f.cwd,
@@ -241,23 +271,49 @@ it("wakes a retired source after its native recipient becomes available", { time
 		"Receive a retained result",
 	).record;
 	assert.equal(target.storageId, targetId);
-	await f.connections.waitForCount(2, 10000);
-	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
-	assert.equal(readDeliveryWake(f.root, f.metadata.storageId), undefined);
+	// The recipient stays up for the whole check; only the source retires at the fixture's short idle interval.
 	const targetClient = await acquireHost(hostMetadata(target), {
-		env: { ...f.env("answer"), PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root },
+		env: { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: "60", PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root },
 	});
 	trackHost(t, targetClient.pid);
 	f.cleanup(() => targetClient.close());
-	const history = (await targetClient.request("inspect", {
-		view: "search",
-		query: "retained parked result",
-		source: "user",
-	})) as { matches: unknown[] };
-	assert.equal(history.matches.length, 1);
+	const changes = eventLog<void>();
+	assert.ok(targetClient.subscribeChanges);
+	const unsubscribe = await targetClient.subscribeChanges(() => changes.push(undefined), AbortSignal.timeout(10000));
+	f.cleanup(unsubscribe);
+	for (;;) {
+		const next = changes.length + 1;
+		const history = (await targetClient.request("inspect", {
+			view: "search",
+			query: "retained parked result",
+			source: "user",
+		})) as { matches: unknown[] };
+		if (history.matches.length > 0) {
+			assert.equal(history.matches.length, 1);
+			break;
+		}
+		await changes.waitForCount(next, 10000);
+	}
+	const publications = eventLog<void>();
+	const stop = subscribeCatalogChanges(
+		f.manager.catalog.root,
+		() => publications.push(undefined),
+		() => {},
+	);
+	try {
+		for (;;) {
+			const next = publications.length + 1;
+			if (readRecipientHint(f.root, targetId, f.metadata.storageId) === undefined) break;
+			await publications.waitForCount(next, 10000);
+		}
+	} finally {
+		stop();
+	}
+	assert.equal(readFileSync(claim, "utf8"), retiredClaim, "cold delivery does not install a serving host claim");
+	assert.equal(f.connections.length, 1);
 });
 
-it("retains wake metadata before a crash between sidecar publication and marker clearance", {
+it("publishes the delivery hint before marker clearance and delivers it cold after a crash", {
 	timeout: 30000,
 }, async (t) => {
 	const f = fixture(t, "60"),
@@ -280,18 +336,31 @@ it("retains wake metadata before a crash between sidecar publication and marker 
 		if (output.includes("WAKE_BEFORE_MARKER_CLEAR\n")) checkpoint.push(undefined);
 	});
 	await checkpoint.waitForCount(1, 10000);
-	assert.deepEqual(readDeliveryWake(f.root, f.metadata.storageId)?.recipients, [owner]);
+	assert.deepEqual(readRecipientHint(f.root, owner, f.metadata.storageId), {
+		source: f.metadata.storageId,
+		execution: false,
+	});
 	assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, true);
 	child.kill("SIGKILL");
 	await waitForProcessExit(child);
+	assert.equal(child.signalCode, "SIGKILL");
+	const claim = hostPaths(f.metadata).claim;
+	const crashedClaim = readFileSync(claim, "utf8");
+	const coldDeliveries = eventLog<ColdDeliveryResult>();
+	const env = { ...f.env("answer"), PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root };
 	const manager = new AgentManager({
 		root: f.root,
 		agentDir: f.agentDir,
 		packageDir: f.metadata.packageDir,
 		acquire: async (metadata, options) => {
-			const client = await acquireHost(metadata, { ...options, env: f.env("answer") });
-			trackHost(t, client.pid);
-			return client;
+			assert.equal(options?.launchNeeded?.(), false);
+			return acquireHost(metadata, { ...options, env });
+		},
+		deliverCold: async (metadata, recipients, options) => {
+			assert.deepEqual(recipients, [owner]);
+			const outcome = await deliverColdStorage(metadata, recipients, { ...options, env });
+			if ("result" in outcome) coldDeliveries.push(outcome.result);
+			return outcome;
 		},
 	});
 	f.cleanup(() => manager.close());
@@ -305,5 +374,8 @@ it("retains wake metadata before a crash between sidecar publication and marker 
 	await delivered.waitForCount(1, 10000);
 	assert.equal(delivered.length, 1);
 	assert.match(delivered[0] ?? "", /retained parked result/u);
-	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+	await coldDeliveries.waitForCount(1, 10000);
+	assert.deepEqual(coldDeliveries[0], { scheduling: "paused", remaining: [] });
+	assert.equal(readRecipientHint(f.root, owner, f.metadata.storageId), undefined);
+	assert.equal(readFileSync(claim, "utf8"), crashedClaim, "delivery leaves the crashed host's claim unchanged");
 });

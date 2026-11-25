@@ -81,11 +81,18 @@ rows. New admissions, pending native work and active delivery rows cancel the
 release and restore normal idle retirement without closing observations.
 Delivery scans, read-only requests and generation-only races leave the release
 pending for the next activity or quiescent event.
-The source writer publishes a bounded parked-recipient sidecar before clearing
-its recovery marker. An exact primary registration, the first saved transcript
-of a current receiver, or a newly available named recipient wakes the matching
-source through bounded catalogue scans. Unrelated registration does not relaunch parked-only hosts. Sidecars stay
-outside the catalogue directory; only their source writer changes them.
+Recovery acts only for a registered party: an ordinary primary registered in
+the process, or a Durable storage whose host runs. Each source writer keeps one
+recipient hint per recipient storage with a pending row, in that recipient's
+own directory under `.recipient-hints`, and adds it before it admits work
+routed there. A party reads only its own directory. A hint for unfinished work
+there resumes the source's host; a hint for rows alone delivers them without
+the source's scheduler, through the running host or a cold writer. An exact
+registration, the first saved transcript of a current receiver, a catalogue
+notice and a paced read act on these hints. Unrelated registration launches no
+runner, opens no writer and starts no scheduler. Hints stay outside the
+catalogue directory; only their source writer changes them. The parked-recipient
+sidecar and the recovery marker remain for managers of earlier releases.
 
 Delivery is at-least-once. The cross-host boundary has no shared transaction or
 general exactly-once promise. The manager does not poll receipts, and footer

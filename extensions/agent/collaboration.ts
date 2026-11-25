@@ -107,14 +107,23 @@ function recipients(input: Record<string, unknown>, actor: string): string[] {
 	);
 }
 
+/** Called inside the commit that stores the notices, before it, with each recipient of one. */
+export type NoticeRouteStaging = (recipients: readonly string[]) => void;
+
 /** Thread events and notification intents share the source storage's atomic commit. */
-async function appendEvent(tx: Tx, thread: CollaborationThread, event: CollaborationEvent): Promise<void> {
+async function appendEvent(
+	tx: Tx,
+	thread: CollaborationThread,
+	event: CollaborationEvent,
+	stage?: NoticeRouteStaging,
+): Promise<void> {
 	const stored = await tx.doc(CollaborationEvents, `${thread.id}:${event.sequence}`, null);
 	stored.event = event;
 	const audience = [...new Set([...thread.members.map((member) => member.identity), ...event.notify])].filter(
 		(recipient) => recipient !== event.sender,
 	);
 	if (audience.length === 0) return;
+	stage?.(audience);
 	const notices = await tx.doc(ThreadDeliveryDoc, thread.id, null);
 	notices.pending += audience.length;
 	for (const recipient of audience) {
@@ -286,6 +295,7 @@ export async function mutateCollaboration(
 	storageId: string,
 	input: Record<string, unknown>,
 	context: Context,
+	stage?: NoticeRouteStaging,
 ): Promise<{ threadId: string; sequence: number; deduped: boolean }> {
 	validateCollaborationTextLimits(input);
 	const actor = collaborationIdentity(input.senderIdentity, "senderIdentity");
@@ -345,7 +355,7 @@ export async function mutateCollaboration(
 		};
 		byteBound(thread, 24 * 1024, "Thread frame and participants");
 		byteBound(event, 20 * 1024, "Thread event");
-		await appendEvent(tx, thread, event);
+		await appendEvent(tx, thread, event, stage);
 		receipt.digest = digest;
 		receipt.threadId = id;
 		receipt.sequence = event.sequence;

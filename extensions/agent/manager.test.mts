@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { fork, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -29,6 +29,7 @@ after(() => {
 import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { CALLER_ANSWER_WAIT_MS, stopColdStorage } from "./cold-stop.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
+import { recipientHintPath, RecipientHintWriter } from "./recipient-hints.ts";
 import { publishCatalogChange, subscribeCatalogChanges } from "./catalog-events.ts";
 import { dashboardText } from "./dashboard-roster.ts";
 import {
@@ -95,6 +96,16 @@ function createRecord(manager: AgentManager, root: string, ownerId = "owner-1") 
 		thinkingLevel: "off",
 		ownerId,
 	});
+}
+
+function recoveryHint(root: string, source: string, party: string, execution = true): RecipientHintWriter {
+	const writer = new RecipientHintWriter(root, source);
+	writer.publish(new Map([[party, execution]]));
+	return writer;
+}
+
+function recoveryNotice(manager: AgentManager, source: string): void {
+	(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([source]);
 }
 
 /** One syntactically valid writer claim owned by `pid` on this host. */
@@ -1596,10 +1607,11 @@ it("closes a host opened for a primary that aborts mid-registration", { timeout:
 		}),
 	);
 	const record = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(record.storageId, true);
+	const owner = randomUUID();
+	recoveryHint(root, record.storageId, owner);
 	const controller = new AbortController();
 	const primary = fakePrimary(controller.signal);
-	const registering = manager.registerPrimary("owner-1", primary.client);
+	const registering = manager.registerPrimary(owner, primary.client);
 	await openingStarted.promise;
 	controller.abort();
 	const connection = fakeConnection(hostMetadata(record), async () => ({}));
@@ -1827,8 +1839,9 @@ it("refreshes the durable footer from published views at startup and after a hos
 			},
 		}),
 	);
-	const record = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(record.storageId, true);
+	const owner = randomUUID();
+	const record = createRecord(manager, root, owner);
+	recoveryHint(root, record.storageId, owner);
 	writeClaim(record, claimFor(record, process.pid));
 	const publish = (state: string) =>
 		manager.catalog.updateView(record.storageId, {
@@ -1850,9 +1863,9 @@ it("refreshes the durable footer from published views at startup and after a hos
 	publish("working");
 	const primary = fakePrimary(new AbortController().signal);
 	try {
-		await manager.registerPrimary("owner-1", primary.client);
+		await manager.registerPrimary(owner, primary.client);
 		await primary.statuses.waitFor((items) => items.includes("agents: 0/1+"));
-		assert.ok(connection, "a due record delegates endpoint attachment and lease exclusion to acquisition");
+		assert.ok(connection, "a source hint delegates endpoint attachment and lease exclusion to acquisition");
 		publish("idle");
 		let changes = 0;
 		const changed = deferred();
@@ -2637,10 +2650,11 @@ for (const [kind, error] of [
 		);
 		t.after(() => manager.close());
 		const record = createRecord(manager, root);
-		manager.catalog.markRecoveryDue(record.storageId, true);
+		const owner = randomUUID();
+		recoveryHint(root, record.storageId, owner);
 		// A later catalog notice would start a read of its own, and that read tries a failed launch again.
 		await catalogNoticesSent(manager, root);
-		await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+		await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 		await settleCatalogueRecovery(manager);
 		const page = await manager.dashboardPage(),
 			row = page.rows.find((value) => value.id === record.storageId);
@@ -2659,20 +2673,24 @@ for (const [kind, error] of [
 it("does not record a recovery failure when launch demand ends during attachment", { timeout: 5000 }, async (t) => {
 	const root = fixtureRoot(t);
 	let acquisitions = 0;
+	const owner = randomUUID();
+	let hint: RecipientHintWriter;
 	const manager = new AgentManager(
 		managerOptions(root, {
 			createPrimary: primaryFactory().factory,
 			acquire: async (metadata, options) => {
 				acquisitions++;
-				manager.catalog.markRecoveryDue(metadata.storageId, false);
+				assert.equal(options?.launchNeeded?.(), true);
+				hint.withdraw(owner);
+				assert.equal(options?.launchNeeded?.(), false);
 				return acquireHost(metadata, { ...options, runner: "--eval", runnerArgs: ["process.exit(42)"] });
 			},
 		}),
 	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(record.storageId, true);
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	hint = recoveryHint(root, record.storageId, owner);
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	await settleCatalogueRecovery(manager);
 	assert.equal(acquisitions, 1);
 	assert.deepEqual(((await manager.status()) as { failures: unknown[] }).failures, []);
@@ -2697,8 +2715,10 @@ it("a BUSY recovery note preserves an earlier genuine error until successful rec
 	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(record.storageId, true);
-	for (const owner of ["first", "second"]) {
+	const owners = [randomUUID(), randomUUID(), randomUUID()];
+	new RecipientHintWriter(root, record.storageId).publish(new Map(owners.map((owner) => [owner, true])));
+	await catalogNoticesSent(manager, root);
+	for (const owner of owners.slice(0, 2)) {
 		await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 		await settleCatalogueRecovery(manager);
 	}
@@ -2708,7 +2728,7 @@ it("a BUSY recovery note preserves an earlier genuine error until successful rec
 	assert.deepEqual(((await manager.status()) as { failures: unknown[] }).failures, [
 		{ storageId: record.storageId, error: "Owned launch failed" },
 	]);
-	await manager.registerPrimary("third", fakePrimary(new AbortController().signal).client);
+	await manager.registerPrimary(owners[2], fakePrimary(new AbortController().signal).client);
 	await settleCatalogueRecovery(manager);
 	const recovered = (await manager.dashboardPage()).rows.find((row) => row.id === record.storageId);
 	assert.equal(recovered?.health?.lastError, undefined);
@@ -2798,8 +2818,15 @@ for (const cached of [false, true])
 		const host = await runHost(() => runtime, { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
 		t.after(() => host.close());
 		if (cached) await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
-		manager.catalog.markRecoveryDue(record.storageId, true);
-		await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+		const owner = randomUUID(),
+			nextOwner = randomUUID();
+		new RecipientHintWriter(root, record.storageId).publish(
+			new Map([
+				[owner, true],
+				[nextOwner, true],
+			]),
+		);
+		await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 		const crashes = (manager as unknown as { crashes: { entries: Iterable<unknown> } }).crashes;
 		assert.equal([...crashes.entries].length, 0, "an operation refusal is not a host loss");
 		assert.equal(openings, 1);
@@ -2820,7 +2847,7 @@ for (const cached of [false, true])
 			announceReady: () => {},
 		});
 		t.after(() => updated.close());
-		await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
+		await manager.registerPrimary(nextOwner, fakePrimary(new AbortController().signal).client);
 		await recoveryReads.waitForCount(1);
 		assert.equal([...crashes.entries].length, 0);
 		assert.doesNotMatch((await manager.dashboardPage()).rows[0]?.ownerLabel ?? "", /next start/u);
@@ -2870,16 +2897,17 @@ it("stops repeated live host losses in Attention and permits an explicit attach 
 		],
 		coverage: { complete: true, omitted: 0 },
 	});
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	const owner = randomUUID();
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
-	manager.catalog.markRecoveryDue(record.storageId, true);
+	recoveryHint(root, record.storageId, owner);
 	writeClaim(record, claimFor(record, deadProcessId()));
 	for (let index = 0; index < 3; index++) {
 		await connections[index]?.exit({ code: null, signal: "SIGKILL", failed: true });
 		await connections.waitForCount(index + 2);
 	}
 	await connections[3]?.exit({ code: null, signal: "SIGKILL", failed: true });
-	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
+	await settleCatalogueRecovery(manager);
 	assert.equal(connections.length, 4, "three replacements exhaust the short-window budget");
 	const stopped = await manager.dashboardPage();
 	assert.match(stopped.rows[0]?.health?.lastError ?? "", /Automatic recovery stopped/u);
@@ -2929,11 +2957,12 @@ for (const entry of ["cached", "recovery"] as const)
 			t.after(() => manager.close());
 			const record = createRecord(manager, root),
 				unrelated = createRecord(manager, root, "unrelated");
-			if (entry === "recovery") manager.catalog.markRecoveryDue(record.storageId, true);
-			await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+			const owner = randomUUID();
+			if (entry === "recovery") recoveryHint(root, record.storageId, owner);
+			await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 			if (entry === "cached") {
 				await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
-				manager.catalog.markRecoveryDue(record.storageId, true);
+				recoveryHint(root, record.storageId, owner);
 			}
 			await settleCatalogueRecovery(manager);
 			assert.equal(connections.length, 1, "initial registration or explicit attachment opens one link");
@@ -2978,9 +3007,10 @@ it("catalogue recovery waits for the current owned failed-exit source", { timeou
 	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	const owner = randomUUID();
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
-	manager.catalog.markRecoveryDue(record.storageId, true);
+	recoveryHint(root, record.storageId, owner);
 	await settleCatalogueRecovery(manager);
 	const first = connections[0];
 	assert.ok(first);
@@ -2995,6 +3025,7 @@ it("catalogue recovery waits for the current owned failed-exit source", { timeou
 		endedAt: "2026-01-01T00:00:01.000Z",
 	});
 	await first.close();
+	recoveryNotice(manager, record.storageId);
 	await settleCatalogueRecovery(manager);
 	assert.equal(connections.length, 1, "catalogue scans and end metadata do not bypass a pending exit observation");
 	await first.exit({ code: 1, signal: null, failed: true });
@@ -3123,197 +3154,209 @@ it("keeps hundreds of clean catalog records out of board reads and host launches
 	assert.equal(observes, 0);
 });
 
-it("keeps unrelated registrations cold and wakes parked delivery only for its exact primary", {
-	timeout: 15000,
-}, async (t) => {
+it("keeps unrelated registrations cold and delivers only for the exact primary", async (t) => {
 	const root = fixtureRoot(t);
-	const links: FakeConnection[] = [];
+	const attempts: string[] = [];
+	const deliveries: Array<[string, readonly string[]]> = [];
 	const manager = new AgentManager(
 		managerOptions(root, {
 			createPrimary: primaryFactory().factory,
-			acquire: async (metadata) => {
-				const link = fakeConnection(metadata, async () => ({
-					workPending: false,
-					deliveriesPending: true,
-					deliveriesActive: false,
-				}));
-				links.push(link);
-				return link;
+			acquire: async (metadata, options) => {
+				attempts.push(metadata.storageId);
+				assert.equal(options?.launchNeeded?.(), false);
+				throw new HostLaunchDemandEnded();
 			},
-			observe: async () => ({ conversations: [] }),
-			connect: noHost,
+			deliverCold: async (metadata, recipients) => {
+				deliveries.push([metadata.storageId, recipients]);
+				return { result: { scheduling: "paused", remaining: [] } };
+			},
 		}),
 	);
 	t.after(() => manager.close());
-	const owner = randomUUID(),
-		record = createRecord(manager, root, owner);
-	manager.catalog.markRecoveryDue(record.storageId, false);
-	writeDeliveryWake(root, record.storageId, [owner]);
-	await manager.registerPrimary(randomUUID(), fakePrimary(new AbortController().signal).client);
-	assert.equal(links.length, 0, "an unrelated registration cannot relaunch a parked-only source");
-	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
-	assert.equal(links.length, 1);
-	assert.equal(links[0].closed, true, "parked rows release the transient recovery link");
-	assert.equal(manager.catalog.read(record.storageId).recoveryDue, false);
-	await manager.registerPrimary(randomUUID(), fakePrimary(new AbortController().signal).client);
-	assert.equal(links.length, 1);
+	const owner = randomUUID();
+	const source = createRecord(manager, root, owner);
+	recoveryHint(root, source.storageId, owner, false);
+	await catalogNoticesSent(manager, root);
+	const unrelated = randomUUID();
+	const control = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(control.storageId, true);
+	writeDeliveryWake(root, control.storageId, [unrelated]);
+	await catalogNoticesSent(manager, root);
+	const register = (id: string) => manager.registerPrimary(id, fakePrimary(new AbortController().signal).client);
+	await register(unrelated);
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(attempts, [], "neither another party's hint nor a marker or sidecar grants recovery");
+	assert.deepEqual(deliveries, []);
+	await register(owner);
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(deliveries, [[source.storageId, [owner]]]);
+	await register(randomUUID());
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(attempts, [source.storageId]);
+	assert.deepEqual(deliveries, [[source.storageId, [owner]]]);
 });
 
-it("wakes the parked source of a registered primary when that session first saves its transcript", {
-	timeout: 15000,
-}, async (t) => {
-	const root = fixtureRoot(t),
-		acquired = eventLog<string>();
-	const manager = new AgentManager(
+function deliveryOnlyManager(root: string, deliveries: Array<[string, readonly string[]]>): AgentManager {
+	return new AgentManager(
 		managerOptions(root, {
-			acquire: async (metadata) => {
-				acquired.push(metadata.storageId);
-				return fakeConnection(metadata, async () => ({
-					workPending: false,
-					deliveriesPending: false,
-					deliveriesActive: false,
-				}));
+			createPrimary: primaryFactory().factory,
+			acquire: async (_metadata, options) => {
+				assert.equal(options?.launchNeeded?.(), false);
+				throw new HostLaunchDemandEnded();
 			},
-			observe: async () => ({ conversations: [] }),
-			connect: noHost,
+			deliverCold: async (metadata, recipients) => {
+				deliveries.push([metadata.storageId, recipients]);
+				return { result: { scheduling: "paused", remaining: [...recipients] } };
+			},
 		}),
 	);
+}
+
+it("retries delivery for a registered primary when that session first saves its transcript", async (t) => {
+	const root = fixtureRoot(t);
+	const deliveries: Array<[string, readonly string[]]> = [];
+	const manager = deliveryOnlyManager(root, deliveries);
 	t.after(() => manager.close());
-	const owner = randomUUID(),
-		record = createRecord(manager, root, owner);
-	manager.catalog.markRecoveryDue(record.storageId, false);
+	const owner = randomUUID();
+	const source = createRecord(manager, root, owner);
+	recoveryHint(root, source.storageId, owner, false);
+	await catalogNoticesSent(manager, root);
 	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
-	assert.equal(acquired.length, 0, "no row waited for the session at registration");
-	// The source parks a row while the session has no file; the session then saves its first message.
-	writeDeliveryWake(root, record.storageId, [owner]);
-	manager.primaryRetains(owner);
-	await acquired.waitForCount(1);
-	assert.deepEqual([...acquired], [record.storageId]);
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(deliveries, [[source.storageId, [owner]]]);
 	manager.primaryRetains(randomUUID());
-	assert.equal(acquired.length, 1, "an unregistered session wakes nothing");
+	await settleCatalogueRecovery(manager);
+	assert.equal(deliveries.length, 1, "an unregistered session makes no delivery attempt");
+	manager.primaryRetains(owner);
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(deliveries, [
+		[source.storageId, [owner]],
+		[source.storageId, [owner]],
+	]);
 });
 
-it("wakes a source when its exact native recipient gains a catalogue record", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t),
-		acquired = eventLog<string>();
-	const manager = new AgentManager(
-		managerOptions(root, {
-			acquire: async (metadata) => {
-				acquired.push(metadata.storageId);
-				return fakeConnection(metadata, async () => ({
-					workPending: false,
-					deliveriesPending: false,
-					deliveriesActive: false,
-				}));
-			},
-			connect: noHost,
-		}),
-	);
+it("a native recipient's new catalogue record does not grant recovery without registration", async (t) => {
+	const root = fixtureRoot(t);
+	const deliveries: Array<[string, readonly string[]]> = [];
+	const manager = deliveryOnlyManager(root, deliveries);
 	t.after(() => manager.close());
 	const source = createRecord(manager, root),
 		target = createRecord(manager, root);
 	unlinkSync(manager.catalog.path(target.storageId));
-	manager.catalog.markRecoveryDue(source.storageId, false);
-	writeDeliveryWake(root, source.storageId, [`${target.storageId}:7`]);
+	recoveryHint(root, source.storageId, target.storageId, false);
 	await manager.registerPrimary(randomUUID(), fakePrimary(new AbortController().signal).client);
-	assert.deepEqual([...acquired], []);
+	assert.deepEqual(deliveries, []);
 	writeFileSync(manager.catalog.path(target.storageId), JSON.stringify(target));
-	publishCatalogChange(manager.catalog.root, target.storageId);
-	await acquired.waitForCount(1, 5000);
-	assert.deepEqual([...acquired], [source.storageId]);
+	recoveryNotice(manager, target.storageId);
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(deliveries, []);
+	manager.registerRecoveryParty(target.storageId, new AbortController().signal);
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(deliveries, [[source.storageId, [target.storageId]]]);
 });
 
-it("persists failed recipient availability across fresh primary managers and wakes once after a change", {
-	timeout: 15000,
-}, async (t) => {
-	const root = fixtureRoot(t),
-		acquired: string[] = [];
-	let target!: CatalogRecord;
-	const fingerprint = () =>
-		createHash("sha256")
-			.update(JSON.stringify(hostMetadata(target, join(root, "package"))))
-			.digest("hex");
-	const options = managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		acquire: async (metadata) => {
-			acquired.push(metadata.storageId);
-			writeDeliveryWake(root, metadata.storageId, [target.storageId], () => fingerprint());
-			return fakeConnection(metadata, async () => ({
-				workPending: false,
-				deliveriesPending: true,
-				deliveriesActive: false,
-			}));
-		},
-		connect: noHost,
-	});
-	const first = new AgentManager(options);
+it("fresh managers each try a registered primary's retained delivery hint once", async (t) => {
+	const root = fixtureRoot(t);
+	const deliveries: Array<[string, readonly string[]]> = [];
+	const first = deliveryOnlyManager(root, deliveries);
 	t.after(() => first.close());
-	const source = createRecord(first, root);
-	target = createRecord(first, root);
-	first.catalog.markRecoveryDue(source.storageId, false);
-	writeDeliveryWake(root, source.storageId, [target.storageId], () => fingerprint());
+	const owner = randomUUID();
+	const source = createRecord(first, root, owner);
+	recoveryHint(root, source.storageId, owner, false);
+	await catalogNoticesSent(first, root);
 	const register = (manager: AgentManager) =>
-		manager.registerPrimary(target.storageId, fakePrimary(new AbortController().signal).client);
+		manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	await register(first);
-	assert.equal(acquired.length, 0);
+	recoveryNotice(first, source.storageId);
+	await settleCatalogueRecovery(first);
+	assert.deepEqual(deliveries, [[source.storageId, [owner]]]);
 	await first.close();
-	const second = new AgentManager(options);
+	const second = deliveryOnlyManager(root, deliveries);
 	t.after(() => second.close());
 	await register(second);
-	assert.equal(acquired.length, 0);
-	target = { ...target, model: { ...target.model, modelId: "model-y" } };
-	writeFileSync(second.catalog.path(target.storageId), JSON.stringify(target));
-	await register(second);
-	assert.deepEqual(acquired, [source.storageId]);
-	await register(second);
-	assert.deepEqual(acquired, [source.storageId]);
-	await second.close();
-	const third = new AgentManager(options);
-	t.after(() => third.close());
-	await register(third);
-	assert.deepEqual(acquired, [source.storageId]);
+	recoveryNotice(second, source.storageId);
+	await settleCatalogueRecovery(second);
+	assert.deepEqual(deliveries, [
+		[source.storageId, [owner]],
+		[source.storageId, [owner]],
+	]);
 });
 
-it("does not repeat a parked wake for unchanged recipient availability at primary registration", {
-	timeout: 15000,
-}, async (t) => {
-	const root = fixtureRoot(t),
-		acquired: string[] = [];
+it("delivery-only attempts repeat after a hint or registration change, not an unchanged notice", async (t) => {
+	const root = fixtureRoot(t);
+	const deliveries: Array<[string, readonly string[]]> = [];
+	const manager = deliveryOnlyManager(root, deliveries);
+	t.after(() => manager.close());
+	const owner = randomUUID();
+	const source = createRecord(manager, root, owner);
+	recoveryHint(root, source.storageId, owner, false);
+	await catalogNoticesSent(manager, root);
+	const register = () => manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
+	await register();
+	assert.equal(deliveries.length, 1);
+	for (let index = 0; index < 2; index++) {
+		recoveryNotice(manager, source.storageId);
+		await settleCatalogueRecovery(manager);
+	}
+	assert.equal(deliveries.length, 1);
+	const path = recipientHintPath(root, owner, source.storageId);
+	utimesSync(path, 1, 1);
+	recoveryNotice(manager, source.storageId);
+	await settleCatalogueRecovery(manager);
+	assert.equal(deliveries.length, 2);
+	await register();
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(
+		deliveries,
+		Array.from({ length: 3 }, () => [source.storageId, [owner]]),
+	);
+});
+
+it("a registered Durable party recovers only its own sources until its signal aborts", async (t) => {
+	const root = fixtureRoot(t);
+	const acquired: Array<[string, boolean | undefined]> = [];
+	const delivered: Array<[string, readonly string[]]> = [];
 	const manager = new AgentManager(
 		managerOptions(root, {
-			createPrimary: primaryFactory().factory,
-			acquire: async (metadata) => {
-				acquired.push(metadata.storageId);
-				writeDeliveryWake(root, metadata.storageId, [target.storageId], () =>
-					createHash("sha256")
-						.update(JSON.stringify(hostMetadata(target, join(root, "package"))))
-						.digest("hex"),
-				);
-				return fakeConnection(metadata, async () => ({
-					workPending: false,
-					deliveriesPending: true,
-					deliveriesActive: false,
-				}));
+			acquire: async (metadata, options) => {
+				const launch = options?.launchNeeded?.();
+				acquired.push([metadata.storageId, launch]);
+				if (!launch) throw new HostLaunchDemandEnded();
+				return fakeConnection(metadata, async () => ({ workPending: true }));
 			},
-			connect: noHost,
+			deliverCold: async (metadata, recipients) => {
+				delivered.push([metadata.storageId, recipients]);
+				return { result: { scheduling: "paused", remaining: [] } };
+			},
 		}),
 	);
 	t.after(() => manager.close());
-	const source = createRecord(manager, root),
-		target = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(source.storageId, false);
-	writeDeliveryWake(root, source.storageId, [target.storageId]);
-	const register = () => manager.registerPrimary(target.storageId, fakePrimary(new AbortController().signal).client);
-	await register();
-	await register();
-	assert.deepEqual(acquired, [source.storageId]);
-	manager.catalog.updateView(target.storageId, {
-		updatedAt: new Date().toISOString(),
-		rows: [],
-		coverage: { complete: true, omitted: 0 },
-	});
-	await register();
-	assert.deepEqual(acquired, [source.storageId], "a view publication is not new host availability");
+	const party = randomUUID();
+	const executing = createRecord(manager, root);
+	const delivering = createRecord(manager, root);
+	const unrelated = createRecord(manager, root);
+	recoveryHint(root, executing.storageId, party);
+	recoveryHint(root, delivering.storageId, party, false);
+	recoveryHint(root, unrelated.storageId, randomUUID());
+	const controller = new AbortController();
+	manager.registerRecoveryParty(party, controller.signal);
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(
+		acquired.slice().sort(),
+		[
+			[delivering.storageId, false],
+			[executing.storageId, true],
+		].sort(),
+	);
+	assert.deepEqual(delivered, [[delivering.storageId, [party]]]);
+	controller.abort();
+	const next = createRecord(manager, root);
+	recoveryHint(root, next.storageId, party);
+	utimesSync(recipientHintPath(root, party, delivering.storageId), 1, 1);
+	recoveryNotice(manager, next.storageId);
+	await settleCatalogueRecovery(manager);
+	assert.equal(acquired.length, 2);
+	assert.equal(delivered.length, 1);
 });
 
 it("refreshes an existing recovery link at another primary registration", { timeout: 15000 }, async (t) => {
@@ -3321,10 +3364,13 @@ it("refreshes an existing recovery link at another primary registration", { time
 	let connection: FakeConnection | undefined;
 	let active = true;
 	let reads = 0;
+	let acquisitions = 0;
 	const manager = new AgentManager(
 		managerOptions(root, {
 			createPrimary: primaryFactory().factory,
-			acquire: async (metadata) => {
+			acquire: async (metadata, options) => {
+				assert.equal(options?.launchNeeded?.(), false);
+				acquisitions++;
 				connection = fakeConnection(metadata, async (method) => {
 					if (method === "recovery-state") reads++;
 					return { workPending: false, deliveriesPending: true, deliveriesActive: active };
@@ -3337,14 +3383,24 @@ it("refreshes an existing recovery link at another primary registration", { time
 	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root, "recovering");
-	manager.catalog.markRecoveryDue(record.storageId, true);
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	const owner = randomUUID(),
+		other = randomUUID();
+	new RecipientHintWriter(root, record.storageId).publish(
+		new Map([
+			[owner, false],
+			[other, false],
+		]),
+	);
+	await catalogNoticesSent(manager, root);
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
+	await settleCatalogueRecovery(manager);
 	assert.equal(connection?.closed, false);
 	const prior = reads;
 	active = false;
-	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
+	await manager.registerPrimary(other, fakePrimary(new AbortController().signal).client);
 	assert.ok(reads > prior, "registration refreshes delivery even without a native commit");
 	assert.equal(connection?.closed, true);
+	assert.equal(acquisitions, 1, "both registrations use the same link");
 });
 
 /** A location resolver that settles without waiting for I/O, so a registration reaches its recovery read at once. */
@@ -3364,10 +3420,11 @@ for (const [resolver, locations] of [
 	["the default location resolver", undefined],
 	["a location resolver that never waits", immediateLocations],
 ] as const)
-	it(`launches only marked-due records and caps concurrent recovery at two with ${resolver}`, {
+	it(`launches only sources with execution hints and caps concurrent recovery at two with ${resolver}`, {
 		timeout: 60000,
 	}, async (t) => {
 		const root = fixtureRoot(t);
+		const owner = randomUUID();
 		const acquired = eventLog<string>();
 		const gates = new Map<string, () => void>();
 		const activity = { active: 0, peak: 0 };
@@ -3378,7 +3435,8 @@ for (const [resolver, locations] of [
 				packageDir,
 				createPrimary: primaryFactory().factory,
 				...(locations === undefined ? {} : { locations }),
-				acquire: async (metadata) => {
+				acquire: async (metadata, options) => {
+					assert.equal(options?.launchNeeded?.(), true);
 					assert.equal(metadata.packageDir, packageDir, "startup recovery uses the caller installation");
 					const storageId = metadata.storageId;
 					acquired.push(storageId);
@@ -3395,8 +3453,7 @@ for (const [resolver, locations] of [
 					activity.active -= 1;
 					return fakeConnection(metadata, async (method) => {
 						if (method !== "recovery-state") return {};
-						// A host with nothing left clears its marker in the request that reports it.
-						manager.catalog.markRecoveryDue(storageId, false);
+						new RecipientHintWriter(root, storageId).withdraw(owner);
 						return { workPending: false, deliveriesPending: false, deliveriesActive: false };
 					});
 				},
@@ -3407,32 +3464,32 @@ for (const [resolver, locations] of [
 		t.after(() => manager.close());
 		const due = Array.from({ length: 5 }, (_, index) => {
 			const record = createRecord(manager, root, `due-${index}`);
-			manager.catalog.markRecoveryDue(record.storageId, true);
+			recoveryHint(root, record.storageId, owner);
 			return record;
 		});
 		const clean = createRecord(manager, root, "clean");
+		manager.catalog.markRecoveryDue(clean.storageId, true);
+		recoveryHint(root, clean.storageId, randomUUID());
 		const primary = fakePrimary(new AbortController().signal);
-		const registering = manager.registerPrimary("owner-1", primary.client);
+		const registering = manager.registerPrimary(owner, primary.client);
 		await acquired.waitForCount(2);
 		assert.equal(activity.peak, 2, "at most two recoveries run at once");
 		assert.equal(acquired.length, 2, "the queue holds the other due records until a slot frees");
 		for (const gate of [...gates.values()]) gate();
 		await registering;
+		await settleCatalogueRecovery(manager);
 		assert.deepEqual(
 			acquired.slice().sort(),
 			due.map((record) => record.storageId).sort(),
-			"every due record recovers once and the clean record never launches",
+			"every source with a hint for this party recovers once",
 		);
 		assert.equal(acquired.includes(clean.storageId), false);
-		assert.deepEqual(
-			manager.connectedStorageIds(),
-			[],
-			"delivery-only recovery stays out of the persistent client map",
-		);
+		assert.deepEqual(manager.connectedStorageIds(), [], "completed recovery leaves no persistent link");
 	});
 
-it("recovers a due record that sorts after hundreds of other catalog records", { timeout: 60000 }, async (t) => {
+it("recovers an execution hint after the first page of dangling hints", { timeout: 60000 }, async (t) => {
 	const root = fixtureRoot(t);
+	const owner = randomUUID();
 	const acquired: string[] = [];
 	const manager = new AgentManager(
 		managerOptions(root, {
@@ -3442,7 +3499,7 @@ it("recovers a due record that sorts after hundreds of other catalog records", {
 				acquired.push(metadata.storageId);
 				return fakeConnection(metadata, async (method) => {
 					if (method !== "recovery-state") return {};
-					manager.catalog.markRecoveryDue(metadata.storageId, false);
+					new RecipientHintWriter(root, metadata.storageId).withdraw(owner);
 					return { workPending: false, deliveriesPending: false, deliveriesActive: false };
 				});
 			},
@@ -3451,28 +3508,24 @@ it("recovers a due record that sorts after hundreds of other catalog records", {
 		}),
 	);
 	t.after(() => manager.close());
-	const records = Array.from({ length: 400 }, (_, index) => createRecord(manager, root, `owner-${index}`));
-	const last = records
-		.map((record) => record.storageId)
-		.sort()
-		.at(-1);
-	assert.ok(last);
-	manager.catalog.markRecoveryDue(last, true);
-	const primary = fakePrimary(new AbortController().signal);
-	await manager.registerPrimary("owner-1", primary.client);
-	assert.deepEqual(acquired, [last], "the due record recovers although 399 records sort before it");
-	const overview = (await manager.status()) as { failures: Array<{ storageId: string }> };
-	assert.equal(
-		overview.failures.some(({ storageId }) => storageId === "startup"),
-		false,
-		"a scan that read every record reports no incomplete recovery",
-	);
+	const record = createRecord(manager, root);
+	for (let index = 0; index < 399; index++) {
+		const missing = `00000000-0000-0000-0000-${index.toString(16).padStart(12, "0")}`;
+		assert.ok(missing < record.storageId);
+		recoveryHint(root, missing, owner);
+	}
+	await catalogNoticesSent(manager, root);
+	recoveryHint(root, record.storageId, owner);
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
+	await settleCatalogueRecovery(manager);
+	assert.deepEqual(acquired, [record.storageId], "the valid hint follows more than one page of dangling hints");
 });
 
 it("tries a failing launch once for two reads that overlap, and again for a later read", {
 	timeout: 60000,
 }, async (t) => {
 	const root = fixtureRoot(t);
+	const owner = randomUUID();
 	const acquired = eventLog<string>();
 	const gates: Array<() => void> = [];
 	let held = true;
@@ -3483,7 +3536,7 @@ it("tries a failing launch once for two reads that overlap, and again for a late
 			acquire: async (metadata) => {
 				acquired.push(metadata.storageId);
 				if (held) await new Promise<void>((release) => gates.push(release));
-				// No host starts, so the record stays marked due.
+				// No host starts, so the source keeps its execution hint.
 				throw new Error("launch failed");
 			},
 			observe: async () => ({ conversations: [] }),
@@ -3494,23 +3547,23 @@ it("tries a failing launch once for two reads that overlap, and again for a late
 	const due = [0, 1]
 		.map((index) => {
 			const record = createRecord(manager, root, `due-${index}`);
-			manager.catalog.markRecoveryDue(record.storageId, true);
+			recoveryHint(root, record.storageId, owner);
 			return record.storageId;
 		})
 		.sort();
 	await catalogNoticesSent(manager, root);
 	const notice = () =>
 		(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([due[0] as string]);
-	const registering = manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	const registering = manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	await acquired.waitForCount(2);
-	// A catalog notice starts a second read of the same due records while the first read's launches are open.
+	// A catalog notice starts a second read of the same hinted sources while the first read's launches are open.
 	notice();
 	held = false;
 	for (const release of gates.splice(0)) release();
 	await registering;
 	await settleCatalogueRecovery(manager);
 	assert.deepEqual(acquired.slice().sort(), due, "the second read began before the launches failed");
-	// A read that begins after the failure finds the records still due and tries again.
+	// A read that begins after the failure finds the records still hinted and tries again.
 	notice();
 	await settleCatalogueRecovery(manager);
 	assert.deepEqual(acquired.slice().sort(), [...due, ...due].sort());
@@ -3520,24 +3573,30 @@ it("leaves a storage to a later batch when the launch of an earlier batch was no
 	timeout: 60000,
 }, async (t) => {
 	const root = fixtureRoot(t);
+	const owner = randomUUID();
+	let hint: RecipientHintWriter;
 	const acquired = eventLog<string>();
 	let release = () => {};
 	const manager = new AgentManager(
 		managerOptions(root, {
 			createPrimary: primaryFactory().factory,
 			locations: immediateLocations,
-			acquire: async (metadata) => {
+			acquire: async (metadata, options) => {
+				assert.equal(options?.launchNeeded?.(), true);
 				acquired.push(metadata.storageId);
 				if (acquired.length === 1) {
 					// The first read's demand ends while its acquisition is open, so no host is launched for it.
 					await new Promise<void>((done) => {
 						release = done;
 					});
+					hint.withdraw(owner);
+					assert.equal(options?.launchNeeded?.(), false);
+					hint.publish(new Map([[owner, true]]));
 					throw new HostLaunchDemandEnded();
 				}
 				return fakeConnection(metadata, async (method) => {
 					if (method !== "recovery-state") return {};
-					manager.catalog.markRecoveryDue(metadata.storageId, false);
+					hint.withdraw(owner);
 					return { workPending: false, deliveriesPending: false, deliveriesActive: false };
 				});
 			},
@@ -3547,9 +3606,9 @@ it("leaves a storage to a later batch when the launch of an earlier batch was no
 	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(record.storageId, true);
+	hint = recoveryHint(root, record.storageId, owner);
 	await catalogNoticesSent(manager, root);
-	const registering = manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	const registering = manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	await acquired.waitForCount(1);
 	// A second read lists the same record while the first acquisition is open; its own demand still holds.
 	(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([record.storageId]);
@@ -3557,7 +3616,7 @@ it("leaves a storage to a later batch when the launch of an earlier batch was no
 	await registering;
 	await settleCatalogueRecovery(manager);
 	assert.deepEqual(acquired.slice(), [record.storageId, record.storageId], "the second read acquires the storage");
-	assert.equal(manager.catalog.read(record.storageId).recoveryDue, false);
+	assert.equal(existsSync(recipientHintPath(root, owner, record.storageId)), false);
 });
 
 it("launches a host that never starts at most three times a minute under a burst of catalog notices", {
@@ -3580,7 +3639,14 @@ it("launches a host that never starts at most three times a minute under a burst
 	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(record.storageId, true);
+	const owner = randomUUID(),
+		other = randomUUID();
+	new RecipientHintWriter(root, record.storageId).publish(
+		new Map([
+			[owner, true],
+			[other, true],
+		]),
+	);
 	await catalogNoticesSent(manager, root);
 	const burst = async (notices: number) => {
 		for (let index = 0; index < notices; index++) {
@@ -3590,7 +3656,7 @@ it("launches a host that never starts at most three times a minute under a burst
 	};
 	const failure = async () =>
 		((await manager.status()) as { failures: Array<{ storageId: string; error: string }> }).failures;
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	assert.equal(launches, 1, "the registration launches once");
 	assert.deepEqual(await failure(), [{ storageId: record.storageId, error: "Host launch failed" }]);
 	await burst(200);
@@ -3600,7 +3666,7 @@ it("launches a host that never starts at most three times a minute under a burst
 	assert.deepEqual(await failure(), [{ storageId: record.storageId, error: waiting }]);
 
 	// A registration is an explicit act: it launches at once and leaves the automatic launches waiting.
-	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
+	await manager.registerPrimary(other, fakePrimary(new AbortController().signal).client);
 	assert.equal(launches, 4);
 	await burst(20);
 	assert.equal(launches, 4);
@@ -3617,7 +3683,7 @@ it("launches a host that never starts at most three times a minute under a burst
 	assert.equal(launches, 11, "the attachment cleared the window, so three automatic launches follow");
 });
 
-it("reads the catalog again when a storage's launch wait ends, without a catalog notice", {
+it("reads the hints again when a storage's launch wait ends, without a catalog notice", {
 	timeout: 60000,
 }, async (t) => {
 	const root = fixtureRoot(t);
@@ -3636,14 +3702,15 @@ it("reads the catalog again when a storage's launch wait ends, without a catalog
 	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(record.storageId, true);
+	const owner = randomUUID();
+	recoveryHint(root, record.storageId, owner);
 	await catalogNoticesSent(manager, root);
 	t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
 	const notice = async () => {
 		(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([record.storageId]);
 		await settleCatalogueRecovery(manager);
 	};
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	for (let index = 0; index < 200; index++) await notice();
 	assert.equal(launches, 3, "the storage waits after its third failed launch");
 	// A failed launch writes nothing to the catalog, so no notice follows on a quiet machine.
@@ -3655,54 +3722,62 @@ it("reads the catalog again when a storage's launch wait ends, without a catalog
 	assert.equal(launches, 4, "the first failure left the window, and the skipped read ran again once");
 });
 
-it("wakes a parked delivery after the source's launch wait when the recipient became available during it", {
+it("reads a delivery-only hint after the source's launch wait ends", {
 	timeout: 60000,
 }, async (t) => {
 	const root = fixtureRoot(t);
-	const launched: string[] = [];
+	let launches = 0;
+	let connections = 0;
+	const deliveries: Array<[string, readonly string[]]> = [];
 	const manager = new AgentManager(
 		managerOptions(root, {
 			createPrimary: primaryFactory().factory,
 			locations: immediateLocations,
-			acquire: async (metadata) => {
-				launched.push(metadata.storageId);
+			acquire: async (_metadata, options) => {
+				if (!options?.launchNeeded?.()) {
+					connections++;
+					throw new HostLaunchDemandEnded();
+				}
+				launches++;
 				throw new Error("Host launch failed");
+			},
+			deliverCold: async (metadata, recipients) => {
+				deliveries.push([metadata.storageId, recipients]);
+				return { result: { scheduling: "paused", remaining: [] } };
 			},
 			observe: async () => ({ conversations: [] }),
 			connect: noHost,
 		}),
 	);
 	t.after(() => manager.close());
-	const source = createRecord(manager, root),
-		target = createRecord(manager, root);
-	// The recipient of the source's parked delivery has no catalogue record yet.
-	unlinkSync(manager.catalog.path(target.storageId));
-	manager.catalog.markRecoveryDue(source.storageId, true);
-	writeDeliveryWake(root, source.storageId, [target.storageId]);
+	const source = createRecord(manager, root);
+	const owner = randomUUID();
+	const hint = recoveryHint(root, source.storageId, owner);
 	await catalogNoticesSent(manager, root);
-	t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-	const notice = async (storageId: string) => {
-		(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([storageId]);
+	t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+	const notice = async () => {
+		recoveryNotice(manager, source.storageId);
 		await settleCatalogueRecovery(manager);
 	};
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
-	await notice(source.storageId);
-	await notice(source.storageId);
-	assert.equal(launched.length, 3, "the source waits after three failed launches");
-	// Only the parked delivery keeps the source a candidate from here on.
-	manager.catalog.markRecoveryDue(source.storageId, false);
-	await notice(source.storageId);
-	// The recipient becomes available while the source waits.
-	writeFileSync(manager.catalog.path(target.storageId), JSON.stringify(target));
-	await notice(target.storageId);
-	assert.equal(launched.length, 3, "the waiting source launches nothing");
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
+	await notice();
+	await notice();
+	assert.equal(launches, 3, "the source waits after three failed launches");
+	hint.publish(new Map([[owner, false]]));
+	await notice();
+	assert.equal(connections, 0, "the wait defers the new delivery-only demand");
+	assert.deepEqual(deliveries, []);
 	t.mock.timers.tick(60_000);
-	await notice(target.storageId);
-	assert.equal(launched.length, 4, "the read after the wait still finds the recipient newly available");
+	await settleCatalogueRecovery(manager);
+	assert.equal(launches, 3, "replay must not launch a serving host");
+	assert.equal(connections, 1);
+	assert.deepEqual(deliveries, [[source.storageId, [owner]]]);
 });
 
 it("serializes simultaneous primary registrations without duplicate recovery", { timeout: 60000 }, async (t) => {
 	const root = fixtureRoot(t);
+	const owner = randomUUID(),
+		other = randomUUID();
 	const launched = eventLog<string>();
 	const gates = new Map<string, () => void>();
 	const activity = { active: 0, peak: 0 };
@@ -3735,21 +3810,27 @@ it("serializes simultaneous primary registrations without duplicate recovery", {
 	t.after(() => manager.close());
 	const due = Array.from({ length: 5 }, (_, index) => {
 		const record = createRecord(manager, root, `due-${index}`);
-		manager.catalog.markRecoveryDue(record.storageId, true);
+		new RecipientHintWriter(root, record.storageId).publish(
+			new Map([
+				[owner, true],
+				[other, true],
+			]),
+		);
 		return record;
 	});
 	const clean = createRecord(manager, root, "clean");
 	const first = fakePrimary(new AbortController().signal);
 	const second = fakePrimary(new AbortController().signal);
 	const registering = Promise.all([
-		manager.registerPrimary("owner-1", first.client),
-		manager.registerPrimary("owner-2", second.client),
+		manager.registerPrimary(owner, first.client),
+		manager.registerPrimary(other, second.client),
 	]);
 	await launched.waitForCount(2);
 	assert.equal(activity.peak, 2, "the global recovery queue runs at most two launches");
 	assert.equal(launched.length, 2, "the queue holds the remaining due records until a slot frees");
 	for (const gate of [...gates.values()]) gate();
 	await registering;
+	await settleCatalogueRecovery(manager);
 	assert.deepEqual(
 		launched.slice().sort(),
 		due.map((record) => record.storageId).sort(),
@@ -3759,10 +3840,11 @@ it("serializes simultaneous primary registrations without duplicate recovery", {
 	assert.equal(launched.includes(clean.storageId), false, "the clean control record never launches");
 });
 
-it("delegates marked recovery to acquisition without diagnostic ownership assumptions", {
+it("delegates execution-hint recovery to acquisition without diagnostic ownership assumptions", {
 	timeout: 30000,
 }, async (t) => {
 	const root = fixtureRoot(t);
+	const owner = randomUUID();
 	const acquired = eventLog<string>();
 	const connected: string[] = [];
 	const manager = new AgentManager(
@@ -3772,8 +3854,7 @@ it("delegates marked recovery to acquisition without diagnostic ownership assump
 				acquired.push(metadata.storageId);
 				return fakeConnection(metadata, async (method) => {
 					if (method !== "recovery-state") return {};
-					// A host with nothing left clears its marker in the request that reports it.
-					manager.catalog.markRecoveryDue(metadata.storageId, false);
+					new RecipientHintWriter(root, metadata.storageId).withdraw(owner);
 					return { workPending: false, deliveriesPending: false, deliveriesActive: false };
 				});
 			},
@@ -3788,18 +3869,19 @@ it("delegates marked recovery to acquisition without diagnostic ownership assump
 	);
 	t.after(() => manager.close());
 	const absent = createRecord(manager, root, "absent");
-	manager.catalog.markRecoveryDue(absent.storageId, true);
+	recoveryHint(root, absent.storageId, owner);
 	const dead = createRecord(manager, root, "dead");
-	manager.catalog.markRecoveryDue(dead.storageId, true);
+	recoveryHint(root, dead.storageId, owner);
 	writeClaim(dead, claimFor(dead, deadProcessId()));
 	const unknown = createRecord(manager, root, "unknown");
-	manager.catalog.markRecoveryDue(unknown.storageId, true);
+	recoveryHint(root, unknown.storageId, owner);
 	writeClaim(unknown, "{ not json");
 	const live = createRecord(manager, root, "live");
-	manager.catalog.markRecoveryDue(live.storageId, true);
+	recoveryHint(root, live.storageId, owner);
 	writeClaim(live, claimFor(live, process.pid));
 	const primary = fakePrimary(new AbortController().signal);
-	await manager.registerPrimary("owner-1", primary.client);
+	await manager.registerPrimary(owner, primary.client);
+	await settleCatalogueRecovery(manager);
 	assert.deepEqual(
 		acquired.slice().sort(),
 		[absent.storageId, dead.storageId, unknown.storageId, live.storageId].sort(),
@@ -3814,7 +3896,8 @@ it("closes a delivery-only recovery connection when no work remains", { timeout:
 	const manager = new AgentManager(
 		managerOptions(root, {
 			createPrimary: primaryFactory().factory,
-			acquire: async (metadata) => {
+			acquire: async (metadata, options) => {
+				assert.equal(options?.launchNeeded?.(), false);
 				connection = fakeConnection(metadata, async (method) => (method === "recovery-state" ? recoveryState : {}));
 				return connection;
 			},
@@ -3824,10 +3907,11 @@ it("closes a delivery-only recovery connection when no work remains", { timeout:
 	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(record.storageId, true);
+	const owner = randomUUID();
+	recoveryHint(root, record.storageId, owner, false);
 	const controller = new AbortController();
 	const primary = fakePrimary(controller.signal);
-	await manager.registerPrimary("owner-1", primary.client);
+	await manager.registerPrimary(owner, primary.client);
 	const active = connection;
 	assert.ok(active);
 	assert.equal(active.closed, false, "pending deliveries keep the recovery connection open");
@@ -4735,7 +4819,8 @@ it("uses a startup recovery link publication before explicit attachment", { time
 		managerOptions(root, { connect: open, acquire: open, createPrimary: primaryFactory().factory }),
 	);
 	t.after(() => manager.close());
-	const record = createRecord(manager, root);
+	const owner = randomUUID();
+	const record = createRecord(manager, root, owner);
 	const view = {
 		storageId: record.storageId,
 		updatedAt: "2026-01-01T00:00:00.000Z",
@@ -4755,7 +4840,7 @@ it("uses a startup recovery link publication before explicit attachment", { time
 		coverage: { complete: true, omitted: 0 },
 	};
 	manager.catalog.updateView(record.storageId, view);
-	manager.catalog.markRecoveryDue(record.storageId, true);
+	recoveryHint(root, record.storageId, owner);
 	const host = await runHost(
 		() => ({
 			request: async (method) => {
@@ -4769,7 +4854,7 @@ it("uses a startup recovery link publication before explicit attachment", { time
 		{ metadata: hostMetadata(record), idleMs: 0, announceReady() {} },
 	);
 	t.after(() => host.close());
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	await settleCatalogueRecovery(manager);
 	assert.equal(connections.length, 1);
 	const page = await manager.dashboardPage();
@@ -4777,7 +4862,7 @@ it("uses a startup recovery link publication before explicit attachment", { time
 	assert.equal(page.rows[0].currentTool?.argument, "recovery publication");
 	assert.equal(page.coverage.inventory.unknownClaims, 1);
 	assert.equal(page.coverage.complete, true);
-	assert.equal(await manager.sessionFigures("owner-1", page), "agents: 1/1");
+	assert.equal(await manager.sessionFigures(owner, page), "agents: 1/1");
 	assert.ok(
 		requests.every((method) => method === "recovery-state"),
 		"presentation uses the existing recovery feed without a status request",
@@ -4818,7 +4903,8 @@ it("a clean exact foreign retirement does not report a recovery fault", { timeou
 	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(record.storageId, true);
+	const owner = randomUUID();
+	recoveryHint(root, record.storageId, owner);
 	const host = await runHost(
 		() => ({
 			request: async () => ({ workPending: true, deliveriesActive: true }),
@@ -4827,7 +4913,7 @@ it("a clean exact foreign retirement does not report a recovery fault", { timeou
 		}),
 		{ metadata: hostMetadata(record), idleMs: 0, announceReady() {} },
 	);
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	await connections.waitForCount(1);
 	await host.close();
 	await waitForConnectionClose(connections[0]);

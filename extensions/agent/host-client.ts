@@ -10,7 +10,9 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstatSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, statSync } from "node:fs";
+import { dirname } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { awaitWithContext, withAbortSignal, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PluginError, isChordError } from "@earendil-works/chord";
@@ -21,6 +23,7 @@ import {
 	type TransportSubscription,
 } from "../../transport/index.ts";
 import { observeClaim, readClaimFile } from "./claims.ts";
+import { tryNativeWriterLease, type NativeWriterLease } from "./native-lease.ts";
 import { isPassiveHostOperation } from "./host-passive.ts";
 import {
 	HOST_CONTRACT_MEMBER,
@@ -29,6 +32,7 @@ import {
 	hostRequestVersionError,
 	hostPaths,
 	isRetrySafeHostMethod,
+	launchReservationPath,
 	parseHostMetadata,
 	parseHostHello,
 	parseHostReadyLine,
@@ -603,7 +607,12 @@ function assertBusyTarget(error: unknown, metadata: HostMetadata, paths: HostPat
 		throw new HostError("Busy runner identity does not match the expected storage endpoint", "invalid");
 }
 
-async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions, deadline: number): Promise<Link> {
+/** This process's current launch of the storage, or a new one under the reservation; undefined when another holds it. */
+async function launchAttempt(
+	metadata: HostMetadata,
+	options: HostLaunchOptions,
+	deadline: number,
+): Promise<OwnedLaunch | undefined> {
 	const paths = hostPaths(metadata);
 	let attempt = ownedLaunches.get(paths.socket);
 	if (attempt?.state === "uncertain")
@@ -618,10 +627,16 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions, 
 		await withinBudget(attempt.exited, deadline, options.signal);
 		attempt = ownedLaunches.get(paths.socket);
 	}
-	if (!attempt || attempt.state === "exited" || attempt.writerReleased) {
-		if (options.launchNeeded?.() === false) throw new HostLaunchDemandEnded();
-		attempt = startOwnedLaunch(metadata, options, deadline);
-	}
+	if (attempt && attempt.state !== "exited" && !attempt.writerReleased) return attempt;
+	if (options.launchNeeded?.() === false) throw new HostLaunchDemandEnded();
+	return reservedLaunch(metadata, options, deadline);
+}
+
+async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions, deadline: number): Promise<Link> {
+	const paths = hostPaths(metadata);
+	const attempt = await launchAttempt(metadata, options, deadline);
+	// Another process is starting this storage's runner; its endpoint is the one to reach.
+	if (attempt === undefined) return attachForeignLaunch(metadata, deadline, options.signal);
 	try {
 		await withinBudget(attempt.ready, deadline, options.signal);
 	} catch (error) {
@@ -636,6 +651,77 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions, 
 		if (!(error instanceof HostError) && !options.signal?.aborted && attempt.state !== "exited")
 			throw new HostReadinessUnavailableError(error);
 		throw error;
+	}
+}
+
+/** Take the launch reservation without blocking; undefined while another launcher holds it. */
+function reserveLaunch(metadata: HostMetadata): NativeWriterLease | undefined {
+	const path = launchReservationPath(metadata);
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	const attempt = tryNativeWriterLease(path);
+	return attempt.kind === "held" ? attempt.lease : undefined;
+}
+
+/** Start an owned runner under the launch reservation, or undefined when another launcher holds it. */
+function reservedLaunch(metadata: HostMetadata, options: HostLaunchOptions, deadline: number): OwnedLaunch | undefined {
+	const reservation = reserveLaunch(metadata);
+	if (reservation === undefined) return undefined;
+	let attempt: OwnedLaunch;
+	try {
+		attempt = startOwnedLaunch(metadata, options, deadline);
+	} catch (error) {
+		reservation.release();
+		throw error;
+	}
+	void Promise.race([attempt.ready.then(undefined, () => undefined), attempt.exited]).finally(() =>
+		reservation.release(),
+	);
+	return attempt;
+}
+
+/** How often a launcher that lost the reservation looks for the winner's endpoint. */
+const FOREIGN_LAUNCH_POLL_MS = 100;
+
+/**
+ * Reach the runner that another launcher starts. That launcher holds the reservation until its runner is ready or
+ * has exited, so a free reservation without an endpoint means that launch ended without a host. An endpoint file
+ * that a lost host left does not answer; the wait continues while the reservation is held.
+ */
+async function attachForeignLaunch(metadata: HostMetadata, deadline: number, signal?: AbortSignal): Promise<Link> {
+	for (;;) {
+		signal?.throwIfAborted();
+		const link = await foreignLaunchLink(metadata, deadline, signal);
+		if (link !== undefined) return link;
+		if (performance.now() >= deadline)
+			throw new HostReadinessUnavailableError(new Error("Another process is still launching this storage's host"));
+		await delay(Math.min(FOREIGN_LAUNCH_POLL_MS, Math.max(1, deadline - performance.now())), undefined, {
+			...(signal === undefined ? {} : { signal }),
+		});
+	}
+}
+
+/** One look for the foreign launch's endpoint; undefined while that launch still holds the reservation. */
+async function foreignLaunchLink(
+	metadata: HostMetadata,
+	deadline: number,
+	signal?: AbortSignal,
+): Promise<Link | undefined> {
+	const endpoint = lstatSync(hostPaths(metadata).socket, { throwIfNoEntry: false }) !== undefined;
+	const reservation = reserveLaunch(metadata);
+	if (reservation !== undefined) {
+		reservation.release();
+		if (endpoint || lstatSync(hostPaths(metadata).socket, { throwIfNoEntry: false }) !== undefined)
+			return attachLink(metadata, deadline, signal);
+		throw new HostReadinessUnavailableError(
+			new Error("Another process launched this storage's host, and that launch ended without an endpoint"),
+		);
+	}
+	if (!endpoint) return undefined;
+	try {
+		return await attachLink(metadata, deadline, signal);
+	} catch (error) {
+		if (signal?.aborted || performance.now() >= deadline) throw error;
+		return undefined;
 	}
 }
 

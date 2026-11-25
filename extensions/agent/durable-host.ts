@@ -64,7 +64,7 @@ import {
 import { abortScopeConversations } from "./abort-scope.ts";
 import { captureStoppedWork, PENDING_TASKS_LIMIT, recoverStoppedTasks, stopScope } from "./conversation-stop.ts";
 import { withdrawStorageWork } from "./thread-storage-work.ts";
-import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
+import { listCollaboration, readCollaboration, mutateCollaboration, type NoticeRouteStaging } from "./collaboration.ts";
 import { threadStorageRefusal, threadStorageServes } from "./identity.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -698,6 +698,12 @@ export class DurableHost {
 		this.foreignStop = stop;
 	}
 
+	/** Publishes discovery for thread notice recipients inside the commit that stores the notices. */
+	private noticeRouteStaging?: NoticeRouteStaging;
+	setNoticeRouteStaging(stage: NoticeRouteStaging): void {
+		this.noticeRouteStaging = stage;
+	}
+
 	/** Observed context facts of one producing conversation, as lines for its result delivery. A failed read yields one line and never rejects. */
 	async childContinuityLines(conversationId: ConversationId, unusable: boolean): Promise<string[]> {
 		return continuityLines(
@@ -815,7 +821,7 @@ export class DurableHost {
 			case "collaboration-read":
 				return readCollaboration(this.harness, params ?? {}, requestContext);
 			case "collaboration-mutate":
-				return mutateCollaboration(this.harness, this.storageId, params ?? {}, requestContext);
+				return mutateCollaboration(this.harness, this.storageId, params ?? {}, requestContext, this.noticeRouteStaging);
 			case "passive-submit":
 				return this.passiveSubmitRequest(params, requestContext);
 			case "profile-read": {
