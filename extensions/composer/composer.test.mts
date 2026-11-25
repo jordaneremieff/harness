@@ -665,17 +665,26 @@ test("startup and tree replay recall each exact Composer prompt once without cha
 	assert.deepEqual(history, ["second", "first", padded]);
 
 	const editor = pi.editor();
-	// Pi seeds the installed editor with the selected branch when it rerenders the transcript.
-	for (const text of ["first", padded, "second", "second"]) editor.addToHistory(text);
-	const { events } = await ask("/events", { after: sequence });
-	assert.deepEqual(
-		events?.map(({ entries }) => entries),
-		[
-			["second", padded, "first"],
-			["second", "first", padded],
-			["first", padded, "second"],
-		],
+	// Pi adds the selected branch's prompts synchronously during its transcript redraw.
+	const otherBranch = ["first", "alternate", padded, "second", "second"];
+	pi.branch.splice(
+		0,
+		pi.branch.length,
+		...otherBranch.map((content) => ({ type: "message", message: { role: "user", content } })),
 	);
+	await pi.event("session_tree");
+	for (const text of otherBranch) editor.addToHistory(text);
+	const changed = await ask("/events", { after: sequence });
+	assert.deepEqual(
+		changed.events?.map(({ entries }) => entries),
+		[["first", "alternate", padded, "second"]],
+	);
+	assert.equal(pi.text(), draft);
+
+	for (const text of otherBranch) editor.addToHistory(text);
+	await pi.event("thinking_level_select", { level: "low" });
+	const unchanged = await ask("/events", { after: changed.sequence });
+	assert.deepEqual(unchanged.events, []);
 	assert.equal(pi.text(), draft);
 });
 
@@ -693,12 +702,20 @@ test("Composer history caps entry count and total UTF-8 bytes after moving a rep
 	const first = "🌱".repeat(32 * 1024);
 	const second = "🌲".repeat(32 * 1024);
 	const editor = pi.editor();
-	for (const text of [first, second, first, `${first}${second}!`, "\uD800", " ", "new"]) editor.addToHistory(text);
-	const { events } = await ask("/events", { after: sequence });
-	assert.equal(events?.length, 4);
-	assert.deepEqual(events?.[1]?.entries, [first, second]);
-	assert.deepEqual(events?.[2]?.entries, [second, first]);
-	assert.deepEqual(events?.[3]?.entries, [first, "new"]);
+	let after = sequence;
+	for (const { add, expected } of [
+		{ add: [first, second], expected: [first, second] },
+		{ add: [first], expected: [second, first] },
+		{ add: [`${first}${second}!`, "\uD800", " ", "new"], expected: [first, "new"] },
+	]) {
+		for (const text of add) editor.addToHistory(text);
+		const update = await ask("/events", { after });
+		assert.deepEqual(
+			update.events?.map(({ entries }) => entries),
+			[expected],
+		);
+		after = update.sequence;
+	}
 });
 
 test("resize validates the request and refuses hidden or unconfirmed panes", { timeout: 6000 }, async (t) => {

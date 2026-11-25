@@ -290,6 +290,8 @@ class Connection {
 	private pendingResize?: { apply(): Promise<ResizeResult>; reply(value: ResizeResult): void };
 	private readonly completion = new ComposerCompletion();
 	private readonly history: string[] = [];
+	private publishedHistory: string[] = [];
+	private historyUpdatePending = false;
 	private visible = false;
 	private displayed = false;
 	private restoring = false;
@@ -399,8 +401,7 @@ class Connection {
 				(event) => this.bridge.emit(event),
 				previous?.(tui, theme, keys),
 				(text) => {
-					if (!this.restoring && historyPush(this.history, text) && this.attached)
-						this.bridge.emit({ type: "history", entries: [...this.history] });
+					if (!this.restoring && historyPush(this.history, text) && this.attached) this.scheduleHistoryUpdate();
 				},
 			);
 			this.restoring = true;
@@ -482,7 +483,24 @@ class Connection {
 		this.pidTimer ??= setInterval(() => {
 			if (!this.env.alive(pid)) void this.finish(undefined);
 		}, 1000);
-		return { history: [...this.history], ...(fromPi ? { text: current } : {}) };
+		this.publishedHistory = [...this.history];
+		return { history: this.publishedHistory, ...(fromPi ? { text: current } : {}) };
+	}
+	private scheduleHistoryUpdate(): void {
+		if (this.historyUpdatePending) return;
+		this.historyUpdatePending = true;
+		// Pi adds history synchronously during a transcript redraw. Send only the final list.
+		queueMicrotask(() => {
+			this.historyUpdatePending = false;
+			if (this.ended) return;
+			if (
+				this.history.length === this.publishedHistory.length &&
+				this.history.every((text, index) => this.publishedHistory[index] === text)
+			)
+				return;
+			this.publishedHistory = [...this.history];
+			this.bridge.emit({ type: "history", entries: this.publishedHistory });
+		});
 	}
 	private get forwarding(): boolean {
 		return this.present && this.visible;
