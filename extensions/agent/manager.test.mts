@@ -511,6 +511,41 @@ for (const method of ["abort", "release"] as const)
 		assert.equal(method === "release" ? (outcome.aborted as { cold?: boolean }).cold : outcome.cold, true);
 	});
 
+it("selects a stop again when the competing writer's host ends its retirement during the connection", async (t) => {
+	const root = fixtureRoot(t);
+	let connects = 0;
+	const stops: string[] = [];
+	const manager = new AgentManager(
+		managerOptions(root, {
+			connect: async (metadata) => {
+				connects++;
+				// The first look finds no host; the competing writer's host then retires during its hello.
+				throw new HostEndpointUnavailableError(
+					metadata.storageId,
+					connects === 2 ? new HostRetiringError("The durable host process is shutting down", true) : new Error("none"),
+				);
+			},
+			acquire: async () => {
+				throw new Error("a stop never starts an executing host");
+			},
+			stopCold: async (_metadata, sessionId) => {
+				stops.push(sessionId);
+				return (
+					stops.length === 1 ? { busy: true } : { result: { aborted: true, settled: true, pendingTasks: [] } }
+				) as never;
+			},
+		}),
+	);
+	t.after(() => manager.close());
+	const target = createRecord(manager, root, "owner").storageId;
+	const outcome = (await manager.control("abort", { sessionId: target }, { id: "terminal", cwd: root })) as Record<
+		string,
+		unknown
+	>;
+	assert.deepEqual(stops, [target, target], "the stop is selected once more, and no more");
+	assert.equal(outcome.cold, true);
+});
+
 it("refuses a cold stop whose working directory was removed with the directory, not the executable", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root));

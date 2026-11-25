@@ -460,6 +460,12 @@ function publishedRows(
 	});
 }
 
+/** A connection that found its host ending its retirement, which admits nothing; the next selection may succeed. */
+function endedRetirement(error: unknown): boolean {
+	const cause = error instanceof HostEndpointUnavailableError ? error.cause : error;
+	return cause instanceof HostRetiringError && cause.ended;
+}
+
 /** Why a control that names the calling primary session refuses, or undefined when the caller may name itself. */
 function callerTargetRefusal(method: string): string | undefined {
 	if (["abort", "release", "interrupt-continue", "fork", "rewind", "compact", "configure", "command"].includes(method))
@@ -1360,8 +1366,20 @@ export class AgentManager {
 				};
 				return method === "release" ? { aborted, retiring: true, blockers: [], writesPlaced: 0 } : aborted;
 			}
-			// A competing writer won the lease. Stop it in place; never launch or retire it on this evidence.
-			return stopLive(await this.connection(target, undefined, false));
+			return stopOwner();
+		};
+		// A competing writer won the lease. Stop it in place; never launch or retire it on this evidence.
+		const stopOwner = async (): Promise<unknown> => {
+			let owner: HostConnection;
+			try {
+				owner = await this.connection(target, undefined, false);
+			} catch (error) {
+				// Its host ended its retirement during the connection, so it admitted nothing; select once more.
+				if (reselected || !endedRetirement(error)) throw error;
+				reselected = true;
+				return select();
+			}
+			return stopLive(owner);
 		};
 		return select();
 	}
