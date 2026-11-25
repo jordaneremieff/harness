@@ -27,6 +27,7 @@ import { producerRetryFact, retryFactLines } from "./await-facts.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
 import { openWorkCheckInLines, requestHasOpenWork } from "./open-work.ts";
 import { recoveryAwaitsReceipt } from "./delegated-recovery.ts";
+import { CapturedStopTaskDoc } from "./conversation-stop.ts";
 
 export type CheckInInput = {
 	conversationId: number;
@@ -538,6 +539,20 @@ async function closeWatch(
 	}, context);
 }
 
+/**
+ * An aborted watch. A stop closes the watched request and aborts every check-in task of it, and a closed request
+ * needs no pause state, so either retires the pause document. A watch aborted while its request stays open keeps the
+ * document and stays the request's watcher, so an earlier watch task of the request still creates no deadline.
+ */
+async function endAbortedWatch(tx: Tx, input: CheckInInput, task: TaskId, stopped: boolean): Promise<void> {
+	if (stopped || !(await watchedOpen(tx, input.conversationId, input.requestId))) {
+		await clearCheckInPause(tx, input.ownerId, input);
+		return;
+	}
+	const pause = await ownPause(tx, input, task);
+	if (pause !== undefined) pause.watcher = task;
+}
+
 /** The submission wait owns the deadline task, so settlement without open declared work stops it without waiting for its deadline. */
 export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 	name: "agent.check-in",
@@ -561,8 +576,13 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 			await closeWatch(runtime, input, context, watch, deadlines);
 		},
 	},
-	abort: (_task, runtime, context) =>
-		runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+	abort: async (task, runtime, context) => {
+		const stopped = (await runtime.snapshot(CapturedStopTaskDoc, task.id, context))?.captured === true;
+		await runtime.commit(async (tx) => {
+			await endAbortedWatch(tx, task.input, task.id, stopped);
+			return { status: "terminal", outcome: { status: "aborted" } };
+		}, context);
+	},
 });
 
 /** Resolve the owner against the producer's storage, including alternate root spellings. */

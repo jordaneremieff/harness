@@ -4978,7 +4978,10 @@ The re-armed watch finds the admitted input by its request ID, so nothing is
 submitted again, and no missed interval produces a notice. A settled request
 keeps no pause: the commit that retires its notice at settlement, or that
 acknowledges it, retires the pause document, and a watch that ends with its
-request closed retires it too. Because acknowledgement and re-arm commit
+request closed retires it too. A stop that closes the request aborts every
+check-in task of it, and the aborted watch retires the document. A watch aborted
+while its request stays open keeps the document and names itself as the
+watcher, so an earlier watch task of the request still creates no deadline. Because acknowledgement and re-arm commit
 together, a crash before or after that commit gives the same outcome. A host of
 an earlier release starts a re-armed watch at its first interval, which gives
 at most one immediate notice.
