@@ -1018,6 +1018,34 @@ it("stops a host without idle retirement once a lease file is removed", async (t
 	await assert.rejects(host.done, /lost its writer lease/u);
 });
 
+it("a close after the lease file is removed writes nothing and names the lost lease", async (t) => {
+	const config = metadata(fixtureRoot(t));
+	const exits: number[] = [];
+	let runtimeCloses = 0;
+	const host = await runHost(
+		() => ({
+			...echoRuntime(),
+			close: async () => {
+				runtimeCloses++;
+			},
+		}),
+		{
+			metadata: config,
+			idleMs: 0,
+			announceReady: noop,
+			exit: ((status: 0 | 1) => {
+				exits.push(status);
+			}) as (status: 0 | 1) => never,
+		},
+	);
+	rmSync(writerLeasePaths(config)[1]);
+	await assert.rejects(host.close(), /lost its writer lease/u);
+	await new Promise<void>(setImmediate);
+	assert.equal(runtimeCloses, 0, "the runtime that would write again is never closed");
+	assert.deepEqual(exits, [1]);
+	assert.equal(lstatSync(hostPaths(config).socket, { throwIfNoEntry: false }), undefined, "its endpoint is gone");
+});
+
 it("excludes a new host while either writer lease is held elsewhere", async (t) => {
 	const config = metadata(fixtureRoot(t));
 	const [hostLease, storageLease] = writerLeasePaths(config);

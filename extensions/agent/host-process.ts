@@ -892,6 +892,9 @@ class HostProcessServer implements HostProcess {
 		// Stop admitting observation work before the runtime that answers it closes.
 		this.observationPump.dispose();
 		try {
+			// A host whose lease file is gone must not write again: no runtime close, marker or end record.
+			if (!this.writerNamed())
+				throw new Error("The durable host lost its writer lease; it stopped without closing its runtime");
 			await closeRuntime(this.runtime, this.exit);
 			this.unpublishSocket();
 			this.claim.assertNamed();
