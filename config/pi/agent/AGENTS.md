@@ -68,6 +68,15 @@ ranges for relevant code.
 
 - Lead with the answer. Use plain words, and explain any project term you
   must use.
+- In the interactive session with the operator, end each answer with one
+  plain sentence that says whether he can close this session. If he cannot,
+  name the one thing that keeps it open. For example: "You can close this
+  session." or "Keep this session open: it pushes main when the lanes
+  finish."
+- When he asks whether a session is done, still needed or safe to close,
+  answer that with yes or no in the first sentence. Add at most one sentence:
+  what this session still has to do, or the one act that only he can do and
+  exactly how. Leave out work that other sessions own.
 - Say what you checked and what you inferred. Claim only what the evidence
   shows. Report a designed limit or refusal as expected behavior, not as a
   failure.
