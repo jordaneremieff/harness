@@ -25,7 +25,7 @@ export interface FloatedPane {
  * - `covering`: it floats unchanged in front of the conversation and covers at least the minimum share;
  * - `focused`: it has the focus of its window, so somebody works in it, and it waits for a later moment;
  * - `clear`: it floats unchanged but leaves the conversation visible, so it stays where it is;
- * - `arranged`: it was moved, resized, tiled or taken to another window, so it stays where it is;
+ * - `arranged`: it was moved, resized, minimized, tiled or taken to another window, so it stays where it is;
  * - `missing`: it no longer exists.
  */
 export type PaneState = { kind: "covering"; share: number } | { kind: "focused" | "clear" | "arranged" | "missing" };
@@ -39,7 +39,7 @@ export interface ConversationWindow {
 	layers: unknown[];
 	/** Blocks of the window's tiled layer. */
 	tiled: ReadonlySet<string>;
-	/** Each block in a layer of the window that is not tiled, with that layer's kind and bounds. */
+	/** Each block in a layer of the window that is not tiled, with that layer's kind, bounds and state. */
 	floating: ReadonlyMap<string, string>;
 }
 
@@ -120,7 +120,8 @@ export function conversationWindow(view: unknown, conversationBlockId: string): 
 	for (const value of layers) {
 		const layer = object(value);
 		if (layer.kind === "tiled") continue;
-		for (const leaf of leaves(layer.layout)) floating.set(leaf.blockId, JSON.stringify([layer.kind, layer.bounds]));
+		for (const leaf of leaves(layer.layout))
+			floating.set(leaf.blockId, JSON.stringify([layer.kind, layer.bounds, layer.state ?? null]));
 	}
 	return {
 		...(typeof window.focused_block_id === "string" ? { focus: window.focused_block_id } : {}),
@@ -165,8 +166,10 @@ export function paneState(
 		if (layer.kind === "tiled") continue;
 		const leaf = leaves(layer.layout).find((candidate) => candidate.blockId === blockId);
 		if (!leaf) continue;
-		// A layer kind other than floating is a presentation that this extension does not know, so it stays.
-		if (layer.kind !== "floating" || !unchanged(layer, created)) return { kind: "arranged" };
+		// A layer kind other than floating is a presentation that this extension does not know, so it stays. Rex does
+		// not draw a minimized layer: somebody put it away, and it covers nothing.
+		if (layer.kind !== "floating" || layer.state === "minimized" || !unchanged(layer, created))
+			return { kind: "arranged" };
 		if (window.focus === blockId) return { kind: "focused" };
 		const share = overlap(window.pane, leaf.rect) / (window.pane[2] * window.pane[3]);
 		return share >= MIN_COVERED_SHARE ? { kind: "covering", share } : { kind: "clear" };

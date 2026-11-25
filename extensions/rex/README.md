@@ -264,9 +264,9 @@ At such a moment the extension decides each waiting pane from the latest
   keep running; nothing closes.
 - A pane that leaves the conversation visible stays where it is and is not moved later.
 - A pane whose floating layer differs from the bounds of its creation by more than a
-  hundredth of the window, a pane in the tiled layout, a pane in another window and a
-  pane in a layer of a kind other than floating were arranged by someone, so they stay.
-  A closed pane is forgotten.
+  hundredth of the window, a pane in a minimized floating layer, a pane in the tiled
+  layout, a pane in another window and a pane in a layer of a kind other than floating
+  were arranged by someone, so they stay. A closed pane is forgotten.
 - The pane that has the focus of its window is the one that somebody works in. It
   waits for a later moment.
 
@@ -540,11 +540,14 @@ view no longer holds the block, the helper looks the block up again and moves
 its event stream to the session that holds it now, without the reconnect delay.
 It writes only JSON report lines: the pane rectangle and intersecting layers
 above it, or a null pane when the block is in no window, for example while it
-is detached or no session holds it. Reports use window fractions, account for
-zoom, and change only when the geometry changes. They describe the session's
-layout, not one client's screen: a pane in a background tab still has its
-geometry. The layers of `session.view` carry no minimised or hidden state, so the
-helper has no undrawn layer to leave out.
+is detached or no session holds it. Reports use window fractions and change only
+when the geometry changes. They describe the session's layout, not one client's
+screen: a pane in a background tab still has its geometry. A minimized floating
+layer is not drawn, so it covers nothing. Zoom follows `zoomed_block_id`: Rex
+draws the zoomed block over the whole window, behind the floating layers when it
+is a tiled block and in front of everything when it is a floating block, so the
+zoomed block reports the whole window and the blocks that it hides report full
+cover.
 
 Each consumer costs one Rex events stream, one `target.resolve` call per
 connection and one initial `session.view` call.

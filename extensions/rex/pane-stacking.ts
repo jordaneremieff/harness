@@ -40,32 +40,44 @@ function intersects(a: PaneRect, b: PaneRect): boolean {
 	);
 }
 
-function frontRects(layers: unknown[], index: number, pane: PaneRect): PaneRect[] {
+const WHOLE: PaneRect = [0, 0, 1, 1];
+
+/** Rex keeps the blocks of a minimized floating layer running but does not draw the layer. */
+function drawn(layer: Record<string, unknown>): boolean {
+	return layer.state !== "minimized";
+}
+
+function frontRects(layers: Record<string, unknown>[], index: number, pane: PaneRect): PaneRect[] {
 	const above: PaneRect[] = [];
 	for (let front = index + 1; front < layers.length && above.length < 64; front++) {
-		const bounds = rect(object(layers[front]).bounds);
+		if (!drawn(layers[front])) continue;
+		const bounds = rect(layers[front].bounds);
 		if (bounds && intersects(pane, bounds)) above.push(bounds);
 	}
 	return above;
 }
 
+/**
+ * Rex draws a zoomed block over the whole window while every layout keeps its normal sizes: a zoomed block of the
+ * tiled layer behind the floating layers, a zoomed block of a floating layer in front of everything.
+ */
 function windowReport(value: unknown, blockId: string): PaneStackingReport | undefined {
 	const window = object(value);
 	if (!Array.isArray(window.layers)) return undefined;
-	for (let index = 0; index < window.layers.length; index++) {
-		const layer = object(window.layers[index]);
-		let pane = leafRect(layer.layout, blockId);
-		if (!pane) continue;
-		if (layer.kind === "tiled") {
-			const zoomed = window.zoomed_block_id;
-			if (typeof zoomed === "string" && zoomed !== blockId && leafRect(layer.layout, zoomed)) {
-				return { version: 1, pane, above: [[0, 0, 1, 1]] };
-			}
-			if (zoomed === blockId) pane = [0, 0, 1, 1];
-		}
-		return { version: 1, pane, above: frontRects(window.layers, index, pane) };
+	const layers = window.layers.map(object);
+	const holding = (id: string) => layers.findIndex((layer) => leafRect(layer.layout, id));
+	const index = holding(blockId);
+	if (index < 0) return undefined;
+	const layer = layers[index];
+	const pane = leafRect(layer.layout, blockId) as PaneRect;
+	const zoomed = typeof window.zoomed_block_id === "string" ? window.zoomed_block_id : undefined;
+	const zoomedLayer = zoomed === undefined ? undefined : layers[holding(zoomed)];
+	if (zoomedLayer) {
+		const floating = zoomedLayer.kind !== "tiled";
+		if (zoomed === blockId) return { version: 1, pane: WHOLE, above: floating ? [] : frontRects(layers, index, WHOLE) };
+		if (floating || layer.kind === "tiled") return { version: 1, pane, above: [WHOLE] };
 	}
-	return undefined;
+	return { version: 1, pane, above: frontRects(layers, index, pane) };
 }
 
 /** Window fractions and front-layer order come only from Rex's layout model. */

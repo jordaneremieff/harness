@@ -16,7 +16,7 @@ const overlap = [0.2, 0.2, 0.4, 0.4];
 function layer(id: string, bounds = full, kind = "floating") {
 	return { kind, bounds, layout: { block_id: id, rect: bounds } };
 }
-function view(layers = [layer("pane", half, "tiled"), layer("float", overlap)], zoomed_block_id?: string) {
+function view(layers: unknown[] = [layer("pane", half, "tiled"), layer("float", overlap)], zoomed_block_id?: string) {
 	return { revision: 1, windows: [{ layers, zoomed_block_id }] };
 }
 
@@ -64,6 +64,53 @@ test("a different zoomed tiled block covers the whole pane", () => {
 });
 test("a zoomed pane fills the window and retains floating layers above it", () => {
 	assert.deepEqual(paneStacking(view(undefined, "pane"), "pane"), { version: 1, pane: full, above: [overlap] });
+});
+test("a zoomed floating block fills the window in front of everything and covers every other block", () => {
+	// The shape of an observed Rex view: the zoomed float keeps its layer's normal bounds.
+	const float = [0.2, 0.2, 0.5, 0.5];
+	const layout = {
+		windows: [
+			{
+				zoomed_block_id: "float",
+				layers: [
+					layer("tile", full, "tiled"),
+					{
+						kind: "floating",
+						bounds: float,
+						layout: {
+							rect: float,
+							split: {
+								before: { block_id: "float", rect: [0.2, 0.2, 0.25, 0.5] },
+								after: { block_id: "beside", rect: [0.45, 0.2, 0.25, 0.5] },
+							},
+						},
+					},
+					layer("front", overlap),
+				],
+			},
+		],
+	};
+	assert.deepEqual(paneStacking(layout, "float"), { version: 1, pane: full, above: [] });
+	assert.deepEqual(paneStacking(layout, "tile"), { version: 1, pane: full, above: [full] });
+	assert.deepEqual(paneStacking(layout, "beside"), { version: 1, pane: [0.45, 0.2, 0.25, 0.5], above: [full] });
+	assert.deepEqual(paneStacking(layout, "front"), { version: 1, pane: overlap, above: [full] });
+	const restored = { windows: [{ ...layout.windows[0], zoomed_block_id: undefined }] };
+	assert.deepEqual(paneStacking(restored, "tile"), { version: 1, pane: full, above: [float, overlap] });
+});
+test("a minimized floating layer is not drawn, so it covers nothing", () => {
+	const minimized = { ...layer("hidden", overlap), state: "minimized" };
+	const layout = view([layer("pane", half, "tiled"), minimized, layer("float", overlap)]);
+	assert.deepEqual(paneStacking(layout, "pane"), { version: 1, pane: half, above: [overlap] });
+	assert.deepEqual(paneStacking(view([layer("pane", half, "tiled"), minimized]), "pane"), {
+		version: 1,
+		pane: half,
+		above: [],
+	});
+	assert.deepEqual(
+		paneStacking(view([layer("pane", half, "tiled"), { ...layer("float", overlap), state: "unknown" }]), "pane"),
+		{ version: 1, pane: half, above: [overlap] },
+		"an unknown state draws as normal",
+	);
 });
 test("absent blocks have no pane", () => {
 	assert.deepEqual(paneStacking(view(), "absent"), { version: 1, pane: null });

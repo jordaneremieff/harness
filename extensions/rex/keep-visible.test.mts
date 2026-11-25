@@ -708,3 +708,24 @@ test("the conversation's block names its session; a block that no session holds 
 	);
 	await second.shutdown();
 });
+
+test("a minimized floating pane stays put: somebody put it away", async () => {
+	const rex = new FakeRex([["block:reader", READER]]);
+	const keeper = keeperFor(rex);
+	const { ctx } = context();
+	keeper.start(ctx);
+	keeper.floated([{ blockId: "block:reader", bounds: READER }]);
+	const layers = rex.layers.bind(rex);
+	rex.layers = () =>
+		layers().map((layer) => {
+			const value = layer as Record<string, unknown>;
+			return value.kind === "floating" ? { ...value, state: "minimized" } : value;
+		});
+	await decide(keeper, ctx);
+	assert.deepEqual(rex.moves(), []);
+	rex.layers = layers;
+	rex.calls.length = 0;
+	await decide(keeper, ctx);
+	assert.deepEqual(rex.calls, [], "a pane that was put away no longer waits");
+	await keeper.shutdown();
+});
