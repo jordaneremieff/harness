@@ -449,3 +449,37 @@ it("reconnect and selection changes clear retained history references", async (t
 		f.ui.dispose();
 	}
 });
+
+it("a frame that changes only the live slot serialises no committed entry", async (t) => {
+	const live = liveSource(["one"]);
+	const clock = manualClock();
+	const committed = Array.from({ length: 300 }, (_, index) => userEntry(String(index + 1), `Committed ${index + 1}`));
+	const initial = conversationFrame({ entries: committed });
+	live.frames.set("one", initial);
+	const f = fixture(120, 40, live.observed, undefined, undefined, theme, undefined, clock);
+	try {
+		await turn();
+		f.ui.render(120);
+		const stringify = JSON.stringify;
+		const members = new Set<unknown>(committed);
+		let serialised = 0;
+		t.mock.method(JSON, "stringify", (...args: Parameters<typeof stringify>) => {
+			if (members.has(args[0])) serialised++;
+			return stringify(...args);
+		});
+		for (let revision = 2; revision < 12; revision++) {
+			live.frames.set("one", {
+				...initial,
+				revision,
+				live: [userEntry("live:message", `Live output ${revision}`)],
+			});
+			live.notify();
+			clock.advance(50);
+			await turn();
+		}
+		assert.match(visible(f.ui.render(120)), /Live output 11/u);
+		assert.equal(serialised, 0);
+	} finally {
+		f.ui.dispose();
+	}
+});

@@ -242,9 +242,24 @@ export class AgentConversation {
 		this.update(entries);
 	}
 
+	/**
+	 * A committed entry object never changes after a frame delivered it, so its signature is serialised once. An
+	 * entry of the live slot is serialised for each frame.
+	 */
+	private readonly entrySignatures = new WeakMap<AgentConversationEntry, string>();
+	private signature(entry: AgentConversationEntry): string {
+		if (entry.id.startsWith("live:")) return JSON.stringify(entry);
+		let signature = this.entrySignatures.get(entry);
+		if (signature === undefined) {
+			signature = JSON.stringify(entry);
+			this.entrySignatures.set(entry, signature);
+		}
+		return signature;
+	}
+
 	/** Stable entry and call identities keep measured committed blocks through prepend and eviction. */
 	update(entries: readonly AgentConversationEntry[]): void {
-		const signatures = entries.map((entry) => JSON.stringify(entry));
+		const signatures = entries.map((entry) => this.signature(entry));
 		if (
 			signatures.length === this.signatures.length &&
 			signatures.every((signature, index) => signature === this.signatures[index])
@@ -261,7 +276,7 @@ export class AgentConversation {
 				(entry.model ?? []).some((message) => message.role === "toolResult") || liveNestedTool(entry) !== undefined;
 			if (cached?.signature === signatures[index] && !result) {
 				this.blocks.push(...cached.blocks);
-				this.restoreEntryTools(entry);
+				this.restoreEntryTools(entry, cached.blocks);
 			} else this.appendEntry(entry);
 			next.set(entry.id, { signature: signatures[index], blocks: this.blocks.slice(start) });
 		});
@@ -372,12 +387,13 @@ export class AgentConversation {
 			this.nestedTools.delete(id);
 		}
 	}
-	private restoreEntryTools(entry: AgentConversationEntry): void {
+	/** Register the tool rows among the retained blocks of one entry. */
+	private restoreEntryTools(entry: AgentConversationEntry, blocks: readonly ConversationBlock[]): void {
 		const calls = (entry.model ?? []).flatMap((message) =>
 			message.role === "assistant" ? message.content.filter((part) => part.type === "toolCall") : [],
 		);
 		for (const part of calls) {
-			const block = this.blocks.find((block) => block.id === `${entry.id}:${part.id}`);
+			const block = blocks.find((block) => block.id === `${entry.id}:${part.id}`);
 			if (!block || !(block.component instanceof ToolExecutionComponent)) continue;
 
 			this.tools.set(part.id, block.component as ReadingToolComponent);

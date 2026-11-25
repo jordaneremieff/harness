@@ -261,9 +261,15 @@ export class ConversationView {
 			.filter((entry) => !ids.has(entry.id) && !(entry === generation && duplicate))
 			.map((entry) => (entry === generation && identity ? { ...entry, id: identity.id } : entry));
 	}
+	/** The display bound of the last committed entries; a frame that changes only the live slot reuses it. */
+	private bounded?: { readonly source: readonly AgentConversationEntry[]; readonly entries: AgentConversationEntry[] };
+	private boundedCommitted(entries: readonly AgentConversationEntry[]): AgentConversationEntry[] {
+		if (this.bounded?.source !== entries) this.bounded = { source: entries, entries: boundedEntries(entries) };
+		return this.bounded.entries;
+	}
 	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[], cwd: string): void {
 		this.viewport = undefined;
-		const committed = boundedEntries(entries);
+		const committed = this.boundedCommitted(entries);
 		const ids = new Set(committed.map((entry) => entry.id));
 		this.transferLiveInstance(entries);
 		const merged = [...committed, ...this.liveEntries(committed, live, ids)];
