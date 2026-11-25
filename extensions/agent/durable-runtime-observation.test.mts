@@ -211,9 +211,10 @@ it("a view publication reads again only the conversations with a stored change",
 			return projection.apply(this, args);
 		},
 	);
+	// The interval is far beyond the test, so only a stored change decides what a publication reads.
 	const opened = await createDurableRuntime(
 		{ ...fixture.metadata, model },
-		{ modelRuntime: await createTestRuntime() },
+		{ modelRuntime: await createTestRuntime(), completeViewIntervalMs: 600_000 },
 	);
 	runtime = opened;
 	const published = () =>
@@ -295,9 +296,13 @@ it("a complete view follows a partial one without another commit", { timeout: 60
 	await host.submit({ message: "Second request", requestId: "second", origin: "operator" });
 	while (row(0)?.state !== "working" || row(1) === undefined) await published();
 
-	// A change in the fork alone: the publication keeps the row of the root, whose turn still runs.
+	// A change in the fork alone: the publication keeps the row of the root, whose turn still runs. The held
+	// request stores its live state once, about a second after it starts. A publication that names the root for
+	// that change, or one that reads every conversation, keeps no row of the root, so the change is made again.
+	const forkAlone = (read: readonly number[] | "every" | undefined): read is readonly number[] =>
+		Array.isArray(read) && read.length === 1 && read[0] === fork.conversationId;
 	let partial: readonly number[] | undefined;
-	for (let attempt = 0; attempt < 5 && partial === undefined; attempt++) {
+	for (let attempt = 0; attempt < 20 && partial === undefined; attempt++) {
 		const marker = `Marker ${attempt}`;
 		await host.harness.commit(
 			(tx) => tx.appendEntry(AssistantEntry, fork.conversationId, { model: [answerMessage(marker)] }),
@@ -305,15 +310,15 @@ it("a complete view follows a partial one without another commit", { timeout: 60
 		);
 		while (row(1)?.latestReply !== marker) await published();
 		const last = reads.at(-1);
-		if (last !== "every") partial = last;
+		if (forkAlone(last)) partial = last;
 	}
-	assert.deepEqual(partial, [fork.conversationId]);
+	assert.deepEqual(partial, [fork.conversationId], "a publication read the fork alone");
 	const retained = row(0)?.durationMs;
 	assert.equal(typeof retained, "number");
 
 	// A stored change of the running turn can still name the root; only a read of every conversation counts.
 	const deadline = new AbortController();
-	const expired = pause(5000, "expired" as const, { signal: deadline.signal }).catch(() => "expired" as const);
+	const expired = pause(15_000, "expired" as const, { signal: deadline.signal }).catch(() => "expired" as const);
 	let outcome: "complete" | "expired" | undefined;
 	while (outcome === undefined) {
 		const next = await Promise.race([published().then(() => "published" as const), expired]);
