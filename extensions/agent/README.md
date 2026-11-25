@@ -3864,8 +3864,9 @@ a token request after close.
   storage's own directory, so removing the `durable-hosts` directory does not
   admit a second newer writer, and an older host that takes only the first file
   still excludes a newer one. A host checks that both pathnames still name its
-  descriptors before each request, at each idle check (every 5 minutes when idle
-  retirement is off), on native activity and before shutdown; when one does not,
+  descriptors before each request, at each idle check, on native activity, before
+  shutdown, and every 5 minutes on its own timer, whatever retirement and open
+  observations do; when one does not,
   it unpublishes its endpoint and the process exits at once without closing the
   runtime or writing again. Limits: an older launcher takes only the first file,
   so after a removal of `durable-hosts` under a newer host it can open the

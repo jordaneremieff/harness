@@ -122,6 +122,8 @@ export interface RunHostOptions {
 	readonly writeEndRecord?: (descriptor: number, bytes: Buffer) => void;
 	/** Schedule the dedicated process's shutdown deadline and return its cancellation. Defaults to a wall-clock timer. */
 	readonly scheduleShutdownDeadline?: (expire: () => void, delayMs: number) => () => void;
+	/** Schedule the next writer lease check and return its cancellation. Defaults to a timer that keeps no process alive. */
+	readonly scheduleLeaseCheck?: (check: () => void, delayMs: number) => () => void;
 	/** Schedule the dedicated process's bootstrap deadline and return its cancellation. Defaults to a wall-clock timer. */
 	readonly scheduleBootstrapDeadline?: (expire: () => void, delayMs: number) => () => void;
 }
@@ -183,7 +185,7 @@ const OBSERVATION_INTERVAL_MS = 100;
 const RELEASE_RESPONSE_GRACE_MS = 100;
 /** A dedicated host process ends this long after any shutdown starts, even when a close step never settles. */
 export const SHUTDOWN_GRACE_MS = 20_000;
-/** With idle retirement off, an idle host checks its writer lease at this interval. */
+/** A serving host checks that its writer lease files still name its descriptors at this interval. */
 export const LEASE_CHECK_MS = 300_000;
 /**
  * A dedicated host process that has not announced readiness this long after it took the writer lease ends, which
@@ -295,6 +297,8 @@ class HostProcessServer implements HostProcess {
 	private readonly scheduleShutdownDeadline: NonNullable<RunHostOptions["scheduleShutdownDeadline"]>;
 	private cancelShutdownDeadline: (() => void) | undefined;
 	private writerLost = false;
+	private cancelLeaseCheck: (() => void) | undefined;
+	private readonly scheduleLeaseTimer: NonNullable<RunHostOptions["scheduleLeaseCheck"]>;
 
 	constructor(
 		runtime: HostRuntime,
@@ -307,7 +311,9 @@ class HostProcessServer implements HostProcess {
 		exit?: RunHostOptions["exit"],
 		writeEndRecord = writeEndClaim,
 		scheduleShutdownDeadline?: RunHostOptions["scheduleShutdownDeadline"],
+		scheduleLeaseCheck?: RunHostOptions["scheduleLeaseCheck"],
 	) {
+		this.scheduleLeaseTimer = scheduleLeaseCheck ?? unrefDeadline;
 		this.exit = exit;
 		this.scheduleShutdownDeadline = scheduleShutdownDeadline ?? wallClockDeadline;
 		this.record = record;
@@ -411,6 +417,7 @@ class HostProcessServer implements HostProcess {
 		if (this.runtime.shutdownRequired) throw new Error("Durable runtime stopped before host readiness");
 		announce({ pid: this.pid, socketPath: this.paths.socket, writerId: this.writerId, contract: HOST_CONTRACT });
 		this.scheduleRetirement();
+		this.scheduleLeaseCheck();
 	}
 
 	private attachment(peer: string): AttachmentState {
@@ -755,24 +762,31 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private scheduleRetirement(): void {
-		if (this.closing || this.activeRequests > 0 || this.hasObservations()) return;
+		if (this.closing || this.idleMs === 0 || this.activeRequests > 0 || this.hasObservations()) return;
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = this.scheduleIdleCheck(
 			() => {
 				void this.onIdleCheck();
 			},
-			this.idleMs === 0 ? LEASE_CHECK_MS : Math.max(1, this.idleMs),
+			Math.max(1, this.idleMs),
 		);
+	}
+
+	/**
+	 * Check the writer lease on its own timer, whatever retirement, requests or observations do, so a host that
+	 * nothing wakes still learns that its lease file was removed.
+	 */
+	private scheduleLeaseCheck(): void {
+		if (this.closing) return;
+		this.cancelLeaseCheck = this.scheduleLeaseTimer(() => {
+			this.cancelLeaseCheck = undefined;
+			if (this.writerNamed()) this.scheduleLeaseCheck();
+		}, LEASE_CHECK_MS);
 	}
 
 	private async onIdleCheck(releasing = false): Promise<void> {
 		this.cancelIdleCheck = undefined;
 		if (!this.writerNamed()) return;
-		// With idle retirement off, the same timer still checks the writer lease of an idle host.
-		if (this.idleMs === 0 && !releasing) {
-			this.scheduleRetirement();
-			return;
-		}
 		if (this.closing || this.retirementChecking || this.activeRequests > 0 || (!releasing && this.hasObservations()))
 			return;
 		this.retirementChecking = true;
@@ -825,6 +839,8 @@ class HostProcessServer implements HostProcess {
 		this.closing = true;
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
+		this.cancelLeaseCheck?.();
+		this.cancelLeaseCheck = undefined;
 		this.observationPump.dispose();
 		diagnostic(
 			"Durable host: its writer lease file was removed, replaced or changed; the process stops without further writes.\n",
@@ -900,6 +916,8 @@ class HostProcessServer implements HostProcess {
 		this.unsubscribeRelease = undefined;
 		// Stop admitting observation work before the runtime that answers it closes.
 		this.observationPump.dispose();
+		this.cancelLeaseCheck?.();
+		this.cancelLeaseCheck = undefined;
 		try {
 			// A host whose lease file is gone must not write again: no runtime close, marker or end record.
 			if (!this.writerNamed())
@@ -1005,6 +1023,7 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 			options.exit,
 			options.writeEndRecord,
 			options.scheduleShutdownDeadline,
+			options.scheduleLeaseCheck,
 		);
 		try {
 			await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));

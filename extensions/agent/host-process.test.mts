@@ -991,28 +991,45 @@ it("keeps one writer for a storage after its host directory is removed", async (
 	await assert.rejects(host.done, /lost its writer lease/u);
 });
 
-it("stops a host without idle retirement once a lease file is removed", async (t) => {
+it("checks the writer lease on its own timer with retirement off and an observation open", async (t) => {
 	const config = metadata(fixtureRoot(t));
 	const exits: number[] = [];
-	const checks: Array<{ check: () => void; delayMs: number }> = [];
-	const host = await runHost(echoRuntime, {
-		metadata: config,
-		idleMs: 0,
-		announceReady: noop,
-		scheduleIdleCheck: (check, delayMs) => {
-			checks.push({ check, delayMs });
-			return noop;
+	const idleChecks: Array<() => void> = [];
+	const leaseChecks: Array<{ check: () => void; delayMs: number; cancelled: boolean }> = [];
+	const host = await runHost(
+		() => ({ ...echoRuntime(), request: async (method, params) => (method === "observe-open" ? params : {}) }),
+		{
+			metadata: config,
+			idleMs: 0,
+			announceReady: noop,
+			scheduleIdleCheck: (check) => {
+				idleChecks.push(check);
+				return noop;
+			},
+			scheduleLeaseCheck: (check, delayMs) => {
+				const entry = { check, delayMs, cancelled: false };
+				leaseChecks.push(entry);
+				return () => {
+					entry.cancelled = true;
+				};
+			},
+			exit: ((status: 0 | 1) => {
+				exits.push(status);
+			}) as (status: 0 | 1) => never,
 		},
-		exit: ((status: 0 | 1) => {
-			exits.push(status);
-		}) as (status: 0 | 1) => never,
-	});
+	);
 	t.after(() => host.close().catch(noop));
-	assert.equal(checks.at(-1)?.delayMs, LEASE_CHECK_MS, "an idle host without retirement still schedules a lease check");
-	checks.at(-1)?.check();
-	assert.equal(checks.at(-1)?.delayMs, LEASE_CHECK_MS, "a named lease reschedules the check and never retires");
+	const client = await connectClient(config);
+	t.after(() => client.dispose());
+	await call(client, config, "observe-open", { token: "quiet" });
+	assert.equal(idleChecks.length, 0, "retirement stays off");
+	assert.equal(leaseChecks.length, 1);
+	assert.equal(leaseChecks[0].delayMs, LEASE_CHECK_MS);
+	assert.equal(leaseChecks[0].cancelled, false, "an open observation keeps the lease check");
+	leaseChecks[0].check();
+	assert.equal(leaseChecks.length, 2, "a named lease schedules the next check");
 	rmSync(writerLeasePaths(config)[1]);
-	checks.at(-1)?.check();
+	leaseChecks[1].check();
 	await new Promise<void>(setImmediate);
 	assert.deepEqual(exits, [1]);
 	await assert.rejects(host.done, /lost its writer lease/u);
