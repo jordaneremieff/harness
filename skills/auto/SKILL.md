@@ -10,7 +10,7 @@ description: >
   blocker or a true risk, and finish everything else. Do not use when the
   operator asks to approve a plan or see a proposal before work proceeds. A
   task whose deliverable is itself a proposal can still run on auto.
-compatibility: Pi. Delegation and self-compaction use the agent tools, and questions to the operator use the rex extension's rex_ask, when the session offers them.
+compatibility: Pi. Delegation and self-compaction use the agent tools when the session offers them.
 ---
 
 # Auto
@@ -86,12 +86,10 @@ or hold it as a true blocker or a true risk.
 
 When an act stays held, finish all other work and prepare the held act
 completely, as the exact command, payload, or draft. If the operator handed
-the task to you directly and the session has `rex_ask`, ask about each held
-act with it: show the prepared act in the question's matter, put the choice
-that changes nothing first, and mark your recommendation. Carry out the answer
-and its note in the same run. When an agent's brief carried the task to you,
-bring held acts to that agent instead. A held act without an answer goes into
-the final report.
+the task to you directly, ask about each held act in the final report: show
+the prepared act and your recommendation, and the operator answers in the
+chat. When an agent's brief carried the task to you, bring held acts to that
+agent instead.
 
 ## Work the task through
 

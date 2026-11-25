@@ -1,6 +1,5 @@
-import { basename } from "node:path";
 import { withAbortSignal, withoutAbortSignal, type Context } from "@earendil-works/chord/context";
-import type { RexBudget } from "./deadline.ts";
+import { createRexBudget, type RexBudget } from "./deadline.ts";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type * as Durable from "@earendil-works/pi-durable";
 import {
@@ -12,7 +11,7 @@ import {
 	type RexRequest,
 	type RexResult,
 } from "./core.ts";
-import { liveCalls, resultChannels, toolBudget, type RexAdapterOptions } from "./config.ts";
+import { liveCalls, resultChannels, type RexAdapterOptions } from "./config.ts";
 import {
 	initialOwnershipState,
 	validateOwnershipState,
@@ -20,7 +19,6 @@ import {
 	type OwnershipStore,
 } from "./ownership.ts";
 import {
-	ASK_GUIDANCE,
 	prepareRequest,
 	REX_GUIDANCE,
 	ResultSchema,
@@ -211,8 +209,7 @@ async function callContext(
 	budget.check("resolve");
 	const cwd = api.env?.cwd ?? (await api.agent(context)).cwd ?? host.cwd;
 	budget.check("resolve");
-	// A native conversation has no name that this extension can read; its working directory names the work.
-	return { ownerId, callId: api.callId, cwd, signal: budget.signal, budget, asker: basename(cwd) };
+	return { ownerId, callId: api.callId, cwd, signal: budget.signal, budget };
 }
 
 async function nativeOperation(
@@ -320,7 +317,7 @@ export function rexContribution(
 			});
 			return durable.defineExtension({
 				name: "rex",
-				sections: [durable.section("rex", () => [REX_GUIDANCE, ...ASK_GUIDANCE].join(" "))],
+				sections: [durable.section("rex", () => REX_GUIDANCE)],
 				tools: toolSpecs.map((spec) =>
 					durable.defineTool({
 						name: spec.name,
@@ -334,8 +331,7 @@ export function rexContribution(
 							const maxBytes = resultByteLimit(settings.maxOutputBytes);
 							const validated = validateRequest(spec.name, args);
 							if (!validated.ok) return nativeResult(validated, maxBytes);
-							const budget = toolBudget(
-								spec.name,
+							const budget = createRexBudget(
 								validated.request.timeoutMs,
 								settings.maxWaitMs,
 								AbortSignal.any([host.signal, ...(context.abortSignal ? [context.abortSignal] : [])]),

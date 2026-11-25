@@ -33,7 +33,7 @@ export const settings = {
 			min: 1000,
 			max: 300000,
 			description:
-				"Deadline cap for a complete Rex tool operation other than rex_ask, including nested calls and cleanup. Background label CLI calls also use this cap. A larger request uses the cap and reports it. Deadline cancellation does not stop persistent terminal work.",
+				"Deadline cap for a complete Rex tool operation, including nested calls and cleanup. Background label CLI calls also use this cap. A larger request uses the cap and reports it. Deadline cancellation does not stop persistent terminal work.",
 		},
 		maxRecords: {
 			apply: "reload",

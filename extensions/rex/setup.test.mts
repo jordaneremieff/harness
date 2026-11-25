@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { ASK_ACTION_DESCRIPTION } from "./ask.ts";
 import { BLOCK_VERSION, configBlock, findConfigBlock, withConfigBlock, withoutConfigBlock } from "./config-block.ts";
 import { registerRexCommand, rexCommand, type SetupDeps } from "./setup.ts";
 
@@ -24,7 +23,7 @@ test("setup adds and removes only its own exact block, leaving every other byte 
 	assert.match(added, new RegExp(`-- pi-harness: pi actions v${BLOCK_VERSION} begin`));
 	assert.deepEqual(
 		[...added.matchAll(/^ {2}name = "([^"]+)"/gm)].map((match) => match[1]),
-		["pi_ask", "pi_command"],
+		["pi_command"],
 	);
 	assert.ok(findBlock(added));
 	const earlier = `-- pi-harness: pi actions v${BLOCK_VERSION - 1} begin\n-- an earlier runtime\n-- pi-harness: pi actions end\n`;
@@ -93,8 +92,6 @@ class SetupTransport implements RexTransport {
 	refuseCandidate = false;
 	/** The registry that the loaded block reads, as its `pi_command` description names it. */
 	registry: string | undefined;
-	/** The description of the loaded question action, or undefined when the server has none. */
-	askDescription: string | undefined;
 	/** Runs while Rex checks the candidate, as an edit by somebody else would. */
 	duringCheck?: () => Promise<void>;
 	readonly path: string;
@@ -119,11 +116,24 @@ class SetupTransport implements RexTransport {
 			const text = await readFile(this.path, "utf8");
 			this.loaded = text.includes('name = "pi_command"');
 			this.registry = /registry = "([^"]+)"/.exec(text)?.[1];
-			this.askDescription = /name = "pi_ask",\n.*\n {2}description = "([^"]+)"/.exec(text)?.[1];
 			return ok("generation: 4\n");
 		}
 		if (first === "whoami") return ok(JSON.stringify({ rex_version: "0.1.0-test", api_revision: this.revision }));
-		if (first === "actions") return ok(JSON.stringify({ actions: this.loaded ? this.loadedActions() : [] }));
+		if (first === "actions")
+			return ok(
+				JSON.stringify({
+					actions: this.loaded
+						? [
+								{
+									name: "pi_command",
+									kind: "lua",
+									description: `Runs one Pi command by its ID, for a key binding. Pi records its commands in ${this.registry}.`,
+								},
+								...this.commandActions.map((name) => ({ name, kind: "lua", description: "" })),
+							]
+						: [],
+				}),
+			);
 		if (first === "api")
 			return ok(
 				JSON.stringify({
@@ -134,18 +144,6 @@ class SetupTransport implements RexTransport {
 				}),
 			);
 		return { ...ok(""), exitCode: 1, stderr: `unexpected ${command.join(" ")}` };
-	}
-	/** The actions of the loaded block, as `rex actions --json` lists them. */
-	loadedActions() {
-		return [
-			...(this.askDescription === undefined ? [] : [{ name: "pi_ask", kind: "lua", description: this.askDescription }]),
-			{
-				name: "pi_command",
-				kind: "lua",
-				description: `Runs one Pi command by its ID, for a key binding. Pi records its commands in ${this.registry}.`,
-			},
-			...this.commandActions.map((name) => ({ name, kind: "lua", description: "" })),
-		];
 	}
 	dispose() {}
 }
@@ -371,7 +369,6 @@ test("status leads with the commands that the palette offers and names a command
 		await writeFile(f.path, withConfigBlock(operatorConfig, registry));
 		f.transport.loaded = true;
 		f.transport.registry = registry;
-		f.transport.askDescription = ASK_ACTION_DESCRIPTION;
 		await rexCommand("status", f.deps);
 		assert.deepEqual(f.lines, [
 			'warning: The Rex palette does not list "Browse Files…" yet. Run /rex setup to reload the Rex configuration.',
@@ -391,39 +388,6 @@ test("status leads with the commands that the palette offers and names a command
 	} finally {
 		await f.done();
 	}
-});
-
-test("status and setup name /rex setup when the server has not loaded the current question action", async () => {
-	const f = await fixture(withBlock(operatorConfig));
-	try {
-		f.transport.loaded = true;
-		f.transport.registry = REGISTRY;
-		for (const description of [undefined, "Shows a question from a Pi agent. Pi runs this action."]) {
-			f.transport.askDescription = description;
-			f.lines.length = 0;
-			await rexCommand("status", f.deps);
-			assert.deepEqual(f.lines, [
-				"warning: Rex has not loaded the current agent questions, so agents cannot ask you through Rex. Run /rex setup to reload the Rex configuration.",
-			]);
-		}
-		await rexCommand("setup", f.deps);
-		assert.match(f.asked.at(-1) ?? "", /^Reload the Rex configuration\?\n.*has not loaded agent questions\./);
-		assert.equal(f.transport.askDescription, ASK_ACTION_DESCRIPTION, "the reload loads the current question action");
-	} finally {
-		await f.done();
-	}
-});
-
-test("the question action shows the choices, then the note field, within one wait", () => {
-	const lua = piBlock();
-	assert.match(lua, /description = "Shows a question from a Pi agent, then a field for an optional note\./);
-	assert.match(lua, /args = \{ title = "string\?", items = "array\?", wait = "integer\?" \}/);
-	assert.match(lua, /rex\.ui\.pick\{ title = args\.title, items = args\.items, timeout = wait \}/);
-	assert.match(
-		lua,
-		/title = "Add a note", placeholder = "Optional", confirm = "Send", timeout = math\.min\(3600, left\)/,
-	);
-	assert.match(lua, /if note ~= nil then return \{ choice = choice, note = note \} end/);
 });
 
 test("an earlier format of Pi block is refused, and a loaded block of another agent directory counts as not loaded", async () => {

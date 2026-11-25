@@ -43,20 +43,16 @@ export class RexStopped extends Error {
 		this.phase = phase;
 	}
 }
-/**
- * One operation owns both active work and its bounded mandatory finalisation. `limit` is the largest allowance the
- * operation accepts: terminal work stays within five minutes, and a question waits for a person up to its own limit.
- */
+/** One operation owns both active work and its bounded mandatory finalisation. */
 export function createRexBudget(
 	requested: number | undefined,
 	cap: number,
 	caller?: AbortSignal,
 	time: BudgetClock = clock,
-	limit = 300000,
 ): RexBudget {
 	const value = requested ?? Math.min(30000, cap);
-	if (!Number.isSafeInteger(value) || value < 1 || value > limit)
-		throw new Error(`Rex timeoutMs must be an integer from 1 to ${limit}.`);
+	if (!Number.isSafeInteger(value) || value < 1 || value > 300000)
+		throw new Error("Rex timeoutMs must be an integer from 1 to 300000.");
 	const effectiveMs = Math.min(value, cap);
 	const startedAt = time.now();
 	const reserve = Math.min(1000, Math.max(1, Math.floor(effectiveMs / 10)));

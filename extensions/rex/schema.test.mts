@@ -37,14 +37,8 @@ test("every provider declaration is a plain object root even when a strict built
 		assert.equal(schema.type, "object", spec.name);
 		assert.equal(schema.anyOf, undefined, spec.name);
 		assert.equal(schema.oneOf, undefined, spec.name);
-		if (spec.name === "rex_ask") {
-			// A question has one operation, so its arguments name none.
-			assert.equal(schema.properties.op, undefined);
-			assert.deepEqual(schema.required, ["about", "question", "choices"]);
-		} else {
-			assert.ok(schema.required?.includes("op"), spec.name);
-			assert.ok(schema.properties.op?.enum?.length, spec.name);
-		}
+		assert.ok(schema.required?.includes("op"), spec.name);
+		assert.ok(schema.properties.op?.enum?.length, spec.name);
 		for (const [name, property] of Object.entries(schema.properties)) {
 			assert.ok(property.type, `${spec.name}.${name} declares a type`);
 			assert.equal(property.patternProperties, undefined, `${spec.name}.${name}`);

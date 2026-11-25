@@ -1,10 +1,8 @@
-import { ASK_ACTION, ASK_ACTION_DESCRIPTION } from "./ask.ts";
-
 /**
  * The version of the configuration block. Setup keeps the exact block of this version, replaces a block of an earlier
  * version after the operator confirms, and refuses any other text between the markers.
  */
-export const BLOCK_VERSION = 7;
+export const BLOCK_VERSION = 8;
 const BEGIN = /^-- pi-harness: pi actions v(\d+) begin\r?$/gm;
 const END = /^-- pi-harness: pi actions end\r?$/gm;
 const MARKER = /^-- pi-harness: .*$/gm;
@@ -13,37 +11,8 @@ const MARKER = /^-- pi-harness: .*$/gm;
  * The Lua that runs palette commands (docs/conventions/palette-commands.md): it reads the registry that Pi records
  * when each command runs, runs each step's program with `rex.exec`, asks with `rex.ui`, and opens the pane that a
  * command shows. `pi_harness` stays local to the configuration file.
- *
- * The question action of `rex_ask` shows the menu, then the note field, within one wait that `wait` gives in
- * seconds. A prompt that every app keeps busy is asked again by Pi before a choice, and by the action after one.
  */
 const RUNTIME = `
-rex.action{
-  name = "${ASK_ACTION}",
-  title = "Pi: Agent Question",
-  description = "${ASK_ACTION_DESCRIPTION}",
-  category = "Pi",
-  args = { title = "string?", items = "array?", wait = "integer?" },
-  run = function(ctx, args)
-    if args.title == nil or args.items == nil then return nil end
-    if rex.ui == nil then return { why = "unsupported", detail = "This Rex server has no rex.ui." } end
-    local wait = math.max(1, math.min(3600, args.wait or 3600))
-    local ends = os.time() + wait
-    local choice, why, detail = rex.ui.pick{ title = args.title, items = args.items, timeout = wait }
-    if choice == nil then return { why = why, detail = detail } end
-    while true do
-      local left = ends - os.time()
-      if left < 1 then return { why = "timeout", choice = choice } end
-      local note, note_why, note_detail = rex.ui.input{
-        title = "Add a note", placeholder = "Optional", confirm = "Send", timeout = math.min(3600, left),
-      }
-      if note ~= nil then return { choice = choice, note = note } end
-      if note_why ~= "busy" then return { why = note_why, detail = note_detail, choice = choice } end
-      rex.sleep(1)
-    end
-  end,
-}
-
 function pi_harness.valid_entry(entry)
   if type(entry) ~= "table" or type(entry.id) ~= "string" or type(entry.title) ~= "string" then return false end
   if type(entry.argv) ~= "table" or #entry.argv == 0 then return false end
@@ -248,13 +217,10 @@ function luaPath(path: string): string {
 	return `"${path}"`;
 }
 
-/**
- * The Rex configuration block that Pi's /rex setup writes. Rex lets only an action of its configuration show a
- * prompt, so the block holds the question action that `rex_ask` runs, and the runtime of palette commands.
- */
+/** The Rex configuration block that Pi's /rex setup writes: the runtime of palette commands. */
 export function configBlock(registryPath: string): string {
 	return `-- pi-harness: pi actions v${BLOCK_VERSION} begin
--- Pi commands in the Rex palette, and questions from Pi agents.
+-- Pi commands in the Rex palette.
 -- Pi's /rex setup wrote this block and /rex remove deletes it.
 local pi_harness = { registry = ${luaPath(registryPath)} }
 ${RUNTIME}
