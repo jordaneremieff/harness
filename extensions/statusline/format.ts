@@ -296,13 +296,15 @@ export interface Line2Layout {
 	line: string;
 	/** Span of the hidden-status count cell when statuses were shed. */
 	overflow?: LineSpan & { hidden: number };
+	/** Spans of the status cells shown, in the order of the statuses given; shed statuses have none. */
+	statuses?: LineSpan[];
 }
 
 /**
  * Compose line 2 with complete status cells. Project context shortens before
  * statuses drop from the right behind a +N cell; at extreme widths the count
- * outranks the project. The returned span lets a pointer host hit-test the
- * count without parsing the rendered text.
+ * outranks the project. The returned spans let a pointer host hit-test the
+ * count and each shown status without parsing the rendered text.
  */
 export function composeLine2(
 	project: Line2Project,
@@ -320,7 +322,17 @@ export function composeLine2(
 		const budget = width - visibleWidth(tail) - (cells.length ? visibleWidth(sep) : 0);
 		const label = fitProject(project, budget, visibleWidth, fg);
 		const line = [label, ...cells].join(sep);
-		if (visibleWidth(line) <= width) return line2Layout(line, countCell, hidden, visibleWidth);
+		if (visibleWidth(line) <= width) {
+			const layout = line2Layout(line, countCell, hidden, visibleWidth);
+			const sepWidth = visibleWidth(sep);
+			let x = visibleWidth(label) + sepWidth;
+			layout.statuses = statuses.slice(0, count).map((cell) => {
+				const span = { x, width: visibleWidth(cell) };
+				x += span.width + sepWidth;
+				return span;
+			});
+			return layout;
+		}
 		if (count === 0) return minimalLine2(countCell, label, hidden, width, visibleWidth);
 	}
 	return { line: "" };

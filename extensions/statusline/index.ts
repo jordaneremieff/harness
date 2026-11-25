@@ -5,8 +5,9 @@
  * Line 2: folder (branch) │ extension statuses │ +N
  *
  * The footer carries status only; it adds no navigation labels. In fullscreen the model, the
- * level and the +N cell are click targets for the Model and Statuses views; regular mode leaves
- * the mouse to the terminal. Commands, Model and Statuses open independently in the editor slot.
+ * level and the +N cell are click targets for the Model and Statuses views, and a status cell runs
+ * the extension command named like its key; regular mode leaves the mouse to the terminal.
+ * Commands, Model and Statuses open independently in the editor slot.
  * Installed only in TUI mode; setFooter is a documented no-op elsewhere. One unref'd 5s tick owns wall-clock
  * freshness for duration while idle.
  */
@@ -32,6 +33,7 @@ import {
 	type Line1Parts,
 	type Line2Layout,
 } from "./format.ts";
+import { dispatchCommand } from "./commands.ts";
 import type { Frame } from "./frame.ts";
 import { MetricsCache, type SessionMetrics } from "./metrics.ts";
 import type { CommandsState } from "./views.ts";
@@ -139,13 +141,16 @@ function buildLine1(
 	return { line: composeLine1(parts, sep, width, visibleWidth), spans };
 }
 
+/** Line 2 with the status key of each shown status cell, in the order of `Line2Layout.statuses`. */
+type FooterLine2 = Line2Layout & { readonly keys: readonly string[] };
+
 function buildLine2(
 	ctx: ExtensionContext,
 	footerData: ReadonlyFooterDataProvider,
 	fg: Fg,
 	sep: string,
 	width: number,
-): Line2Layout {
+): FooterLine2 {
 	const branch = footerData.getGitBranch();
 	const project = {
 		folder: sanitizeDisplay(folderLabel(ctx.cwd || process.cwd(), process.env.HOME)),
@@ -154,9 +159,12 @@ function buildLine2(
 	// Each status is bracketed by the reset so a kept SGR sequence cannot bleed
 	// its color into the next cell or the rest of the footer.
 	const statuses: string[] = [];
-	for (const text of footerData.getExtensionStatuses().values()) {
+	const keys: string[] = [];
+	for (const [key, text] of footerData.getExtensionStatuses()) {
 		const clean = sanitizeDisplay(text);
-		if (clean) statuses.push(`${RESET}${clean}${RESET}`);
+		if (!clean) continue;
+		statuses.push(`${RESET}${clean}${RESET}`);
+		keys.push(key);
 	}
 	const layout = composeLine2(project, statuses, sep, width, visibleWidth, fg);
 
@@ -164,7 +172,7 @@ function buildLine2(
 	// line cannot come back cut in half; it only needs a closing reset when it
 	// did not truncate and add one itself.
 	const body = truncateToWidth(layout.line, width);
-	return { ...layout, line: body.endsWith(RESET) ? body : `${body}${RESET}` };
+	return { ...layout, keys, line: body.endsWith(RESET) ? body : `${body}${RESET}` };
 }
 
 /** Whether a line-1 click lands on the model identity or its level bracket. */
@@ -181,18 +189,30 @@ function overflowHit(layout: Line2Layout, x: number): boolean {
 	return overflow !== undefined && x >= overflow.x && x < overflow.x + overflow.width;
 }
 
+/** The key of the status cell at column `x` of line 2. */
+function statusHit(layout: FooterLine2, x: number): string | undefined {
+	const index = layout.statuses?.findIndex((span) => x >= span.x && x < span.x + span.width) ?? -1;
+	return index < 0 ? undefined : layout.keys[index];
+}
+
 /**
- * The view under a plain left click: the model identity or its level bracket opens Model, and the
- * hidden-status count opens Statuses. Anything else stays with Pi, so drag selection keeps working.
+ * The target under a plain left click: the model identity or its level bracket opens Model, the
+ * hidden-status count opens Statuses, and a status cell names its key. Anything else stays with Pi,
+ * so drag selection keeps working.
  */
+type ClickTarget = "model" | "statuses" | { status: string };
+
 function clickTarget(
 	event: TuiMouseEvent,
 	spans: Line1Spans | undefined,
-	layout: Line2Layout,
-): "model" | "statuses" | undefined {
+	layout: FooterLine2,
+): ClickTarget | undefined {
 	if (event.type !== "click" || event.button !== "left" || event.shift || event.alt || event.ctrl) return undefined;
 	if (event.y === 0) return onModel(spans, event.x) ? "model" : undefined;
-	return event.y === 1 && overflowHit(layout, event.x) ? "statuses" : undefined;
+	if (event.y !== 1) return undefined;
+	if (overflowHit(layout, event.x)) return "statuses";
+	const status = statusHit(layout, event.x);
+	return status === undefined ? undefined : { status };
 }
 
 export default function registerStatusline(pi: ExtensionAPI) {
@@ -261,6 +281,18 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		}
 	}
 
+	/**
+	 * A click on a status cell runs the extension command named like its key, with no arguments, as the Commands
+	 * view runs one. False when no extension registers such a command, so the click stays with Pi.
+	 */
+	function runStatusCommand(ctx: ExtensionContext, key: string): boolean {
+		const command = pi.getCommands().find((candidate) => candidate.source === "extension" && candidate.name === key);
+		if (!command) return false;
+		if (dispatchCommand(pi, command, "").kind !== "sent")
+			ctx.ui.notify(`The /${sanitizeDisplay(key)} registration changed; Pi did not run it.`, "warning");
+		return true;
+	}
+
 	/** Read current usage and catch the metrics up; false when no session is attached. */
 	function update(): boolean {
 		if (!current || !enabled) return false;
@@ -304,11 +336,20 @@ export default function registerStatusline(pi: ExtensionAPI) {
 			stopTick();
 			requestRender = () => tui.requestRender();
 			readStatuses = () => footerData.getExtensionStatuses();
-			let layout: Line2Layout | undefined;
+			let layout: FooterLine2 | undefined;
 			let spans: Line1Spans | undefined;
 			let renderedWidth = -1;
 			let renderedLine1: string | undefined;
 			const session = () => current ?? ctx;
+			/** Do what a footer click asks; undefined leaves the click with Pi. */
+			const followClick = (target: ClickTarget): TuiMouseEventResult | undefined => {
+				const ctx = session();
+				if (typeof target === "object") return runStatusCommand(ctx, target.status) ? { handled: true } : undefined;
+				void openOwn(ctx, target).catch((error: unknown) =>
+					ctx.ui.notify(viewFailure(viewNames[target], error), "error"),
+				);
+				return { handled: true };
+			};
 			// The tick advances the duration and catches usage up between events. A render recomputes the
 			// lines of every component in the session view, so the tick requests one only when line 1
 			// would show different text; line 2 changes arrive with branch and status events that render
@@ -348,12 +389,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 						!composerPresent && pointer && layout && event.width === renderedWidth
 							? clickTarget(event, spans, layout)
 							: undefined;
-					if (!target) return undefined;
-					const ctx = session();
-					void openOwn(ctx, target).catch((error: unknown) =>
-						ctx.ui.notify(viewFailure(viewNames[target], error), "error"),
-					);
-					return { handled: true };
+					return target === undefined ? undefined : followClick(target);
 				},
 			};
 		});

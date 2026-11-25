@@ -965,6 +965,69 @@ describe("footer controls", () => {
 	});
 });
 
+describe("status clicks", () => {
+	it("runs the extension command named like the clicked status key, and leaves other cells to Pi", async () => {
+		const statuses = new Map([
+			["agent", "\u25cf agents: 0/1"],
+			["jobs", "\u25cf jobs: 1/2"],
+			["notes", "notes ready"],
+		]);
+		const { handlers, sent } = makePi(() => [
+			registration("agent"),
+			registration("jobs"),
+			registration("notes", { source: "prompt" }),
+		]);
+		const mocks = makeCtx({ tuiMode: "fullscreen", statuses, cwd: "/work/project" });
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const footer = installFooter(mocks);
+		try {
+			const line = strip(footer.render(120)[1]);
+			const at = (text: string) => {
+				const x = line.indexOf(text);
+				assert.ok(x >= 0, `${text} is shown in ${line}`);
+				return x;
+			};
+			assert.equal(footer.handleMouse?.(click(at("jobs: 1/2") + 2, 1, 120))?.handled, true);
+			assert.equal(
+				footer.handleMouse?.(click(at("\u25cf agents"), 1, 120))?.handled,
+				true,
+				"the dot is part of the cell",
+			);
+			assert.deepEqual(
+				sent.map(({ content }) => content),
+				["/jobs", "/agent"],
+			);
+			assert.equal(
+				footer.handleMouse?.(click(at("notes ready"), 1, 120)),
+				undefined,
+				"a key without an extension command of its name is not a control",
+			);
+			assert.equal(
+				footer.handleMouse?.(click(at(" \u2502 \u25cf jobs") + 1, 1, 120)),
+				undefined,
+				"a separator is not a control",
+			);
+			assert.equal(sent.length, 2);
+		} finally {
+			footer.dispose();
+		}
+		const regular = makeCtx({ tuiMode: "regular", statuses, cwd: "/work/project" });
+		await handlers.get("session_start")(sessionStart, regular.ctx);
+		const plain = installFooter(regular);
+		try {
+			const line = strip(plain.render(120)[1]);
+			assert.equal(
+				plain.handleMouse?.(click(line.indexOf("jobs: 1/2"), 1, 120)),
+				undefined,
+				"regular mode leaves the mouse to the terminal",
+			);
+			assert.equal(sent.length, 2);
+		} finally {
+			plain.dispose();
+		}
+	});
+});
+
 describe("Commands view", () => {
 	it("sends an extension command only after an explicit Run with the exact current registration", async () => {
 		const review = registration("review:1", { description: "Review the current diff" });

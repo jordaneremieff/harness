@@ -20,6 +20,7 @@ command of its own. The code for these views loads on demand.
 | `/statuses` | command | Open the Statuses view: the complete extension status map. |
 | model and level segments | footer click targets | In fullscreen, a click on the `provider/model` segment or its `[level]` bracket opens the Model view. |
 | `+N` cell | footer click target | In fullscreen, the hidden-status count opens the Statuses view. |
+| status cells | footer click targets | In fullscreen, a status cell runs the extension command named like its status key, such as `/agent` for `agent`. |
 
 No extension-specific configuration is required. The custom footer starts
 enabled; use `/statusline` to switch to Pi's default footer or back. With the
@@ -30,12 +31,17 @@ footer-owned tick, or background work.
 
 ## Footer clicks
 
-In fullscreen, two parts of the footer take a plain left click: the
-`provider/model` segment or its `[level]` bracket opens the Model view, and
-the `+N` cell opens the Statuses view. Every other click stays with Pi, so
-drag selection keeps working. A click reported for another width acts on
-nothing. In regular mode the mouse belongs to the terminal and the footer
-claims no click.
+In fullscreen, these parts of the footer take a plain left click: the
+`provider/model` segment or its `[level]` bracket opens the Model view, the
+`+N` cell opens the Statuses view, and a shown status cell runs the extension
+command whose name equals its status key, with no arguments, the way the
+Commands view runs a command. The [status key registry](../../docs/conventions/status-keys.md)
+makes that command open its owner's view, so a click on the agents entry opens
+`/agent` and one on the jobs entry opens `/jobs`. A status whose key names no
+extension command is not a control. Every other click stays with Pi, so drag
+selection keeps working. A click reported for another width acts on nothing.
+In regular mode the mouse belongs to the terminal and the footer claims no
+click.
 
 ## Views
 

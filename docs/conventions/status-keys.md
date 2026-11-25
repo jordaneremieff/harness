@@ -50,5 +50,11 @@ key, and a consumer must not parse a sibling's status text.
   Colour is drawn only in the interactive terminal; other hosts receive the
   plain glyph. Each publisher decides with its own code which of its work
   counts and when it shows red.
+- A click on a status cell in the fullscreen footer runs the extension command
+  whose name equals the key, with no arguments. A publisher that registers a
+  command of its key's name makes that command, with no arguments, open its
+  own view, or at least do nothing harmful. A key that names no extension
+  command is not a control. The consumer matches the key exactly and reads
+  nothing from the text.
 - A new key is added to this registry by its publisher in the same change
   that introduces it.

@@ -307,4 +307,16 @@ describe("composeLine2", () => {
 		assert.equal(result.overflow.x + result.overflow.width, visibleWidth(result.line));
 		assert.equal(text.slice(result.overflow.x), `+${result.overflow.hidden}`);
 	});
+
+	it("reports the span of each shown status cell and none for shed ones", () => {
+		const cells = ["one", "two", "three"];
+		for (const width of [200, 22, 15]) {
+			const result = composeLine2(project, cells, " │ ", width, visibleWidth, plain);
+			const text = strip(result.line);
+			const shown = cells.length - (result.overflow?.hidden ?? 0);
+			assert.equal(result.statuses?.length, shown, `width ${width}`);
+			for (const [index, span] of (result.statuses ?? []).entries())
+				assert.equal(text.slice(span.x, span.x + span.width), cells[index], `width ${width}`);
+		}
+	});
 });
