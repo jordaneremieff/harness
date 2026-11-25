@@ -55,7 +55,7 @@ import { AwaitDoc, acknowledgeProviderRetry, forgetFailedAdmission, recordInputP
 import { prepareAdmittedCapture } from "./communication-retention.ts";
 import { placementOf, prepareQueuedInputs, type Placement } from "./unplaced-inputs.ts";
 import { admissionSource } from "./firing-timer.ts";
-import { createCheckIn } from "./durable-checkins.ts";
+import { clearCheckInPause, createCheckIn, pausedCheckInResume } from "./durable-checkins.ts";
 import {
 	cleanupRequestContexts,
 	recordRequestContext,
@@ -1895,8 +1895,10 @@ async function retireAutomaticReports(tx: Tx, reports: readonly DeliveryReport[]
 		if (
 			(watched?.status === "done" || watched?.status === "unanswered") &&
 			!(await requestHasOpenWork(tx, report.checkIn.conversationId as ConversationId, report.checkIn.requestId))
-		)
+		) {
 			await storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
+			await clearCheckInPause(tx, report.ownerId, report.checkIn);
+		}
 	}
 }
 /** Settle answer groups atomically. A null cursor skips a completed automatic traversal. */
@@ -1947,12 +1949,35 @@ export async function acknowledgeDeliveries(
 	return acknowledged;
 }
 
-/** Report acknowledgement and the thread projection change in the same native commit. */
+/** Acknowledge one retained report; a check-in notice returns the re-arm step of its paused watch. */
+async function acknowledgeReport(
+	tx: Tx,
+	ownerId: string,
+	sourceId: string,
+	now: number,
+): Promise<{ sourceId: string; rearm?: () => Promise<void> } | undefined> {
+	const report = await retainedReport(tx, ownerId, sourceId);
+	if (!report || report.acknowledged) return undefined;
+	if (report.threadId !== undefined) {
+		const notices = await tx.doc(ThreadDeliveryDoc, report.threadId, null);
+		if (notices.pending < 1) throw new Error("The pending thread-notice projection is inconsistent");
+		notices.pending -= 1;
+	}
+	await storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
+	const rearm = report.checkIn === undefined ? undefined : await pausedCheckInResume(tx, ownerId, report.checkIn, now);
+	return { sourceId: report.sourceId, ...(rearm === undefined ? {} : { rearm }) };
+}
+
+/**
+ * Report acknowledgement, the thread projection change and the re-arm of a check-in watch that the notice paused, in
+ * the same native commit. `now` is the host clock that the re-arm schedules from.
+ */
 export async function acknowledgeReports(
 	harness: Harness,
 	ownerId: string,
 	sourceIds: readonly string[],
 	context: Context,
+	now: number,
 ): Promise<string[]> {
 	await migrateDeliveryStore(harness, context);
 	const acknowledged: string[] = [];
@@ -1961,17 +1986,15 @@ export async function acknowledgeReports(
 		if ((await harness.snapshot(DeliveryRowDoc, reportKey(ownerId, sourceId), context))?.value != null)
 			existing.push(sourceId);
 	await harness.commit(async (tx) => {
+		// Every re-arm reads before the first task creation of the commit.
+		const rearms: (() => Promise<void>)[] = [];
 		for (const sourceId of existing) {
-			const report = await retainedReport(tx, ownerId, sourceId);
-			if (!report || report.acknowledged) continue;
-			if (report.threadId !== undefined) {
-				const notices = await tx.doc(ThreadDeliveryDoc, report.threadId, null);
-				if (notices.pending < 1) throw new Error("The pending thread-notice projection is inconsistent");
-				notices.pending -= 1;
-			}
-			await storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
-			acknowledged.push(report.sourceId);
+			const outcome = await acknowledgeReport(tx, ownerId, sourceId, now);
+			if (outcome === undefined) continue;
+			if (outcome.rearm !== undefined) rearms.push(outcome.rearm);
+			acknowledged.push(outcome.sourceId);
 		}
+		for (const rearm of rearms) await rearm();
 	}, context);
 	return acknowledged;
 }

@@ -362,8 +362,16 @@ function deliveryCommunicationParams(row: DeliveryRow, host: DurableHost): { com
 }
 
 /** Answer entries are storage-wide identities; unanswered inputs remain separate. */
-function receiptKey(receipt: DeliveryReceipt): string {
+function receiptKey(receipt: Pick<DeliveryReceipt, "answerEntryId" | "submissionId">): string {
 	return receipt.answerEntryId === null ? `submission:${receipt.submissionId}` : `answer:${receipt.answerEntryId}`;
+}
+
+/**
+ * The identity a refusal of one receipt's content holds for: its answer for its owner, which the transport source
+ * identity also names. A delivery page that holds only part of an answer group finds the same identity.
+ */
+function receiptRefusalKey(receipt: Pick<DeliveryReceipt, "answerEntryId" | "submissionId" | "ownerId">): string {
+	return `receipt:${JSON.stringify([receiptKey(receipt), receipt.ownerId])}`;
 }
 
 function receiptRows(receipts: readonly DeliveryReceipt[]): ReceiptRow[] {
@@ -1039,7 +1047,7 @@ interface EligibilityOptions {
 	readonly packageDir?: string;
 	/** Refusals of primary owners that hold for all their rows, each with the facts the refused attempt used. */
 	readonly primaryRefusals?: ReadonlyMap<string, PrimaryRefusalRecord>;
-	/** Refusals of one row's content, by eligibility key, each with the facts the refused attempt used. */
+	/** Refusals of one row's content, by report or by answer and owner, each with the facts the refused attempt used. */
 	readonly rowRefusals?: ReadonlyMap<string, PrimaryRefusalRecord>;
 	readonly activeOnly?: boolean;
 	/** The owner of the observing storage when that storage is itself a thread storage. */
@@ -1148,7 +1156,7 @@ export async function observeDeliveryEligibility(
 	) => {
 		const terminalReason = row.delivery?.state === "terminal" ? row.delivery.reason : undefined;
 		const recipient = recipientFacts(row.ownerId, options);
-		const refused = options.rowRefusals?.get(key);
+		const refused = options.rowRefusals?.get(kind === "receipt" ? receiptRefusalKey(row as DeliveryReceipt) : key);
 		const eligibility = classifyDelivery({
 			ownerId: row.ownerId,
 			originValid,
@@ -1556,21 +1564,16 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 
 	const acknowledgeRow = async (row: DeliveryRow, owners: readonly string[]): Promise<void> => {
 		if (owners.length === 0) return;
-		if (row.kind === "report" && row.report.checkIn !== undefined) {
-			const { report } = row;
-			const { checkIn } = row.report;
-			// The acknowledgement and the re-arm of a paused watch commit together, so a crash on either side of
-			// the commit leaves the same outcome.
-			await host.harness.commit(async (tx) => {
-				const current = await retainedReport(tx, report.ownerId, report.sourceId);
-				if (current === undefined || current.acknowledged) return;
-				await storeDeliveryRow(tx, "report", { ...current, acknowledged: true });
-				await resumePausedCheckIn(tx, report.ownerId, checkIn, host.currentTime());
-			}, BACKGROUND_CONTEXT);
-			return;
-		}
+		// Acknowledgement of a check-in notice re-arms its paused watch in the same commit, as the acknowledge request
+		// does, so a crash on either side of the commit leaves the same outcome.
 		if (row.kind === "report") {
-			await acknowledgeReports(host.harness, row.report.ownerId, [row.report.sourceId], BACKGROUND_CONTEXT);
+			await acknowledgeReports(
+				host.harness,
+				row.report.ownerId,
+				[row.report.sourceId],
+				BACKGROUND_CONTEXT,
+				host.currentTime(),
+			);
 			return;
 		}
 		await host.harness.commit(async (tx) => {
@@ -1861,11 +1864,11 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		return eligibility.get(key) ?? { state: "terminal", reason: "delivery row is absent" };
 	};
 
-	/** Eligibility keys of one row for one owner: a receipt row groups that owner's receipts of one answer. */
-	const rowKeys = (row: DeliveryRow, owner: string): string[] =>
+	/** The refusal identity of one row: a report, or one answer for its owner across every delivery page. */
+	const refusalKey = (row: DeliveryRow, owner: string): string =>
 		row.kind === "report"
-			? [`report:${row.report.sourceId}:${owner}`]
-			: row.receipts.filter((receipt) => receipt.ownerId === owner).map((receipt) => `receipt:${receipt.submissionId}`);
+			? `report:${row.report.sourceId}:${owner}`
+			: receiptRefusalKey({ ...row.receipt, ownerId: owner });
 
 	/**
 	 * A refusal of the row's content (`copy`, `misaddressed`) parks that row only. A refusal about the session
@@ -1879,13 +1882,13 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (kind === undefined || kind === "unsaved") return;
 		const refusal = { reason: `primary session ${owner} refused the row (${kind}): ${asError(error).message}`, facts };
 		if (kind === "no-transcript" || kind === "not-held") primaryRefusals.set(owner, refusal);
-		else for (const key of rowKeys(row, owner)) rowRefusals.set(key, refusal);
+		else rowRefusals.set(refusalKey(row, owner), refusal);
 	};
 
 	/** True while a refusal of this row's content holds under the owner's current facts. */
 	const rowRefused = (row: DeliveryRow, owner: string): boolean => {
 		const current = primaryFactsKey(primaryFacts(sessionsRoot, owner));
-		return rowKeys(row, owner).some((key) => rowRefusals.get(key)?.facts === current);
+		return rowRefusals.get(refusalKey(row, owner))?.facts === current;
 	};
 
 	/** A failed native acquisition or a primary refusal parks the route; a reachable transport retries. */

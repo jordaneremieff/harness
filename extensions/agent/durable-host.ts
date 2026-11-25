@@ -1346,7 +1346,7 @@ export class DurableHost {
 			return value;
 		});
 		const acknowledged = await acknowledgeDeliveries(this.harness, ownerId, ids as SubmissionId[], context);
-		const acknowledgedReports = await acknowledgeReports(this.harness, ownerId, sources, context);
+		const acknowledgedReports = await acknowledgeReports(this.harness, ownerId, sources, context, this.now());
 		return { acknowledged, acknowledgedReports };
 	}
 

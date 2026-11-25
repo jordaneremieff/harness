@@ -16,8 +16,10 @@ import {
 	fixtureModelId,
 	fixtureProvider,
 	fixtureRegistry,
+	gateTool,
 	hostOptions,
 	scriptedRuntime,
+	toolCallMessage,
 } from "./durable-host-fixture.mts";
 import { parseHostMetadata } from "./host-protocol.ts";
 import { createPrimaryChannel, primaryRefusal, type PrimaryDelivery } from "./primary-channel.ts";
@@ -320,4 +322,75 @@ it("does not park a replacement registration for a refusal that the previous end
 	watch(t, host, root);
 	assert.equal(await eventually(() => acknowledged(host, id)), true, "the replacement takes the row");
 	assert.equal(replacement.length, 1);
+});
+
+it("keeps a refused answer group parked when a later delivery page holds the rest of the group", {
+	timeout: 60000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	const owner = randomUUID();
+	let release = () => {},
+		entered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const storageId = randomUUID();
+	const models = await scriptedRuntime([toolCallMessage("gate"), answerMessage("one answer")]);
+	const host = await DurableHost.open({
+		...hostOptions(join(root, `${storageId}.sqlite`), models, fixtureRegistry([gateTool(gate, entered)])),
+		storageId,
+		cwd: root,
+		settings: { steeringMode: "all" },
+	});
+	t.after(async () => {
+		release();
+		await host.close();
+	});
+	const submit = async (requestId: string, whenBusy?: string) =>
+		(
+			(await host.request(
+				"submit",
+				{
+					sessionId: storageId,
+					message: `task ${requestId}`,
+					requestId,
+					ownerId: owner,
+					origin: "model",
+					...(whenBusy === undefined ? {} : { whenBusy }),
+				},
+				BACKGROUND_CONTEXT,
+			)) as { submissionId: SubmissionId }
+		).submissionId;
+	const inputs = [await submit("first")];
+	await started;
+	// More inputs than one delivery page holds join the running work and share its one answer.
+	for (let index = 1; index <= 64; index++) inputs.push(await submit(`input-${index}`, "steer"));
+	release();
+	for (const id of inputs) await host.wait(id, BACKGROUND_CONTEXT);
+	const sources: string[] = [];
+	const counter = passCounter();
+	await registerPrimary(t, root, {
+		id: owner,
+		sessionFile: saveTranscript(join(root, "owner.jsonl"), owner),
+		deliver: (message) => {
+			sources.push(message.sourceId);
+			throw primaryRefusal("copy", "this answer carries a copy marker");
+		},
+	});
+	const { delivery } = watch(t, host, root, { onIdle: counter.onIdle });
+	const reasons = await parkedReasons(host, inputs);
+	assert.ok(reasons.every((reason) => /refused the row \(copy\)/u.test(reason)));
+	const answers = new Set(
+		Object.values((await deliveryState(host.harness, BACKGROUND_CONTEXT, true))?.receipts ?? {}).map(
+			(receipt) => receipt.answerEntryId,
+		),
+	);
+	assert.equal(answers.size, 1, "every input shares one answer");
+	assert.notEqual([...answers][0], null);
+	// The first traversal reads the group on two delivery pages; both pages see the one refusal.
+	assert.equal(delivery.summary().active, false, "the refused group arms no retry");
+	assert.equal(sources.length, 1, "the group's one transport identity is refused once under unchanged facts");
 });

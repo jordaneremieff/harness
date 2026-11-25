@@ -133,7 +133,7 @@ it("bounds equal add/ack work independently of acknowledged history and preserve
 				{ ownerId: "owner", senderIdentity: "sender", requestId: id, message: "x".repeat(1024) },
 				context,
 			);
-			await acknowledgeReports(harness, "owner", [row.sourceId], context);
+			await acknowledgeReports(harness, "owner", [row.sourceId], context, Date.now());
 		}
 		storage.bytes = 0;
 		storage.writes = 0;
@@ -143,7 +143,7 @@ it("bounds equal add/ack work independently of acknowledged history and preserve
 			{ ownerId: "owner", senderIdentity: "sender", requestId: `measured-${history}`, message: "x".repeat(1024) },
 			context,
 		);
-		await acknowledgeReports(harness, "owner", [row.sourceId], context);
+		await acknowledgeReports(harness, "owner", [row.sourceId], context, Date.now());
 		samples.push({
 			history,
 			logicalBaseBytes: storage.bytes,
@@ -358,7 +358,7 @@ it("couples thread acknowledgement, the retained row and pending removal atomica
 		await storeDeliveryRow(tx, "report", row, true);
 		await tx.doc(ThreadDeliveryDoc, "thread", null);
 	}, context);
-	await assert.rejects(acknowledgeReports(harness, "owner", [row.sourceId], context), /inconsistent/u);
+	await assert.rejects(acknowledgeReports(harness, "owner", [row.sourceId], context, Date.now()), /inconsistent/u);
 	assert.equal(
 		(await harness.snapshot(DeliveryRowDoc, reportKey("owner", row.sourceId), context))?.value &&
 			(await harness.commit((tx) => retainedReport(tx, "owner", row.sourceId), context))?.acknowledged,
@@ -375,7 +375,7 @@ it("couples thread acknowledgement, the retained row and pending removal atomica
 		),
 	);
 	try {
-		assert.deepEqual(await acknowledgeReports(harness, "owner", [row.sourceId], context), [row.sourceId]);
+		assert.deepEqual(await acknowledgeReports(harness, "owner", [row.sourceId], context, Date.now()), [row.sourceId]);
 	} finally {
 		unsubscribe();
 	}
@@ -415,6 +415,7 @@ it("does not create retained documents for absent observation or acknowledgement
 			"owner",
 			Array.from({ length: 100 }, (_, index) => `unknown-${index}`),
 			context,
+			Date.now(),
 		),
 		[],
 	);
@@ -537,7 +538,7 @@ it("retains terminal diagnostics and owner acknowledgement without active traver
 	);
 	await settleDeliveries(harness, context);
 	assert.deepEqual((await pendingDeliveryPage(harness, context)).state.reports, []);
-	assert.deepEqual(await acknowledgeReports(harness, "owner", ["report:r-0"], context), ["report:r-0"]);
+	assert.deepEqual(await acknowledgeReports(harness, "owner", ["report:r-0"], context, Date.now()), ["report:r-0"]);
 	assert.equal(await deliveryPendingCount(harness, context), 192);
 	assert.equal((await terminalDeliveryState(harness, context)).reports[0]?.sourceId, "report:r-1");
 	assert.equal((await deliveryState(harness, context, true)).reports.length, 193);
@@ -565,7 +566,7 @@ it("deduplicates report request identities independently of source acknowledgeme
 			context,
 		);
 	assert.deepEqual(await retry(), row);
-	assert.deepEqual(await acknowledgeReports(harness, row.ownerId, [row.sourceId], context), [row.sourceId]);
+	assert.deepEqual(await acknowledgeReports(harness, row.ownerId, [row.sourceId], context, Date.now()), [row.sourceId]);
 	assert.deepEqual(await retry(), { ...row, acknowledged: true });
 	assert.equal((await deliveryState(harness, context, true)).reports.length, 1);
 });

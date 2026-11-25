@@ -1018,8 +1018,8 @@ it("writes notification intents with the event and retains source-qualified dedu
 	assert.equal(page.events.at(-1)?.sequence, receipt.sequence);
 	assert.ok(ledger);
 	const sourceId = ledger.reports[0].sourceId;
-	assert.deepEqual(await acknowledgeReports(f.host.harness, peer, [sourceId], context), [sourceId]);
-	assert.deepEqual(await acknowledgeReports(f.host.harness, peer, [sourceId], context), []);
+	assert.deepEqual(await acknowledgeReports(f.host.harness, peer, [sourceId], context, Date.now()), [sourceId]);
+	assert.deepEqual(await acknowledgeReports(f.host.harness, peer, [sourceId], context, Date.now()), []);
 	await f.reopen();
 	assert.equal((await readCollaboration(f.host.harness, { threadId: created.threadId }, context)).pending, 0);
 });

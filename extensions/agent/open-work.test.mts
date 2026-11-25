@@ -1196,7 +1196,7 @@ it("reads the exact final report in pages after acknowledgement and after the cl
 		/Read the final report: agent_inspect\(\{"view":"result","sessionId":"storage-a","submissionId":\d+,"finalReport":true,"offset":0\}\)/u,
 	);
 
-	await acknowledgeReports(harness, "recipient-c", ["report:work-final:1:task-a"], context);
+	await acknowledgeReports(harness, "recipient-c", ["report:work-final:1:task-a"], context, Date.now());
 	assert.equal(
 		(
 			await harness.commit(
@@ -1405,7 +1405,13 @@ it("reads the final report of an input without an answer after acknowledgement, 
 	assert.deepEqual(await report(own), ["unanswered", undefined, exact("task-s"), STORAGE, undefined]);
 	assert.equal((await inspect({ submissionId: own })).work?.finalReport?.delivery, "retained");
 
-	await acknowledgeReports(harness, "recipient-c", [`report:work-final:${conversation.id}:task-a`], context);
+	await acknowledgeReports(
+		harness,
+		"recipient-c",
+		[`report:work-final:${conversation.id}:task-a`],
+		context,
+		Date.now(),
+	);
 	for (let index = 0; index <= CLOSED_WORK_LIMIT; index++) {
 		const later = await harness.commit((tx) => placed(tx, conversation.id, route(`later-${index}`)), context);
 		await harness.commit(

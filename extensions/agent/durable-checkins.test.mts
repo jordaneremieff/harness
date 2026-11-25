@@ -12,6 +12,8 @@ import {
 	CheckInTask,
 	CheckInDeadlineTask,
 	CheckInParkedSignal,
+	CheckInPauseDoc,
+	checkInPauseKey,
 	createCheckIn,
 	resumePausedCheckIn,
 } from "./durable-checkins.ts";
@@ -1057,6 +1059,146 @@ it("pauses at a parked notice without another notice, and re-arms one future dea
 		f.releaseAnswer();
 		await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);
 		await checkInsEnded(f);
+	} finally {
+		f.releaseAnswer();
+	}
+});
+
+/** Submit a watched request with a one-minute check-in and pause its watch at the first notice. */
+async function pausedWatch(f: ScheduleFixture, epoch: number, setNow: (value: number) => void, requestId: string) {
+	await f.host.request("submit", {
+		sessionId: f.storageId,
+		message: "long work",
+		requestId,
+		ownerId: f.ownerId,
+		origin: "model",
+		checkInMinutes: 1,
+	});
+	const watch = (await checkInTasks(f)).find((row) => row.record.kind === CheckInTask.definition.name);
+	assert.ok(watch);
+	const conversation = await f.conversation();
+	const key = (k: number) => `check-in:${conversation.id}:${requestId}:${k}`;
+	setNow(epoch + 60000);
+	await f.reopen();
+	const first = await waitForReport(f, key(1));
+	await parkReport(f, first.sourceId);
+	assert.equal(await signalDeadline(f, first.sourceId), "delivered");
+	await checkInsEnded(f);
+	return {
+		conversation,
+		key,
+		first,
+		input: watch.record.input as Parameters<typeof CheckInTask.definition.initial>[0],
+	};
+}
+
+async function pauseState(f: ScheduleFixture, conversationId: number, requestId: string) {
+	return f.host.harness.snapshot(
+		CheckInPauseDoc,
+		checkInPauseKey(f.ownerId, conversationId, requestId),
+		BACKGROUND_CONTEXT,
+	);
+}
+
+it("lets a re-armed watch supersede the paused watch task that a restart resumes later", {
+	timeout: 60000,
+}, async (t) => {
+	const epoch = Date.now();
+	let now = epoch;
+	const f = await scheduleFixture(t, { agentExtension: true, deferAnswers: true, now: () => now });
+	t.mock.method(Date, "now", () => epoch);
+	try {
+		const paused = await pausedWatch(f, epoch, (value) => (now = value), "superseded-watch");
+		now = epoch + 600000;
+		await f.reopen();
+		await f.host.request("acknowledge", { ownerId: f.ownerId, sourceIds: [paused.first.sourceId] });
+		// The paused watch task resumes after the re-arm, as a crash between the pause and its end leaves it: a live
+		// check-in task of the same request, with the original schedule and no deadline of its own.
+		const stale = await f.host.harness.commit(
+			(tx) =>
+				tx.createTask(CheckInTask, paused.input, {
+					ownership: { kind: "conversation" },
+					conversationId: paused.conversation.id,
+					background: true,
+				}),
+			BACKGROUND_CONTEXT,
+		);
+		// The stale task either ends or creates a second deadline; observe whichever comes first.
+		let deadlines = 0;
+		let staleLive = true;
+		for (let attempt = 0; attempt < 500 && staleLive && deadlines < 2; attempt++) {
+			const tasks = await checkInTasks(f);
+			staleLive = tasks.some((row) => row.record.id === stale);
+			deadlines = tasks.filter((row) => row.record.kind === CheckInDeadlineTask.definition.name).length;
+			if (staleLive && deadlines < 2) await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.equal(deadlines < 2, true, "only the re-armed watch holds a deadline");
+		assert.equal(staleLive, false, "the superseded watch task ends");
+		now = epoch + 660000;
+		await f.reopen();
+		await waitForReport(f, paused.key(11));
+		const reports = (await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true))?.reports ?? [];
+		assert.deepEqual(
+			reports.map((row) => row.sourceId),
+			[paused.key(1), paused.key(11)],
+			"the superseded watch writes no notice on the old schedule",
+		);
+		f.releaseAnswer();
+		await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);
+		await checkInsEnded(f);
+		assert.equal(await pauseState(f, paused.conversation.id, "superseded-watch"), undefined);
+	} finally {
+		f.releaseAnswer();
+	}
+});
+
+it("re-arms a paused watch through the acknowledge request in the acknowledging commit", {
+	timeout: 60000,
+}, async (t) => {
+	const epoch = Date.now();
+	let now = epoch;
+	const f = await scheduleFixture(t, { agentExtension: true, deferAnswers: true, now: () => now });
+	t.mock.method(Date, "now", () => epoch);
+	try {
+		const paused = await pausedWatch(f, epoch, (value) => (now = value), "acknowledged-watch");
+		now = epoch + 600000;
+		await f.reopen();
+		const result = (await f.host.request("acknowledge", {
+			ownerId: f.ownerId,
+			sourceIds: [paused.first.sourceId],
+		})) as { acknowledgedReports: string[] };
+		assert.deepEqual(result.acknowledgedReports, [paused.first.sourceId]);
+		const rearmed = (await checkInTasks(f)).filter((row) => row.record.kind === CheckInTask.definition.name);
+		assert.equal(rearmed.length, 1, "one watch re-arms");
+		assert.equal((rearmed[0].record.input as { next?: number }).next, 11, "at the next future interval");
+		assert.deepEqual((await pauseState(f, paused.conversation.id, "acknowledged-watch"))?.watch, null);
+		f.releaseAnswer();
+		await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);
+		await checkInsEnded(f);
+	} finally {
+		f.releaseAnswer();
+	}
+});
+
+it("clears the pause of a watched request when settlement retires its parked notice", {
+	timeout: 60000,
+}, async (t) => {
+	const epoch = Date.now();
+	let now = epoch;
+	const f = await scheduleFixture(t, { agentExtension: true, deferAnswers: true, now: () => now });
+	t.mock.method(Date, "now", () => epoch);
+	try {
+		const paused = await pausedWatch(f, epoch, (value) => (now = value), "settled-watch");
+		assert.notEqual((await pauseState(f, paused.conversation.id, "settled-watch"))?.watch ?? null, null);
+		f.releaseAnswer();
+		await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);
+		await settleDeliveries(f.host.harness, BACKGROUND_CONTEXT);
+		const report = (await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true))?.reports.find(
+			(row) => row.sourceId === paused.first.sourceId,
+		);
+		assert.equal(report?.acknowledged ?? true, true, "settlement retires the notice");
+		assert.equal(await pauseState(f, paused.conversation.id, "settled-watch"), undefined, "and its pause");
+		assert.deepEqual(await checkInTasks(f), []);
 	} finally {
 		f.releaseAnswer();
 	}

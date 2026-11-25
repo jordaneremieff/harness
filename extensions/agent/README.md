@@ -4797,7 +4797,9 @@ One classification controls delivery, status and retirement:
   a live primary whose endpoint publishes no session file (it keeps no
   transcript) or whose published session file does not yet exist, or a primary
   that refused the row. A refusal of the row's content (`misaddressed`, `copy`)
-  parks that row only; a refusal about the session (`no-transcript`,
+  parks that row only: one report, or one answer for its owner, including the
+  members of that answer group on later delivery pages. A refusal about the
+  session (`no-transcript`,
   `not-held`) parks all the owner's rows. Each refusal holds while the owner's
   endpoint state, version, transcript availability and registration server ID
   equal those read before the refused attempt, with the server ID that the
@@ -4968,12 +4970,18 @@ paused watch holds no task, so it neither keeps its host alive nor sets the
 recovery marker; the watched work itself still does. When the owner accepts the
 outstanding notice, the same commit that acknowledges it re-arms one watch if
 the request is still open: a new `agent.check-in` task that waits for the next
-future interval of the existing admission. It finds the admitted input by its
-request ID, so nothing is submitted again, and no missed interval produces a
-notice. A settled request only clears the pause. Because acknowledgement and
-re-arm commit together, a crash before or after that commit gives the same
-outcome. A host of an earlier release starts a re-armed watch at its first
-interval, which gives at most one immediate notice.
+future interval of the existing admission. The delivery watcher's
+acknowledgement and the `acknowledge` request use that same commit. The pause
+document then names the new task as the request's only watcher, so an earlier
+watch task of the request that a restart resumes later ends without a deadline.
+The re-armed watch finds the admitted input by its request ID, so nothing is
+submitted again, and no missed interval produces a notice. A settled request
+keeps no pause: the commit that retires its notice at settlement, or that
+acknowledges it, retires the pause document, and a watch that ends with its
+request closed retires it too. Because acknowledgement and re-arm commit
+together, a crash before or after that commit gives the same outcome. A host of
+an earlier release starts a re-armed watch at its first interval, which gives
+at most one immediate notice.
 
 The headline names the agent and says it is still working, not finished, with
 elapsed time and retained conversation-total cost. The bounded body covers only
@@ -5096,12 +5104,13 @@ returns. An earlier sender retries a live current owner that lacks a saved file
 until that owner saves. A current sender sends no copies to earlier receivers
 and does not attempt delivery while a live owner's published session file is
 absent or its endpoint publishes none. An earlier receiver does not announce
-its first save: a current source delivers the waiting row at its next check of
-its owners (any commit in that storage, its idle retirement check, or a
-`recovery-state` request) while its host runs, and otherwise at that session's
-next registration or the source's next start. A current extension that a
-reload loaded into a process whose earlier manager it kept behaves the same
-way. A pair running earlier code has neither protection. Host operation identities are checked
+its first save. While the source's host runs, it delivers the waiting row at
+its next check of parked owners: its idle retirement check, a `recovery-state`
+request, or a delivery pass that a submission, task, or delivery-document change
+in that storage starts. A source without a running host delivers it only at
+that session's next registration or the source's next start. A current
+extension that a reload loaded into a process whose earlier manager it kept
+behaves the same way. A pair running earlier code has neither protection. Host operation identities are checked
 independently. The Endpoint identity remains separate from both retained
 interfaces.
 

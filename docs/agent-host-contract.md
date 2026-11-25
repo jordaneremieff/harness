@@ -458,8 +458,10 @@ queued call to Pi's void `sendMessage`. The source ledger retains retry ownershi
 while bounded file verification is incomplete. The reader streams past unrelated
 records without a record-size limit or general transcript validation. If the
 session file does not exist yet, the row waits at the source. Pi saves the file
-with the first user or assistant message, and the extension's first observation
-of that file starts recovery for the exact registered recipient.
+with the first user or assistant message. A current receiver's first observation
+of that file starts recovery for the exact registered recipient. An earlier
+receiver announces no first save; the compatibility rules in the agent extension
+README state when its waiting rows arrive.
 
 Direct ordinary-primary submit and report use `admit` with
 `requireRetained:false`. They require a saved session file and accept a

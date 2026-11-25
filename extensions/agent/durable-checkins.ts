@@ -50,7 +50,13 @@ type DeadlineInput = Omit<CheckInInput, "next"> & { next: number };
  * re-arms one deadline when that owner accepts the notice while the watched request is still open.
  */
 type PausedWatch = { readonly input: DeadlineInput; readonly pausedAt: number };
-const CheckInPauseDoc = defineDocFamily<{ watch: PausedWatch | null }, null>({
+/**
+ * The pause state of one watched request, while its watch lives. `watcher` names the check-in task that a re-arm
+ * created; any other check-in task of the request is superseded and creates no deadline. A watch that no re-arm
+ * replaced has none.
+ */
+type PauseState = { watch: PausedWatch | null; watcher?: number };
+export const CheckInPauseDoc = defineDocFamily<PauseState, null>({
 	kind: "agent.check-in-pause",
 	version: 1,
 	scope: "session",
@@ -58,7 +64,7 @@ const CheckInPauseDoc = defineDocFamily<{ watch: PausedWatch | null }, null>({
 	initial: () => ({ watch: null }),
 	checkpointWhen: () => true,
 });
-function pauseKey(owner: string, conversationId: number, requestId: string): string {
+export function checkInPauseKey(owner: string, conversationId: number, requestId: string): string {
 	return JSON.stringify([owner, conversationId, requestId]);
 }
 
@@ -81,43 +87,73 @@ async function watchedOpen(tx: Tx, conversationId: number, requestId: string): P
 	return (await requestHasOpenWork(tx, id, requestId)) || (await recoveryAwaitsReceipt(tx, retained));
 }
 
-async function pausedWatch(tx: Tx, input: CheckInInput): Promise<PausedWatch | null> {
-	return (await tx.doc(CheckInPauseDoc, pauseKey(input.ownerId, input.conversationId, input.requestId), null)).watch;
+/** The pause state of a watch that this check-in task still owns, or undefined when a re-arm superseded it. */
+async function ownPause(tx: Tx, input: CheckInInput, task: TaskId): Promise<PauseState | undefined> {
+	const doc = await tx.doc(
+		CheckInPauseDoc,
+		checkInPauseKey(input.ownerId, input.conversationId, input.requestId),
+		null,
+	);
+	return doc.watcher === undefined || doc.watcher === task ? doc : undefined;
 }
-async function clearPause(tx: Tx, input: CheckInInput): Promise<void> {
-	const doc = await tx.doc(CheckInPauseDoc, pauseKey(input.ownerId, input.conversationId, input.requestId), null);
-	if (doc.watch !== null) doc.watch = null;
+/**
+ * A closed request keeps no pause state: call in the commit that established that it is closed. Retirement reads no
+ * table and creates no document.
+ */
+export async function clearCheckInPause(
+	tx: Tx,
+	owner: string,
+	checkIn: { conversationId: number; requestId: string },
+): Promise<void> {
+	await tx.retireDoc(CheckInPauseDoc, checkInPauseKey(owner, checkIn.conversationId, checkIn.requestId));
 }
 
 /**
- * The owner accepted a check-in notice. In the same commit as that acknowledgement, a paused watch of a request that
- * is still open re-arms one watch at the next future interval of the existing admission; a settled one only clears.
- * The watch finds the admitted input by its request ID, so nothing is submitted again, and no missed interval
- * produces a notice.
+ * The owner accepted a check-in notice. Read in the acknowledging commit before any table write; the returned step,
+ * run in the same commit, re-arms a paused watch of a request that is still open at the next future interval of the
+ * existing admission and records the new check-in task as the only watcher, so a paused watch that a restart resumes
+ * later creates no second deadline. A closed request keeps no pause state. The watch finds the admitted input by its
+ * request ID, so nothing is submitted again, and no missed interval produces a notice.
  */
+export async function pausedCheckInResume(
+	tx: Tx,
+	owner: string,
+	checkIn: { conversationId: number; requestId: string },
+	now: number,
+): Promise<(() => Promise<void>) | undefined> {
+	const admitted = await tx.submissionByRequest(checkIn.conversationId as ConversationId, checkIn.requestId);
+	if (admitted === undefined) return undefined;
+	if (!(await watchedOpen(tx, checkIn.conversationId, checkIn.requestId))) {
+		await clearCheckInPause(tx, owner, checkIn);
+		return undefined;
+	}
+	const doc = await tx.doc(CheckInPauseDoc, checkInPauseKey(owner, checkIn.conversationId, checkIn.requestId), null);
+	const watch = doc.watch;
+	if (watch === null) return undefined;
+	doc.watch = null;
+	const { input } = watch;
+	const next = Math.max(input.next, Math.floor((now - input.admittedAt) / input.intervalMs) + 1);
+	return async () => {
+		doc.watcher = await tx.createTask(
+			CheckInTask,
+			{ ...input, next },
+			{
+				ownership: { kind: "conversation" },
+				conversationId: checkIn.conversationId as ConversationId,
+				background: true,
+			},
+		);
+	};
+}
+
+/** Acknowledgement of one check-in notice and its re-arm, in one commit. */
 export async function resumePausedCheckIn(
 	tx: Tx,
 	owner: string,
 	checkIn: { conversationId: number; requestId: string },
 	now: number,
 ): Promise<void> {
-	const doc = await tx.doc(CheckInPauseDoc, pauseKey(owner, checkIn.conversationId, checkIn.requestId), null);
-	const watch = doc.watch;
-	if (watch === null) return;
-	doc.watch = null;
-	const admitted = await tx.submissionByRequest(checkIn.conversationId as ConversationId, checkIn.requestId);
-	if (admitted === undefined || !(await watchedOpen(tx, checkIn.conversationId, checkIn.requestId))) return;
-	const { input } = watch;
-	const next = Math.max(input.next, Math.floor((now - input.admittedAt) / input.intervalMs) + 1);
-	await tx.createTask(
-		CheckInTask,
-		{ ...input, next },
-		{
-			ownership: { kind: "conversation" },
-			conversationId: checkIn.conversationId as ConversationId,
-			background: true,
-		},
-	);
+	await (await pausedCheckInResume(tx, owner, checkIn, now))?.();
 }
 
 function textOf(model: unknown): string {
@@ -288,15 +324,16 @@ async function deadlineStep(
 	waitOn: string | undefined,
 ): Promise<NextTaskState<CheckInState, null>> {
 	if (!(await watchedOpen(tx, input.conversationId, input.requestId))) {
-		await clearPause(tx, input);
+		await clearCheckInPause(tx, input.ownerId, input);
 		return COMPLETED;
 	}
 	const previous = await currentCheckInReport(tx, input.ownerId, input.conversationId, input.requestId);
 	if (parked(previous)) {
-		(await tx.doc(CheckInPauseDoc, pauseKey(input.ownerId, input.conversationId, input.requestId), null)).watch = {
-			input: { ...input, next: checkpoint.next },
-			pausedAt: now,
-		};
+		(await tx.doc(CheckInPauseDoc, checkInPauseKey(input.ownerId, input.conversationId, input.requestId), null)).watch =
+			{
+				input: { ...input, next: checkpoint.next },
+				pausedAt: now,
+			};
 		return COMPLETED;
 	}
 	const deadline = input.admittedAt + checkpoint.next * input.intervalMs;
@@ -419,6 +456,88 @@ async function watchableAdmission(
 	return !refused;
 }
 
+const COMPLETED_WATCH = { status: "terminal", outcome: { status: "completed", result: null } } as const;
+
+/**
+ * The deadline of one check-in task. A paused watch creates no deadline; its owner's acceptance of the outstanding
+ * notice re-arms one in a new check-in task, which supersedes this one, also when a restart resumes this task after
+ * the re-arm. A superseded task completes in the commit that finds it superseded.
+ */
+function deadlineWatch(
+	runtime: Pick<TaskRuntime<CheckInInput, CheckInState, null, object>, "commit">,
+	task: { readonly id: TaskId; readonly input: CheckInInput; readonly state: { readonly checkpoint: CheckInState } },
+	context: Context,
+	existing: TaskId | undefined,
+) {
+	const input = task.input;
+	const watch = {
+		deadline: existing,
+		superseded: false,
+		/** The live deadline, created unless the watch is paused or superseded. */
+		ensure: async (): Promise<TaskId | undefined> => {
+			if (watch.deadline !== undefined) return watch.deadline;
+			await runtime.commit(async (tx) => {
+				const pause = await ownPause(tx, input, task.id);
+				watch.superseded = pause === undefined;
+				if (pause === undefined) return COMPLETED_WATCH;
+				if (pause.watch !== null) return undefined;
+				watch.deadline = await tx.createTask(
+					CheckInDeadlineTask,
+					{ ...input, next: task.state.checkpoint.next },
+					{ ownership: { kind: "task", taskId: task.id } },
+				);
+				return undefined;
+			}, context);
+			return watch.deadline;
+		},
+		/** Whether the watched request is open and the watch paused. */
+		state: async (): Promise<{ open: boolean; paused: boolean }> => {
+			let open = false;
+			let paused = false;
+			await runtime.commit(async (tx) => {
+				open = await watchedOpen(tx, input.conversationId, input.requestId);
+				const pause = await ownPause(tx, input, task.id);
+				watch.superseded = pause === undefined;
+				paused = pause !== undefined && pause.watch !== null;
+				return watch.superseded ? COMPLETED_WATCH : undefined;
+			}, context);
+			return { open, paused };
+		},
+	};
+	return watch;
+}
+
+/**
+ * After the watched input settled or the watch paused. A request with open declared work keeps its check-in: the
+ * deadline task ends itself once the item closes. The receipt of a failed input can still open recovered work for
+ * its request; that work counts here. A closed request stops the deadline and keeps no pause.
+ */
+async function closeWatch(
+	runtime: Pick<TaskRuntime<CheckInInput, CheckInState, null, object>, "commit" | "waitForTask" | "abortOwned">,
+	input: CheckInInput,
+	context: Context,
+	watch: ReturnType<typeof deadlineWatch>,
+	deadlines: readonly { readonly id: TaskId }[],
+): Promise<void> {
+	const { open, paused } = await watch.state();
+	if (watch.superseded) return;
+	if (open) {
+		const watching = paused ? undefined : await watch.ensure();
+		if (watch.superseded) return;
+		if (watching !== undefined) await runtime.waitForTask(watching, context);
+	} else
+		for (const child of new Set([
+			...deadlines.map((item) => item.id),
+			...(watch.deadline === undefined ? [] : [watch.deadline]),
+		]))
+			await runtime.abortOwned(child, context);
+	await runtime.commit(async (tx) => {
+		if (!(await watchedOpen(tx, input.conversationId, input.requestId)))
+			await clearCheckInPause(tx, input.ownerId, input);
+		return COMPLETED_WATCH;
+	}, context);
+}
+
 /** The submission wait owns the deadline task, so settlement without open declared work stops it without waiting for its deadline. */
 export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 	name: "agent.check-in",
@@ -436,44 +555,10 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 				(child) => child.kind === CheckInDeadlineTask.definition.name,
 			);
 			const settled = status.status === "done" || status.status === "unanswered";
-			let deadline = deadlines[0]?.id;
-			// A paused watch creates no deadline; its owner's acceptance of the outstanding notice re-arms one.
-			const watch = async () => {
-				if (deadline === undefined)
-					await runtime.commit(async (tx) => {
-						if ((await pausedWatch(tx, input)) !== null) return undefined;
-						deadline = await tx.createTask(
-							CheckInDeadlineTask,
-							{ ...input, next: task.state.checkpoint.next },
-							{ ownership: { kind: "task", taskId: task.id } },
-						);
-						return undefined;
-					}, context);
-				return deadline;
-			};
-			if (!settled) await settledOrPaused(runtime, submission, await watch(), context);
-			// A request with open declared work keeps its check-in: the deadline task ends itself once the item closes.
-			// The receipt of a failed input can still open recovered work for its request; that work counts here.
-			let open = false;
-			let paused = false;
-			await runtime.commit(async (tx) => {
-				open = await watchedOpen(tx, input.conversationId, input.requestId);
-				paused = (await pausedWatch(tx, input)) !== null;
-				return undefined;
-			}, context);
-			if (open) {
-				const watching = paused ? undefined : await watch();
-				if (watching !== undefined) await runtime.waitForTask(watching, context);
-			} else
-				for (const child of new Set([
-					...deadlines.map((item) => item.id),
-					...(deadline === undefined ? [] : [deadline]),
-				]))
-					await runtime.abortOwned(child, context);
-			await runtime.commit(async (tx) => {
-				if (!(await watchedOpen(tx, input.conversationId, input.requestId))) await clearPause(tx, input);
-				return { status: "terminal", outcome: { status: "completed", result: null } };
-			}, context);
+			const watch = deadlineWatch(runtime, task, context, deadlines[0]?.id);
+			if (!settled) await settledOrPaused(runtime, submission, await watch.ensure(), context);
+			if (watch.superseded) return;
+			await closeWatch(runtime, input, context, watch, deadlines);
 		},
 	},
 	abort: (_task, runtime, context) =>

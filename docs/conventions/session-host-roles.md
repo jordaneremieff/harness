@@ -82,9 +82,9 @@ release and restore normal idle retirement without closing observations.
 Delivery scans, read-only requests and generation-only races leave the release
 pending for the next activity or quiescent event.
 The source writer publishes a bounded parked-recipient sidecar before clearing
-its recovery marker. An exact primary registration, its first saved transcript,
-or a newly available named recipient wakes the matching source through bounded
-catalogue scans. Unrelated registration does not relaunch parked-only hosts. Sidecars stay
+its recovery marker. An exact primary registration, the first saved transcript
+of a current receiver, or a newly available named recipient wakes the matching
+source through bounded catalogue scans. Unrelated registration does not relaunch parked-only hosts. Sidecars stay
 outside the catalogue directory; only their source writer changes them.
 
 Delivery is at-least-once. The cross-host boundary has no shared transaction or
