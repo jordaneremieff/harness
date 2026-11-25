@@ -43,9 +43,9 @@ Pi's public completion events for each completed pillars call:
 
 - A successful call whose `resource` argument is present, is not `inventory`
   or `governance`, and carries no `draft` records a draftless source read.
-- A successful call with a `draft` present resets the observation period,
-  regardless of `resource`. A failed or unexecuted call neither observes nor
-  resets.
+- A successful call with a `draft` present resets the observation period.
+  The pillars tool accepts a draft only alone, without `resource`. A failed
+  or unexecuted call neither observes nor resets.
 - Inventory and governance reads, default calls without a `resource`, and
   calls from other tools never enter the period.
 
@@ -88,7 +88,7 @@ disable, retire, or reset the rule like any seeded rule. See the
 ## Evaluation fixture
 
 The policy product suite's synthetic pillars tool mirrors the public argument
-shape (`resource`, optional `draft`) and serves the repository's actual corpus
+shape (an optional `resource`, or a `draft` sent alone) and serves the repository's actual corpus
 text for its listed resources. It imports no sibling module and labels nothing
 invented as corpus doctrine. Deterministic tests drive production hooks for
 the lifecycle bounds above; model-backed runs remain a separately approved,

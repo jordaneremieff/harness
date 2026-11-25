@@ -139,7 +139,7 @@ export const PACKAGE_CATALOG: PackageDefinitionRow[] = [
 			},
 			action: {
 				kind: "guide",
-				text: "Pillars entry text was read without a draft. If those entries govern a consequential decision, action, or answer now, check the concrete proposal with pillars(draft: ...) before delivery; use the relevant source already selected. Apply the assessment, fix affected work, and continue the authorized task. If the request is only to read or quote doctrine, the work is routine, or no proposal follows, proceed without an extra check. A source read or submitted draft does not prove application or grant permission.",
+				text: "Pillars entry text was read without a draft. If those entries govern a consequential decision, action, or answer now, check the concrete proposal with pillars({draft}) before delivery; send the draft alone, without a resource. Apply the assessment, fix affected work, and continue the authorized task. If the request is only to read or quote doctrine, the work is routine, or no proposal follows, proceed without an extra check. A source read or submitted draft does not prove application or grant permission.",
 			},
 			onUnavailable: "skip",
 		},

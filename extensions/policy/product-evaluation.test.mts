@@ -54,7 +54,7 @@ const volume = (bytes: number): ProductStep => ({ name: "policy_product_volume",
 const pillarsEntry = "pattern-grounding-preflight";
 const pillarsBody: ProductStep = { name: "pillars", args: { resource: pillarsEntry } };
 const pillarsCall = (args: Record<string, string>): ProductStep => ({ name: "pillars", args });
-const pillarsDraft = (text: string): ProductStep => pillarsCall({ resource: pillarsEntry, draft: text });
+const pillarsDraft = (text: string): ProductStep => pillarsCall({ draft: text });
 const pillarsPeriod = async (run: ReturnType<typeof harness>) => run.period("recovery.pillars-application");
 const adaptiveGuidancePattern = (entryId: string): RegExp =>
 	entryId === "recovery-guidance"

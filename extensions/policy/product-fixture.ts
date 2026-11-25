@@ -148,7 +148,7 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 			return result(args.compact ? "COMPACT: 2 items" : "x".repeat(args.bytes));
 		},
 	});
-	// Public pillars argument contract only: optional resource and draft strings.
+	// Public pillars argument contract only: an optional resource string, or a draft string sent alone.
 	pi.registerTool({
 		name: "pillars",
 		label: "Synthetic Pillars corpus",
