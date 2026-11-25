@@ -188,7 +188,7 @@ type PlaceLockAttempt =
  * Resolve when the lock directory changes or after `ms`, whichever comes first. A change notice only shortens
  * the wait for the next attempt; the timer covers a notice that the platform drops.
  */
-function lockChange(directory: string, ms: number): Promise<void> {
+function lockChange(directory: string, name: string, ms: number): Promise<void> {
 	return new Promise((done) => {
 		let watcher: ReturnType<typeof watch> | undefined;
 		const finish = () => {
@@ -198,7 +198,10 @@ function lockChange(directory: string, ms: number): Promise<void> {
 		};
 		const timer = setTimeout(finish, ms);
 		try {
-			watcher = watch(directory, { persistent: false }, finish);
+			// Other files of the directory change often; only the lock file's name can end a wait early.
+			watcher = watch(directory, { persistent: false }, (_event, changed) => {
+				if (changed === null || changed === name) finish();
+			});
 			watcher.on("error", finish);
 		} catch {
 			// Without a watcher the timer alone ends the wait.
@@ -461,7 +464,9 @@ export class PlaceBook {
 	private openLock(lockFile: string): { descriptor: number; created: boolean } | PlaceLockAttempt {
 		mkdirSync(dirname(this.file), { recursive: true });
 		const flags = constants.O_RDWR | DARWIN_O_EXLOCK | constants.O_NONBLOCK | noFollow();
-		const published = this.publishLock(lockFile, flags);
+		// A present lock file needs no private candidate, whose create and removal would wake every waiter.
+		const published =
+			lstatSync(lockFile, { throwIfNoEntry: false }) === undefined ? this.publishLock(lockFile, flags) : undefined;
 		if (published !== undefined) return { descriptor: published, created: true };
 		try {
 			return { descriptor: openSync(lockFile, flags), created: false };
@@ -509,7 +514,11 @@ export class PlaceBook {
 			const remaining = deadline - performance.now();
 			if (attempt.final === true || (remaining <= 0 && attempt.retry !== true))
 				throw new PlaceLockedError(`${this.file}.lock`, attempt.claim, attempt.detail);
-			await lockChange(dirname(this.file), Math.max(1, Math.min(remaining, LOCK_RECHECK_MS)));
+			await lockChange(
+				dirname(this.file),
+				basename(this.file) + ".lock",
+				Math.max(1, Math.min(remaining, LOCK_RECHECK_MS)),
+			);
 		}
 	}
 

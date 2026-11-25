@@ -248,6 +248,48 @@ describe("place bindings", () => {
 		}
 	});
 
+	it("a waiter publishes no candidate while the lock is held and ignores other files of the directory", async (t) => {
+		const root = base();
+		try {
+			const holder = new PlaceBook(root);
+			let entered: () => void = () => {};
+			const inside = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			let publish: () => void = () => {};
+			let finish: () => void = () => {};
+			const done = new Promise<void>((resolve) => {
+				finish = resolve;
+			});
+			const held = holder.withArea("/work/first", async (_current, reserve) => {
+				publish = reserve("first");
+				entered();
+				await done;
+				return "first";
+			});
+			await inside;
+			const prototype = PlaceBook.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
+			const published = t.mock.method(prototype, "publishLock");
+			const attempts = t.mock.method(prototype, "tryLock");
+			const waiting = new PlaceBook(root, { lockWaitMs: 10_000 }).withArea("/work/other", async (_current, reserve) => {
+				reserve("other")();
+				return "other";
+			});
+			// Other files of the same directory change many times while the holder works.
+			for (let index = 0; index < 200; index++) writeFileSync(join(dirname(holder.file), `other-${index}.json`), "{}");
+			await new Promise<void>((resolve) => setTimeout(resolve, 600));
+			const whileHeld = attempts.mock.callCount();
+			assert.equal(published.mock.callCount(), 0, "a present lock file needs no private candidate");
+			assert.ok(whileHeld <= 12, `the waiter tried ${whileHeld} times in 600 ms`);
+			publish();
+			finish();
+			await held;
+			assert.equal((await waiting).binding.sessionId, "other");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("holds the lock across an asynchronous place operation and releases it", async () => {
 		const root = base();
 		try {
