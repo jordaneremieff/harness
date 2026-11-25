@@ -273,6 +273,10 @@ export class JobsView {
 			return { handled: true };
 		}
 		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
+		return this.handleControl(event);
+	}
+
+	private handleControl(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (event.y === this.keyRow.y) {
 			const target = this.keyRow.targets.find((item) => event.x >= item.x && event.x < item.x + item.width);
 			if (!target) return undefined;
