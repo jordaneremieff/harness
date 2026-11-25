@@ -3839,13 +3839,21 @@ a token request after close.
   runner takes one nonblocking Darwin lock before it opens SQLite or resumes the
   Durable scheduler. A busy lease prevents a second runtime from opening. Every
   writer (serving host, cold stop, delivery-page adoption) holds two lease files:
-  the one under `durable-hosts` and `.leases/<storage file>.writer` in the storage's
-  own directory,
-  so removing the `durable-hosts` directory does not admit a second writer, and
-  an older host that takes only the first file still excludes a newer one. A host
-  checks that both pathnames still name its descriptors before each request, at
-  each idle check and on native activity; when one does not, it unpublishes its
-  endpoint and the process exits at once without closing the runtime. Normal
+  the one under `durable-hosts` and `.leases/<storage file>.writer` in the
+  storage's own directory, so removing the `durable-hosts` directory does not
+  admit a second newer writer, and an older host that takes only the first file
+  still excludes a newer one. A host checks that both pathnames still name its
+  descriptors before each request, at each idle check (every 5 minutes when idle
+  retirement is off), on native activity and before shutdown; when one does not,
+  it unpublishes its endpoint and the process exits at once without closing the
+  runtime or writing again. Limits: an older launcher takes only the first file,
+  so after a removal of `durable-hosts` under a newer host it can open the
+  storage beside that host until the newer host's next check stops it; this ends
+  once every process of older code has restarted. A host whose endpoint file
+  alone is removed keeps its leases; a launch from the process that started it
+  waits its launch budget for that host's exit and then fails. A cold stop holds
+  the leases without the start gate, so a launch that meets it reports BUSY
+  without an endpoint. Normal
   release closes the runtime, removes the owned socket and verifies that the
   claim pathname still names the held inode. It then writes the holder's complete
   diagnostic record with canonical `endedAt` through the held descriptor at byte
