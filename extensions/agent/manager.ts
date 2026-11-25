@@ -1576,7 +1576,8 @@ export class AgentManager {
 		if (method !== "submit" && method !== "report")
 			throw new Error("A registered primary accepts messages, not Durable session controls");
 		const sourceId = typeof input.requestId === "string" ? input.requestId : randomUUID();
-		const deadline = Date.now() + PRIMARY_RELOAD_WAIT_MS;
+		// A monotonic clock: a wall-clock step neither ends nor extends the wait.
+		const deadline = performance.now() + PRIMARY_RELOAD_WAIT_MS;
 		const channel = await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root }).catch(
 			async (error: unknown) => {
 				// The record can name a channel that a reload closes before the connection; a live owner publishes the next.
@@ -1694,7 +1695,7 @@ export class AgentManager {
 	): Promise<PrimaryChannelConnection | "ended" | "deadline"> {
 		let absent = 0;
 		for (;;) {
-			if (Date.now() >= deadline) return "deadline";
+			if (performance.now() >= deadline) return "deadline";
 			await delay(PRIMARY_RELOAD_RETRY_MS, undefined, signal === undefined ? undefined : { signal });
 			try {
 				return await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root });

@@ -815,3 +815,45 @@ test("a message whose request timed out is sent once more and confirmed by the s
 	assert.equal(receipt.sourceId, "source-slow");
 	assert.deepEqual([...taken], ["source-slow"]);
 });
+
+test("a wall-clock step during the reload wait does not end the wait of a message", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-reload-clock-")));
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const sender = randomUUID();
+	const target = randomUUID();
+	await manager.registerPrimary(sender, { signal: new AbortController().signal, cwd: root, send() {} });
+	const first = new AbortController();
+	await manager.registerPrimary(target, { signal: first.signal, cwd: root, send() {} });
+	assert.equal(manager.suspendPrimary(target, first), true);
+	// The wall clock steps one hour forward while the message waits for the next registration.
+	const wall = Date.now.bind(Date);
+	let stepped = false;
+	t.mock.method(Date, "now", () => wall() + (stepped ? 3_600_000 : 0));
+	setTimeout(() => {
+		stepped = true;
+	}, 100);
+	const delivered: string[] = [];
+	const registered = new Promise<void>((done) => {
+		setTimeout(() => {
+			void manager
+				.registerPrimary(target, {
+					signal: new AbortController().signal,
+					cwd: root,
+					send: (text) => delivered.push(text),
+				})
+				.then(done);
+		}, 400);
+	});
+	const receipt = (await manager.control(
+		"submit",
+		{ sessionId: target, message: "sent across a clock step", origin: "model" },
+		{ id: sender, cwd: root },
+	)) as { admitted?: boolean };
+	await registered;
+	assert.equal(receipt.admitted, true);
+	assert.equal(delivered.length, 1);
+});
