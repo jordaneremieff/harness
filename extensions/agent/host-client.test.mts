@@ -386,6 +386,29 @@ it("a first connection that meets a retiring host waits for it and acquires a fr
 	assert.deepEqual(await connection.request("timer-list", { probe: 1 }), { probe: 1 });
 });
 
+it("a launch after a retiring host ended gets its own launch budget", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const metadata = fixtureMetadata(root);
+	let finishClose: () => void = () => {};
+	const closeStep = new Promise<void>((resolve) => {
+		finishClose = resolve;
+	});
+	const retiring = await runHost(() => ({ request: async () => ({}), close: () => closeStep, isIdle: () => true }), {
+		metadata,
+		idleMs: 0,
+		announceReady: () => {},
+	});
+	const closed = retiring.close();
+	const acquiring = acquireHost(metadata, launch({ launchTimeoutMs: 4000 }));
+	// The close step uses nearly all of the first budget; the fresh runner needs its own.
+	setTimeout(finishClose, 3800);
+	await closed;
+	const connection = await acquiring;
+	track(t, connection.pid);
+	t.after(() => connection.close());
+	assert.deepEqual(await connection.request("timer-list", { probe: 2 }), { probe: 2 });
+});
+
 it("an attach-only connection to a host that ended while it waited reports no endpoint", {
 	timeout: 30000,
 }, async (t) => {
