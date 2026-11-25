@@ -323,6 +323,21 @@ function reportCommunication(report: DeliveryReport): Communication | undefined 
 		},
 	};
 }
+/** The body within its own byte bound; a body that this cut shortens is not complete. */
+function withBoundedBody<T extends Communication>(value: T): T {
+	let text = "";
+	let bytes = 0;
+	for (const point of value.body.text) {
+		const size = Buffer.byteLength(point, "utf8");
+		if (bytes + size > COMMUNICATION_BODY_BYTES) break;
+		text += point;
+		bytes += size;
+	}
+	return {
+		...value,
+		body: { ...value.body, text, complete: value.body.complete && !value.body.redacted && text === value.body.text },
+	};
+}
 function deliveryCommunication(row: DeliveryRow, host: DurableHost): Communication | undefined {
 	try {
 		let value: Communication | undefined =
@@ -332,18 +347,7 @@ function deliveryCommunication(row: DeliveryRow, host: DurableHost): Communicati
 					? receiptCommunication(row, host.storageId, row.receiptGroup, row.receiptGroup.members)
 					: undefined;
 		if (value === undefined) return undefined;
-		let text = "";
-		let bytes = 0;
-		for (const point of value.body.text) {
-			const size = Buffer.byteLength(point, "utf8");
-			if (bytes + size > COMMUNICATION_BODY_BYTES) break;
-			text += point;
-			bytes += size;
-		}
-		value = {
-			...value,
-			body: { ...value.body, text, complete: value.body.complete && !value.body.redacted && text === value.body.text },
-		};
+		value = withBoundedBody(value);
 		while (!communicationFits(value) && value.body.text.length > 0) {
 			const points: string[] = Array.from(value.body.text);
 			value = {
@@ -2205,10 +2209,11 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		for (;;) {
 			const { page, members } = await host.harness.commit(
 				(tx) =>
-					receiptReferenceSlice(tx, metadata.storageId, row.receipt, cursor, (candidate, receipts) => {
-						const value = receiptCommunication(row, metadata.storageId, candidate, receipts);
-						return communicationFits({ ...value, body: { ...value.body, text: "", complete: false } });
-					}),
+					// The page shares its envelope with the answer: a page that leaves no room for the whole inline
+					// answer gives up references, which the receipt continuation still reaches, and never answer text.
+					receiptReferenceSlice(tx, metadata.storageId, row.receipt, cursor, (candidate, receipts) =>
+						communicationFits(withBoundedBody(receiptCommunication(row, metadata.storageId, candidate, receipts))),
+					),
 				BACKGROUND_CONTEXT,
 			);
 			if (members.length > 0) return { ...page, members };
@@ -2217,6 +2222,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 	};
 	const prepareReceiptRow = async (row: ReceiptRow): Promise<void> => {
+		// The reason is part of the envelope that the reference page is fitted against.
+		await prepareDisplayReason(row);
 		row.receiptGroup = await firstReceiptGroup(row);
 		if (
 			!row.receiptGroup.complete ||
@@ -2240,6 +2247,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 				},
 			);
 		}
+	};
+	const prepareDisplayReason = async (row: ReceiptRow): Promise<void> => {
 		if (row.receipt.status !== "unanswered") return;
 		const input = await host.harness.submission(row.receipt.submissionId, BACKGROUND_CONTEXT);
 		const native = await input?.status(BACKGROUND_CONTEXT);

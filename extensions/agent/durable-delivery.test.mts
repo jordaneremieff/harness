@@ -1,5 +1,10 @@
 import { onStoredCommit } from "./commit-observation.ts";
-import { COMMUNICATION_BODY_BYTES, parseCommunication, parseCommunicationPassive } from "./communication.ts";
+import {
+	COMMUNICATION_BODY_BYTES,
+	COMMUNICATION_VALUE_BYTES,
+	parseCommunication,
+	parseCommunicationPassive,
+} from "./communication.ts";
 import { AwaitDoc } from "./awaited-results.ts";
 import type { ReceiptContinuation } from "./result-schema.ts";
 import {
@@ -1502,6 +1507,83 @@ for (const [name, answer, complete] of [
 		assert.equal(primaryDetails.continuation?.offset, end);
 		assert.match(nativeText, new RegExp(`Answer continues: \\{.*"offset":${end}\\}`, "u"));
 	});
+
+it("keeps the whole inline answer in the structured body of a group whose references fill the envelope", {
+	timeout: 30000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	const path = join(root, "source.sqlite");
+	const source = await openHost(path, randomUUID(), root);
+	t.after(() => source.close());
+	const catalog = new AgentCatalog(root);
+	const target = catalog.create({
+		cwd: root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
+		model: { provider: fixtureProvider, modelId: fixtureModelId },
+		thinkingLevel: "off",
+		ownerId: "requester",
+	}).storageId;
+	const answer = `${"x".repeat(RECEIPT_ANSWER_UNITS - 1)}Z`;
+	const requests = 19;
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	// One answer settles many requests of one recipient, and each request ID is near its byte bound.
+	await source.harness.commit(async (tx) => {
+		for (let index = 1; index <= requests; index++)
+			await storeDeliveryRow(
+				tx,
+				"receipt",
+				{
+					submissionId: index as SubmissionId,
+					requestId: `${String(index).padStart(2, "0")}${"r".repeat(985)}`,
+					ownerId: target,
+					conversationId: 1 as ConversationId,
+					operationId: null,
+					origin: "model",
+					status: "done",
+					entryId: index as EntryId,
+					answerEntryId: 50 as EntryId,
+					answer,
+					answerTruncated: false,
+					answerLength: answer.length,
+					reason: null,
+					acknowledged: false,
+				},
+				true,
+			);
+	}, BACKGROUND_CONTEXT);
+	const received = eventLog<RequestParams>();
+	const watcher = startDurableDelivery({
+		host: source,
+		metadata: sourceMetadata(root, source.storageId, path),
+		catalog,
+		signal: new AbortController().signal,
+		acquire: async () =>
+			({
+				closed: false,
+				close: async () => {},
+				request: async (_method: string, params: RequestParams) => {
+					received.push(params);
+					return { submissionId: 1, requestId: params.requestId, status: "queued" };
+				},
+			}) as unknown as HostConnection,
+	});
+	t.after(() => watcher.close());
+	await received.waitForCount(1);
+	const communication = parseCommunication(received[0].communication);
+	assert.ok(communication?.kind === "result");
+	assert.deepEqual(
+		communication.body,
+		{ text: answer, complete: true, redacted: false },
+		"the structured body ends where the notice text ends",
+	);
+	assert.equal(String(received[0].message).includes(answer), true);
+	const shown = communication.metadata.references.length;
+	assert.ok(shown >= 1 && shown < 16, `the reference page gave up room for the answer: ${shown} references`);
+	assert.equal(communication.metadata.omittedReferences, requests - shown);
+	assert.ok(communication.metadata.receiptContinuation, "the references that did not fit stay reachable");
+	assert.ok(Buffer.byteLength(JSON.stringify(communication)) <= COMMUNICATION_VALUE_BYTES);
+});
 
 it("bounds a check-in digest while retaining the full source", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);

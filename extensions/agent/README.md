@@ -2287,8 +2287,10 @@ note in place of its final report. In a shared answer group, the body
 continuation selects a request without declared work, if the group has one.
 
 A result communication shows the first nonempty page of references for this
-recipient in retained order, up to 16. Fewer are shown if their encoded
-metadata would exceed the 24 KiB communication limit. Every reference has its
+recipient in retained order, up to 16. Fewer are shown if the communication
+with them and the whole inline answer would exceed its 24 KiB limit: the page
+gives up references, which the receipt continuation still reaches, and never
+answer text. Every reference has its
 exact submission ID. A request ID that does not fit the communication's text
 rules is omitted, not shortened. The first page can include earlier delivered
 submissions. `omittedReferences` counts submissions in the pending chunk that
