@@ -1284,7 +1284,9 @@ export class AgentManager {
 	}
 
 	/**
-	 * Stop a live host in place. A cold storage gets only an exclusive stop writer, never an executing host.
+	 * Stop a live host in place. A cold storage gets only an exclusive stop writer, never an executing host. A host
+	 * that refuses the stop because it is ending admitted nothing: once it has ended, the stop is selected again,
+	 * once, and reaches the next live host or a cold stop writer.
 	 */
 	private async abortControl(
 		target: CatalogRecord,
@@ -1296,28 +1298,42 @@ export class AgentManager {
 	): Promise<unknown> {
 		if (method === "release" && params.background === true)
 			throw new Error("release cannot be combined with background");
-		const running = await this.observationConnection(target);
-		if (running !== undefined) return this.controlClient(running, method, params, caller, signal);
-		if (!launch) throw new HostEndpointUnavailableError(target.storageId, new Error("this abort may not start a host"));
-		signal?.throwIfAborted();
-		const reply = await (this.options.stopCold ?? stopColdStorage)(
-			hostMetadata(target, this.options.packageDir),
-			String(params.sessionId),
-			params.background === true,
-			{ signal },
-		);
-		if ("result" in reply) {
-			const aborted = {
-				...reply.result,
-				cold: true,
-				started:
-					"A stop writer marked the retained work and exited. No host was started. Pending abort handlers settle on normal recovery.",
-			};
-			return method === "release" ? { aborted, retiring: true, blockers: [], writesPlaced: 0 } : aborted;
-		}
-		// A competing writer won the lease. Stop it in place; never launch or retire it on this evidence.
-		const owner = await this.connection(target, undefined, false);
-		return this.controlClient(owner, method, params, caller, signal);
+		let reselected = false;
+		const stopLive = async (client: HostConnection): Promise<unknown> => {
+			try {
+				return await this.controlClient(client, method, params, caller, signal);
+			} catch (error) {
+				if (reselected || !(error instanceof HostRetiringError)) throw error;
+				if (!(await connectionEnded(client, RETIRING_HOST_WAIT_MS, signal))) throw error;
+				reselected = true;
+				return select();
+			}
+		};
+		const select = async (): Promise<unknown> => {
+			const running = await this.observationConnection(target);
+			if (running !== undefined) return stopLive(running);
+			if (!launch)
+				throw new HostEndpointUnavailableError(target.storageId, new Error("this abort may not start a host"));
+			signal?.throwIfAborted();
+			const reply = await (this.options.stopCold ?? stopColdStorage)(
+				hostMetadata(target, this.options.packageDir),
+				String(params.sessionId),
+				params.background === true,
+				{ signal },
+			);
+			if ("result" in reply) {
+				const aborted = {
+					...reply.result,
+					cold: true,
+					started:
+						"A stop writer marked the retained work and exited. No host was started. Pending abort handlers settle on normal recovery.",
+				};
+				return method === "release" ? { aborted, retiring: true, blockers: [], writesPlaced: 0 } : aborted;
+			}
+			// A competing writer won the lease. Stop it in place; never launch or retire it on this evidence.
+			return stopLive(await this.connection(target, undefined, false));
+		};
+		return select();
 	}
 
 	private requestedOperation(method: string, params: Record<string, unknown>): string {

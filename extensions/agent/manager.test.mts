@@ -472,6 +472,45 @@ it("sends only the refused step of an attach again after a retiring host refused
 	assert.deepEqual(seen, ["1:configure", "1:status", "2:status"], "the applied configuration is not sent again");
 });
 
+for (const method of ["abort", "release"] as const)
+	it(`selects the ${method} again after the host it found refused as retiring, without starting a host`, async (t) => {
+		const root = fixtureRoot(t);
+		let connects = 0;
+		let launches = 0;
+		const stops: string[] = [];
+		const manager = new AgentManager(
+			managerOptions(root, {
+				connect: async (metadata) => {
+					connects++;
+					if (connects > 1) throw new HostEndpointUnavailableError(metadata.storageId, new Error("closed"));
+					const connection: FakeConnection = fakeConnection(metadata, async (requested) => {
+						if (requested !== method) return {};
+						setImmediate(() => void connection.close());
+						throw new HostRetiringError("The durable host process is shutting down");
+					});
+					return connection;
+				},
+				acquire: async () => {
+					launches++;
+					throw new Error("a stop never starts an executing host");
+				},
+				stopCold: async (_metadata, sessionId) => {
+					stops.push(sessionId);
+					return { result: { aborted: true, settled: true, pendingTasks: [] } } as never;
+				},
+			}),
+		);
+		t.after(() => manager.close());
+		const target = createRecord(manager, root, "owner").storageId;
+		const outcome = (await manager.control(method, { sessionId: target }, { id: "terminal", cwd: root })) as Record<
+			string,
+			unknown
+		>;
+		assert.deepEqual(stops, [target], "the cold stop runs once the retiring host ended");
+		assert.equal(launches, 0);
+		assert.equal(method === "release" ? (outcome.aborted as { cold?: boolean }).cold : outcome.cold, true);
+	});
+
 it("refuses a cold stop whose working directory was removed with the directory, not the executable", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root));
