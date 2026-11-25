@@ -61,7 +61,7 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 		process.exitCode = 1;
 	};
 	process.once("beforeExit", unsettled);
-	const host = await runHost(() => createDurableRuntime(metadata), {
+	const host = await runHost((bootstrap) => createDurableRuntime(metadata, { decisionWait: bootstrap.decisionWait }), {
 		metadata,
 		exit: (status) => process.exit(status),
 	})

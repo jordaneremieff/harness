@@ -917,11 +917,53 @@ it("ends a dedicated process at its bootstrap deadline and cancels it after read
 	assert.equal(scheduled[0].delayMs, BOOTSTRAP_DEADLINE_MS);
 	scheduled[0].expire();
 	assert.deepEqual(exits, [1]);
-	void runHost(() => new Promise<HostRuntime>(noop), { ...options, metadata: metadata(fixtureRoot(t)) });
-	assert.equal(scheduled[1].delayMs, TRUST_BOOTSTRAP_DEADLINE_MS, "a pending trust decision gets the longer bound");
 	const host = await runHost(echoRuntime, { ...options, metadata: metadata(fixtureRoot(t)) });
 	t.after(() => host.close());
-	assert.equal(scheduled[2].cancelled, true, "readiness cancels the bootstrap deadline");
+	assert.equal(scheduled[1].cancelled, true, "readiness cancels the bootstrap deadline");
+});
+
+it("extends the bootstrap deadline only while a decision from a person is awaited", async (t) => {
+	const scheduled: Array<{ delayMs: number; cancelled: boolean }> = [];
+	let answer: (value: boolean) => void = noop;
+	let decided: Promise<boolean> | undefined;
+	void runHost(
+		async (bootstrap) => {
+			decided = bootstrap.decisionWait(
+				() =>
+					new Promise<boolean>((resolve) => {
+						answer = resolve;
+					}),
+			);
+			await decided;
+			return new Promise<HostRuntime>(noop);
+		},
+		{
+			metadata: metadata(fixtureRoot(t)),
+			idleMs: 0,
+			announceReady: noop,
+			exit: (() => undefined) as unknown as (status: 0 | 1) => never,
+			scheduleBootstrapDeadline: (_expire, delayMs) => {
+				const deadline = { delayMs, cancelled: false };
+				scheduled.push(deadline);
+				return () => {
+					deadline.cancelled = true;
+				};
+			},
+		},
+	);
+	await new Promise<void>(setImmediate);
+	assert.deepEqual(
+		scheduled.map((deadline) => deadline.delayMs),
+		[BOOTSTRAP_DEADLINE_MS, TRUST_BOOTSTRAP_DEADLINE_MS],
+		"a record without a trust value starts with the short bound; the trust prompt extends it",
+	);
+	assert.equal(scheduled[0].cancelled, true);
+	answer(true);
+	await decided;
+	await new Promise<void>(setImmediate);
+	assert.equal(scheduled[1].cancelled, true);
+	assert.equal(scheduled.at(-1)?.delayMs, BOOTSTRAP_DEADLINE_MS, "the short bound starts again after the decision");
+	assert.equal(scheduled.at(-1)?.cancelled, false);
 });
 
 it("keeps one writer for a storage after its host directory is removed", async (t) => {

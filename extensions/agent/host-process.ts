@@ -90,8 +90,17 @@ export interface HostRuntime {
 	onQuiescent?(listener: () => void): () => void;
 }
 
+/** Bootstrap services that runHost lends the factory while it builds the runtime. */
+export interface HostBootstrap {
+	/**
+	 * Run one wait for a decision from a person (a project trust prompt). The bootstrap deadline extends for the wait
+	 * and starts again when it ends.
+	 */
+	decisionWait<T>(wait: () => Promise<T>): Promise<T>;
+}
+
 /** Called with exclusive ownership. A rejected factory retains the claim because partial native construction has no close handle. */
-export type HostRuntimeFactory = () => HostRuntime | Promise<HostRuntime>;
+export type HostRuntimeFactory = (bootstrap: HostBootstrap) => HostRuntime | Promise<HostRuntime>;
 
 export interface RunHostOptions {
 	readonly metadata: HostMetadata;
@@ -178,8 +187,9 @@ export const SHUTDOWN_GRACE_MS = 20_000;
 export const LEASE_CHECK_MS = 300_000;
 /**
  * A dedicated host process that has not announced readiness this long after it took the writer lease ends, which
- * releases the lease. The bound is longer than the launcher's own readiness wait, and longer again while a project
- * trust decision can be pending.
+ * releases the lease. The bound is longer than the launcher's own readiness wait. While the host waits for a project
+ * trust decision from the primary, the longer bound applies, and the shorter one starts again when the decision
+ * arrives.
  */
 export const BOOTSTRAP_DEADLINE_MS = 90_000;
 export const TRUST_BOOTSTRAP_DEADLINE_MS = 420_000;
@@ -969,18 +979,9 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	}
 	// Without a complete runtime there is no safe close handle: keep the lease until process exit. A dedicated
 	// process whose bootstrap never finishes would hold it forever, so it ends at its bootstrap deadline.
-	const bootstrapMs = metadata.trust === undefined ? TRUST_BOOTSTRAP_DEADLINE_MS : BOOTSTRAP_DEADLINE_MS;
-	const cancelBootstrap = exit
-		? (options.scheduleBootstrapDeadline ?? unrefDeadline)(() => {
-				writeSync(
-					2,
-					`Durable host: bootstrap did not announce readiness within ${bootstrapMs / 1000} s; the process exits and releases its writer lease. A configured extension that never finishes loading can cause this.\n`,
-				);
-				exit(1);
-			}, bootstrapMs)
-		: undefined;
+	const deadline = bootstrapDeadline(exit, options.scheduleBootstrapDeadline ?? unrefDeadline);
 	try {
-		const runtime = await createRuntime();
+		const runtime = await createRuntime({ decisionWait: deadline.decisionWait });
 		const host = new HostProcessServer(
 			runtime,
 			paths,
@@ -1001,9 +1002,49 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 			throw error;
 		}
 	} finally {
-		cancelBootstrap?.();
+		deadline.cancel();
 		gate?.release();
 	}
+}
+
+/** The bootstrap deadline of a dedicated process; an embedded host has none. */
+function bootstrapDeadline(
+	exit: RunHostOptions["exit"],
+	schedule: NonNullable<RunHostOptions["scheduleBootstrapDeadline"]>,
+): { readonly decisionWait: HostBootstrap["decisionWait"]; cancel(): void } {
+	let cancelTimer: (() => void) | undefined;
+	let ended = false;
+	let waits = 0;
+	const arm = (delayMs: number) => {
+		cancelTimer?.();
+		cancelTimer = undefined;
+		if (ended || !exit) return;
+		cancelTimer = schedule(() => {
+			writeSync(
+				2,
+				`Durable host: bootstrap did not announce readiness within ${delayMs / 1000} s; the process exits and releases its writer lease. A configured extension that never finishes loading can cause this.\n`,
+			);
+			exit(1);
+		}, delayMs);
+	};
+	arm(BOOTSTRAP_DEADLINE_MS);
+	return {
+		async decisionWait(wait) {
+			waits++;
+			if (waits === 1) arm(TRUST_BOOTSTRAP_DEADLINE_MS);
+			try {
+				return await wait();
+			} finally {
+				waits--;
+				if (waits === 0) arm(BOOTSTRAP_DEADLINE_MS);
+			}
+		},
+		cancel() {
+			ended = true;
+			cancelTimer?.();
+			cancelTimer = undefined;
+		},
+	};
 }
 
 /** The start gate sits beside the storage file; a dedicated runner may block its own thread on it. */

@@ -128,9 +128,14 @@ const PUBLISH_COALESCE_MS = 250;
  */
 const COMPLETE_PROJECTION_INTERVAL_MS = 5_000;
 
-/** Options of one runtime. `completeViewIntervalMs` replaces the complete-read interval for timing tests. */
+/**
+ * Options of one runtime. `completeViewIntervalMs` replaces the complete-read interval for timing tests.
+ * `decisionWait` wraps each wait for a project trust decision from the primary; the host bootstrap deadline extends
+ * meanwhile.
+ */
 export type DurableRuntimeOptions = Pick<CreateDurableServicesOptions, "modelRuntime"> & {
 	readonly completeViewIntervalMs?: number;
+	readonly decisionWait?: <T>(wait: () => Promise<T>) => Promise<T>;
 };
 
 /** The conversation that one stored change belongs to; undefined for a change that any row may depend on. */
@@ -147,11 +152,23 @@ async function bootstrap(
 	metadata: HostMetadata,
 	controller: AbortController,
 	execution: boolean,
-	options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {},
+	options: Omit<DurableRuntimeOptions, "completeViewIntervalMs"> = {},
 ): Promise<DurableServices> {
 	const independent = metadata.independent;
+	const { decisionWait, ...serviceOptions } = options;
+	const askTrust = async (cwd: string) => {
+		const root = dirname(dirname(metadata.storagePath));
+		const primary = new AgentCatalog(root).ordinaryOwner(metadata.ownerId);
+		if (primary === undefined) return undefined;
+		const channel = await connectPrimaryChannel({ id: primary, sessionsRoot: root });
+		try {
+			return await channel.trustPrompt(cwd, controller.signal);
+		} finally {
+			await channel.close();
+		}
+	};
 	return createDurableServices({
-		...options,
+		...serviceOptions,
 		cwd: metadata.cwd,
 		agentDir: metadata.agentDir,
 		storageId: metadata.storageId,
@@ -167,17 +184,7 @@ async function bootstrap(
 				agentDir: metadata.agentDir,
 				packageDir: metadata.packageDir,
 			}),
-		askPrimary: async (cwd) => {
-			const root = dirname(dirname(metadata.storagePath));
-			const primary = new AgentCatalog(root).ordinaryOwner(metadata.ownerId);
-			if (primary === undefined) return undefined;
-			const channel = await connectPrimaryChannel({ id: primary, sessionsRoot: root });
-			try {
-				return await channel.trustPrompt(cwd, controller.signal);
-			} finally {
-				await channel.close();
-			}
-		},
+		askPrimary: (cwd) => (decisionWait ? decisionWait(() => askTrust(cwd)) : askTrust(cwd)),
 		ordinarySession: () => new AgentCatalog(dirname(dirname(metadata.storagePath))).ordinaryOwner(metadata.ownerId),
 		onReport: (error) => {
 			process.stderr.write(`Durable host: ${String(error)}\n`);
