@@ -169,7 +169,7 @@ it("ranks a priority storage's threads first however many records the catalog ho
 	assert.equal(page.coverage.visited, 270);
 	assert.equal(page.coverage.unvisited, false);
 });
-it("keeps priority threads ahead of sampled ones in a prompt read", async (t) => {
+it("shows only priority threads in a prompt read and lists them first in an observation", async (t) => {
 	const { catalog, input } = fixture(t);
 	const threads = Array.from({ length: RECENT_COLLABORATION_LIMITS.results + 3 }, () => {
 		const record = catalog.create(input);
@@ -190,17 +190,24 @@ it("keeps priority threads ahead of sampled ones in a prompt read", async (t) =>
 		);
 		return id;
 	}).sort();
-	// The contact's thread has the largest identity, so identity order alone would drop it.
+	// The priority thread has the largest identity, so identity order alone would drop it.
 	const priority = threads.at(-1) as string;
-	const page = await readRecentCollaboration(catalog, [priority.split("/")[0]], {
-		prompt: true,
-		matches: async () => true,
-	});
-	assert.equal(page.items.length, RECENT_COLLABORATION_LIMITS.results);
-	assert.equal(page.items[0]?.id, priority, "the contact's thread outranks every sampled identity");
+	const storage = priority.split("/")[0];
+	const efforts = new Map([[storage, "live-effort"]]);
+	const read = (prompt: boolean) =>
+		readRecentCollaboration(catalog, [storage], { prompt, matches: async () => true }, { efforts });
+	const prompt = await read(true);
 	assert.deepEqual(
-		page.items.slice(1).map((item) => item.id),
-		threads.slice(0, RECENT_COLLABORATION_LIMITS.results - 1),
+		prompt.items.map((item) => [item.id, item.effort]),
+		[[priority, "live-effort"]],
+		"a thread that no live effort holds stays out of the prompt",
+	);
+	const observation = await read(false);
+	assert.equal(observation.items.length, RECENT_COLLABORATION_LIMITS.results);
+	assert.deepEqual(observation.items[0], prompt.items[0], "the priority thread outranks every other identity");
+	assert.deepEqual(
+		observation.items.slice(1).map((item) => [item.id, item.effort]),
+		threads.slice(0, RECENT_COLLABORATION_LIMITS.results - 1).map((id) => [id, undefined]),
 	);
 });
 
@@ -403,15 +410,45 @@ it("refuses a cursor of another shape", async (t) => {
 	});
 });
 
-it("shows a priority source's threads in prompt mode even outside project scope", async (t) => {
+it("names the effort that holds a thread's storage before the effort whose claim names the thread", async (t) => {
+	const { catalog, input } = fixture(t);
+	const [thread] = publish(catalog, input, [10]);
+	const storage = thread.id.split("/")[0] as string;
+	const scope = { prompt: true, matches: async () => true };
+	const read = (efforts: Map<string, string>) =>
+		readRecentCollaboration(catalog, [], scope, { contactThreads: [thread.id], efforts });
+	const held = await read(
+		new Map([
+			[thread.id, "claimant"],
+			[storage, "holder"],
+		]),
+	);
+	assert.deepEqual(
+		held.items.map((item) => item.effort),
+		["holder"],
+	);
+	const named = await read(new Map([[thread.id, "claimant"]]));
+	assert.deepEqual(
+		named.items.map((item) => item.effort),
+		["claimant"],
+		"a contact claim names the thread when no effort holds its storage",
+	);
+});
+
+it("shows a priority source's threads even outside project scope and no other project's threads", async (t) => {
 	const { catalog, input } = fixture(t);
 	const [related] = publish(catalog, input, [5], 0, false, "related");
 	publish(catalog, input, [9], 0, false, "unrelated");
-	const scope = { prompt: true, matches: async () => false };
-	const page = await readRecentCollaboration(catalog, [related.id.split("/")[0]], scope);
-	assert.deepEqual(
-		page.items.map((item) => item.title),
-		["related"],
-	);
-	assert.equal(page.coverage.outOfScope, 1);
+	for (const prompt of [true, false]) {
+		const page = await readRecentCollaboration(catalog, [related.id.split("/")[0]], {
+			prompt,
+			matches: async () => false,
+		});
+		assert.deepEqual(
+			page.items.map((item) => item.title),
+			["related"],
+		);
+		// A prompt read locates no record outside the priority sources, so only an observation counts them.
+		assert.equal(page.coverage.outOfScope ?? 0, prompt ? 0 : 1);
+	}
 });

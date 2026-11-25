@@ -7,8 +7,10 @@ import {
 	type CollaborationSummary,
 } from "./collaboration-contract.ts";
 
+/** A thread hint; `effort` names the session whose storages hold the thread, or else the one whose claim names it. */
+export type RecentThreadHint = CollaborationSummary & { effort?: string };
 export interface RecentCollaborationPage {
-	items: CollaborationSummary[];
+	items: RecentThreadHint[];
 	coverage: {
 		visited: number;
 		records: number;
@@ -42,10 +44,13 @@ function recentPartial(page: RecentCollaborationPage, reason: string): void {
 
 /** Which threads of one record a read admits: all its active threads, or only named contact threads. */
 type Admission = { rank: number; only?: ReadonlySet<string> };
+/** The effort of a priority storage, keyed by storage, and of a contact thread, keyed by thread. */
+type ThreadEfforts = ReadonlyMap<string, string>;
 
 /**
- * Whether a record's active threads stay on the page under the project scope. A location this read
- * left unresolved is neither shown in a prompt nor counted out of scope.
+ * Whether a record's active threads stay on the page under the project scope. A thread outside the
+ * project counts out of scope and is not shown; a location this read left unresolved is neither shown
+ * nor counted.
  */
 async function shownInScope(
 	page: RecentCollaborationPage,
@@ -58,22 +63,44 @@ async function shownInScope(
 	const matches = await (check ?? ((other) => scope.matches(other)))(record);
 	if (matches === undefined) recentPartial(page, "location-unresolved");
 	else if (!matches) page.coverage.outOfScope = (page.coverage.outOfScope ?? 0) + active;
-	return matches === true || !scope.prompt;
+	return matches === true;
+}
+
+/** A priority thread names the effort that holds its storage, or else the effort whose claim names it. */
+function hint(
+	thread: CollaborationSummary,
+	storageId: string,
+	admission: Admission,
+	efforts: ThreadEfforts,
+): RecentThreadHint {
+	const effort = admission.rank === 0 ? (efforts.get(storageId) ?? efforts.get(thread.id)) : undefined;
+	return effort === undefined ? thread : { ...thread, effort };
+}
+
+/** Priority threads first; a prompt then keeps identity order, an observation shows newest first. */
+function hintOrder(ranks: ReadonlyMap<string, number>, prompt: boolean) {
+	return (a: RecentThreadHint, b: RecentThreadHint): number =>
+		(ranks.get(a.id) ?? 1) - (ranks.get(b.id) ?? 1) ||
+		(prompt ? 0 : b.updatedAt - a.updatedAt) ||
+		a.id.localeCompare(b.id);
 }
 
 /**
- * A prompt keeps threads from priority sources (the reader's own storages, related live efforts and
- * their contact threads) ahead of the other records' threads, each group in identity order; an
- * observation shows newest first.
+ * Priority sources are the reader's own storages, the storages of related live efforts and their
+ * contact threads. A prompt shows only their threads, in identity order. An observation shows them
+ * first and then the other active threads of the project, each group newest first.
  */
 async function collectRecentHints(
 	page: RecentCollaborationPage,
 	record: EffortRecord,
 	ranks: Map<string, number>,
 	admission: Admission,
+	efforts: ThreadEfforts,
 	scope?: ThreadProjectScope,
 	check?: ScopeCheck,
 ): Promise<void> {
+	// A thread that no live effort holds or names is history, not a current coordination point.
+	if (scope?.prompt && admission.rank > 0) return;
 	if (record.threads === undefined) {
 		page.coverage.missingHints += 1;
 		recentPartial(page, "missing-thread-hints");
@@ -87,15 +114,12 @@ async function collectRecentHints(
 	// A priority source is related by contact or presence, so project scope does not filter it.
 	if (active.length > 0 && admission.rank > 0 && !(await shownInScope(page, record, active.length, scope, check)))
 		return;
+	const order = hintOrder(ranks, scope?.prompt ?? false);
 	for (const thread of active) {
 		if (ranks.has(thread.id)) continue;
 		ranks.set(thread.id, admission.rank);
-		page.items.push(thread);
-		page.items.sort(
-			(a, b) =>
-				(scope?.prompt ? (ranks.get(a.id) ?? 1) - (ranks.get(b.id) ?? 1) : b.updatedAt - a.updatedAt) ||
-				a.id.localeCompare(b.id),
-		);
+		page.items.push(hint(thread, record.storageId, admission, efforts));
+		page.items.sort(order);
 		if (page.items.length > page.limits.results) {
 			page.items.pop();
 			page.coverage.omittedResults += 1;
@@ -104,8 +128,15 @@ async function collectRecentHints(
 	}
 }
 
-/** Priority storages admit all their active threads; a contact thread alone admits only itself. */
-function threadAdmissions(priorities: readonly string[], contacts: readonly string[]): Map<string, Admission> {
+/**
+ * Priority storages admit all their active threads; a contact thread alone admits only itself. Every storage
+ * of an effort is a priority, however many storages the effort has.
+ */
+function threadAdmissions(
+	priorities: readonly string[],
+	contacts: readonly string[],
+	efforts: ThreadEfforts,
+): Map<string, Admission> {
 	const admissions = new Map<string, Admission>();
 	for (const thread of contacts) {
 		const storage = thread.split("/")[0];
@@ -114,6 +145,7 @@ function threadAdmissions(priorities: readonly string[], contacts: readonly stri
 		admissions.set(storage, { rank: 0, only });
 	}
 	for (const identity of priorities) admissions.set(identity.split(":")[0], { rank: 0 });
+	for (const key of efforts.keys()) if (!key.includes("/")) admissions.set(key, { rank: 0 });
 	return admissions;
 }
 
@@ -127,7 +159,12 @@ export async function readRecentCollaboration(
 	catalog: AgentCatalog,
 	priorityIdentities: readonly string[] = [],
 	scope?: ThreadProjectScope,
-	options: { contactThreads?: readonly string[]; records?: readonly CatalogIndexEntry<EffortRecord>[] } = {},
+	options: {
+		contactThreads?: readonly string[];
+		records?: readonly CatalogIndexEntry<EffortRecord>[];
+		/** The effort of each storage and contact thread to rank first; every storage here is a priority source. */
+		efforts?: ThreadEfforts;
+	} = {},
 ): Promise<RecentCollaborationPage> {
 	const page: RecentCollaborationPage = {
 		items: [],
@@ -156,20 +193,27 @@ export async function readRecentCollaboration(
 			return page;
 		}
 	}
-	const admissions = threadAdmissions(priorityIdentities.slice(0, page.limits.visits), options.contactThreads ?? []);
+	const efforts = options.efforts ?? new Map<string, string>();
+	const admissions = threadAdmissions(
+		priorityIdentities.slice(0, page.limits.visits),
+		options.contactThreads ?? [],
+		efforts,
+	);
 	const ranks = new Map<string, number>();
 	const ordered = [
 		...entries.filter((entry) => admissions.has(entry.storageId)),
 		...entries.filter((entry) => !admissions.has(entry.storageId)),
 	];
-	// Only records outside the priority sources with active threads need their location.
-	const check = await scope?.locate?.(
-		ordered.flatMap(({ storageId, value }) =>
-			value !== undefined && !admissions.has(storageId) && value.threads?.items.some((thread) => !thread.closed)
-				? [value.cwd]
-				: [],
-		),
-	);
+	// Only an observation shows records outside the priority sources, and only those with active threads need their location.
+	const check = scope?.prompt
+		? undefined
+		: await scope?.locate?.(
+				ordered.flatMap(({ storageId, value }) =>
+					value !== undefined && !admissions.has(storageId) && value.threads?.items.some((thread) => !thread.closed)
+						? [value.cwd]
+						: [],
+				),
+			);
 	for (const entry of ordered) {
 		page.coverage.visited += 1;
 		page.coverage.records += 1;
@@ -178,7 +222,15 @@ export async function readRecentCollaboration(
 			recentPartial(page, "unreadable-records");
 			continue;
 		}
-		await collectRecentHints(page, entry.value, ranks, admissions.get(entry.storageId) ?? { rank: 1 }, scope, check);
+		await collectRecentHints(
+			page,
+			entry.value,
+			ranks,
+			admissions.get(entry.storageId) ?? { rank: 1 },
+			efforts,
+			scope,
+			check,
+		);
 	}
 	while (!scope?.prompt && Buffer.byteLength(JSON.stringify(page)) > page.limits.bytes && page.items.length > 0) {
 		page.items.pop();

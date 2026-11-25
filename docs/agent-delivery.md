@@ -159,11 +159,17 @@ or terminal. The tool accepts no target identity. Use `agent_intent({ action: "r
 for related efforts without changing your claim. Update or clear intent when integration completes; a completed
 plan must not remain the declared next action. Host facts and session intent
 claims are different evidence; unknown liveness and incomplete coverage do not
-prove absence. Per-run context names live efforts and active thread hints
-in the same repository, or the same working directory outside Git, and live
-sessions elsewhere on the machine that used the same documents or handovers or
-whose stated purposes share distinctive words. Read
+prove absence. Per-run context names live efforts in the same repository, or
+the same working directory outside Git, live sessions elsewhere on the machine
+that used the same documents or handovers or whose stated purposes share
+distinctive words, and the active threads of those efforts, each with the
+effort it belongs to. Read
 the `awareness` result of `agent_intent` for the bounded observation and its counts outside that scope.
+Before a shared act that carries another effort's work, such as a switch whose
+range holds that effort's commits, read that effort's claim and the frame of
+its thread: they hold the rules it works under. An effort that holds activation
+or publication of work it landed, under an operator direction, declares the
+hold in its claim, so other sessions see it before their shared acts.
 Awareness appears in per-run context, explicit tool reads, and `/agent`'s
 Related efforts view only. Registration and intent changes do not
 create unsolicited transcript messages. Endpoint records and local roster
@@ -200,7 +206,8 @@ A full suite needs no claim and no prior status read. A session that needs a
 quiet machine, such as for a timing measurement, declares it in its own
 integration intent with `scope.fullGate` set to `true` and clears that claim
 afterwards. A session that sees such a claim holds its own full suite until the
-claim clears and continues its other work. A native coordinator declares
+claim clears and continues its other work. The view omits claims of efforts that
+have ended. A native coordinator declares
 its own claim rather than another session's claim. Notify only efforts that
 requested the release; do not broadcast routine
 starts or releases to every related primary. Each direct model-origin notice

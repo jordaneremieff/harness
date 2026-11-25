@@ -179,8 +179,49 @@ it("bounds visits and results and reports exact visited omissions", async (t) =>
 	assert.equal(page.efforts.length, 20);
 	assert.equal(page.coverage.omitted, 236);
 	assert.equal(page.coverage.complete, false);
-	assert.deepEqual(page.coverage.reasons, ["result-limit", "visit-limit"]);
+	assert.deepEqual(page.coverage.reasons, ["visit-limit", "result-limit"]);
 	assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 16384);
+});
+
+it("lists live efforts first and the most recent first, so the limits leave out the least relevant rows", async (t) => {
+	const root = rootFor(t);
+	const unknown = Array.from({ length: 25 }, () => record(root, { hostname: "remote-host" }));
+	// Activity after every record's start decides the order; a start of this boot cannot be moved back.
+	const activity = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+	const older = record(root, { lastActivityAt: activity(1) });
+	const newer = record(root, { lastActivityAt: activity(2) });
+	const page = await readPage(root, self());
+	assert.equal(page.efforts.length, page.limits.results);
+	assert.deepEqual(
+		page.efforts.slice(0, 2).map((row) => [row.id, row.liveness]),
+		[
+			[newer, "live"],
+			[older, "live"],
+		],
+	);
+	assert.ok(page.efforts.slice(2).every((row) => row.liveness === "unknown"));
+	assert.equal(page.coverage.omitted, unknown.length + 2 - page.limits.results);
+	assert.deepEqual(page.coverage.reasons, ["result-limit"]);
+});
+
+it("ends the page at the first row that exceeds the byte limit, so no smaller, less relevant row follows it", async (t) => {
+	const root = rootFor(t);
+	const claim = (index: number) => ({ ...intent(), integration: `${index} ${"x".repeat(1900)}` });
+	const live = Array.from({ length: 12 }, (_, index) =>
+		record(root, {
+			intentClaim: claim(index),
+			lastActivityAt: new Date(Date.now() + (20 - index) * 60_000).toISOString(),
+		}),
+	);
+	const small = record(root, { hostname: "remote-host" });
+	const page = await readPage(root, self());
+	const shown = page.efforts.map((row) => row.id);
+	assert.ok(shown.length > 0 && shown.length < live.length, `${shown.length} rows fit`);
+	assert.deepEqual(shown, live.slice(0, shown.length), "live rows keep their order, newest activity first");
+	assert.ok(!shown.includes(small), "the small unknown row does not take the place of an omitted live row");
+	assert.equal(page.coverage.omitted, live.length + 1 - shown.length);
+	assert.deepEqual(page.coverage.reasons, ["byte-limit"]);
+	assert.ok(Buffer.byteLength(JSON.stringify(page.efforts)) <= page.limits.bytes - 1024);
 });
 
 it("spends no visits on sockets and storage files beside the records", async (t) => {
@@ -524,6 +565,10 @@ it("retains unknown native efforts and omits ended generations with their declar
 	assert.equal(page.efforts.length, 2);
 	assert.ok(page.efforts.every((row) => row.liveness === "unknown"));
 	assert.ok(page.efforts.every((row) => row.intentClaim?.scope.fullGate === true));
+	assert.ok(
+		page.efforts.every((row) => row.sharedSubstrates?.includes("machine-gates")),
+		"a running Durable agent reads as unknown, and its declared gate still binds",
+	);
 	assert.ok(spy.mock.callCount() > 0, "process presence remains unknown");
 	const ended = {
 		token: "writer",
@@ -543,6 +588,19 @@ it("retains unknown native efforts and omits ended generations with their declar
 	const { endedAt: _endedAt, ...unmarked } = ended;
 	writeFileSync(paths.claim, JSON.stringify(unmarked));
 	assert.deepEqual((await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() })).efforts, []);
+	// A one-shot writer such as a cold stop leaves an empty lease file: no serving host is recorded.
+	spy.mock.mockImplementation(() => true as const);
+	writeFileSync(paths.claim, "");
+	const unserved = await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() });
+	assert.deepEqual(unserved.efforts, []);
+	assert.equal(unserved.coverage.dead, 2);
+	writeFileSync(paths.claim, "{");
+	const malformed = await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() });
+	assert.deepEqual(
+		malformed.efforts.map((row) => row.liveness),
+		["unknown", "unknown"],
+		"a malformed lease stays unknown",
+	);
 });
 
 it("covers every native record and shares result and byte caps with ordinary records without counting unsupported claims as omissions", async (t) => {

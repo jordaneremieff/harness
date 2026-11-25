@@ -117,7 +117,19 @@ export const EffortSelfSchema = obj({
 	omitted: opt(bool()),
 });
 export const RecentCollaborationSchema = obj({
-	items: arr(obj({ id: text, title: text, purpose: text, updatedAt: num(), closed: bool(), members: count })),
+	items: arr(
+		obj({
+			id: text,
+			title: text,
+			purpose: text,
+			updatedAt: num(),
+			closed: bool(),
+			members: count,
+			effort: opt(
+				str({ description: "The session whose storages hold the thread, or else the session whose claim names it." }),
+			),
+		}),
+	),
 	coverage: obj({
 		visited: count,
 		records: count,

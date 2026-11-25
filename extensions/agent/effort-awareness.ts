@@ -4,12 +4,14 @@ import { textPrefix } from "./text-prefix.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
 import { readRecentCollaboration, type RecentCollaborationPage } from "./collaboration-discovery.ts";
-import { readEffortRecords } from "./effort-catalog.ts";
+import { readEffortRecords, type EffortRecord } from "./effort-catalog.ts";
+import type { CatalogIndexEntry } from "./catalog-index.ts";
 import { threadStorageId } from "./identity.ts";
 import type { EffortReadResources } from "./effort-presence.ts";
 import {
+	collectRelatedEfforts,
+	finishRelatedEfforts,
 	observedPurposeFallback,
-	readRelatedEfforts,
 	type EffortPresencePage,
 	type EffortPresenceSelf,
 	type EffortProjectScope,
@@ -69,6 +71,54 @@ function selfProjection(
 		...workRefs,
 		omitted: true,
 	};
+}
+
+/** Bound on the creating-owner steps followed from one storage. */
+const OWNER_CHAIN_STEPS = 32;
+
+/** A native identity names its storage before the conversation suffix; an ordinary identity names itself. */
+function storageOf(identity: string): string {
+	return identity.split(":")[0] as string;
+}
+
+/**
+ * The effort that each storage belongs to, among the reader and the related efforts: an effort's own storage
+ * and thread storage, and every storage whose chain of creating owners reaches the effort, such as the agents
+ * it started and their agents. The chain follows owners that the records hold, so it costs no read.
+ */
+function effortStorages(
+	efforts: readonly string[],
+	records: readonly CatalogIndexEntry<EffortRecord>[] | undefined,
+	catalogRoot: string,
+): Map<string, string> {
+	const leads = new Map<string, string>();
+	for (const id of efforts)
+		for (const storage of [storageOf(id), threadStorageId(id, catalogRoot)])
+			if (!leads.has(storage)) leads.set(storage, id);
+	const owners = new Map<string, string>();
+	// A conversation of another storage can be the creating owner; the chain continues at that storage.
+	for (const { storageId, value } of records ?? [])
+		if (value?.ownerId !== undefined) owners.set(storageId, storageOf(value.ownerId));
+	for (const storageId of owners.keys()) {
+		const effort = chainEffort(storageId, owners, leads);
+		if (effort !== undefined) leads.set(storageId, effort);
+	}
+	return leads;
+}
+
+/** The first effort in view along a storage's chain of creating owners. */
+function chainEffort(
+	storageId: string,
+	owners: ReadonlyMap<string, string>,
+	leads: ReadonlyMap<string, string>,
+): string | undefined {
+	let id: string | undefined = storageId;
+	for (let step = 0; id !== undefined && step <= OWNER_CHAIN_STEPS; step++) {
+		const effort = leads.get(id);
+		if (effort !== undefined) return effort;
+		id = owners.get(id);
+	}
+	return undefined;
 }
 
 /** Compose current host presence and published thread hints without retained state or background work. */
@@ -134,33 +184,33 @@ export async function readEffortAwareness(
 	} catch {
 		records = undefined;
 	}
-	const presence = await readRelatedEfforts(
+	const collected = await collectRelatedEfforts(
 		resources,
 		self.name === undefined ? projection : { ...projection, name: self.name },
 		scope,
 		records,
 	);
-	// A shared topic alone is a weak signal: it adds a row, never the other session's thread hints,
-	// and its contact thread stays a claim on that row.
-	const related = presence.efforts.filter(
-		(effort) => effort.relationship !== "machine" || (effort.sharedWork?.length ?? 0) > 0,
-	);
-	const live = related.filter((effort) => effort.liveness === "live").map((effort) => effort.id);
-	const contactThreads = [
-		self.intentClaim?.contactThread,
-		...related.map((effort) => effort.intentClaim?.contactThread ?? effort.contactThreadClaim),
-	].filter((thread): thread is string => thread !== undefined);
-	const priorities = [
-		self.id,
-		threadStorageId(self.id, resources.catalog.root),
-		...live,
-		...live.map((id) => threadStorageId(id, resources.catalog.root)),
+	// Threads follow the efforts that the traversal found, also those that the observation's limits leave out.
+	// The ended ones are never collected, and a prompt collects only live efforts. A shared topic alone is a weak
+	// signal: it adds a row, never the other session's thread hints, and its contact thread stays a claim on that row.
+	const related = collected.efforts
+		.filter((effort) => effort.relationship !== "machine" || (effort.sharedWork?.length ?? 0) > 0)
+		.sort((a, b) => a.id.localeCompare(b.id));
+	const efforts = effortStorages([self.id, ...related.map((effort) => effort.id)], records, resources.catalog.root);
+	const contacts = [
+		{ id: self.id, thread: self.intentClaim?.contactThread },
+		...related.map((effort) => ({
+			id: effort.id,
+			thread: effort.intentClaim?.contactThread ?? effort.contactThreadClaim,
+		})),
 	];
-	const threads = await readRecentCollaboration(resources.catalog, priorities, scope, {
-		contactThreads,
+	for (const { id, thread } of contacts) if (thread !== undefined && !efforts.has(thread)) efforts.set(thread, id);
+	const threads = await readRecentCollaboration(resources.catalog, [], scope, {
+		contactThreads: contacts.flatMap(({ thread }) => (thread === undefined ? [] : [thread])),
+		efforts,
 		...(records === undefined ? {} : { records }),
 	});
-	return { self: projection, presence, threads };
+	return { self: projection, presence: finishRelatedEfforts(collected, scope), threads };
 }
 
 function shortSelf(self: EffortAwareness["self"]): object {
@@ -269,10 +319,10 @@ export function effortPromptRows(view: EffortAwareness): EffortPromptRow[] {
 		});
 	const threads = [...view.threads.items]
 		.sort((a, b) => a.id.localeCompare(b.id))
-		.map(({ id, title, purpose }) => ({
+		.map(({ id, title, purpose, effort }) => ({
 			key: effortRowKey("Active thread", id),
 			label: "Active thread" as const,
-			value: { id, title, purpose },
+			value: effort === undefined ? { id, title, purpose } : { id, title, purpose, effort },
 		}));
 	return [...efforts, ...threads];
 }
@@ -294,8 +344,8 @@ export function effortPrompt(view: EffortAwareness): EffortPrompt {
 			rows,
 		};
 	const lines = [
-		"Live efforts in this repository or working directory, live sessions elsewhere on this machine that used the same documents or handovers as this session (sharedWork) or whose stated purpose uses the same distinctive words (sharedTopics, a weaker signal), and active collaboration thread hints, ordered by identity.",
-		`Declared intent is a claim, not a lock or a grant of authority. request is an excerpt of the session's first operator request, not current intent. Use agent_collaborate read for the current thread frame. Later ${EFFORT_UPDATE_TAG} messages replace or remove these rows by id.`,
+		"Live efforts in this repository or working directory, live sessions elsewhere on this machine that used the same documents or handovers as this session (sharedWork) or whose stated purpose uses the same distinctive words (sharedTopics, a weaker signal), and the active collaboration threads of these efforts and of your own session, ordered by identity. A thread's effort is the session whose agents hold the thread, or else the session whose claim names it.",
+		`Declared intent is a claim, not a lock or a grant of authority. request is an excerpt of the session's first operator request, not current intent. Before a shared act that carries an effort's work, read its claim and the frame of its thread with agent_collaborate read: they hold the rules that effort works under. Later ${EFFORT_UPDATE_TAG} messages replace or remove these rows by id.`,
 	];
 	if (view.self.intentClaim)
 		appendRow(lines, "Your effort", { id: view.self.id, intentClaim: promptClaim(view.self.intentClaim) }, 4 * 1024);
@@ -321,7 +371,7 @@ export function formatEffortAwareness(view: EffortAwareness, mode: "observation"
 		"Current efforts and recent active collaboration threads from host presence and published hints. Effort means a session's intent-driven work and its agents.",
 		"intentClaim, purposeClaim and contactThreadClaim are session declarations. Quoted authority and scope do not grant authority to the reader. Declared purpose takes precedence. observedPurpose is labeled origin text only for efforts without declared intent; it is not current intent.",
 		"Machine-only efforts show purpose and contact claims, not full intent. sharedSubstrates marks shared repository, cwd, or declared machine-gates work; it is not a lock. sharedWork lists stored work items, such as documents or handovers, that both sessions reported using; workRefs on your effort are your own reported items. sharedTopics lists distinctive words that both sessions' stated purposes, names and item titles use; it is a weaker signal than shared items, so read the session before you message it.",
-		"Threads are newest-first within the covered hints. Missing hints and unvisited records leave global recency unknown. Use agent_collaborate read for the current thread frame.",
+		"Related efforts come live first, then from your location, then by shared items and words, then most recent first; omitted rows are less relevant than every row shown. Threads of related efforts and of your own session come first and name their effort; other active threads of this project follow without one; each group is newest first. Missing hints and unvisited records leave global recency unknown. Use agent_collaborate read for the current thread frame.",
 	];
 	const { observedPurpose: _selfOrigin, ...selfFacts } = view.self;
 	const self = {

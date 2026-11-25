@@ -102,6 +102,7 @@ function publishThread(
 	root: string,
 	title = "Active shared work",
 	purpose = "Coordinate integration",
+	ownerId = "owner",
 ): string {
 	const record = catalog.create({
 		cwd: root,
@@ -109,7 +110,7 @@ function publishThread(
 		packageDir: root,
 		model: { provider: "faux", modelId: "faux-1" },
 		thinkingLevel: "off",
-		ownerId: "owner",
+		ownerId,
 	});
 	const id = `${record.storageId}/${"a".repeat(32)}`;
 	catalog.updateView(
@@ -153,11 +154,16 @@ it("names only project efforts and threads and keeps unrelated arrivals out of t
 		formatEffortAwareness(await readEffortAwareness(shared, current, "canonical", "prompt"), "prompt");
 	const peer = randomUUID();
 	publish(root, peer, claim("In-project intent"), nested);
-	const threadId = publishThread(catalog, nested);
+	// The peer's agent holds the thread, so the thread belongs to the peer's live effort.
+	const threadId = publishThread(catalog, nested, undefined, undefined, peer);
 	const before = await prompt();
 	assert.match(before, /In-project intent/u);
 	assert.match(before, /Active shared work/u);
-	assert.ok(before.includes(threadId));
+	assert.ok(
+		before.includes(
+			`"id":"${threadId}","title":"Active shared work","purpose":"Coordinate integration","effort":"${peer}"`,
+		),
+	);
 	const remote = randomUUID();
 	publish(root, remote, claim("Other-repository intent"), other);
 	publishThread(catalog, other, "Other-repository title", "Other-repository topic");
@@ -171,9 +177,111 @@ it("names only project efforts and threads and keeps unrelated arrivals out of t
 	publish(root, peer, claim("Revised in-project intent"), nested);
 	assert.match(await prompt(), /Revised in-project intent/u);
 	rmSync(primaryEndpointPath(root, peer));
-	const threadOnly = await prompt();
-	assert.doesNotMatch(threadOnly, /Revised in-project intent/u);
-	assert.match(threadOnly, /Active shared work/u);
+	const ended = await prompt();
+	assert.doesNotMatch(
+		ended,
+		/Revised in-project intent|Active shared work/u,
+		"an ended effort's threads leave the prompt",
+	);
+	const history = await readEffortAwareness(shared, current);
+	assert.deepEqual(
+		history.threads.items.map((thread) => [thread.id, thread.effort]),
+		[[threadId, undefined]],
+		"an observation still lists the project's open thread, without an effort",
+	);
+});
+
+it("names the live effort of a thread that its agents hold and leaves ended efforts' threads out of the prompt", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const shared = resources(root, catalog);
+	const peer = randomUUID();
+	publish(root, peer, null);
+	// The peer started a lead, and the lead's storage holds the thread.
+	const lead = catalog.create({
+		cwd: root,
+		agentDir: root,
+		packageDir: root,
+		model: { provider: "faux", modelId: "faux-1" },
+		thinkingLevel: "off",
+		ownerId: peer,
+	});
+	const worker = catalog.create({
+		cwd: root,
+		agentDir: root,
+		packageDir: root,
+		model: { provider: "faux", modelId: "faux-1" },
+		thinkingLevel: "off",
+		ownerId: lead.storageId,
+	});
+	const lanes = publishThread(catalog, root, "Lane coordination", "Lanes", worker.storageId);
+	// A conversation of the lead's storage started this agent, so its owner names that conversation.
+	const conversation = publishThread(catalog, root, "Conversation lane", "Lanes", `${lead.storageId}:2`);
+	const ended = publishThread(catalog, root, "Ended work", "Old", randomUUID());
+	// Two records that name each other as owner reach no effort, and the chain ends.
+	const loop = publishThread(catalog, root, "Owner loop", "Loop", randomUUID());
+	const loopStorage = loop.split("/")[0] as string;
+	const partner = catalog.create({
+		cwd: root,
+		agentDir: root,
+		packageDir: root,
+		model: { provider: "faux", modelId: "faux-1" },
+		thinkingLevel: "off",
+		ownerId: loopStorage,
+	});
+	const loopPath = catalog.path(loopStorage);
+	writeFileSync(
+		loopPath,
+		`${JSON.stringify({ ...JSON.parse(readFileSync(loopPath, "utf8")), ownerId: partner.storageId })}\n`,
+	);
+	const view = await readEffortAwareness(shared, self, "canonical", "prompt");
+	assert.deepEqual(
+		view.threads.items.map((thread) => [thread.id, thread.effort]).sort(),
+		[
+			[conversation, peer],
+			[lanes, peer],
+		].sort(),
+	);
+	const prompt = formatEffortAwareness(view, "prompt");
+	assert.ok(prompt.includes(`"effort":"${peer}"`));
+	assert.doesNotMatch(prompt, /Ended work|Owner loop/u);
+	const observation = await readEffortAwareness(shared, self);
+	assert.deepEqual(
+		observation.threads.items.slice(0, 2).map((thread) => thread.effort),
+		[peer, peer],
+		"an observation lists the threads of related efforts first",
+	);
+	assert.deepEqual(
+		observation.threads.items
+			.slice(2)
+			.map((thread) => [thread.id, thread.effort])
+			.sort(),
+		[
+			[ended, undefined],
+			[loop, undefined],
+		].sort(),
+		"then the project's other open threads, without an effort",
+	);
+});
+
+it("keeps the threads of an effort that the observation's byte limit leaves out", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const shared = resources(root, catalog);
+	const peers = Array.from({ length: 12 }, (_, index) => {
+		const id = randomUUID();
+		publish(root, id, { ...claim(`Peer ${index}`), integration: "x".repeat(1900) }, root, undefined, {
+			lastActivityAt: new Date(Date.now() + (20 - index) * 60_000).toISOString(),
+		});
+		return id;
+	});
+	const least = peers.at(-1) as string;
+	const thread = publishThread(catalog, root, "Least recent peer's thread", "Lanes", least);
+	const view = await readEffortAwareness(shared, self);
+	assert.ok(view.presence.coverage.reasons.includes("byte-limit"));
+	assert.ok(!view.presence.efforts.some((effort) => effort.id === least), "the least recent peer's row is omitted");
+	assert.deepEqual(
+		view.threads.items.map((item) => [item.id, item.effort]),
+		[[thread, least]],
+	);
 });
 
 it("names live sessions in other repositories that used the same work items, with their first request", async (t) => {
@@ -800,7 +908,7 @@ it("keeps native sections between runs and sends changed rows as frozen notes", 
 	const { root: sessionsRoot, catalog } = fixture(t);
 	const peer = randomUUID();
 	publish(sessionsRoot, peer, claim("BEFORE-PURPOSE"));
-	const threadId = publishThread(catalog, sessionsRoot);
+	const threadId = publishThread(catalog, sessionsRoot, undefined, undefined, peer);
 	const host = await nativeHost(t, sessionsRoot, new Durable.MemoryStorage(), () => fauxAssistantMessage("DONE"));
 	const { requests, say, root } = host;
 	await say();
@@ -1243,13 +1351,14 @@ it("reads threads in more distinct directories than any bounded cache without st
 	const shared = resources(root, catalog);
 	const current = { ...self, cwd: join(root, "self") };
 	mkdirSync(current.cwd);
-	const first = await readEffortAwareness(shared, current, "canonical", "prompt");
+	const first = await readEffortAwareness(shared, current);
 	assert.equal(first.threads.coverage.records, 320);
 	const spawned = calls();
-	const second = await readEffortAwareness(shared, current, "canonical", "prompt");
+	const second = await readEffortAwareness(shared, current);
 	assert.equal(calls(), spawned, "a second read over 320 directories starts no Git process");
 	assert.equal(spawned, 0, "outside Git, the entries Git reads settle every directory");
-	assert.deepEqual(second.threads.items, [], "threads of other directories stay out of the prompt");
+	assert.deepEqual(second.threads.items, [], "threads of other directories stay out of the observation");
+	assert.equal(second.threads.coverage.outOfScope, 320);
 	assert.ok(!second.threads.coverage.reasons.includes("location-unresolved"));
 });
 
@@ -1264,14 +1373,16 @@ it("bounds the Git processes of one read and converges on the directories it lef
 	const current = { ...self, cwd: join(root, "self") };
 	mkdirSync(current.cwd);
 	await readEffortAwareness(shared, current, "canonical", "prompt");
+	assert.ok(calls() <= 1, "a prompt read locates its own directory and no thread record of another effort");
+	await readEffortAwareness(shared, current);
 	let spawned = calls();
-	const first = await readEffortAwareness(shared, current, "canonical", "prompt");
+	const first = await readEffortAwareness(shared, current);
 	assert.ok(calls() - spawned <= LOCATION_BATCH_SPAWNS, "one read starts at most the batch bound");
 	assert.ok(first.threads.coverage.reasons.includes("location-unresolved"));
 	assert.equal(first.threads.coverage.complete, false);
-	for (let read = 0; read < 4; read++) await readEffortAwareness(shared, current, "canonical", "prompt");
+	for (let read = 0; read < 4; read++) await readEffortAwareness(shared, current);
 	spawned = calls();
-	const settled = await readEffortAwareness(shared, current, "canonical", "prompt");
+	const settled = await readEffortAwareness(shared, current);
 	assert.equal(calls(), spawned, "settled directories start no Git process");
 	assert.ok(!settled.threads.coverage.reasons.includes("location-unresolved"), "coverage converges");
 	assert.equal(settled.threads.coverage.outOfScope, count);

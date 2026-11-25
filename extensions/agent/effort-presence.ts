@@ -1,3 +1,4 @@
+import { lstatSync } from "node:fs";
 import { opendir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { hostname } from "node:os";
@@ -167,6 +168,7 @@ function projectIntent(
 	};
 }
 
+/** A declared machine gate is shared only with a live effort: a claim without a running claimant gates nothing. */
 function sharedSubstrates(
 	self: PresenceSelf,
 	other: Pick<PrimaryInfo, "cwd" | "repository" | "intentClaim" | "hostname">,
@@ -174,6 +176,7 @@ function sharedSubstrates(
 	const shared: NonNullable<RelatedEffort["sharedSubstrates"]> = [];
 	if (self.repository && self.repository === other.repository) shared.push("repository");
 	if (self.cwd === other.cwd) shared.push("cwd");
+	// A row of an effort that has ended is never collected, so every declared gate here can still be in use.
 	if (other.hostname === hostname() && (self.intentClaim?.scope.fullGate || other.intentClaim?.scope.fullGate))
 		shared.push("machine-gates");
 	return shared;
@@ -265,22 +268,54 @@ function selectPromptEfforts(rows: RelatedEffort[], limit: number): RelatedEffor
 	return selected;
 }
 
-function appendEffort(page: EffortPresencePage, row: RelatedEffort, prompt: boolean): void {
-	// Prompt rows are selected once after the traversal; prompt bytes are bounded by the formatter.
-	if (prompt) {
-		page.efforts.push(row);
-		return;
+const LIVENESS_ORDER: Readonly<Record<RelatedEffort["liveness"], number>> = { live: 0, incompatible: 1, unknown: 2 };
+
+/** The latest of a row's last activity, claim update and start, in milliseconds. */
+function recency(row: RelatedEffort): number {
+	const times = [row.lastActivityAt, row.intentClaim?.updatedAt ?? row.intentUpdatedAt, row.startedAt]
+		.map((value) => (value === undefined ? Number.NaN : Date.parse(value)))
+		.filter(Number.isFinite);
+	return times.length === 0 ? 0 : Math.max(...times);
+}
+
+/**
+ * Observation order: live efforts first (an incompatible one runs another version), efforts at the reader's
+ * location before efforts elsewhere, then more shared items and shared words, then the most recent activity
+ * or claim, then identity.
+ */
+function observationOrder(a: RelatedEffort, b: RelatedEffort): number {
+	return (
+		LIVENESS_ORDER[a.liveness] - LIVENESS_ORDER[b.liveness] ||
+		Number(a.relationship === "machine") - Number(b.relationship === "machine") ||
+		(b.sharedWork?.length ?? 0) - (a.sharedWork?.length ?? 0) ||
+		(b.sharedTopics?.length ?? 0) - (a.sharedTopics?.length ?? 0) ||
+		recency(b) - recency(a) ||
+		a.id.localeCompare(b.id)
+	);
+}
+
+/**
+ * An observation keeps the first rows in observation order that fit its result and byte limits. The first row
+ * that does not fit ends the page, so no row left out is more relevant than a row shown. Each row left out
+ * counts as omitted.
+ */
+function limitObservation(page: EffortPresencePage): void {
+	const ordered = page.efforts.sort(observationOrder);
+	let bytes = 2;
+	let kept = 0;
+	for (const row of ordered) {
+		const size = Buffer.byteLength(JSON.stringify(row)) + (kept > 0 ? 1 : 0);
+		const reason =
+			kept >= page.limits.results ? "result-limit" : bytes + size > page.limits.bytes - 1024 ? "byte-limit" : undefined;
+		if (reason) {
+			page.coverage.omitted += ordered.length - kept;
+			markPartial(page, reason);
+			break;
+		}
+		kept++;
+		bytes += size;
 	}
-	const reason =
-		page.efforts.length >= page.limits.results
-			? "result-limit"
-			: Buffer.byteLength(JSON.stringify([...page.efforts, row])) > page.limits.bytes - 1024
-				? "byte-limit"
-				: undefined;
-	if (reason) {
-		page.coverage.omitted += 1;
-		markPartial(page, reason);
-	} else page.efforts.push(row);
+	page.efforts.splice(kept);
 }
 
 /**
@@ -314,8 +349,8 @@ async function collectEffort(
 		page.coverage.unrelated++;
 		return;
 	}
-	const prompt = scope?.prompt ?? false;
-	appendEffort(page, effortRow(info, self, liveness, relationship, topics, prompt), prompt);
+	// Rows are selected and limited once after the traversal; prompt bytes are bounded by the formatter.
+	page.efforts.push(effortRow(info, self, liveness, relationship, topics, scope?.prompt ?? false));
 }
 
 type EndpointRead = Promise<Awaited<ReturnType<typeof readVerifiedPrimaryEndpointDescriptor>>>;
@@ -445,6 +480,21 @@ async function visitPrimaries(
 		markPartial(page, "directory-unreadable");
 	}
 }
+/**
+ * A serving host truncates its lease file and writes its record when it takes the lease, and a clean end adds
+ * an end marker. One-shot writers, such as a cold stop, take the lease without writing a record. An empty lease
+ * file therefore records no serving host, and presence treats it as a missing one. A starting host leaves the
+ * file empty only between its truncation and its write.
+ */
+function servingHost(observation: ClaimObservation, path: string): ClaimObservation {
+	if (observation.kind !== "unknown") return observation;
+	try {
+		return lstatSync(path).size === 0 ? { kind: "absent" } : observation;
+	} catch {
+		return observation;
+	}
+}
+
 async function nativeRow(
 	record: EffortRecord,
 	id: string,
@@ -473,7 +523,7 @@ async function nativeRow(
 	let ownership = claims.get(record.storageId);
 	if (ownership === undefined) {
 		const paths = hostPaths(record);
-		ownership = observeClaim(paths.claim, paths.identity);
+		ownership = servingHost(observeClaim(paths.claim, paths.identity), paths.claim);
 		claims.set(record.storageId, ownership);
 	}
 	if (ownership.kind === "absent" || ownership.kind === "dead") {
@@ -550,6 +600,28 @@ export async function readRelatedEfforts(
 	scope?: EffortProjectScope,
 	records?: readonly CatalogIndexEntry<EffortRecord>[],
 ): Promise<EffortPresencePage> {
+	return finishRelatedEfforts(await collectRelatedEfforts(resources, reader, scope, records), scope);
+}
+
+/** Select the prompt rows, or apply the observation order and limits, to a collected page. */
+export function finishRelatedEfforts(page: EffortPresencePage, scope?: EffortProjectScope): EffortPresencePage {
+	if (scope?.prompt) {
+		page.efforts.splice(0, page.efforts.length, ...selectPromptEfforts(page.efforts, page.limits.results));
+		page.efforts.sort((a, b) => a.id.localeCompare(b.id));
+	} else limitObservation(page);
+	return page;
+}
+
+/**
+ * Every related row that one traversal finds, before prompt selection or observation limits; the visit
+ * limit still bounds the traversal. finishRelatedEfforts makes the page that a reader sees.
+ */
+export async function collectRelatedEfforts(
+	resources: EffortReadResources,
+	reader: EffortPresenceSelf,
+	scope?: EffortProjectScope,
+	records?: readonly CatalogIndexEntry<EffortRecord>[],
+): Promise<EffortPresencePage> {
 	const self: PresenceSelf = { ...reader, topics: effortTopics(reader) };
 	const sessionsRoot = dirname(resources.catalog.root);
 	const page: EffortPresencePage = {
@@ -569,8 +641,5 @@ export async function readRelatedEfforts(
 	if (self.repositoryState === "unknown") markPartial(page, "repository-unknown");
 	await visitPrimaries(sessionsRoot, self, page, scope);
 	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(resources.catalog, self, page, records, scope);
-	if (scope?.prompt)
-		page.efforts.splice(0, page.efforts.length, ...selectPromptEfforts(page.efforts, page.limits.results));
-	page.efforts.sort((a, b) => a.id.localeCompare(b.id));
 	return page;
 }

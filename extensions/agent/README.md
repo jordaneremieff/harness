@@ -3234,7 +3234,10 @@ conversation, a failed publication, the first publication and each flush read
 every conversation, and so does one publication in every five seconds. A kept
 row carries the ages of its last read, dated by `ageObservedAt`. Native diagnostic records never prove a live lease holder. A valid
 same-host clean-end marker or same-host ESRCH ends only the recorded generation;
-those efforts and their declarations no longer appear. Present or reused PIDs,
+those efforts and their declarations no longer appear. So does an empty writer
+lease: a serving host writes its record into the lease file when it takes the
+lease, while one-shot writers such as a cold stop write none, so an empty file
+records no serving host. Present or reused PIDs,
 EPERM, foreign hosts, malformed markers and read failures remain unknown. A new
 holder can acquire before it rewrites the previous record, so this display
 evidence proves no global absence and grants no recovery, deletion or release
@@ -3246,27 +3249,45 @@ The bounded view lists live efforts on this machine within the configured
 `PI_AGENT_SESSIONS_DIR`, including efforts
 in other repositories. It shows
 purpose-level claims for those without a shared repository or cwd, and full
-intent for those with either shared location. Shared locations
-and declared machine-gate use are marked. Agents judge purpose-level relevance;
+intent for those with either shared location. Rows come live first, then those that
+share the reader's location, then by shared items and shared words, then by the
+most recent activity or claim. The page keeps the first rows in that order that
+fit its result and byte limits, so no omitted row is more relevant than a row
+shown. Shared locations and declared machine-gate use are marked; the claims of
+efforts that have ended are not collected, so a marked gate can still be in use. Agents judge purpose-level relevance;
 the extension does not infer intent from file names or coordinate work for them.
 Carried operator directions appear as quoted, scoped claims, never as permission
-for the reader. Active peer-thread hints appear newest-first. Every catalog
+for the reader. Every catalog
 record is covered: a process-wide record index lists the catalog directory and
 stats each record, parses only the records whose file changed since its
 previous read, and answers from one directory stat while no record changed
 (the catalog changes records only by link, rename or unlink). A directory
 modified less than 2 s before that stat is listed again at every read, because
 a later write in the same timestamp tick would leave its stamp unchanged, and so
-is a catalog in which a record failed to read. The caller's own
-storages and the storages of efforts that share its location or an item are
-priority sources; the contact thread that the caller or such an effort declares
-admits that one thread from its storage. An effort that shares only a topic adds
-its row, not its threads, and its contact thread stays a claim on its row. In
-the prompt, threads from priority sources rank ahead of the other records'
-threads, each group in identity order, so the twelve-thread bound never drops a
-contact's thread for another one. Records without published hints leave global
-recency unknown. A record outside the priority sources is matched by its working
-directory, and one read locates all of them in one batch. For the common layouts
+is a catalog in which a record failed to read.
+
+Thread hints follow the efforts in view. The priority sources are the caller's
+own storages and those of the efforts that the read collects and that share the
+caller's location or an item, also an effort that the observation's limits leave
+out: an effort's own storage, its thread storage, and every storage whose chain
+of creating owners reaches the effort, such as the agents it started and their
+agents. A chain step from a native conversation continues at its storage. The
+chain uses the owners that catalog records hold, so it costs no read. The
+contact thread that the caller or such an effort declares admits that one thread
+from its storage. A hint from a priority source names in `effort` the session
+whose storages hold the thread, or else the session whose claim names it. An
+effort that shares only a topic adds its row, not its threads, and its contact
+thread stays a claim on its row. A prompt collects only live efforts and shows
+only threads from priority sources, in identity order, so a thread that no live
+effort holds or names, such as one that an ended effort left open, stays out of
+every prompt. An observation also collects efforts whose liveness is unknown,
+such as a running Durable agent, whose native claim never reads as live.
+An observation lists the priority threads first and then the other active
+threads of the project without `effort`, each group newest first; it counts
+threads outside the project as out of scope and does not list them. Records
+without published hints leave global recency unknown. In an observation, a
+record outside the priority sources is matched by its working directory, and
+one read locates all of them in one batch; a prompt read locates none. For the common layouts
 the resolver reads the entries that Git reads during discovery, in Git's order,
 and starts no Git process: at each directory from the cwd up, a `.git` directory
 or `gitdir:` file whose Git directory has a valid HEAD (`ref:` followed by
@@ -3362,9 +3383,9 @@ section and its cached prefix survive; the notes of earlier runs are gone. The
 same budget rules replace the section at the next run. A failed read keeps the
 current section; a section that holds a failed read's text is not adopted, so the
 next working read replaces it, also on a new host.
-The `agent-efforts` section names live efforts and active thread hints
-in the same Git repository (including linked worktrees), or the same working
-directory outside Git. It also names live sessions elsewhere on this machine
+The `agent-efforts` section names live efforts in the same Git repository
+(including linked worktrees), or the same working directory outside Git, and
+the active threads of those efforts and of the caller. It also names live sessions elsewhere on this machine
 that share work with the caller, with their purpose-level claim, contact thread,
 session name, first-request excerpt (`request`, at most 200 characters, only
 without a claim) and up to four shared items in identity order as `sharedWork`.
@@ -3373,8 +3394,9 @@ of the shared words as `sharedTopics`; at most four such rows appear, those with
 most shared words first, after every row from the same location and every row
 that shares an item, within the section's twenty rows. A session that shares
 no item, no topic and no location stays out of the section, so the section
-grows with related work rather than with every open session. A thread uses its owning
-storage's working directory; a contact link alone does not establish a match.
+grows with related work rather than with every open session. A thread belongs
+to the effort whose storages hold it or whose claim names it; its working
+directory alone admits no thread to the section.
 Relative scope paths describe work within their declared location and cannot
 match across repositories. Prompt rows use identity order and omit activity,
 timestamps, member counts, and scan coverage. Out-of-scope counts belong to the explicit observation, not
