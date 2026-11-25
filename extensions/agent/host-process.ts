@@ -187,9 +187,9 @@ export const SHUTDOWN_GRACE_MS = 20_000;
 export const LEASE_CHECK_MS = 300_000;
 /**
  * A dedicated host process that has not announced readiness this long after it took the writer lease ends, which
- * releases the lease. The bound is longer than the launcher's own readiness wait. While the host waits for a project
- * trust decision from the primary, the longer bound applies, and the shorter one starts again when the decision
- * arrives.
+ * releases the lease. While the host waits for a project trust decision from the primary, the longer bound applies,
+ * and the shorter one starts again when the decision arrives. A launcher that allows for a trust decision can wait
+ * longer than the short bound; it then observes the runner's exit.
  */
 export const BOOTSTRAP_DEADLINE_MS = 90_000;
 export const TRUST_BOOTSTRAP_DEADLINE_MS = 420_000;
