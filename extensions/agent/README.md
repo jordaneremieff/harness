@@ -4310,7 +4310,9 @@ runners of one storage first queue on a start gate beside the storage file
 (`<storage file>.starting`); the winner holds it until its endpoint listens, so a
 contender reports BUSY only once that endpoint can answer, and concurrent first
 uses of one storage all attach to the winner. A cold stop queues on the same
-gate. The caller then attempts one attachment to the expected endpoint. A failed endpoint remains
+gate for at most 30 s, or until its caller withdraws; until it passes the gate it
+has changed nothing, so it then ends with "nothing was stopped". Once the caller
+confirms the passed gate, the stop runs to its end even if the caller leaves. The caller then attempts one attachment to the expected endpoint. A failed endpoint remains
 unavailable; no poll, PID check or record age authorises replacement.
 
 An owned launch has one monotonic budget across readiness, connection and

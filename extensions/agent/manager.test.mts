@@ -15,7 +15,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { after, it } from "node:test";
 import { isJsonValue } from "@earendil-works/chord/json";
 
@@ -41,7 +41,9 @@ import {
 	type OwnedHostExit,
 } from "./host-client.ts";
 import { runHost } from "./host-process.ts";
-import { HostError, hostPaths, type HostMetadata } from "./host-protocol.ts";
+import { HostError, hostPaths, startGatePath, writerLeasePaths, type HostMetadata } from "./host-protocol.ts";
+import { tryNativeWriterLease } from "./native-lease.ts";
+import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { HOST_CONTRACT, contractRefusal, type RuntimeContract } from "./version-contract.ts";
 import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
 import type { ContinuityFact } from "./continuity-facts.ts";
@@ -451,6 +453,44 @@ it("refuses a cold stop whose working directory was removed with the directory, 
 			!error.message.includes("spawn"),
 	);
 });
+
+for (const withdrawal of ["gate bound", "caller signal"] as const)
+	it(`ends a cold stop that waits on a starting host at its ${withdrawal} without stopping anything`, {
+		timeout: 20000,
+	}, async (t) => {
+		const root = fixtureRoot(t);
+		const manager = new AgentManager(managerOptions(root));
+		t.after(() => manager.close());
+		const record = createRecord(manager, root, "owner");
+		const metadata = { ...hostMetadata(record), packageDir: getPackageDir() };
+		const gatePath = startGatePath(metadata);
+		mkdirSync(dirname(gatePath), { recursive: true, mode: 0o700 });
+		const starting = tryNativeWriterLease(gatePath);
+		assert.equal(starting.kind, "held");
+		t.after(() => {
+			if (starting.kind === "held") starting.lease.release();
+		});
+		const controller = new AbortController();
+		const began = Date.now();
+		const stopping = stopColdStorage(
+			metadata,
+			record.storageId,
+			false,
+			withdrawal === "gate bound" ? { gateWaitMs: 500 } : { signal: controller.signal },
+		);
+		if (withdrawal === "caller signal") setTimeout(() => controller.abort(new Error("caller withdrew")), 500);
+		await assert.rejects(
+			stopping,
+			withdrawal === "gate bound" ? /still starting after 1 s; nothing was stopped/u : /caller withdrew/u,
+		);
+		assert.ok(Date.now() - began < 10000, "the stop ends at its bound, not at the other host's bootstrap deadline");
+		for (const path of writerLeasePaths(metadata)) {
+			mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+			const lease = tryNativeWriterLease(path);
+			assert.equal(lease.kind, "held", "the withdrawn stop never took a writer lease");
+			if (lease.kind === "held") lease.lease.release();
+		}
+	});
 
 it("stops a live target once and never acquires a serving host for a cold stop", async (t) => {
 	const root = fixtureRoot(t);

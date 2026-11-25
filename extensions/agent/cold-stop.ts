@@ -9,6 +9,39 @@ import type { stopBeforeResume } from "./durable-host.ts";
 
 export type ColdStopResult = Awaited<ReturnType<typeof stopBeforeResume>>;
 type Reply = { busy: true } | { result: ColdStopResult };
+/**
+ * The writer reports passing the start gate and takes the writer leases only after the caller answers that it will not
+ * withdraw, or after the caller has gone. Until then it has changed nothing.
+ */
+const GATE_PASSED = { phase: "gate-passed" } as const;
+const PROCEED = { phase: "proceed" } as const;
+
+function isPhase(value: unknown, phase: string): boolean {
+	return value !== null && typeof value === "object" && (value as { phase?: unknown }).phase === phase;
+}
+
+/** Report the passed gate and wait for the caller's answer; a caller that has gone cannot withdraw. */
+function confirmGatePassed(): Promise<void> {
+	if (!process.connected || !process.send) return Promise.resolve();
+	return new Promise((resolve) => {
+		const done = () => {
+			process.off("message", answered);
+			process.off("disconnect", done);
+			resolve();
+		};
+		const answered = (message: unknown) => {
+			if (isPhase(message, PROCEED.phase)) done();
+		};
+		process.on("message", answered);
+		process.once("disconnect", done);
+		process.send?.(GATE_PASSED);
+	});
+}
+/**
+ * A cold stop waits this long for a host of the same storage to finish starting. Until the writer passes the start
+ * gate it has changed nothing, so the wait ends without effect.
+ */
+export const COLD_STOP_GATE_WAIT_MS = 30_000;
 
 /** Only the winner opens storage. A busy lease requests attachment to its actual writer, never another launch. */
 export async function withColdWriter(metadata: HostMetadata, stop: () => Promise<ColdStopResult>): Promise<Reply> {
@@ -18,6 +51,7 @@ export async function withColdWriter(metadata: HostMetadata, stop: () => Promise
 	for (const path of [...leases, startGatePath(metadata)]) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	// A host that is still starting holds the start gate; its endpoint answers once the gate opens.
 	const gate = waitNativeWriterLease(startGatePath(metadata));
+	await confirmGatePassed();
 	const writer = tryNativeWriterLeases(leases);
 	gate.release();
 	if (writer.kind === "busy") return { busy: true };
@@ -34,8 +68,21 @@ export async function withColdWriter(metadata: HostMetadata, stop: () => Promise
 	return { result };
 }
 
+function abortError(signal: AbortSignal | undefined): Error {
+	const reason: unknown = signal?.reason;
+	return reason instanceof Error
+		? reason
+		: new Error("The abort was withdrawn before its stop started; nothing was stopped.");
+}
+
 /** The isolated writer outlives its caller's wait. Its exit confirms that its lease is no longer held. */
-export function stopColdStorage(metadata: HostMetadata, sessionId: string, background: boolean): Promise<Reply> {
+export function stopColdStorage(
+	metadata: HostMetadata,
+	sessionId: string,
+	background: boolean,
+	options: { readonly signal?: AbortSignal; readonly gateWaitMs?: number } = {},
+): Promise<Reply> {
+	options.signal?.throwIfAborted();
 	// Node reports a missing cwd as `spawn <executable> ENOENT`, which names the wrong path.
 	if (!statSync(metadata.cwd, { throwIfNoEntry: false })?.isDirectory())
 		return Promise.reject(
@@ -54,14 +101,48 @@ export function stopColdStorage(metadata: HostMetadata, sessionId: string, backg
 	return new Promise((resolve, reject) => {
 		let reply: Reply | undefined;
 		let diagnostic = "";
+		let gatePassed = false;
+		let withdrawn: Error | undefined;
+		// Before the writer passes the start gate it has changed nothing, so the caller's signal or the gate bound ends it.
+		const withdraw = (reason: Error) => {
+			if (gatePassed || withdrawn) return;
+			withdrawn = reason;
+			child.kill("SIGKILL");
+		};
+		const gateTimer = setTimeout(
+			() =>
+				withdraw(
+					new HostError(
+						`A host of this storage is still starting after ${Math.round((options.gateWaitMs ?? COLD_STOP_GATE_WAIT_MS) / 1000)} s; nothing was stopped. A start that cannot finish ends itself within 90 s; then repeat the abort.`,
+						"unavailable",
+					),
+				),
+			options.gateWaitMs ?? COLD_STOP_GATE_WAIT_MS,
+		);
+		const aborted = () => withdraw(abortError(options.signal));
+		options.signal?.addEventListener("abort", aborted, { once: true });
+		const passGate = () => {
+			gatePassed = true;
+			clearTimeout(gateTimer);
+			options.signal?.removeEventListener("abort", aborted);
+		};
 		child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
 			diagnostic = (diagnostic + chunk).slice(-2048);
 		});
-		child.on("message", (message: Reply) => {
-			reply = message;
+		child.on("message", (message: unknown) => {
+			if (isPhase(message, GATE_PASSED.phase)) {
+				if (withdrawn) return;
+				passGate();
+				child.send(PROCEED);
+			} else reply = message as Reply;
 		});
 		child.once("error", reject);
 		child.once("exit", (code, signal) => {
+			passGate();
+			if (withdrawn) {
+				reject(withdrawn);
+				return;
+			}
 			if (code === 0 && reply && ("busy" in reply ? reply.busy === true : reply.result?.background === background))
 				resolve(reply);
 			else

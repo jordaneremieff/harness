@@ -1303,6 +1303,7 @@ export class AgentManager {
 			hostMetadata(target, this.options.packageDir),
 			String(params.sessionId),
 			params.background === true,
+			{ signal },
 		);
 		if ("result" in reply) {
 			const aborted = {
