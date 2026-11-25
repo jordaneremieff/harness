@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import {
-	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { it } from "node:test";
+import { it, type TestContext } from "node:test";
 import {
 	createPrimaryLocationResolver,
 	discoverPrimaryLocation,
@@ -26,12 +26,8 @@ import {
 
 const REAL_GIT = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
 
-/**
- * A private root with a counting Git on PATH. By default it also sets a ceiling directory that
- * bounds no path here: Git's answer is unchanged, but the environment then changes discovery, so
- * the resolver asks Git and the test exercises the cache of Git answers.
- */
-function workspace(t: { after(fn: () => void): void }, options: { asksGit?: boolean } = {}) {
+/** Count Git launches without adding a shell process to the discovery deadline. */
+function workspace(t: TestContext, options: { asksGit?: boolean } = {}) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "effort-location-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const ceiling = process.env.GIT_CEILING_DIRECTORIES;
@@ -41,21 +37,28 @@ function workspace(t: { after(fn: () => void): void }, options: { asksGit?: bool
 		if (ceiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
 		else process.env.GIT_CEILING_DIRECTORIES = ceiling;
 	});
-	const bin = join(root, "bin");
-	const log = join(root, "git-calls.log");
-	mkdirSync(bin);
-	writeFileSync(log, "");
-	writeFileSync(join(bin, "git"), `#!/bin/sh\necho call >> '${log}'\nexec '${REAL_GIT}' "$@"\n`);
-	chmodSync(join(bin, "git"), 0o755);
-	const previous = process.env.PATH;
-	process.env.PATH = `${bin}:${previous ?? ""}`;
+	let launched = 0;
+	const boundary: { before?: () => void; after?: () => void } = {};
+	const exec = childProcess.execFile;
+	const hook = t.mock.method(childProcess, "execFile", (...args: Parameters<typeof exec>) => {
+		if (args[0] !== "git") return exec(...args);
+		const { before, after } = boundary;
+		delete boundary.before;
+		delete boundary.after;
+		before?.();
+		const child = exec(...args);
+		child.once("spawn", () => launched++);
+		if (after) child.once("exit", after);
+		return child;
+	});
+	syncBuiltinESMExports();
 	t.after(() => {
-		if (previous === undefined) delete process.env.PATH;
-		else process.env.PATH = previous;
+		hook.mock.restore();
+		syncBuiltinESMExports();
 	});
 	const work = join(root, "work");
 	mkdirSync(work);
-	return { root, work, bin, log, calls: () => readFileSync(log, "utf8").split("\n").filter(Boolean).length };
+	return { root, work, boundary, calls: () => launched };
 }
 const git = (cwd: string, ...args: string[]) => execFileSync(REAL_GIT, args, { cwd, stdio: "ignore", timeout: 5000 });
 
@@ -230,7 +233,7 @@ it("notices a commondir alias retargeted between two present repositories", asyn
 });
 
 it("does not cache discovery when a commondir alias cannot be resolved before Git runs", async (t) => {
-	const { root, work, bin, log, calls } = workspace(t);
+	const { root, work, boundary, calls } = workspace(t);
 	git(work, "init", "-q");
 	const target = join(root, "target");
 	mkdirSync(target);
@@ -239,12 +242,10 @@ it("does not cache discovery when a commondir alias cannot be resolved before Gi
 	const alias = join(root, "common");
 	symlinkSync(join(root, "missing"), alias);
 	writeFileSync(join(work, ".git", "commondir"), `${alias}\n`);
-	const trigger = join(root, "mutate");
-	writeFileSync(trigger, "");
-	writeFileSync(
-		join(bin, "git"),
-		`#!/bin/sh\necho call >> '${log}'\nif [ -e '${trigger}' ]; then rm -f '${trigger}' '${alias}'; ln -s '${repository}' '${alias}'; fi\nexec '${REAL_GIT}' "$@"\n`,
-	);
+	boundary.before = () => {
+		unlinkSync(alias);
+		symlinkSync(repository, alias);
+	};
 	const resolver = createPrimaryLocationResolver();
 	assert.equal((await resolver.resolve(work)).repository, repository);
 	assert.equal(calls(), 1);
@@ -255,7 +256,7 @@ it("does not cache discovery when a commondir alias cannot be resolved before Gi
 });
 
 it("does not cache discovery when a commondir alias changes while Git runs", async (t) => {
-	const { root, work, bin, log, calls } = workspace(t);
+	const { root, work, boundary, calls } = workspace(t);
 	git(work, "init", "-q");
 	const repository = (name: string) => {
 		const directory = join(root, name);
@@ -268,12 +269,10 @@ it("does not cache discovery when a commondir alias changes while Git runs", asy
 	const alias = join(root, "common");
 	symlinkSync(first, alias);
 	writeFileSync(join(work, ".git", "commondir"), `${alias}\n`);
-	const trigger = join(root, "mutate");
-	writeFileSync(trigger, "");
-	writeFileSync(
-		join(bin, "git"),
-		`#!/bin/sh\necho call >> '${log}'\n'${REAL_GIT}' "$@"\nstatus=$?\nif [ -e '${trigger}' ]; then rm -f '${trigger}' '${alias}'; ln -s '${second}' '${alias}'; fi\nexit $status\n`,
-	);
+	boundary.after = () => {
+		unlinkSync(alias);
+		symlinkSync(second, alias);
+	};
 	const resolver = createPrimaryLocationResolver();
 	assert.equal((await resolver.resolve(work)).repositoryState, "git");
 	assert.equal(calls(), 1);
@@ -419,15 +418,9 @@ it("notices a removed HEAD in a linked worktree's Git directory", async (t) => {
 });
 
 it("does not retain a result whose discovery inputs changed while Git ran", async (t) => {
-	const { root, work, bin, log, calls } = workspace(t);
+	const { work, boundary, calls } = workspace(t);
 	git(work, "init", "-q");
-	const trigger = join(root, "mutate");
-	writeFileSync(trigger, "");
-	writeFileSync(
-		join(bin, "git"),
-		`#!/bin/sh\necho call >> '${log}'\n'${REAL_GIT}' "$@"\nstatus=$?\nif [ -e '${trigger}' ]; then rm -f '${trigger}'; mv '${work}/.git/HEAD' '${work}/.git/HEAD.moved'; fi\nexit $status\n`,
-	);
-	chmodSync(join(bin, "git"), 0o755);
+	boundary.after = () => renameSync(join(work, ".git", "HEAD"), join(work, ".git", "HEAD.moved"));
 	const resolver = createPrimaryLocationResolver();
 	assert.equal((await resolver.resolve(work)).repositoryState, "git");
 	assert.equal(calls(), 1);
