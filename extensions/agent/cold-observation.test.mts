@@ -14,6 +14,8 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { dirname, join } from "node:path";
 import { hostname, tmpdir } from "node:os";
 import {
@@ -537,6 +539,29 @@ it("names the remedy when a source that needs a copy exceeds the copy bound", as
 			/larger than the 512 MiB bound of a cold copy/u.test(error.message) &&
 			/starts its host/u.test(error.message),
 	);
+});
+
+it("names the refusal of the read in place when a large storage without log bytes needs a copy", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "cold-unprepared-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const storagePath = join(root, "storage.sqlite");
+	// The storage schema is current, and no host prepared the delivery documents yet.
+	await (await openNodeSqliteStorage(storagePath)).close(BACKGROUND_CONTEXT);
+	for (const suffix of ["-wal", "-journal"])
+		assert.equal(statSync(`${storagePath}${suffix}`, { throwIfNoEntry: false })?.size ?? 0, 0);
+	// A sparse extension gives the size without the bytes.
+	truncateSync(storagePath, 513 * 1024 * 1024);
+	await assert.rejects(cache.observe({ ...fixtureMetadata(root), storagePath }, "status", {}), (error: unknown) => {
+		assert.ok(error instanceof Error);
+		assert.equal((error as { code?: unknown }).code, "limit_exceeded");
+		assert.doesNotMatch(error.message, /write-ahead log/u, "no log holds bytes");
+		assert.match(
+			error.message,
+			/larger than the 512 MiB bound of a cold copy, and the read in place refused it \(The delivery documents of this storage need preparation\)/u,
+		);
+		assert.match(error.message, /starts its host, which prepares the storage/u);
+		return true;
+	});
 });
 
 it("reuses a real fresh closed database across two cold reads", async (t) => {

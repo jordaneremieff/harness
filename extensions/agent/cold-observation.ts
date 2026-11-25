@@ -69,6 +69,7 @@ function loadColdObservationRuntime(): Promise<ColdObservationRuntime> {
 const MAX_STORAGES = 8;
 /** A read in place repeats when a writer changed the source during it; the last attempt reports the change. */
 const IN_PLACE_READ_ATTEMPTS = 3;
+const IN_PLACE_REFUSAL_CHARACTERS = 200;
 const MAX_RESULTS_PER_STORAGE = 64;
 const MAX_RESULT_BYTES = 4 * 1024 * 1024;
 
@@ -227,6 +228,8 @@ export async function openColdObservationSnapshot(input: ColdOpenInput): Promise
 		registry: createRegistry(),
 		...(input.classifyOwner === undefined ? {} : { classifyOwner: input.classifyOwner }),
 	};
+	// Why this storage is not read in place; a copy that the size bound then refuses reports it.
+	let inPlaceRefusal = "its write-ahead log or rollback journal holds bytes or cannot be examined";
 	if (input.settled) {
 		try {
 			const observation = await DurableObservation.openSettled(
@@ -238,8 +241,10 @@ export async function openColdObservationSnapshot(input: ColdOpenInput): Promise
 				request: (method, params) => observation.request(method, params),
 				close: () => observation.close(),
 			};
-		} catch {
+		} catch (error) {
 			// A storage that needs preparation, or that no read-only connection can open, is read through a copy.
+			const reason = (error instanceof Error ? error.message : String(error)).replace(/[\s.]+$/u, "");
+			inPlaceRefusal = `the read in place refused it (${reason.slice(0, IN_PLACE_REFUSAL_CHARACTERS)})`;
 		}
 	}
 	const observation = await DurableObservation.open(
@@ -249,7 +254,7 @@ export async function openColdObservationSnapshot(input: ColdOpenInput): Promise
 		if ((error as { code?: unknown }).code !== "limit_exceeded") throw error;
 		throw Object.assign(
 			new Error(
-				"This storage is larger than the 512 MiB bound of a cold copy, and its write-ahead log holds bytes, so it cannot be read while its host is not running. A message to the agent starts its host; a running host answers without a copy.",
+				`This storage is larger than the 512 MiB bound of a cold copy, and ${inPlaceRefusal}, so it cannot be read while its host is not running. A message to the agent starts its host, which prepares the storage; a running host answers without a copy.`,
 			),
 			{ code: "limit_exceeded" },
 		);

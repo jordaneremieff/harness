@@ -1559,9 +1559,11 @@ main file, so the cache compares the source identity before and after every
 read in place. A changed identity discards the read and opens the source again;
 the third changed read in a row reports the change. A storage whose schema or
 delivery documents need preparation is copied, because preparation writes.
-Every other cold storage is copied. A copy has a 512 MiB source bound; the
-refusal says that a message to the agent starts its host, which answers without
-a copy.
+Every other cold storage is copied. A copy has a 512 MiB source bound. The
+refusal names why the storage is not read in place: bytes in its write-ahead
+log or rollback journal, or the refusal of the read in place, such as delivery
+documents or a schema that need preparation. It says that a message to the
+agent starts its host, which prepares the storage and answers without a copy.
 Filesystem-only capture never opens the source through SQLite and never creates
 source sidecars; an absent WAL must remain absent for reuse. SQLite validation and
 delivery preparation use only the private copy. A public Session performs that

@@ -47,5 +47,11 @@ export async function openSettledStorage(path: string): Promise<Storage> {
 		transaction: (callback) => database.transaction((transaction) => callback(ledgerSeedTolerant(transaction))),
 		close: () => database.close(),
 	};
-	return SqliteStorage.open(facade);
+	try {
+		return await SqliteStorage.open(facade);
+	} catch (error) {
+		// The storage open closed the connection. A refused write here is a schema migration statement.
+		if (refusedWrite(error)) throw new Error("The stored schema of this storage needs a migration", { cause: error });
+		throw error;
+	}
 }
