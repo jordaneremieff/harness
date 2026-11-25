@@ -10,8 +10,8 @@ struct NativeLaunch {
         if let index = arguments.firstIndex(of: "--live") {
             guard index + 1 < arguments.count, arguments[index + 1].hasPrefix("/"),
                   arguments.filter({ $0 == "--live" }).count == 1,
-                  arguments.first == "--pane" || arguments.first == "--editor" else {
-                return Self(mode: .usage("--live requires one private absolute configuration path with --pane or --editor"), livePath: nil)
+                  ["--pane", "--editor", "--ask-check"].contains(arguments.first) else {
+                return Self(mode: .usage("--live requires one private absolute configuration path with --pane, --editor or --ask-check"), livePath: nil)
             }
             livePath = arguments[index + 1]
             arguments.removeSubrange(index...index + 1)
@@ -57,6 +57,10 @@ enum LaunchMode {
     /// Opens an open request's document offscreen with the real platform operations and runs
     /// Return to Rex once, printing its result.
     case returnCheck(request: String)
+    /// Opens one stored document offscreen as a live pane does, with the `--live` connection, and
+    /// sends `text` from the Ask card with real key events. It reports what the card shows until the
+    /// conversation answers or `seconds` pass.
+    case askCheck(store: String, document: String, text: String, seconds: Double, output: String?)
     case usage(String)
 
     /// Check and pane modes show no Dock icon; presentation shows a normal window.
@@ -147,6 +151,13 @@ enum LaunchMode {
                 inspect: options["inspect"],
                 darkTheme: options["dark-theme"]
             )
+        case "--ask-check":
+            let usage = "--ask-check --store <store directory> --text <question> [--seconds 90] [--out report.json] --live <configuration> <document ID>"
+            guard positional.count == 1, let document = positional.first, let store = options["store"], let text = options["text"],
+                  !text.isEmpty, Set(options.keys).isSubset(of: ["store", "text", "seconds", "out"]) else { return .usage(usage) }
+            let seconds = options["seconds"].map { Double($0) } ?? 90
+            guard let seconds, seconds > 0, seconds <= 600 else { return .usage(usage) }
+            return .askCheck(store: store, document: document, text: text, seconds: seconds, output: options["out"])
         case "--return-check":
             guard let request = positional.first else { return .usage("--return-check <open request>") }
             return .returnCheck(request: request)
@@ -169,7 +180,7 @@ enum LaunchMode {
         default:
             // An unknown option is an error, so that a caller that expects a newer mode never
             // starts the library application in its place.
-            return .usage("unknown option \(first); options: --pane, --present, --export-image, --verify, --measure, --return-check")
+            return .usage("unknown option \(first); options: --pane, --present, --export-image, --verify, --measure, --return-check, --ask-check")
         }
     }
 }

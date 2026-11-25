@@ -96,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return
         }
         if mode.isCheck {
-            Task { await CheckRunner(mode: mode, windows: windows).run() }
+            Task { await CheckRunner(mode: mode, windows: windows, live: liveConfiguration).run() }
             return
         }
         DispatchQueue.main.async { [self] in

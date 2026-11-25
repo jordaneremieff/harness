@@ -11,6 +11,8 @@ import WebKit
 struct CheckRunner {
     let mode: LaunchMode
     let windows: WindowManager
+    /// The connection that a `--live` launch file supplied, for the Ask check.
+    var live: CollaborationConfiguration?
     private static var presentedWindow: NSWindow?
 
     /// Check modes never replace the user's clipboard.
@@ -45,6 +47,8 @@ struct CheckRunner {
             return
         case .returnCheck(let request):
             status = await returnCheck(request: request)
+        case .askCheck(let store, let document, let text, let seconds, let output):
+            status = await askCheck(store: store, document: document, text: text, seconds: seconds, output: output)
         case .usage(let text):
             FileHandle.standardError.write(Data(TerminalText.line("usage: MarkdownReader \(text)").utf8))
             status = 2

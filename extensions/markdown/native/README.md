@@ -320,6 +320,8 @@ MarkdownReader --export-image --out page.png [--width 900] [--max-height 6000] [
                [--dark-theme frappe|macchiato|mocha] [--text-size n] [--click <selector>] [--answer <answer.md>] <input>
 MarkdownReader --measure [--sizes 51200,512000,2097152] [--out report.json] [<corpus.md>...]
 MarkdownReader --return-check <open request>
+MarkdownReader --ask-check --store <store directory> --text <question> [--seconds 90] [--out report.json]
+               --live <configuration> <document ID>
 ```
 
 `--verify` exercises the real page offscreen under its CSP, asset refusal, bridge-driven
@@ -333,6 +335,14 @@ control, named by CSS selector, before the capture, to show a menu or panel such
 shows the given Markdown file as the agent's answer in the Ask card. `--measure` reports
 read, render, display, find and process observations with their evidence limits.
 `--return-check` performs the explicit terminal-return operation with the request's origin.
+`--ask-check` takes the arguments of a pane launch that `markdown_live show` offered, with
+`--ask-check` in place of `--pane`. It consumes the launch's live configuration, reports startup
+and connects to that Pi conversation as the pane would, then opens the document offscreen inside
+the same live workspace. It presses Command-Option-M, types the question with key events,
+presses Command-Return and reports what the Ask card shows until the conversation answers or the
+seconds pass. The offscreen panel is never the system's key window, so the menu bar cannot
+validate Command-Option-M against it; the check then sends the menu item's own command and says
+so in its report.
 `--present` is a separate visible presentation mode, not an offscreen check.
 
 Swift tests cover the bridge and bounds, exact mirror changes, copy-on-first-change,

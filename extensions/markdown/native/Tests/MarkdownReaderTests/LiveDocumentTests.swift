@@ -837,6 +837,17 @@ import ReaderFeature
             guard case .usage = NativeLaunch.parse(arguments).mode else { Issue.record("Invalid live launch was accepted"); continue }
         }
     }
+
+    @Test func askCheckTakesTheLiveConfigurationAndOneQuestion() {
+        let document = "md-0123456789abcdef0123"
+        let launch = NativeLaunch.parse(["--ask-check", "--store", "/store", "--text", "Explain it.", document, "--live", "/private/config.json"])
+        #expect(launch.livePath == "/private/config.json")
+        guard case .askCheck("/store", document, "Explain it.", 90, nil) = launch.mode else { Issue.record("Ask check changed"); return }
+        for arguments in [["--ask-check", "--store", "/store", document], ["--ask-check", "--store", "/store", "--text", "Q", "--pin", "1", document],
+                          ["--ask-check", "--store", "/store", "--text", "Q", "--seconds", "0", document]] {
+            guard case .usage = LaunchMode.parse(arguments) else { Issue.record("Invalid ask check was accepted"); continue }
+        }
+    }
     @Test func pageReadinessBusyAndPersonHoldRefuseWithoutMutation() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let workspace = EditorWorkspace(directory: root, store: nil)
