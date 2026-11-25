@@ -483,7 +483,12 @@ export class AgentManager {
 	}
 	private catalogChanged(change: CatalogChange): void {
 		this.inventory.invalidate(change);
-		this.rosterChanged();
+		try {
+			this.rosterChanged();
+		} catch (error) {
+			// A notice arrives from a socket; a roster listener that throws must not end the process.
+			this.failures.set("footer", errorText(error));
+		}
 		this.scheduleFooterProjection();
 		// A changed recipient can wake a parked delivery in any source storage.
 		this.recoverCatalogueChanges();

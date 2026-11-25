@@ -1787,6 +1787,22 @@ it("names the next call when a read or control names an identity that nothing ho
 	await assert.rejects(manager.status(ended, undefined, caller), /No peer was contacted\.$/u);
 });
 
+it("records a roster listener that throws on a catalogue notice and keeps the notice path", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	mkdirSync(manager.catalog.root, { recursive: true });
+	t.after(
+		manager.subscribeRoster(() => {
+			throw new Error("roster callback failed");
+		}),
+	);
+	const notice = (manager as unknown as { catalogChanged(change: undefined): void }).catalogChanged.bind(manager);
+	assert.doesNotThrow(() => notice(undefined), "a notice comes from a socket handler, which nothing guards");
+	const overview = (await manager.status()) as { failures: Array<{ error: string }> };
+	assert.ok(overview.failures.some(({ error }) => error.includes("roster callback failed")));
+});
+
 it("opens a roster subscription when catalog observation cannot start and records the failure", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root));
