@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import register from "./index.ts";
 import { EFFORT_PURPOSE_ENTRY } from "./effort-purpose.ts";
+import { AgentManager } from "./manager.ts";
 import { primaryEndpointPath } from "./primary-channel.ts";
 import { WORK_REFERENCE_EVENT, WORK_REFERENCES_ENTRY } from "./work-references.ts";
 import { machineConfig } from "./settings-fixture.mts";
@@ -168,6 +169,14 @@ async function primaryFixture(t: TestContext) {
 			await opened.prompt(text, options);
 			await opened.waitForIdle();
 		},
+		/** A run that a custom message starts; Pi emits no input event for it. */
+		async kickoff(text: string) {
+			await opened.sendCustomMessage(
+				{ customType: "fixture.kickoff", content: text, display: true, details: undefined },
+				{ triggerTurn: true },
+			);
+			await opened.waitForIdle();
+		},
 		navigate: (targetId: string) => opened.navigateTree(targetId),
 	};
 }
@@ -183,6 +192,33 @@ it("records only the first interactive input as observed purpose and leaves the 
 	assert.deepEqual(fixture.endpoint().observedPurpose, { source: "interactive-input", text: "Real task input" });
 	assert.equal(fixture.sessionManager.getSessionName(), undefined, "input never names the session");
 	assert.deepEqual(fixture.nameChanges, []);
+});
+
+it("records no observed purpose after a run that a custom message started", { timeout: 20000 }, async (t) => {
+	const fixture = await primaryFixture(t);
+	await fixture.kickoff("Start the review from the handover");
+	await fixture.prompt("did you see that");
+	assert.deepEqual(fixture.purposeEntries(), [], "the typed message follows the kickoff run's history");
+	assert.equal(fixture.endpoint().observedPurpose, undefined);
+});
+
+it("keeps capture closed when a retained manager of an earlier release would leave it open", {
+	timeout: 20000,
+}, async (t) => {
+	// An earlier release closed capture only for interactive input; a /reload can hand that manager to this entry.
+	const current = AgentManager.prototype.recordPrimaryInput;
+	t.mock.method(
+		AgentManager.prototype,
+		"recordPrimaryInput",
+		function (this: AgentManager, ownerId: string, text: string, source: string) {
+			return source === "interactive" ? current.call(this, ownerId, text, source) : false;
+		},
+	);
+	const fixture = await primaryFixture(t);
+	await fixture.prompt("Generated start of the work", { source: "extension" });
+	await fixture.prompt("did you see that");
+	assert.deepEqual(fixture.purposeEntries(), []);
+	assert.equal(fixture.endpoint().observedPurpose, undefined);
 });
 
 for (const source of ["extension", "rpc"] as const)

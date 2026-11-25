@@ -531,6 +531,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	const primaries = new Map<string, AbortController>();
 	/** Newest-first work items of each live session, retained by this extension and published on its endpoint. */
 	const workReferences = new Map<string, PrimaryWorkReference[]>();
+	/**
+	 * Whether a session's first request can still be captured. This entry decides it, so a manager that an earlier
+	 * release left for a reload cannot keep capture open with its own rule.
+	 */
+	const firstRequestOpen = new Map<string, boolean>();
 	pi.events.on(WORK_REFERENCE_EVENT, (value) => {
 		const event = parseWorkReferenceEvent(value);
 		if (!event || !primaries.has(event.sessionId)) return;
@@ -1588,6 +1593,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const abort = new AbortController();
 		primaries.set(sessionId, abort);
 		const purpose = retainedPurpose(ctx.sessionManager, _event.reason);
+		firstRequestOpen.set(sessionId, purpose.complete && purpose.canCapture && purpose.text === undefined);
 		const workRefs = retainedWorkReferences(ctx.sessionManager);
 		workReferences.set(sessionId, workRefs);
 		const sendPeer = (text: string, details: unknown, wake: boolean) => {
@@ -1754,10 +1760,16 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const id = ctx.sessionManager.getSessionId();
 		const manager = eventManager();
 		manager?.touchPrimary(id);
-		// Every input reaches the manager, so a first input that an extension or a client sent ends capture.
-		if (manager?.recordPrimaryInput(id, event.text, event.source)) {
+		// The first input of any source ends capture; only an interactive one supplies the first request.
+		const open = firstRequestOpen.get(id) === true;
+		firstRequestOpen.set(id, false);
+		if (open && event.source === "interactive" && manager?.recordPrimaryInput(id, event.text, event.source))
 			pi.appendEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: purposeExcerpt(event.text) });
-		}
+	});
+	// Pi emits input before it starts the run of a prompt. A run that starts without input, such as one that a
+	// custom message triggers, leaves history before any typed request, so it ends capture too.
+	pi.on("before_agent_start", (_event, ctx) => {
+		firstRequestOpen.set(ctx.sessionManager.getSessionId(), false);
 	});
 	pi.on("context", (event, ctx) => continuity.context(event, ctx));
 	pi.on("turn_end", (event, ctx) => continuity.turnEnd(event, ctx, selfCompaction.requested));
@@ -1810,6 +1822,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		primaryDeliveries.get(id)?.inbox.close();
 		primaryDeliveries.delete(id);
 		workReferences.delete(id);
+		firstRequestOpen.delete(id);
 		heldPlacements.delete(id);
 		endQuestions(id);
 		continuity.end(id);
