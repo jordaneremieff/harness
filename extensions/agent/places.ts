@@ -11,9 +11,12 @@
  * Every mutation holds a kernel lock (`O_EXLOCK`) on one lock file beside the
  * book, which the kernel releases when its holder exits, so a dead holder never
  * blocks a later mutation. The file also carries a claim in the shared
- * writer-claim shape, marked as kernel-held, for diagnostics. A claim without
- * that mark comes from the exclusive-create protocol that takes no kernel lock,
- * and it still excludes: its holder may be live. The holder removes the file
+ * writer-claim shape, marked as kernel-held, for diagnostics. A new holder
+ * writes its claim into a private file and links that file to the lock path, so
+ * the lock file never appears without its marked claim. Any other content,
+ * including an empty file, comes from the exclusive-create protocol that takes
+ * no kernel lock and writes its claim after the create, so it still excludes:
+ * its holder may be live, whatever the file's age. The holder removes the file
  * while it still holds the lock. A mutation waits a bounded time for a live
  * holder. Reads never follow a symlink. Reads admit at most
  * `PLACE_FILE_MAX_BYTES` and use one extra sentinel byte to detect growth.
@@ -28,6 +31,7 @@ import {
 	constants,
 	fstatSync,
 	ftruncateSync,
+	linkSync,
 	lstatSync,
 	mkdirSync,
 	openSync,
@@ -40,7 +44,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 
 /** One area-to-session binding. */
 export interface PlaceBinding {
@@ -115,12 +119,6 @@ const DARWIN_O_EXLOCK = 0x20;
 export const PLACE_LOCK_WAIT_MS = 15_000;
 const LOCK_RECHECK_MS = 100;
 const LOCK_CLAIM_BYTES = 4096;
-/**
- * An unheld empty lock file younger than this can be an exclusive-create holder between its create and its claim
- * write, so it is not taken. A modification time further in the future than this, after a clock step backwards,
- * counts as old; a nearer one is clock and timestamp granularity, so an orphan clears within twice this bound.
- */
-const EMPTY_LOCK_GRACE_MS = 2_000;
 
 interface PlaceFile {
 	places: PlaceBinding[];
@@ -432,29 +430,23 @@ export class PlaceBook {
 			}
 			if (!created) {
 				const existing = this.readLockClaim(descriptor);
-				// Unheld, a marked claim belongs to an exited holder and an old empty file to a creator that never wrote.
-				// Any other content comes from the exclusive-create protocol, which takes no kernel lock.
-				if (existing?.kernel !== true && stat.size > 0) {
+				// Unheld, a marked claim belongs to an exited holder. Anything else, an empty file included, comes from the
+				// exclusive-create protocol: its holder can be live between its create and its claim write.
+				if (existing?.kernel !== true) {
 					closeSync(descriptor);
 					return {
 						kind: "busy",
 						claim: existing,
-						detail: "held under the exclusive-create protocol, which takes no kernel lock",
+						detail:
+							"held or left by the exclusive-create protocol of older code, which takes no kernel lock; remove the file once no process of older code runs",
 						final: true,
 					};
 				}
-				const age = Date.now() - stat.mtimeMs;
-				if (existing?.kernel !== true && Math.abs(age) < EMPTY_LOCK_GRACE_MS) {
-					closeSync(descriptor);
-					return {
-						kind: "busy",
-						claim: undefined,
-						detail: "being created under the exclusive-create protocol, which takes no kernel lock",
-					};
-				}
-				ftruncateSync(descriptor, 0);
+				// Overwrite, then cut to length, so the file never reads as empty.
+				const claim = Buffer.from(`${JSON.stringify(this.newClaim())}\n`, "utf8");
+				writeSync(descriptor, claim, 0, claim.length, 0);
+				ftruncateSync(descriptor, claim.length);
 			}
-			writeSync(descriptor, `${JSON.stringify(this.newClaim())}\n`, 0, "utf8");
 			return { kind: "held", release: () => this.release(lockFile, held) };
 		} catch (error) {
 			closeSync(descriptor);
@@ -462,16 +454,15 @@ export class PlaceBook {
 		}
 	}
 
-	/** Open the lock file with the kernel lock: created by this call, or an existing file that no process holds. */
+	/**
+	 * Open the lock file with the kernel lock: published by this call with its claim already written, or an existing
+	 * file that no process holds.
+	 */
 	private openLock(lockFile: string): { descriptor: number; created: boolean } | PlaceLockAttempt {
 		mkdirSync(dirname(this.file), { recursive: true });
 		const flags = constants.O_RDWR | DARWIN_O_EXLOCK | constants.O_NONBLOCK | noFollow();
-		try {
-			return { descriptor: openSync(lockFile, flags | constants.O_CREAT | constants.O_EXCL, 0o600), created: true };
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code !== "EEXIST" && code !== "EAGAIN") throw error;
-		}
+		const published = this.publishLock(lockFile, flags);
+		if (published !== undefined) return { descriptor: published, created: true };
 		try {
 			return { descriptor: openSync(lockFile, flags), created: false };
 		} catch (error) {
@@ -480,6 +471,31 @@ export class PlaceBook {
 			if (code === "ENOENT") return { kind: "busy", claim: undefined, retry: true };
 			if (code !== "EAGAIN") throw error;
 			return { kind: "busy", claim: this.readLockClaim(lockFile) };
+		}
+	}
+
+	/**
+	 * Create a private file under the kernel lock, write the marked claim, then link it to the lock path. Undefined when
+	 * the lock path already exists. The private name is removed in either case.
+	 */
+	private publishLock(lockFile: string, flags: number): number | undefined {
+		const privateFile = join(dirname(lockFile), `.${basename(lockFile)}.${randomBytes(8).toString("hex")}`);
+		const descriptor = openSync(privateFile, flags | constants.O_CREAT | constants.O_EXCL, 0o600);
+		try {
+			writeSync(descriptor, `${JSON.stringify(this.newClaim())}\n`, 0, "utf8");
+			try {
+				linkSync(privateFile, lockFile);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+				closeSync(descriptor);
+				return undefined;
+			}
+			return descriptor;
+		} catch (error) {
+			closeSync(descriptor);
+			throw error;
+		} finally {
+			unlinkSync(privateFile);
 		}
 	}
 

@@ -1,20 +1,23 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
+	closeSync,
 	constants,
 	existsSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	openSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	symlinkSync,
+	unlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { PLACE_FILE_MAX_BYTES, PlaceBook, PlaceBookError, PlaceLockedError } from "./places.ts";
 
@@ -168,7 +171,10 @@ describe("place bindings", () => {
 			const dead = spawnSync(process.execPath, ["-e", ""]);
 			assert.ok(dead.pid, "the helper process has a pid");
 			writeFileSync(lock, claim(root, dead.pid, "dead"));
-			assert.throws(() => book.bind("/work/area", "session"), /exclusive-create protocol, which takes no kernel lock/u);
+			assert.throws(
+				() => book.bind("/work/area", "session"),
+				/exclusive-create protocol of older code, which takes no kernel lock/u,
+			);
 			assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "dead", "the dead claim stays");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
@@ -191,44 +197,51 @@ describe("place bindings", () => {
 		}
 	});
 
-	it("does not take a young empty lock file, which an exclusive-create creator has not written yet", async () => {
+	it("refuses an empty lock file at any age while an exclusive-create creator can be between its two steps", async () => {
 		const root = base();
 		try {
 			const book = new PlaceBook(root, { lockWaitMs: 200 });
 			const lock = `${book.file}.lock`;
-			writeFileSync(lock, "");
-			await assert.rejects(
-				book.withArea("/work/area", async (_current, reserve) => {
-					reserve("area")();
-					return "area";
-				}),
-				PlaceLockedError,
-			);
-			assert.equal(readFileSync(lock, "utf8"), "", "the creator's file stays untouched");
-			const old = new Date(Date.now() - 10_000);
-			utimesSync(lock, old, old);
-			assert.equal(
-				(
-					await book.withArea("/work/area", async (_current, reserve) => {
-						reserve("area")();
+			// The exclusive-create protocol creates the file, then writes its claim in a second call.
+			closeSync(openSync(lock, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600));
+			for (const offsetMs of [-10_000, 60_000, 0]) {
+				const at = new Date(Date.now() + offsetMs);
+				utimesSync(lock, at, at);
+				await assert.rejects(
+					book.withArea("/work/area", async (_current, reserve) => {
+						reserve("new-session")();
 						return "area";
-					})
-				).value,
-				"area",
-				"an old empty file is abandoned",
-			);
-			writeFileSync(lock, "");
-			const future = new Date(Date.now() + 60_000);
-			utimesSync(lock, future, future);
-			assert.equal(
-				(
-					await book.withArea("/work/other", async (_current, reserve) => {
-						reserve("other")();
-						return "other";
-					})
-				).value,
-				"other",
-				"a modification time in the future counts as old",
+					}),
+					/exclusive-create protocol of older code/u,
+				);
+				assert.equal(readFileSync(lock, "utf8"), "", "the creator's file stays untouched");
+			}
+			// The paused creator resumes and writes its claim: the new writer still refuses until it releases.
+			writeFileSync(lock, claim(root, process.pid, "older"));
+			assert.throws(() => book.bind("/work/area", "new-session"), /exclusive-create protocol of older code/u);
+			unlinkSync(lock);
+			book.bind("/work/area", "new-session");
+			assert.equal(book.exact("/work/area")?.sessionId, "new-session", "the new writer proceeds after the release");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("publishes its lock file with the marked claim already written and leaves no private file", async () => {
+		const root = base();
+		try {
+			const book = new PlaceBook(root);
+			const lock = `${book.file}.lock`;
+			await book.withArea("/work/area", async (_current, reserve) => {
+				const held = JSON.parse(readFileSync(lock, "utf8"));
+				assert.equal(held.kernel, true);
+				assert.equal(lstatSync(lock).nlink, 1, "the private name is gone once the lock path names the file");
+				reserve("session")();
+				return "area";
+			});
+			assert.deepEqual(
+				readdirSync(dirname(book.file)).filter((name) => name.includes("places.json.lock")),
+				[],
 			);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
@@ -416,10 +429,11 @@ describe("place book kernel lock", () => {
 			assert.equal(book.exact("/work/area")?.sessionId, "session");
 			assert.equal(existsSync(`${book.file}.lock`), false, "the release removes the lock file");
 			writeFileSync(`${book.file}.lock`, "", { mode: 0o600 });
-			const old = new Date(Date.now() - 10_000);
-			utimesSync(`${book.file}.lock`, old, old);
-			book.bind("/work/second", "second");
-			assert.equal(book.exact("/work/second")?.sessionId, "second", "an old empty file without a holder is free");
+			assert.throws(
+				() => book.bind("/work/second", "second"),
+				/exclusive-create protocol of older code/u,
+				"an empty file can belong to an exclusive-create creator, so it refuses",
+			);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

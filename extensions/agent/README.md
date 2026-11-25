@@ -1780,10 +1780,16 @@ agents and partial costs.
 Place mutations hold one kernel lock (`O_EXLOCK`) on the book's lock file. The
 kernel releases it when its holder exits, so the lock of an exited holder never
 blocks a later mutation, and no process ID is consulted. The file carries the
-holder's claim, marked as kernel-held, for the refusal text; the holder removes
-the file while it still holds the lock. A claim without that mark comes from the
-exclusive-create protocol of older code, which takes no kernel lock, so it still
-refuses: its holder may be live. A place operation waits up to 15 seconds for a
+holder's claim, marked as kernel-held, for the refusal text; the holder writes
+that claim into a private file and links it to the lock path, so the lock file
+never appears without it, and removes the file while it still holds the lock.
+Any other content, an empty file included, comes from the exclusive-create
+protocol of older code, which takes no kernel lock and writes its claim after the
+create, so it still refuses at once, whatever the file's age: its holder may be
+live. Such a file left by an exited process of older code refuses until it is
+removed by hand, as older code itself requires. A process that exits between
+creating its private file and removing that name leaves a hidden
+`.places.json.lock.<random>` file, which nothing reads. A place operation waits up to 15 seconds for a
 live holder, then refuses with the holder's process and start time; bind and
 unbind refuse at once. The lock covers only the book: a place that reuses a
 binding reads it under the lock and then releases it, and a creation releases it
