@@ -30,6 +30,7 @@
 	interface Assistance {
 		completionTrigger(text: string, cursor: number): boolean;
 		completionEdit(before: string, result: string, cursor: number): Edit | null;
+		historyIndexAfterUpdate(entries: string[], index: number | null, text: string, next: string[]): number | null;
 		historyStep(
 			context: {
 				entries: string[];
@@ -886,8 +887,8 @@
 			prefetch,
 			paste: (paths: unknown) => addPaths(paths),
 			history(next: string[]) {
+				recalled = assist.historyIndexAfterUpdate(entries, recalled, input.value, next);
 				entries = next;
-				recalled = null;
 			},
 			recovery(label: string) {
 				recoveryLabel = label;

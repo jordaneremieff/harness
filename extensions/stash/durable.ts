@@ -1583,7 +1583,7 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 						checkCapacityCancellation(context);
 						const episode = doc?.episode ?? 1;
 						if (pending.episode !== episode || pending.conversation !== String(api.conversationId)) return undefined;
-						return { continue: pending.text };
+						return { kind: "continue" as const, continue: pending.text };
 					}),
 			}),
 		],

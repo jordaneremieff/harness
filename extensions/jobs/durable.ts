@@ -709,7 +709,7 @@ export function createJobsContribution(options: { source: string }): DurableCont
 					}),
 				],
 				tools: [jobsTool],
-				wraps: [{ tool: "bash", wrap: wrapBash }],
+				wraps: [{ kind: "tool", tool: "bash", wrap: wrapBash }],
 			});
 		},
 	};

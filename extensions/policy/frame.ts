@@ -797,6 +797,13 @@ export function ordinaryTarget(ctx: ExtensionContext): ViewTarget {
 	};
 }
 
+type CustomOptions = NonNullable<Parameters<ExtensionContext["ui"]["custom"]>[1]>;
+
+export interface OpenFrameOptions {
+	expanded?: boolean;
+	blocked?: CustomOptions["blocked"];
+}
+
 /**
  * Show a view in the editor slot below the transcript until it closes. The editor and its draft
  * return when it closes; the close continuation runs after that, so it sees the real editor.
@@ -805,28 +812,31 @@ export async function openFrame(
 	ctx: ExtensionContext,
 	open: (host: ViewHost) => View,
 	track: (frame: Frame | undefined) => void,
-	expanded = false,
+	options: OpenFrameOptions,
 ): Promise<void> {
 	let frame: Frame | undefined;
 	let after: (() => unknown) | undefined;
 	try {
-		await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
-			frame = new Frame({
-				theme,
-				target: ordinaryTarget(ctx),
-				rows: (expanded) => frameRows(tui.terminal.rows, expanded),
-				requestRender: () => tui.requestRender(),
-				close: (then) => {
-					after = then;
-					done(undefined);
-				},
-				expandKey: keybindings.getKeys("app.tools.expand")[0] ?? "ctrl+o",
-				expanded,
-				open,
-			});
-			track(frame);
-			return frame;
-		});
+		await ctx.ui.custom<void>(
+			(tui, theme, keybindings, done) => {
+				frame = new Frame({
+					theme,
+					target: ordinaryTarget(ctx),
+					rows: (expanded) => frameRows(tui.terminal.rows, expanded),
+					requestRender: () => tui.requestRender(),
+					close: (then) => {
+						after = then;
+						done(undefined);
+					},
+					expandKey: keybindings.getKeys("app.tools.expand")[0] ?? "ctrl+o",
+					expanded: options.expanded,
+					open,
+				});
+				track(frame);
+				return frame;
+			},
+			{ blocked: options.blocked },
+		);
 	} finally {
 		frame?.dispose();
 		track(undefined);

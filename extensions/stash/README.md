@@ -595,8 +595,8 @@ Native `/stash budget` commands return the current conversation's context and
 cost snapshot against its selected budgets through the normal host command
 surface. Native automatic per-turn notices are unavailable. Public generation
 hooks read snapshots and memos but provide no retained append operation after
-every model round. `onYield.continue` starts another generation, and `afterRun`
-only covers completed runs, not every tool round. Stash does not replace that
+every model round. An `onYield` decision with `kind: "continue"` starts another
+generation. `afterRun` only covers completed runs, not every tool round. Stash does not replace that
 missing surface with a disappearing request suffix or another ledger.
 
 Ordinary context tokens come from `ctx.getContextUsage()` and remain labelled as

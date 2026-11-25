@@ -577,15 +577,16 @@ test("context edits preserve null, string and empty replacements without withhol
 	assert.equal(readHistory(sm, { entryId: id, pointer: "/data/replacement/content/0/data" }).text, "ordinary data");
 });
 
-test("stored bash truncation stays distinct from a read page", () => {
+test("user Bash spill failure is discoverable and distinct from the command exit and read page", () => {
 	const sm = SessionManager.inMemory();
 	const id = sm.appendMessage({
 		role: "bashExecution",
 		command: "synthetic",
 		output: "stored truncated text",
-		exitCode: 1,
+		exitCode: 7,
 		cancelled: false,
 		truncated: true,
+		fullOutputError: "ENOSPC: no space left on device",
 		excludeFromContext: true,
 		timestamp: 1,
 	});
@@ -594,6 +595,19 @@ test("stored bash truncation stays distinct from a read page", () => {
 	assert.equal((result.entry as Record<string, unknown>).truncated, true);
 	assert.equal((result.entry as Record<string, unknown>).excludeFromContext, true);
 	assert.equal((result.entry as Record<string, unknown>).role, "bashExecution");
+	const manifest = readHistory(sm, { entryId: id, pointer: "/message" });
+	assert.ok((manifest.items as { pointer: string }[]).some((item) => item.pointer === "/message/fullOutputError"));
+	const match = searchHistory(sm, { query: "ENOSPC" });
+	assert.deepEqual(
+		(match.matches as { pointer: string }[]).map((entry) => entry.pointer),
+		["/message/fullOutputError"],
+	);
+	assert.equal(
+		readHistory(sm, { entryId: id, pointer: "/message/fullOutputError" }).text,
+		"ENOSPC: no space left on device",
+	);
+	assert.equal(readHistory(sm, { entryId: id, pointer: "/message/exitCode" }).value, 7);
+	assert.equal(readHistory(sm, { entryId: id, pointer: "/message/fullOutputPath" }).status, "field_absent");
 });
 
 test("defensive execute validation rejects mutated parameters and observes cancellation", async () => {

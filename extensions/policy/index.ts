@@ -32,7 +32,7 @@ import {
 } from "./panel.ts";
 import type { PolicyOperations, PolicyResult, PolicyViewState } from "./operator-view.ts";
 import { effectiveState, selectableForAction, type SessionRuleAudit } from "./rule.ts";
-import type { Frame, View, ViewHost } from "./frame.ts";
+import type { Frame, OpenFrameOptions, View, ViewHost } from "./frame.ts";
 import { PolicyRuntime } from "./runtime.ts";
 import { formatTelemetry, readTelemetryPage } from "./telemetry.ts";
 import {
@@ -673,7 +673,7 @@ async function selectProposal(
 	ctx: ExtensionCommandContext,
 	snapshot: RuleSnapshot,
 	target: string | undefined,
-	action: string,
+	action: "Approve" | "Reject",
 ): Promise<PendingProposal | undefined> {
 	if (target) {
 		const matches = snapshot.pending.filter((p) => p.id === target || p.ruleId === target);
@@ -683,7 +683,11 @@ async function selectProposal(
 	const choices = snapshot.pending.map(
 		(p) => `${p.ruleId} · ${p.operation} · ${choiceText(p.candidate?.purpose ?? p.reason)}`,
 	);
-	const selected = await ctx.ui.select(`${action} which policy proposal?`, choices);
+	const selected = await ctx.ui.select(
+		`${action} which policy proposal?`,
+		choices,
+		action === "Reject" ? { blockedKind: "permission" } : undefined,
+	);
 	return selected === undefined ? undefined : snapshot.pending[choices.indexOf(selected)];
 }
 
@@ -1060,7 +1064,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	const openPolicyFrame = async (
 		ctx: ExtensionContext,
 		makeView: () => Promise<(host: ViewHost) => View>,
-		expanded = false,
+		options: OpenFrameOptions = {},
 	): Promise<void> => {
 		if (opening) return;
 		const controller = new AbortController();
@@ -1078,7 +1082,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 					(current) => {
 						frame = current;
 					},
-					expanded,
+					options,
 				);
 		} finally {
 			opening = undefined;
@@ -1158,7 +1162,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 						},
 					});
 			},
-			true,
+			{ expanded: true, blocked: { kind: "permission", message: title.split(/\r?\n/, 1)[0] } },
 		);
 		return approved;
 	};

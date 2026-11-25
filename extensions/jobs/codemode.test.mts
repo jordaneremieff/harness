@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import {
 	type ToolCall,
 } from "@earendil-works/pi-ai";
 import {
+	convertToLlm,
 	createAgentSession,
 	createCodemodeExtension,
 	DefaultResourceLoader,
@@ -33,7 +34,7 @@ test("native codemode composes Bash and managed jobs in an ordinary session", { 
 	let pending: ToolCall | undefined;
 	let sequence = 0;
 	const errors: string[] = [];
-	const nested: Array<{ name: string; isError: boolean }> = [];
+	const nested: Array<{ name: string; isError: boolean; details: unknown }> = [];
 	const model = {
 		id: "deterministic",
 		name: "Deterministic fixture",
@@ -140,7 +141,8 @@ test("native codemode composes Bash and managed jobs in an ordinary session", { 
 						streamSimple: stream,
 					});
 					pi.on("tool_result", (event) => {
-						if (event.parentToolCallId) nested.push({ name: event.toolName, isError: event.isError });
+						if (event.parentToolCallId)
+							nested.push({ name: event.toolName, isError: event.isError, details: event.details });
 					});
 				},
 			],
@@ -174,6 +176,79 @@ test("native codemode composes Bash and managed jobs in an ordinary session", { 
 		assert.equal(foreground.rejected, true);
 		assert.deepEqual(foreground.empty, { jobs: [] });
 		assert.ok(nested.some((event) => event.name === "bash" && event.isError));
+
+		const longLine = `node -e 'process.stdout.write("x".repeat(120_000) + "FINAL EVIDENCE\\n\\n")'`;
+		const previousTemp = process.env.TMPDIR;
+		try {
+			process.env.TMPDIR = root;
+			const saved = await session.executeBash(longLine);
+			assert.equal(saved.truncated, true);
+			assert.match(saved.output, /xFINAL EVIDENCE/u);
+			assert.ok(saved.fullOutputPath);
+			assert.equal(saved.fullOutputError, undefined);
+			assert.equal((await readFile(saved.fullOutputPath, "utf8")).length, 120_016);
+			const full = await script(`
+				const {output, ...facts} = await tools.bash({command: ${JSON.stringify(longLine)}});
+				return {...facts, length: output.length, ending: output.slice(-16)};
+			`);
+			assert.equal(full.truncated, false, "the program reads the saved output beyond the model-facing limit");
+			assert.equal(full.full_output_path, undefined);
+			assert.equal(full.length, 120_016);
+			assert.equal(full.ending, "FINAL EVIDENCE\n\n");
+
+			process.env.TMPDIR = join(root, "missing-temp-directory");
+			const missing = await script(`
+				const short = ${JSON.stringify(longLine)};
+				const long = ${JSON.stringify(longLine.replace("120_000", "320_000"))};
+				const summarize = ({output, ...facts}) => ({...facts, ending: output.slice(-20)});
+				return {
+					complete: summarize(await tools.bash({command: short})),
+					success: summarize(await tools.bash({command: long})),
+					failure: summarize(await tools.bash({command: long + "; exit 7"})),
+				};
+			`);
+			assert.equal(missing.complete.truncated, false, "a failed spill does not itself truncate program output");
+			assert.equal(missing.complete.full_output_error, undefined);
+			const modelDetails = nested.at(-3)?.details as { truncation?: { truncated?: boolean }; fullOutputError?: string };
+			assert.equal(modelDetails.truncation?.truncated, true);
+			assert.match(modelDetails.fullOutputError ?? "", /ENOENT/u);
+			for (const [result, exit] of [
+				[missing.success, 0],
+				[missing.failure, 7],
+			] as const) {
+				assert.equal(result.exit_code, exit);
+				assert.equal(result.truncated, true);
+				assert.equal(result.full_output_path, undefined);
+				assert.match(result.full_output_error, /ENOENT/u);
+				assert.match(result.ending, /xFINAL EVIDENCE/u);
+			}
+			assert.deepEqual(
+				nested.slice(-2).map((event) => event.isError),
+				[false, true],
+			);
+
+			const failed = await session.executeBash(`${longLine}; exit 7`);
+			assert.equal(failed.exitCode, 7);
+			assert.equal(failed.truncated, true);
+			assert.equal(failed.fullOutputPath, undefined);
+			assert.match(failed.fullOutputError ?? "", /ENOENT/u);
+			assert.match(failed.output, /xFINAL EVIDENCE/u);
+			await session.executeBash(`printf EXCLUDED_USER_BASH`, undefined, { excludeFromContext: true });
+			const retained = session.sessionManager
+				.getBranch()
+				.flatMap((entry) =>
+					entry.type === "message" && entry.message.role === "bashExecution" ? [entry.message] : [],
+				);
+			assert.equal(retained.at(-2)?.fullOutputError, failed.fullOutputError);
+			assert.equal(retained.at(-1)?.excludeFromContext, true);
+			const projected = JSON.stringify(convertToLlm(retained));
+			assert.match(projected, /Command exited with code 7/u);
+			assert.match(projected, /Could not save the full output: ENOENT/u);
+			assert.doesNotMatch(projected, /EXCLUDED_USER_BASH/u);
+		} finally {
+			if (previousTemp === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = previousTemp;
+		}
 
 		const admitted = await script(`return await tools.bash({
 			command: ${JSON.stringify(`node -e 'process.stdout.write("x".repeat(${JOB_LIMITS.logBytes + 1000}))'`)}, background: true});`);

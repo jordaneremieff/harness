@@ -31,7 +31,7 @@ async function openOldStore(t: TestContext, drained: boolean): Promise<{ harness
 	const path = join(directory, "storage.sqlite");
 	const writer = await openNodeSqliteStorage(path);
 	for (const batches of fixture.batches.slice(0, drained ? fixture.drained : undefined))
-		await writer.commit(batches, () => {}, context);
+		assert.deepEqual(await writer.commit(batches, () => {}, context), { kind: "stored", stored: batches.length });
 	await writer.close(context);
 	const storage = await openNodeSqliteStorage(path);
 	const harness = await Harness.open(

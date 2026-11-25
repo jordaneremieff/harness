@@ -39,6 +39,11 @@
 		}
 		return { start, end, text: result.slice(start, stop), cursor };
 	}
+	function historyIndexAfterUpdate(entries: string[], index: number | null, text: string, next: string[]) {
+		if (index === null || text !== entries[index]) return null;
+		const moved = next.indexOf(text);
+		return moved === -1 ? null : moved;
+	}
 	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: A history step is valid only at the correct line and in an unchanged entry.
 	function historyStep({ entries, index, text, base, selectionStart, selectionEnd }: Recall, direction: -1 | 1) {
 		if (selectionStart !== selectionEnd || entries.length === 0) return null;
@@ -90,6 +95,7 @@
 	(globalThis as typeof globalThis & { composerAssistance: object }).composerAssistance = {
 		completionTrigger,
 		completionEdit,
+		historyIndexAfterUpdate,
 		historyStep,
 		imagePaths,
 		syntaxParts,

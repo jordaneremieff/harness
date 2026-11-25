@@ -62,7 +62,13 @@ const resource = obj({
 	observationIdentityMismatch: opt(bool()),
 });
 const finding = obj({
-	code: oneOf(["expiry_marker", "selected_not_in_catalog", "selected_auth_missing", "metadata_conflict"]),
+	code: oneOf([
+		"expiry_marker",
+		"selected_not_in_catalog",
+		"selected_auth_missing",
+		"selected_auth_unresolved",
+		"metadata_conflict",
+	]),
 	reason: text,
 	boundary: text,
 	fields: opt(strings),

@@ -18,7 +18,7 @@ test("a real ordinary session applies tool activation now and Pi settings at rel
 	const cwd = join(root, "project");
 	mkdirSync(agentDir);
 	mkdirSync(cwd);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark", notices: { cacheMisses: true } }));
 	const saved = { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_HARNESS_FILE: process.env.PI_HARNESS_FILE };
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	delete process.env.PI_HARNESS_FILE;
@@ -75,22 +75,31 @@ test("a real ordinary session applies tool activation now and Pi settings at rel
 		assert.ok(session.getActiveToolNames().includes(inactive.name));
 		assert.equal(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")).defaultTools, undefined);
 
-		const before = await call("config_get", { ids: ["pi:/hideThinkingBlock"] });
+		const before = await call("config_get", { ids: ["pi:/notices/compactionCosts"] });
 		const revision = before.context.documents.find(
 			(item: { document: string }) => item.document === "pi-global",
 		).revision;
 		const edit = await call("config_edit", {
 			mode: "commit",
-			changes: [{ id: "pi:/hideThinkingBlock", scope: "global", action: "set", value: true }],
+			changes: [{ id: "pi:/notices/compactionCosts", scope: "global", action: "set", value: true }],
 			revisions: { "pi-global": revision },
 		});
 		assert.equal(edit.outcome, "committed", edit.summary);
 		assert.equal(edit.documents[0].changes[0].apply.state, "pending-reload");
-		assert.equal(session.settingsManager.getHideThinkingBlock(), false);
+		assert.equal(session.settingsManager.getNotices().compactionCosts, false);
+		assert.deepEqual(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8")).notices, {
+			cacheMisses: true,
+			compactionCosts: true,
+		});
 
 		await session.reload();
-		assert.equal(session.settingsManager.getHideThinkingBlock(), true);
-		const after = await call("config_get", { ids: ["pi:/hideThinkingBlock"] });
+		assert.deepEqual(session.settingsManager.getNotices(), {
+			cacheMisses: true,
+			cacheWarming: false,
+			compactionCosts: true,
+			reasoningDrops: false,
+		});
+		const after = await call("config_get", { ids: ["pi:/notices/compactionCosts"] });
 		assert.equal(after.entries[0].session.differs, false);
 		assert.equal(after.entries[0].applyState.state, "applied");
 		session.dispose();

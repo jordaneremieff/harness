@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Model } from "@earendil-works/pi-ai";
 import {
 	convertTools,
 	resolveGoogleFunctionCallingMode,
@@ -44,12 +45,24 @@ test("every provider declaration is a plain object root even when a strict built
 			assert.equal(property.patternProperties, undefined, `${spec.name}.${name}`);
 		}
 	}
-	for (const modelId of ["gemini-4-argon", "gemini-3.8-flash"]) {
+	const google: Model<"google-generative-ai"> = {
+		api: "google-generative-ai",
+		provider: "google",
+		id: "vendor-gemini-4-argon",
+		name: "Strict tool test",
+		baseUrl: "https://example.invalid",
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		reasoning: false,
+		contextWindow: 8192,
+		maxTokens: 1024,
+	};
+	for (const model of [google, { ...google, id: "deployment-alias", compat: { supportsStrictMode: true } }]) {
 		const tools = [
 			...strictBuiltins,
 			...toolSpecs.map((spec) => ({ name: spec.name, description: spec.description, parameters: spec.parameters })),
 		];
-		const strict = supportsGoogleStrictToolSampling(modelId);
+		const strict = supportsGoogleStrictToolSampling(model);
 		assert.equal(strict, true);
 		assert.equal(resolveGoogleFunctionCallingMode(tools, undefined, strict), "VALIDATED");
 		const declarations = convertTools(tools, false, strict)?.[0]?.functionDeclarations ?? [];
@@ -59,8 +72,8 @@ test("every provider declaration is a plain object root even when a strict built
 		);
 		for (const declaration of declarations) {
 			const parameters = declaration.parametersJsonSchema as { type?: string; anyOf?: unknown };
-			assert.equal(parameters.type, "object", `${modelId} ${declaration.name}`);
-			assert.equal(parameters.anyOf, undefined, `${modelId} ${declaration.name}`);
+			assert.equal(parameters.type, "object", `${model.id} ${declaration.name}`);
+			assert.equal(parameters.anyOf, undefined, `${model.id} ${declaration.name}`);
 		}
 	}
 });

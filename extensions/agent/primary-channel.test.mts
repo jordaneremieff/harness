@@ -38,6 +38,7 @@ import {
 	type PrimaryDelivery,
 } from "./primary-channel.ts";
 import { ownerStartReused, processStartToken, type ProcessStartSource } from "./process-start.ts";
+import { promptProjectTrust } from "./trust-support.ts";
 
 interface Fixture {
 	readonly root: string;
@@ -193,13 +194,30 @@ it("delivers a message with source, text, details, and retained replyTo", async 
 	}
 });
 
-it("routes a trust prompt and returns the primary decision", async (t) => {
-	const f = await fixture(t);
-	const client = await connectPrimaryChannel({ id: f.id, sessionsRoot: f.root });
+it("routes project trust to a permission dialog and returns the primary decision", async (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	const titles: string[] = [];
+	const channel = await createPrimaryChannel(
+		channelOptions(root, id, {
+			promptTrust: (cwd) =>
+				promptProjectTrust(cwd, {
+					select: async (title, choices, options) => {
+						titles.push(title);
+						assert.deepEqual(options, { blockedKind: "permission" });
+						return cwd === "/work/deny" ? undefined : choices.find((choice) => choice === "Trust this folder");
+					},
+				}),
+		}),
+	);
+	t.after(() => channel.close());
+	const client = await connectPrimaryChannel({ id, sessionsRoot: root });
 	try {
 		assert.deepEqual(await client.trustPrompt("/work/topic"), { trusted: true, remember: true });
 		assert.equal(await client.trustPrompt("/work/deny"), undefined);
-		assert.deepEqual(f.prompted, ["/work/topic", "/work/deny"]);
+		assert.equal(titles.length, 2);
+		assert.match(titles[0], /^Trust project folder\?\n\/work\/topic\n/u);
+		assert.match(titles[1], /^Trust project folder\?\n\/work\/deny\n/u);
 	} finally {
 		await client.close();
 	}

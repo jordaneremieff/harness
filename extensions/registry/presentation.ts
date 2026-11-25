@@ -193,7 +193,11 @@ function modelFacts(entry: Fields): string {
 	return join(
 		entry.selected === true ? "selected" : "",
 		boolean(entry.available, "available (cached)", "unavailable (cached)"),
-		boolean(entry.configuredAuth, "auth configured", "no configured auth"),
+		boolean(
+			entry.configuredAuth,
+			"auth configured",
+			entry.authSource === "stored" ? "stored credential unresolved" : "no configured auth",
+		),
 		context && context > 0 ? `${context.toLocaleString("en-US")} context` : "",
 		levels ? `thinking ${levels}` : "",
 	);

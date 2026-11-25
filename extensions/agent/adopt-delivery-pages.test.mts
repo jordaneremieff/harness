@@ -31,7 +31,7 @@ const conversationCommit = fixture.batches.findIndex((batches) => batches[0]?.[0
 async function replay(path: string, drained: boolean): Promise<void> {
 	const storage = await openNodeSqliteStorage(path);
 	for (const batches of fixture.batches.slice(0, drained ? fixture.drained : undefined))
-		await storage.commit(batches, () => {}, context);
+		assert.deepEqual(await storage.commit(batches, () => {}, context), { kind: "stored", stored: batches.length });
 	await storage.close(context);
 }
 
@@ -44,7 +44,7 @@ async function retainedWorkStore(path: string, ...more: StorageWrite[][][]): Pro
 		...fixture.retainedWork,
 		...more,
 	])
-		await storage.commit(batches, () => {}, context);
+		assert.deepEqual(await storage.commit(batches, () => {}, context), { kind: "stored", stored: batches.length });
 	await storage.close(context);
 }
 
@@ -139,7 +139,8 @@ it("counts storages in a dry run without writing, adopts version 1 storages unde
 	const walWriter = await openNodeSqliteStorage(walled.storagePath);
 	let walOpen = true;
 	t.after(() => (walOpen ? walWriter.close(context) : undefined));
-	for (const batches of fixture.batches.slice(0, fixture.drained)) await walWriter.commit(batches, () => {}, context);
+	for (const batches of fixture.batches.slice(0, fixture.drained))
+		assert.deepEqual(await walWriter.commit(batches, () => {}, context), { kind: "stored", stored: batches.length });
 	assert.ok((lstatSync(`${walled.storagePath}-wal`, { throwIfNoEntry: false })?.size ?? 0) > 0);
 	const busyClaim = hostPaths(busy).claim;
 	mkdirSync(dirname(busyClaim), { recursive: true });

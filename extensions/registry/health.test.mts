@@ -173,6 +173,15 @@ describe("offline catalog health", () => {
 		assert.match(result.text, /silently omit failed providers/);
 		assert.match(result.text, /not recent dispatch use/);
 	});
+	it("distinguishes an unresolved stored credential from an absent one without a credential lookup", async () => {
+		const { ctx, catalog } = fixture([model("stable")]);
+		ctx.model = catalog[0];
+		ctx.modelRegistry.hasConfiguredAuth = () => false;
+		ctx.modelRegistry.getProviderAuthStatus = () => ({ configured: false, source: "stored" });
+		const result = await run(readModels(ctx, 1));
+		assert.deepEqual(codes(records(result)[0]), ["selected_auth_unresolved"]);
+		assert.equal(coverage(result).remoteResolution, "not_checked");
+	});
 	it("compares exact identities and capability sets before filters, not display names or different providers", async () => {
 		const a = model("same");
 		const b = { ...model("same"), contextWindow: 20000 };

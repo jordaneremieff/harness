@@ -174,7 +174,7 @@ function retainQueuedRow(inputs: UnplacedInput[], inbox: readonly InboxItem[], r
 
 /**
  * Retain queued inputs in the commit that admits them, or in a repair commit. The table reads (prune and watch)
- * run now, before a `Conversation.submit(tx, draft)` admission; the returned write reads only documents, so it runs
+ * run now, before a `Conversation.admit(tx, draft)` admission; the returned write reads only documents, so it runs
  * after that admission in the same commit. An input that the native inbox does not hold is placed or withdrawn and
  * gets no row. A row keeps the label of its admission, else the class and sender of its native entry.
  */

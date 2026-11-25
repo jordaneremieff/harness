@@ -209,9 +209,8 @@ function readExtensionProviders(registry: ModelRegistry): Set<string> | null {
 }
 
 interface ModelBuildInput {
-	/** Every row to project: the catalog plus a selected model outside it. */
-	models: ModelInfo[];
 	catalog: ModelInfo[];
+	selectedModel?: ModelInfo;
 	catalogAvailable: boolean;
 	available: Set<string>;
 	availableSnapshot: boolean;
@@ -229,16 +228,19 @@ interface ModelBuildInput {
 	at: number;
 }
 
-function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord {
+function buildModelRecord(
+	model: ModelInfo,
+	input: ModelBuildInput,
+	catalog: boolean,
+	providerScope: Map<string, number> | undefined,
+): ModelRecord {
 	const name = `${model.provider}/${model.id}`;
 	const selected =
 		input.selectedRef !== undefined &&
 		model.provider === input.selectedRef.provider &&
 		model.id === input.selectedRef.modelId;
-	const scopeIndex =
-		input.scopedModels?.findIndex((entry) => entry.model.provider === model.provider && entry.model.id === model.id) ??
-		-1;
-	const scope = input.scopedModels?.[scopeIndex];
+	const scopeIndex = providerScope?.get(model.id);
+	const scope = scopeIndex === undefined ? undefined : input.scopedModels?.[scopeIndex];
 	const cost = catalogCost(model);
 	return {
 		kind: "model",
@@ -247,7 +249,7 @@ function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord
 		id: model.id,
 		displayName: model.name,
 		metadataAvailable: true,
-		catalog: input.catalog.some((entry) => entry.provider === model.provider && entry.id === model.id),
+		catalog,
 		selected,
 		reasoning: model.reasoning,
 		input: [...model.input],
@@ -259,14 +261,11 @@ function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord
 		...input.billing(model),
 		catalogCost: cost,
 		catalogCostHasTiers: cost === null ? null : (cost.tiers?.length ?? 0) > 0,
-		providerHasScopedModels:
-			input.scopeConfigured === true
-				? (input.scopedModels?.some((entry) => entry.model.provider === model.provider) ?? null)
-				: null,
+		providerHasScopedModels: input.scopeConfigured === true ? providerScope !== undefined : null,
 		providerNamedInSettings: input.settingsProviders?.has(model.provider) ?? null,
 		extensionProvider: input.extensionProviders === null ? null : input.extensionProviders.has(model.provider),
 		inScope: input.scopeConfigured === null ? null : !input.scopeConfigured || scope !== undefined,
-		...(scopeIndex < 0 ? {} : { scopeIndex }),
+		...(scopeIndex === undefined ? {} : { scopeIndex }),
 		...(scope?.thinkingLevel === undefined ? {} : { scopeThinkingLevel: scope.thinkingLevel }),
 		...(selected && input.thinkingLevel !== undefined ? { currentThinkingLevel: input.thinkingLevel } : {}),
 		evidence: "registration",
@@ -328,7 +327,20 @@ function buildModelSnapshot(input: ModelBuildInput): ModelSnapshot {
 		scopeOrder: input.scopeOrder,
 		...(input.settingsScope === undefined ? {} : { settingsScope: input.settingsScope }),
 	};
-	for (const model of input.models) result.records.push(buildModelRecord(model, input));
+	const scope = new Map<string, Map<string, number>>();
+	for (const [index, { model }] of (input.scopedModels ?? []).entries()) {
+		let positions = scope.get(model.provider);
+		if (!positions) {
+			positions = new Map();
+			scope.set(model.provider, positions);
+		}
+		if (!positions.has(model.id)) positions.set(model.id, index);
+	}
+	for (const model of input.catalog)
+		result.records.push(buildModelRecord(model, input, true, scope.get(model.provider)));
+	if (input.selectedModel && !result.records.some((record) => record.selected)) {
+		result.records.push(buildModelRecord(input.selectedModel, input, false, scope.get(input.selectedModel.provider)));
+	}
 	result.records.sort((a, b) => modelGroup(a) - modelGroup(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 	return result;
 }
@@ -339,12 +351,8 @@ export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
 	const registry = ctx.modelRegistry;
 	const catalogRead = readModelCatalog(registry);
 	const availableRead = readAvailableNames(registry);
-	const models = [...catalogRead.models];
-	if (ctx.model && !models.some((model) => model.provider === ctx.model?.provider && model.id === ctx.model.id)) {
-		models.push(ctx.model);
-	}
 	return buildModelSnapshot({
-		models,
+		selectedModel: ctx.model,
 		catalog: catalogRead.models,
 		catalogAvailable: catalogRead.available,
 		available: availableRead.names,
@@ -433,15 +441,8 @@ export function readDurableModels(
 			/* The selected identity remains available without capability metadata. */
 		}
 	}
-	const models = [...catalog];
-	if (
-		selectedModel &&
-		!models.some((model) => model.provider === selectedModel.provider && model.id === selectedModel.id)
-	) {
-		models.push(selectedModel);
-	}
 	const input: ModelBuildInput = {
-		models,
+		selectedModel,
 		catalog,
 		catalogAvailable,
 		available,

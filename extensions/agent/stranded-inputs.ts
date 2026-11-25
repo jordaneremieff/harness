@@ -36,7 +36,7 @@ export async function admitPassiveWrite(
 		inbox.items.push({ id: retained.id, mode: "write", entry: copyJson(entry) as JsonObject });
 		return retained.id;
 	}
-	return conversation.submit(tx, { type: "write", requestId, entry });
+	return conversation.admit(tx, { type: "write", requestId, entry });
 }
 
 /** One failed generation identifies one replay-safe boundary write. */
@@ -47,7 +47,7 @@ export async function recoverStrandedInputs(conversation: Conversation, context:
 		if (live.run || !inbox.items.some((item) => item.mode !== "write")) return undefined;
 		const failure = live.runFailure;
 		if (failure?.reason !== "model_error" || (await isStopped(tx, conversation.id))) return undefined;
-		await conversation.submit(tx, {
+		await conversation.admit(tx, {
 			type: "write",
 			requestId: `agent-recovery:${conversation.id}:${failure.taskId}`,
 			entry: {
@@ -71,7 +71,7 @@ export async function placeLeftoverWrites(conversation: Conversation, context: C
 		const inbox = await tx.doc(InboxDoc, conversation.id);
 		if (live.run || inbox.items.length === 0 || inbox.items.some((item) => item.mode !== "write")) return undefined;
 		const newest = { id: inbox.items[inbox.items.length - 1].id, count: inbox.items.length };
-		const submitted = await conversation.submit(tx, {
+		const submitted = await conversation.admit(tx, {
 			type: "write",
 			requestId: `agent-inbox-boundary:${conversation.id}:${newest.id}`,
 			entry: { kind: "agent.inbox-boundary", edits: [] },

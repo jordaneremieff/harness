@@ -569,7 +569,7 @@ export class ChildCapacityReports {
 			if (live.run === undefined && (await tx.doc(InboxDoc, conversationId)).items.length > 0) return;
 			const head = await tx.latestHeadMarker(conversationId);
 			const text = planningBudgetSelfBody(notice.tokens, notice.budget, notice.model, notice.observedAt);
-			await conversation.submit(tx, {
+			await conversation.admit(tx, {
 				type: "write",
 				requestId: planningBudgetSelfId(head?.id ?? 0, notice.runId),
 				entry: {

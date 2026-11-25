@@ -353,8 +353,9 @@ The supported signals are:
 - The selected provider/model identity is absent from the returned catalog,
   provided the catalog read answered and no catalog error was reported. This
   does not establish removal: Pi can silently omit a provider whose getter fails.
-- The selected model has `configuredAuth: false`. Selection is not dispatch
-  history, and configuration presence is not credential validity. Unselected
+- The selected model has `configuredAuth: false`. When `authSource` is `stored`,
+  Pi found the stored credential but could not resolve it. This differs from a
+  missing credential; Registry does not run the key command or test a login. Unselected
   unauthenticated models are not flagged merely because Pi lists them.
 - Duplicate rows with the same provider and model ID disagree on reasoning,
   input modalities, context/output limits, or supported thinking levels. Array

@@ -41,7 +41,7 @@ const api = { conversationId: 2, taskId: 7, snapshot: async () => undefined } as
 type NativeOutcome = Durable.ToolExecutionResult | Durable.ToolPark;
 
 function text(output: NativeOutcome): string {
-	assert.ok(output.sleep === undefined && output.wait === undefined, "expected a completed control call");
+	assert.ok(output.kind === undefined, "expected a completed control call");
 	return output.output?.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("") ?? "";
 }
 

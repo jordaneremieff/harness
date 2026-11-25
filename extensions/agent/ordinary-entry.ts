@@ -1833,10 +1833,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				stuckAgents = new Set(stuck);
 				showAgentCell(ctx);
 			},
-			promptTrust: (cwd) =>
-				ctx.hasUI
-					? promptProjectTrust(cwd, { select: (question, options) => ctx.ui.select(question, [...options]) })
-					: Promise.resolve(undefined),
+			promptTrust: (cwd) => (ctx.hasUI ? promptProjectTrust(cwd, ctx.ui) : Promise.resolve(undefined)),
 		});
 		// A received question still open at start lost its run with the earlier process, so its notice is due.
 		if (!abort.signal.aborted) noticeUnanswered(ctx);

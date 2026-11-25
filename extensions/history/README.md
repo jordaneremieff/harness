@@ -219,7 +219,7 @@ separate facts. Expansion does not recover evidence absent from the result.
 `ancestry_exhausted` means that the selected parent walk reached its root.
 It is not a whole-session absence claim. Text search covers summaries,
 string content, text and non-redacted thinking blocks, bash command and output,
-message errors, entry names, and labels. It does not search structured details,
+full-output save errors from user Bash, message errors, entry names, and labels. It does not search structured details,
 custom data, tool arguments, images, signatures, or arbitrary fields;
 [argument search](#argument-search) covers tool-call argument strings. The
 response states each mode's exclusions even when it has no matches.
@@ -266,10 +266,17 @@ compaction checkpoints and context-edit replacements. Direct pointers retain
 the same exclusions. Redaction flags remain visible as metadata.
 
 Stored `isError`, bash `truncated`, cancellation, and context-exclusion flags
-remain distinct from the history tool's own page status. Tool-specific
-truncation details remain accessible by exact child pointer. Stored text
-retains any upstream truncation notice. The tools do not recover data that Pi
-never stored, follow an upstream output-file path, or interpret a tool's private
+remain distinct from the history tool's own page status. For an ordinary `!` or
+`!!` entry, `/message/output` reads the retained tail and `/message/exitCode`
+reads the command exit code. Read `/message/fullOutputPath` for a saved file or
+`/message/fullOutputError` for a save failure. These entries use the raw
+`bashExecution` role, so neither the `user` nor the `toolResult` filter selects them.
+
+For an ordinary Bash tool result, inspect retained text at `/message/content/0/text`
+and, when present, `/message/details/truncation`, `/message/details/fullOutputPath`
+or `/message/details/fullOutputError`. The live program result (`structuredContent`)
+is not part of the retained tool-result message. History does not recover data
+that Pi never stored, follow an output-file path, or interpret a tool's private
 result format.
 
 Controls use reversible JSON escapes, including terminal control characters.
@@ -366,6 +373,11 @@ Semantic differences from the ordinary tools, all named in the tool results:
   `conversationId`, `kind`, `model`, `data`, `head`, `edits`, and `byTaskId`;
   a message is `/model/<i>`, a content block `/model/<i>/content/<b>`, and a
   context edit `/edits/<e>` with its replacement messages below it.
+- **Durable Bash uses retained tool-result evidence.** Read the content blocks
+  at `/model/0/content` and the error flag at `/model/0/isError`. The entry also
+  retains `/data/diagnostics`, including any reported exit, full-output path
+  or tool failure. The live program result (`structuredOutput`) is not part of
+  the committed entry.
 
 There are no terminal renderer functions in the native form: Durable has no Pi
 TUI renderer surface. The same withholding rules apply at Durable content-block

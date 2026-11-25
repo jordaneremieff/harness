@@ -56,6 +56,22 @@ describe("model snapshots", () => {
 		assert.equal(Object.hasOwn(outside, "scopeIndex"), false);
 		assert.equal(Object.hasOwn(outside, "scopeThinkingLevel"), false);
 	});
+	it("uses the first scope position and keeps duplicate catalog rows", () => {
+		const { ctx, catalog } = context();
+		catalog.push({ ...catalog[1] });
+		ctx.scopedModels = [
+			{ model: catalog[1], thinkingLevel: "low" },
+			{ model: catalog[1], thinkingLevel: "high" },
+		];
+		const rows = readModels(ctx, 1).records.filter((row) => row.provider === catalog[1].provider);
+		assert.deepEqual(
+			rows.map((row) => [row.catalog, row.scopeIndex, row.scopeThinkingLevel]),
+			[
+				[true, 0, "low"],
+				[true, 0, "low"],
+			],
+		);
+	});
 	it("omits scope positions and uses a null order when no scope is configured", () => {
 		const { ctx } = context();
 		ctx.scopedModels = [];

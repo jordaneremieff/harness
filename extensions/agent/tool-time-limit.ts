@@ -69,7 +69,7 @@ export function limitExtensionToolTime(extension: Durable.Extension, limitMs: nu
 			configurable: true,
 			get: () =>
 				extension.wraps?.map((wrap) =>
-					"tool" in wrap ? { tool: wrap.tool, wrap: (base: Tool) => limitToolTime(wrap.wrap(base), limitMs) } : wrap,
+					wrap.kind === "tool" ? { ...wrap, wrap: (base: Tool) => limitToolTime(wrap.wrap(base), limitMs) } : wrap,
 				),
 		},
 	});

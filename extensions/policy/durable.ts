@@ -587,6 +587,7 @@ export async function createPolicyDurableExtension(
 		name: "policy",
 		tools: [rulesTool, proposeTool, approveTool, controlTool],
 		wraps: [...wrappedTools].map((tool) => ({
+			kind: "tool",
 			tool,
 			wrap: (registration: Durable.ToolRegistration) => runtime.wrapActionTool(registration),
 		})),

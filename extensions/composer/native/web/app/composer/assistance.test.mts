@@ -19,13 +19,15 @@ interface Assistance {
 		next: string,
 		cursor: number,
 	): { start: number; end: number; text: string; cursor: number } | null;
+	historyIndexAfterUpdate(entries: string[], index: number | null, text: string, next: string[]): number | null;
 	historyStep(context: Recall, direction: number): { index: number | null; text: string } | null;
 	imagePaths(text: string): { path: string; start: number; end: number }[];
 	syntaxParts(text: string): { text: string; kind?: string }[];
 }
 const scope = {} as { composerAssistance: Assistance };
 runInNewContext(stripTypeScriptTypes(readFileSync(new URL("./assistance.ts", import.meta.url), "utf8")), scope);
-const { completionTrigger, completionEdit, historyStep, imagePaths, syntaxParts } = scope.composerAssistance;
+const { completionTrigger, completionEdit, historyIndexAfterUpdate, historyStep, imagePaths, syntaxParts } =
+	scope.composerAssistance;
 
 test("slash parameters and standalone file mentions ask Pi for completions", () => {
 	assert.equal(completionTrigger("/reload arg", 11), true);
@@ -53,6 +55,19 @@ test("history honours line boundaries and restores the empty draft", () => {
 	assert.equal(historyStep(recalled, -1)?.text, "old");
 	assert.equal(historyStep({ ...recalled, selectionStart: 9, selectionEnd: 9 }, 1)?.text, "");
 	assert.equal(historyStep({ ...recalled, text: "modified" }, -1), null);
+});
+
+test("history updates keep recall on the same unedited text after a move", () => {
+	const entries = ["a", "b", "c"];
+	const next = ["a", "c", "b"];
+	const index = historyIndexAfterUpdate(entries, 1, "b", next);
+	assert.equal(index, 2);
+	const recall = { entries: next, index, text: "b", base: "", selectionStart: 1, selectionEnd: 1 };
+	assert.equal(historyStep(recall, -1)?.text, "c");
+	assert.equal(historyStep(recall, 1)?.text, "");
+	assert.equal(historyIndexAfterUpdate(entries, 1, "edited b", next), null);
+	assert.equal(historyIndexAfterUpdate(entries, 1, "b", ["a", "c"]), null);
+	assert.equal(historyIndexAfterUpdate(entries, null, "b", next), null);
 });
 
 test("image ranges refer to the path text, including spaces and shell quotes", () => {

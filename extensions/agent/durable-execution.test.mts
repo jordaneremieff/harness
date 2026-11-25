@@ -2,7 +2,7 @@ import { onStoredCommit } from "./commit-observation.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -46,6 +46,7 @@ import {
 	fixtureProvider,
 	fixtureServerPath,
 	httpMcpServer,
+	MCP_FIXTURE_IMAGE,
 	messageText,
 	resourceListStream,
 	streamRuntime,
@@ -1319,6 +1320,181 @@ function mcpConfigFixture(
 	writeFileSync(override, JSON.stringify({ mcpServers: projectServers }));
 	return { agentDir, cwd, source, override };
 }
+
+function remoteDocsConfig(url: string, token: string, config: Record<string, unknown> = {}) {
+	return {
+		mcpServers: { "remote-docs": { url, timeout: 2, ...config } },
+		mcpAuth: {
+			[`mcp__remote_docs|${url}`]: {
+				serverUrl: url,
+				tokens: { access_token: token, token_type: "Bearer" },
+			},
+		},
+	};
+}
+
+function mcpModelCalls(calls: readonly { name: string; arguments: Record<string, string> }[]): FixtureStream {
+	return ({ messages }) => {
+		const index = messages.filter((message) => message.role === "toolResult").length;
+		const call = calls[index];
+		return call === undefined
+			? answerMessage()
+			: {
+					...answerMessage(),
+					content: [{ type: "toolCall", id: `mcp-result-${index}`, ...call }],
+					stopReason: "toolUse",
+				};
+	};
+}
+
+it("projects native MCP SSE results and follows readable resource links in the model", {
+	timeout: 30000,
+}, async (t) => {
+	const token = `token-${randomUUID()}`;
+	const server = await httpMcpServer(token, { richResults: true });
+	t.after(() => server.close());
+	const f = await executionFixture(t, {
+		stream: mcpModelCalls([
+			{ name: "mcp__remote_docs__echo", arguments: { value: "mixed" } },
+			{ name: "read_mcp_resource", arguments: { server: "remote-docs", uri: "docs://bundle" } },
+			{ name: "mcp__remote_docs__echo", arguments: { value: "error" } },
+		]),
+		...remoteDocsConfig(server.url, token, { exposure: "direct" }),
+	});
+	const { toolResults } = await f.submit("Read the linked resource bundle");
+	const [mixed, read, error] = toolResults;
+	assert.equal(toolResults.length, 3);
+	const mixedText = toolResultText(mixed);
+	const path = / saved to (.+\.dat)\]/u.exec(mixedText)?.[1];
+	assert.ok(path, mixedText);
+	t.after(() => rmSync(path, { force: true }));
+	assert.equal(statSync(path).mode & 0o777, 0o600);
+	assert.deepEqual(readFileSync(path), Buffer.from("binary\0payload"));
+	assert.match(mixedText, /^inline text\n/u);
+	assert.match(mixedText, /docs:\/\/bundle.*Read it with read_mcp_resource \(server "remote-docs"\)/u);
+	assert.doesNotMatch(mixedText, /YmluYXJ5AHBheWxvYWQ=|structuredContent|private/u);
+	assert.deepEqual(mixed?.details, { server: "remote-docs", tool: "echo" });
+	assert.equal(read?.isError, false, toolResultText(read));
+	assert.equal(toolResultText(read), "docs://bundle/summary:\ntext from read\ndocs://bundle/picture:");
+	const image = { type: "image", data: MCP_FIXTURE_IMAGE, mimeType: "image/png" };
+	for (const result of [mixed, read]) {
+		assert.deepEqual(
+			result?.content.filter((block) => block.type === "image"),
+			[image],
+		);
+		const providerResult = f.requests
+			.at(-1)
+			?.messages.find((message) => message.role === "toolResult" && message.toolCallId === result?.toolCallId);
+		assert.equal(providerResult?.role, "toolResult");
+		assert.deepEqual(
+			providerResult.content.filter((block) => block.type === "image"),
+			[image],
+		);
+	}
+	assert.equal(error?.isError, true);
+	assert.match(toolResultText(error), /MCP tool remote-docs\/echo returned an error/u);
+});
+
+it("validates native MCP script results with relocated refs and preserves structured errors", {
+	timeout: 30000,
+}, async (t) => {
+	const token = `token-${randomUUID()}`;
+	const server = await httpMcpServer(token, { richResults: true });
+	t.after(() => server.close());
+	const f = await executionFixture(t, {
+		code: `const call = (value) => tools.mcp__remote_docs__echo({ value });
+			const result = await call("link");
+			const error = await call("error");
+			const untyped = await tools.mcp__remote_docs__untyped({});
+			const read = await tools.read_mcp_resource({ server: "remote-docs", uri: result.content[0].uri });
+			let invalid;
+			try { await call("invalid"); } catch (error) { invalid = error.message; }
+			return { result, error, untyped, read: read.contents[0], invalid };`,
+		...remoteDocsConfig(server.url, token),
+	});
+	const { toolResults } = await f.submit("Read MCP envelope data in a script");
+	const result = toolResults.at(-1);
+	assert.notEqual(result?.isError, true, toolResultText(result));
+	const output = JSON.parse(toolResultBody(result));
+	const structuredContent = { label: "root", next: { label: "leaf" } };
+	assert.deepEqual(output.result, {
+		content: [{ type: "resource_link", uri: "docs://bundle", name: "bundle", size: 2048 }],
+		structuredContent,
+	});
+	assert.deepEqual(output.error, { content: [{ type: "text", text: "" }], structuredContent, isError: true });
+	assert.deepEqual(output.untyped, { content: [], structuredContent: [null, 7, "sample"] });
+	assert.deepEqual(output.read, { uri: "docs://bundle/summary", mimeType: "text/plain", blob: "dGV4dCBmcm9tIHJlYWQ=" });
+	assert.match(output.invalid, /structuredContent.*next.*label/u);
+});
+
+it("names a non-direct MCP resource reader only when the conversation has a route to it", {
+	timeout: 30000,
+}, async (t) => {
+	const token = `token-${randomUUID()}`;
+	const server = await httpMcpServer(token, { richResults: true });
+	t.after(() => server.close());
+	const name = "mcp__remote_docs__echo";
+	for (const [scenario, exposure, discovery] of [
+		["hidden resources", "hidden", undefined],
+		["reader removed from the conversation", "direct", undefined],
+		["nested through codemode", "codemode", "codemode"],
+		["deferred through tool search", "deferred", "tool_search"],
+	] as const) {
+		await t.test(scenario, async (subtest) => {
+			const f = await executionFixture(subtest, {
+				stream: mcpModelCalls([{ name, arguments: { value: "link" } }]),
+				settings: { defaultTools: [] },
+				...remoteDocsConfig(server.url, token, { exposure, toolExposure: { echo: "direct" } }),
+			});
+			if (exposure === "direct") {
+				const agent = await f.conversation.agent(BACKGROUND_CONTEXT);
+				const echo = agent.tools.find((tool) => tool.name === name);
+				assert.ok(echo);
+				await f.conversation.configure({ tools: [echo] }, BACKGROUND_CONTEXT);
+			}
+			const { toolResults } = await f.submit("Show the resource link");
+			const tools = declaredTools(f.requests[0]);
+			assert.ok(!tools.includes("read_mcp_resource"));
+			if (discovery !== undefined) assert.ok(tools.includes(discovery));
+			const shown = toolResultText(toolResults[0]);
+			assert.notEqual(toolResults[0]?.isError, true, shown);
+			assert.match(shown, /docs:\/\/bundle/u);
+			assert.equal(shown.includes("read_mcp_resource"), discovery !== undefined);
+		});
+	}
+});
+
+it("does not retain a late MCP result after native cancellation", { timeout: 30000 }, async (t) => {
+	const token = `token-${randomUUID()}`;
+	const entered = deferred();
+	const release = deferred();
+	t.after(() => release.resolve());
+	const server = await httpMcpServer(token, {
+		beforeResponse: async (method) => {
+			if (method !== "tools/call") return;
+			entered.resolve();
+			await release.promise;
+		},
+	});
+	t.after(() => server.close());
+	const f = await executionFixture(t, {
+		stream: mcpModelCalls([{ name: "mcp__remote_docs__echo", arguments: { value: "late server data" } }]),
+		...remoteDocsConfig(server.url, token, { exposure: "direct", timeout: 10 }),
+	});
+	const submitted = await f.conversation.submit({ type: "input", content: "Start the held tool" }, BACKGROUND_CONTEXT);
+	await entered.promise;
+	await f.conversation.abort(BACKGROUND_CONTEXT);
+	release.resolve();
+	await submitted.wait(BACKGROUND_CONTEXT);
+	await f.conversation.waitForIdle(BACKGROUND_CONTEXT);
+	const view = await f.conversation.context(BACKGROUND_CONTEXT);
+	const result = view.messages.find((message) => message.role === "toolResult");
+	assert.equal(result?.role, "toolResult");
+	assert.equal(result.isError, true);
+	assert.match(toolResultText(result), /aborted/u);
+	assert.doesNotMatch(toolResultText(result), /late server data/u);
+	await f.execution.close();
+});
 
 it("keeps MCP text at Unicode boundaries and preserves the full script result", async (t) => {
 	const text = `${"x".repeat(10237)}😀${"y".repeat(30000)}😀${"z".repeat(10237)}`;

@@ -101,7 +101,7 @@ export async function interruptContinue(
 			!(await matchesQueue(tx, conversation.id, selection.queuedInputs))
 		)
 			return retain(intent, { state: "protected" });
-		const submissionId = await conversation.submit(tx, { type: "continue" });
+		const submissionId = await conversation.admit(tx, { type: "continue" });
 		return retain(intent, { state: "continued", submissionId });
 	}, context);
 }

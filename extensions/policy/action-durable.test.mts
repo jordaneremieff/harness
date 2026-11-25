@@ -476,6 +476,7 @@ test("native final rule read rejects a change during asynchronous preparation", 
 				name: "preparation-barrier",
 				wraps: [
 					{
+						kind: "tool",
 						tool: SEND,
 						wrap: (tool: Durable.ToolRegistration): Durable.ToolRegistration => ({
 							...tool,

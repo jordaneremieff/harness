@@ -1,6 +1,6 @@
 # Pi durable-harness track
 
-Pi 1.6.0 supplies the ordinary coding-agent host and the separate Pi Durable
+Pi 1.6.1 supplies the ordinary coding-agent host and the separate Pi Durable
 runtime. Ordinary sessions retain their ordinary host. A native operator
 conversation does not require an ordinary primary. Durable owns native agent
 conversations, generation, tool tasks, committed state, and recovery. The Agent
@@ -8,36 +8,26 @@ extension supplies cwd-bound resources, process ownership, controls, and deliver
 The [session host roles](conventions/session-host-roles.md) and
 [Agent host contract](agent-host-contract.md) define that composition.
 
-Source review date: 2026-11-20. The current review compares installed 1.5.2
-and 1.6.0 `dist/` trees, excluding source maps and bundles, and checks current
-manifests, release notes, changed defining sources and affected harness consumers.
-Earlier verification dates remain historical evidence. The registry's `latest`
-tags for coding-agent, Durable, Chord and MCP and the upstream `v1.6.0` ref
-were checked separately from the installation and checkout dependency graph.
+Source review date: 2026-11-25. The current review compares 1.6.0 with 1.6.1
+for the declared Pi packages, Chord and transitive telemetry. It covers package
+manifests, installed JavaScript and declarations in `dist/`, the cumulative
+release notes and the harness consumers of changed contracts. It excludes
+source maps, bundles and assets. The registry's `latest` tags and the upstream
+`v1.6.1` ref were checked separately from the running installation and checkout
+dependency graph.
 Release-note coverage is not package-wide runtime parity.
 Dependency installation does not replace modules in retained processes.
 Source inspection does not establish live provider behavior, conversion
 acceptance, or cumulative release acceptance. The release declaration records
 acceptance separately.
 
-The historical file comparisons cover 1.0.3 to 1.2.0 and 1.1.0 to 1.2.0 for
-coding-agent, TUI, and Durable, plus cited AI, agent-core, Codemode, and MCP files.
-They exclude source maps, bundles, native prebuild binaries, generated schemas,
-and vendored assets. Their byte-equality findings apply to those compared
-releases, not automatically to 1.5.0. A separate 1.3.0-to-1.4.0 byte comparison
-checks the defining ordinary session, resource, extension, MCP, Codemode, TUI,
-AI validation, Durable environment, provider, and task files cited below.
-It excludes bundles, maps, binaries, and unlisted files. Unchanged bytes carry
-only those source claims forward; changed files require current inspection.
-The 1.5.0 review reads the release notes and the installed defining
-declarations and sources named in each section; it is not a byte comparison
-with 1.4.0. Claims a section does not cite for 1.5.0 rest on the earlier
-comparison and the 1.5.0 release notes, which name no change to them.
-Earlier runtime trials do not become current trials through a comparison.
+Earlier dates identify historical checks of the named contracts. Unchanged
+source carries a source claim forward; a comparison does not repeat an earlier
+runtime trial.
 
 ## Release review coverage
 
-<!-- pi-release-reviewed-through: 1.6.0 -->
+<!-- pi-release-reviewed-through: 1.6.1 -->
 
 This declaration records the latest Pi release through which the harness
 completed cumulative release intake. Its value is a numeric major.minor.patch
@@ -73,16 +63,16 @@ A manifest does not identify another process's loaded modules.
 
 | Source | Current contract |
 |---|---|
-| Coding-agent 1.6.0 manifest | Runtime exports are the ordinary root and `./rpc-entry`. It depends on agent-core, AI, Codemode, MCP, TUI, and TypeBox. Its undici dependency is 8.12.4. |
-| Agent-core 1.6.0 manifest | The root and package metadata remain public; no AgentHarness lane runtime is published there. It depends on AI and pi-schema. |
-| AI 1.6.0 manifest | The root and subpaths for compatibility, models, providers, APIs, OAuth, session resources and utilities are public. AI depends on pi-schema and telemetry, not TypeBox. The extension loader still aliases the AI root and `./compat` to its TypeBox-compatible view. |
-| Durable 1.6.0 manifest | The root, environments, tools, codemode, tool-search, image processing (including `./images/fit`), storage adapters (including IndexedDB and `./storage/store`) and testing are public. It depends on Chord, AI, Codemode, pi-schema and telemetry, not TypeBox. |
-| Chord 1.6.0 manifest | The root exports Chord v2. Context, JSON, watches, delta, SQLite, telemetry ingest and storage, HTTP, workers, plugins, app, sync and client surfaces have explicit subpaths. It depends on pi-schema and telemetry. esbuild, React and ws are optional peers with caret ranges. The v1 root, `./old`, `./node` and `./next` are absent. |
-| pi-schema 1.6.0 manifest | The root and `./formats` are public. No runtime dependencies. |
-| Codemode 1.6.0 manifest | The root and Cloudflare, declarations, portable, source and worker subpaths are public. It depends on quickjs-wasi. |
-| MCP 1.6.0 manifest | The root, `./oauth` and `./testing` are public. It depends on cross-spawn. |
-| Telemetry 1.6.0 manifest | The root, `./render` and `./testing` are public. No runtime dependencies. |
-| TUI 1.6.0 manifest | The manifest uses `main` and `types` for the root, with no `exports` map. It depends on get-east-asian-width, marked and marked-cjk-friendly. |
+| Coding-agent 1.6.1 manifest | Runtime exports are the ordinary root and `./rpc-entry`. It depends on agent-core, AI, Codemode, MCP, TUI, and TypeBox. Its undici dependency is 8.12.4. |
+| Agent-core 1.6.1 manifest | The root and package metadata remain public; no AgentHarness lane runtime is published there. It depends on AI and pi-schema. |
+| AI 1.6.1 manifest | The root and subpaths for compatibility, models, providers, APIs, OAuth, session resources and utilities are public. AI depends on pi-schema and telemetry, not TypeBox. The extension loader still aliases the AI root and `./compat` to its TypeBox-compatible view. |
+| Durable 1.6.1 manifest | The root, environments, tools, codemode, tool-search, image processing (including `./images/fit`), storage adapters (including IndexedDB and `./storage/store`) and testing are public. It depends on Chord, AI, Codemode, pi-schema and telemetry, not TypeBox. |
+| Chord 1.6.1 manifest | The root exports Chord v2. Context, JSON, watches, delta, SQLite, telemetry ingest and storage, HTTP, workers, plugins, app, sync and client surfaces have explicit subpaths. It depends on pi-schema and telemetry. esbuild, React and ws are optional peers with caret ranges. The v1 root, `./old`, `./node` and `./next` are absent. |
+| pi-schema 1.6.1 manifest | The root and `./formats` are public. No runtime dependencies. |
+| Codemode 1.6.1 manifest | The root and Cloudflare, declarations, portable, source and worker subpaths are public. It depends on quickjs-wasi. |
+| MCP 1.6.1 manifest | The root, `./oauth` and `./testing` are public. It depends on cross-spawn. |
+| Telemetry 1.6.1 manifest | The root, `./render` and `./testing` are public. No runtime dependencies. |
+| TUI 1.6.1 manifest | The manifest uses `main` and `types` for the root, with no `exports` map. It depends on get-east-asian-width, marked and marked-cjk-friendly. |
 | Coding-agent dependencies | Chord is not its dependency. Durable still depends on Chord; this does not remove the harness's direct Chord requirement. |
 | Removed packages | Pi Client, Pi Protocol, and Pi Server served the removed experimental runtime and are no longer released. Their old transport is not a current integration surface. |
 | Loaded processes | Unknown unless that process reports its descriptor or its resolution is directly observed. |
@@ -97,10 +87,10 @@ after a lockfile update; worktree source synchronization does not install it.
 The current-source review separates these layers:
 
 - Published files and installed defining declarations establish available APIs.
-- Ordinary services, message conversion, and cache-warmer implementation files
-  are unchanged from 1.5.2. The SessionManager, session-runtime, extension loader
-  and RPC sources differ; unchanged claims about them rest on inspected hunks.
-  The Codemode, pi-schema and telemetry comparisons found no `dist/` changes.
+- The export maps did not change. Codemode, pi-schema and telemetry had no
+  changes in the compared `dist/` files. The ordinary host, AI, TUI, Durable,
+  Chord and MCP did change. Unchanged exports do not establish unchanged
+  JavaScript behaviour or call signatures.
 - Changed-source inspection establishes the changed contracts described below.
   It does not establish complete OAuth flow or Codemode replay behavior.
 - Controlled owning-layer tests establish only their exercised setup.
@@ -115,14 +105,7 @@ checks before activation. Source release labels are not acceptance evidence.
 
 ## Targeted management-contract refresh
 
-Checked on 2026-11-02 against the installed coding-agent and Durable 1.5.0
-contracts and published package metadata:
-
-- The published `latest` metadata for
-  [coding-agent](https://registry.npmjs.org/@earendil-works%2fpi-coding-agent/latest),
-  [Durable](https://registry.npmjs.org/@earendil-works%2fpi-durable/latest), and
-  [pi-schema](https://registry.npmjs.org/@earendil-works%2fpi-schema/latest)
-  names 1.5.0. These are publication observations, not loaded-process evidence.
+The installed coding-agent and Durable expose distinct management surfaces:
 - Installed `pi-durable/dist/harness/types.d.ts` defines native root creation,
   conversation creation, submission reacquisition, exact task abort, queued-input
   withdrawal, task inspection, and watches. Its `Conversation.compact()` contract
@@ -142,9 +125,8 @@ contracts and published package metadata:
   option does not give equivalent write protection.
 
 Complete release intake remains with [Evo](../extensions/evo/README.md#release-intake).
-The targeted checks above establish only those contracts. They leave cumulative
-coverage unchanged until the coordinator accepts and publishes the complete
-release interval. The [development workflow](conventions/worktrees.md) owns
+Targeted checks alone do not advance the release declaration. Accepted intake
+on local main and remote publication are separate. The [development workflow](conventions/worktrees.md) owns
 checks and publication hygiene.
 
 ## Pi 1.5 host transition contracts
@@ -212,7 +194,7 @@ adopts them as one host transition with no compatibility path for 1.4.0:
 
 ### Native schema package
 
-The 1.6.0 manifest and byte comparison on 2026-11-20 confirm the public entry
+The 1.6.1 manifest and byte comparison with 1.6.0 confirm the public entry
 points and unchanged dist sources of `@earendil-works/pi-schema`. It supplies
 plain JSON Schema builders (`str`,
 `num`, `int`, `bool`, `nul`, `unknown`, `lit`, `oneOf`, `obj`, `opt`, `arr`,
@@ -273,8 +255,9 @@ its grapheme-based limit with an extension-local counter. pi-schema treats
   to expose per-call refusal evidence. Chord adds a wire-visible `denied`
   reference failure for admitted contracts and changes its event codec; its
   handshake protocol number is unchanged. That number does not verify mixed
-  release compatibility. Checked on 2026-11-20 against Chord 1.6.0
-  `dist/{host,link,contracts}` and `transport/{endpoint,unix-link}.ts`.
+  release compatibility. The 1.6.1 binary and text codecs still use protocol
+  1. The transport tests exercise peers on the same release. Sources: `chord/dist/{host,link,contracts}` and
+  `transport/{endpoint,unix-link}.ts`.
   The owning contract is [Chord wire contract](agent-host-contract.md#chord-wire-contract).
 - Chord 1.5.0 checks contract and state schemas with pi-schema. TypeBox-built
   schemas still validate but type as `unknown`; `format` is an annotation and
@@ -284,6 +267,11 @@ its grapheme-based limit with an extension-local counter. pi-schema treats
   `WatchEnd` shapes live in Chord; custom `SqliteDatabase` and `SqliteExecutor`
   implementations add `runCounted`. Source: `chord/CHANGELOG.md` 1.5.0 and
   `chord/dist`.
+- Chord tags rollout outcomes and plugin sources by `kind`. Its experimental
+  sync API removes writer epochs and distinguishes `remote_empty` from
+  divergent history. The Agent uses SQLite storage, not Chord rollout,
+  plugin installation, sync or `importStore`. No local synchronizer or format
+  adapter is required. Sources: `chord/CHANGELOG.md` and `chord/dist/{node,sync,store}`.
 - Native Codemode supplies synchronous `acquireWorker`. Its release callback
   runs once on construction failure or actual worker exit, not result settlement.
   Ordinary coding-agent Codemode reserves workers through a separate arrival-order
@@ -429,9 +417,7 @@ documentation, and release notes:
 
 ### Current loading, tools and ordinary lifecycle
 
-Checked on 2026-11-20 in the coding-agent 1.6.0 defining sources for
-extension loading, built-in tools and reload. Settings and directory-choice
-contracts retain their earlier source boundary.
+The ordinary host owns extension loading, foreground tools and reload:
 
 - Extension imports use the entry file's canonical path. Native contribution
   admission compares canonical source identities with loaded entrypoints. The
@@ -464,6 +450,14 @@ contracts retain their earlier source boundary.
   host that called `bindExtensions({})` gets `session_start` after reload, even
   without UI or error callbacks. Sources: `dist/modes/{rpc/rpc-mode,print-mode}.js`
   and `dist/core/agent-session.js`.
+- When the ordinary Bash tool cannot save the full output, it reports the reason in `details.fullOutputError`
+  and, for incomplete program output, `full_output_error`. A user Bash message
+  retains `fullOutputError` independently of the command exit and truncation.
+  Pi's model projection includes that reason for `!` and excludes `!!`. Jobs
+  delegates ordinary foreground execution to Pi. History exposes the recorded
+  reason; neither invents a saved file. Durable's Node shell aborts the child
+  on a spill fault and reports a tool error, not an ordinary exit code. See
+  [Jobs](../extensions/jobs/README.md) for foreground and background limits.
 - `cacheWarming` accepts `off`, `streaming`, or `idle` and defaults to `idle`.
   Runtime fixtures that disable warming use the string `off`, not a mode object.
   This ordinary default does not establish native provider cache behaviour.
@@ -491,13 +485,23 @@ starting the next run clears the pending set. This preserves MCP tools opened
 by `tool_search` through resume or reload when a `session_start` handler turns
 only its own newly added tool off. Source: `dist/core/agent-session.js`.
 
-Ordinary and Durable use `isRetryableAssistantError()` from pi-ai. The 1.6.0
-classifier recognises `Connection closed.` and bare socket error codes such as
-`ECONNRESET`, `EPIPE` and `ETIMEDOUT`. Their retry budgets and separate overflow
-recovery rules still apply. The Codex provider's fresh-WebSocket retry for a
-mid-turn connection age limit belongs to the provider transport. Sources:
-`pi-ai/dist/{utils/retry,api/openai-codex-responses}.js`,
+Ordinary and Durable use `isRetryableAssistantError()` from `pi-ai` for
+transient gateway errors, throttling and interrupted streams. Context overflow
+is a separate decision: a longer unrelated identifier containing
+`request_too_large` is not that code. The ordinary `after_provider_response`
+hook can receive HTTP errors and each retried HTTP response on supported
+adapters. A response is not necessarily a completed generation. Agent does
+not derive run outcomes or retry budgets from that hook. Sources:
+`pi-ai/dist/utils/{retry,provider-retry,overflow}.js`, ordinary
 `dist/core/agent-session.js`, and `pi-durable/dist/harness/generation.js`.
+
+Model availability, supported thinking levels and effective request options
+come from the configured model runtime. This includes retired catalog entries,
+the minimum reasoning level for a model, and Google's `supportsStrictMode`
+option for deployment aliases. Registry distinguishes an unresolved stored key
+from a missing local authentication source; neither establishes remote health.
+[Codemode](codemode.md) discovers configured decision models at call time and
+preserves the optional provider response ID and reported usage.
 
 The extension loader aliases `pi-ai/models` to the running installation.
 Provider attribution now flows through pi-ai client identity; ordinary
@@ -646,7 +650,7 @@ host capability. Current ordinary defining sources are
   `direct`, `deferred`, and `hidden` have their separate reachability contracts.
 - The bounded ordinary `mcp_servers` prompt section names enabled servers, their access
   surface, and a summary. Full instructions remain available through namespace
-  discovery; a prompt summary does not replace them. pi-mcp 1.6.0 exports
+  discovery; a prompt summary does not replace them. pi-mcp exports
   `mcpServerSummary(description, instructions)`: the first line of the
   configured description, or of the server's instructions if absent or blank.
   Ordinary Pi applies its own prompt length limits to the helper's result. Sources:
@@ -663,12 +667,17 @@ host capability. Current ordinary defining sources are
   and tokenize words in any script, in ordinary and native hosts alike.
 - MCP input schemas are plain JSON Schema. Tool argument validation coerces
   them like TypeBox schemas. Native MCP uses public pi-mcp helpers for tool names,
-  namespaces, input-schema normalisation, server-shape validation, and output
-  limits. The upstream limiter replaces the local 20 KiB text limiter, cuts at
-  UTF-8 boundaries, and receives the native spill-file writer. Structured results
-  remain complete. Local code retains exposure selection, project trust and
-  provider-auth restrictions. Checked on 2026-11-11 against pi-mcp 1.5.2
-  `dist/{naming,input-schema,config,output-limit}.{js,d.ts}` and
+  namespaces, normalisation of input schemas, server configuration validation
+  and output limits. Ordinary and native MCP both use `createMcpResultSchema()`, which
+  rewrites local schema references under `structuredContent`, and
+  `toMcpModelContent()` for the text, images and resources the model sees. The native
+  adapter supplies the private file writer and only names the resource reader
+  when the selected agent can reach it for that server. The model text limit
+  does not truncate the script result. Exposure, project trust, authentication,
+  cancellation and the Durable result envelope remain host responsibilities.
+  The shared MCP client matches IDs returned as decimal strings. Its HTTP
+  transport handles fragmented SSE replies. Sources: `pi-mcp/dist/{result-schema,model-content,client}.js`,
+  ordinary `dist/extensions/mcp/{tools,resources}.js`, and
   `extensions/agent/durable-execution.ts`.
 - Connection no longer lists every resource. `/mcp` and `pi mcp list --json`
   report resource capability as `resources: true`, not inventory counts. Resource
@@ -872,10 +881,12 @@ placement and delivery semantics.
 
 ### Task parks, signals and generation boundaries
 
-Checked on 2026-11-20 in Durable 1.6.0. `Harness.resume()` enables the scheduler;
+In Durable 1.6.1, `Harness.resume()` enables the scheduler;
 it does not replay a provider stream or resume one selected generation.
 `Conversation.submit()` with a `continue` draft starts a new run only while
-idle. Durable now lets a pending tool call park without holding an invocation
+idle. Atomic submission alongside other writes uses `Conversation.admit(tx, draft)`;
+standalone `submit(draft, context)` does not join that transaction.
+Durable lets a pending tool call park without holding an invocation
 while its generation awaits the result. `Harness.wake()` reports runnable work
 and the earliest deadline if one exists. A signal-only sleep contributes no
 alarm; a parked task alone does not make `wake().active` true.
@@ -884,12 +895,15 @@ alarm; a parked task alone does not make `wake().active` true.
   `tx.signal()` deliver it to a live task by key: `delivered`, `duplicate`,
   `invalid`, `closed` or `not_found`. Early delivery is retained and satisfies a
   later sleep; one key serves one wait. `readSignal()` reads its retained state
-  and migrates the value to the token's version. Timed or signal sleeps and
+  as `{ kind: "value", value }` or `{ kind: "expired" }`, or returns
+  `undefined` for an absent key. The public tag does not change the stored
+  signal memo. Timed or signal sleeps and
   task waits expose `time`, `expired`, `signal` or `tasks` in `state.wake` until
   the next checkpoint. A wait with `policy: "any"` resumes when one task ends.
-- A tool's `execute()` returns `ToolExecutionResult | ToolPark`. A `{ sleep }`
-  park waits for a deadline, signals or both; a `{ wait }` park waits on
-  tasks. The slot is sleeping or waiting, without a result. After wake,
+- A tool's `execute()` returns `ToolExecutionResult | ToolPark`. A result has
+  no `kind`. A flat `{ kind: "sleep", ... }` waits for a deadline, signals or
+  both; `{ kind: "wait", on, policy, ... }` waits on tasks. A wrapper checks
+  its own `kind` (`tool` or `section`) before wrapping the target. After wake,
   `execute()` runs again with `api.wake` and `api.checkpoint`. An invalid park
   settles `invalid_park`. A wrapper cannot introduce a park the base tool did
   not return. A parked tool's optional `cancel()` cleans up its external work
@@ -904,8 +918,10 @@ alarm; a parked task alone does not make `wake().active` true.
 - `HookTask` and `hookTask()` replace `RunEndTask` and `runEndTask()`.
   `afterTools` and `onYield` may request tasks owned by the current generation.
   `afterTools` runs after the whole tool round and its tasks may steer or
-  terminate the run. `onYield` may hold the final boundary open in
-  `pi.live.run.yield`; the first valid continuation in creation order wins
+  terminate the run. An `onYield` hook returns a tagged `continue` or `tasks`
+  decision, or no decision. A hook task's own `YieldDecision` does not take
+  that tag. A `beforeCompact` decision is tagged `decline` or `summary`.
+  `onYield` may hold the final boundary open in `pi.live.run.yield`; the first valid continuation in creation order wins
   after the requested tasks settle, unless queued user input or reset takes
   precedence.
 - For a queued input, `onAbort: "keep"` preserves it through conversation
@@ -1080,10 +1096,14 @@ experimental coding-agent client is assumed.
 
 ### Store format and retained task versions
 
-Checked on 2026-11-20 against the installed Durable 1.6.0 migration list and
-native task definitions. Durable 1.6.0 still opens SQLite storage at schema
-version 2, introduced in 1.4.0. The Durable migration list and Chord's SQLite
-migration runner are byte-identical to 1.5.2; there is no new SQLite migration.
+Checked on 2026-11-25 against Durable and Chord 1.6.1. The SQLite schema is
+2. The Durable migration list and Chord's SQLite migration runner are
+byte-identical to 1.6.0. JSONL format 1 and the native task and document
+versions below did not change. This establishes no new migration for a
+current 1.6.0 store, not the schema of any particular live store.
+`Storage.commit()` and Chord's `commitSeries()` now report `kind: "stored"` or
+`kind: "refused"`; both carry the stored count. This return contract is not
+a change to the on-disk format.
 `SqliteStorage.open()`
 automatically applies pending migrations before reading metadata. Migration 2
 rebuilds the tasks table to admit the `sleeping` status, copies its records,
@@ -1107,9 +1127,14 @@ retained task changes, not a harness migration or compatibility path.
 Task and document versions are separate from the SQLite schema. Sources:
 `pi-durable/dist/harness/{tool,generation,live}.js` and `pi-durable/CHANGELOG.md`.
 
-The controlled `extensions/agent/host-upgrade.test.mts` trial completed an
-isolated Pi/Durable 1.3.0-to-1.4.0 transition. It does not establish a transition
-to 1.6.0. It drained tools and deliveries,
+An isolated 1.6.0-to-1.6.1 trial drained a native tool and its delivery, let
+the old writer exit and release its claim, and opened that synthetic store
+under a fresh host. The SQLite schema and existing rows stayed unchanged.
+The new host returned the exact retained answer and completed a new request.
+The trial did not run both writers together or open an operator store.
+
+The earlier `extensions/agent/host-upgrade.test.mts` trial exercised a schema
+migration from 1.3.0 to 1.4.0. It drained tools and deliveries,
 closed the old writer, and released its claim before the new open. The trial
 checked schema 1 to 2, the rebuilt task constraint, unchanged other schema
 objects and retained rows, exact retained results, and successful follow-up work.
@@ -1151,7 +1176,14 @@ fullscreen rendering or terminal restore trial.
 
 `ToolRenderContext` carries recorded `durationMs` and `outputPad`.
 `agent_settled.aborted` distinguishes cancellation from ordinary completion.
-OSC 7501 program status is terminal status, not task acceptance. Regular TUI
+OSC 7501 program status is terminal status, not task acceptance. Ordinary
+select and input dialogs default to `question`, confirm defaults to
+`permission`, and `blockedKind` selects the status of a specific decision.
+Pi uses the first line of the title for the status message. Agent and Policy
+mark permission decisions; opening a browser or dashboard does not by itself
+block work. Pi repaints after an asynchronous editor replacement or paste.
+Composer still owns the native draft and its separate bounded recall history;
+a repeated prompt moves to the newest position. Regular TUI
 mode no longer writes OSC 133 prompt markers, which ended that status in some
 terminals. Hardware cursor,
 mouse-wheel, shifted-key, color-reply, image, and compaction-indicator fixes belong
@@ -1176,6 +1208,12 @@ does not prove selection or activation. Resource `!`, `+`, and `-` path entries
 expand `~`, and nested-worktree context discovery follows current symlinked
 AGENTS paths without introducing new links. Sources: `dist/core/resource-loader.js`,
 `docs/{sdk,settings,packages}.md`, and CLI resource selection.
+
+Pi's `notices.cacheMisses`, `notices.cacheWarming`, `notices.compactionCosts`
+and `notices.reasoningDrops` control four transcript annotations, not the
+underlying operations. `SettingsManager.getNotices()` reads the effective
+values; `setNotice(key, shown)` changes one. Config uses the installed settings
+schema, and Pi owns migration of its old single setting.
 
 Pi publishes editor schemas for settings, models, keybindings, and themes.
 Use installed documentation for their `$schema` URLs. Editor completion is not

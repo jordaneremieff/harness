@@ -9,7 +9,6 @@ import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { Context } from "@earendil-works/chord/context";
 import { awaitWithContext, BACKGROUND_CONTEXT, withAbortSignal, withCancel } from "@earendil-works/chord/context";
-import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode";
 import { CodemodeSandbox, parseCodemodeSource } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension, createCodemodeTool } from "@earendil-works/pi-durable/codemode";
 import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
@@ -24,6 +23,7 @@ import type {
 	Tool as McpTool,
 } from "@earendil-works/pi-mcp";
 import {
+	createMcpResultSchema,
 	createMcpToolName,
 	isMcpServerOverride,
 	JSON_RPC_ERROR_CODES,
@@ -34,7 +34,7 @@ import {
 	normalizeMcpInputSchema,
 	StdioTransport,
 	StreamableHttpTransport,
-	toLlmContent,
+	toMcpModelContent,
 	validateMcpServerConfig,
 } from "@earendil-works/pi-mcp";
 import { McpOAuthAuthorizationRequiredError } from "@earendil-works/pi-mcp/oauth";
@@ -47,7 +47,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 export type { LoadedMcpConfig, McpExposure, McpServerConfig, McpServerEntry } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
-import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 import {
@@ -118,8 +117,6 @@ const MAX_SERVERS_SECTION_CHARS = 4096;
 const MAX_SERVER_DESCRIPTION_CHARS = 250;
 
 type NestedTool = Durable.ToolRegistration;
-
-type ToolResultContent = readonly (TextContent | ImageContent)[];
 
 // ─── MCP configuration ──────────────────────────────────────────────────────
 
@@ -346,83 +343,12 @@ function templateStep(
 	return { text: value, next: dollar + 1 + (braced === null ? name.length : braced[0].length) };
 }
 
-// ─── MCP tool names and results ─────────────────────────────────────────────
-
-/** The `CallToolResult` output schema every MCP tool declares to scripts. */
-function createMcpResultSchema(structuredContentSchema: CodemodeJsonSchema | undefined): Schema {
-	return {
-		type: "object",
-		properties: {
-			content: { type: "array", items: { type: "object" } },
-			structuredContent: structuredContentSchema ?? {},
-			isError: { type: "boolean" },
-			_meta: { type: "object" },
-		},
-		required: ["content"],
-	};
-}
-
-function textOf(content: readonly { type?: string; text?: string }[] | undefined): string {
-	return (content ?? [])
-		.flatMap((block) => (block.type === "text" && typeof block.text === "string" ? [block.text] : []))
-		.join("\n");
-}
+// ─── MCP results ────────────────────────────────────────────────────────────
 
 async function saveToTempFile(data: string | Uint8Array, extension: string): Promise<string> {
 	const path = join(tmpdir(), `pi-durable-execution-${randomBytes(8).toString("hex")}${extension}`);
-	await writeFile(path, data, { mode: 0o600 });
+	await writeFile(path, data, { flag: "wx", mode: 0o600 });
 	return path;
-}
-
-function extensionOf(uri: string): string {
-	const path = URL.canParse(uri) ? new URL(uri).pathname : uri;
-	return /\.[A-Za-z0-9]{1,8}$/.exec(path)?.[0] ?? ".bin";
-}
-
-function isTextMimeType(mimeType: string | undefined): boolean {
-	const type = mimeType?.split(";", 1)[0]?.trim().toLowerCase();
-	return (
-		type !== undefined &&
-		(type.startsWith("text/") || type === "application/json" || type.endsWith("+json") || type.endsWith("+xml"))
-	);
-}
-
-type ResourceLinkBlock = Extract<ContentBlock, { type: "resource_link" }>;
-
-/** Model-facing content of one MCP content block. */
-async function blockToContent(block: ContentBlock): Promise<ToolResultContent> {
-	if (block.type === "resource_link") return [{ type: "text", text: resourceLinkText(block) }];
-	if (block.type === "resource" && "blob" in block.resource && !block.resource.mimeType?.startsWith("image/")) {
-		return await blobResourceContent(block.resource);
-	}
-	return toLlmContent({ content: [block] }) as ToolResultContent;
-}
-
-function resourceLinkText(block: ResourceLinkBlock): string {
-	const details = [block.mimeType, block.size === undefined ? undefined : `${block.size} bytes`].filter(Boolean);
-	const description = block.description === undefined ? "" : `: ${block.description}`;
-	return `[MCP resource ${block.uri} "${block.title ?? block.name}"${details.length > 0 ? ` (${details.join(", ")})` : ""}${description}]`;
-}
-
-async function blobResourceContent(resource: {
-	uri: string;
-	mimeType?: string;
-	blob: string;
-}): Promise<ToolResultContent> {
-	const data = Buffer.from(resource.blob, "base64");
-	if (isTextMimeType(resource.mimeType)) return [{ type: "text", text: data.toString("utf8") }];
-	const kind = `${resource.mimeType ?? "unknown type"}, ${data.length} bytes`;
-	try {
-		const path = await saveToTempFile(data, extensionOf(resource.uri));
-		return [{ type: "text", text: `[MCP resource ${resource.uri} (${kind}) written to ${path}]` }];
-	} catch (error) {
-		return [
-			{
-				type: "text",
-				text: `[MCP resource ${resource.uri} (${kind}) could not be written: ${error instanceof Error ? error.message : String(error)}]`,
-			},
-		];
-	}
 }
 
 /** Convert one MCP result into a Durable tool result. Scripts read `structuredOutput`. */
@@ -430,11 +356,18 @@ export async function convertMcpResult(
 	server: string,
 	tool: string,
 	result: CallToolResult,
+	readableResources = false,
 ): Promise<Durable.ToolExecutionResult<JsonValue>> {
-	const limited = await limitMcpContent([...(await mcpModelContent(result))], saveToTempFile);
+	const converted = await toMcpModelContent(server, result, {
+		saveOutput: saveToTempFile,
+		...(readableResources ? { readResourceTool: READ_MCP_RESOURCE_TOOL } : {}),
+	});
+	if (result.isError && !converted.some((block) => block.type === "text" && block.text !== ""))
+		converted.push({ type: "text", text: `MCP tool ${server}/${tool} returned an error` });
+	const limited = await limitMcpContent(converted, saveToTempFile);
 	const { _meta: _ignored, ...scriptResult } = result;
 	return {
-		output: [...limited.content],
+		output: limited.content,
 		structuredOutput: scriptResult as unknown as JsonValue,
 		details: {
 			server,
@@ -443,16 +376,6 @@ export async function convertMcpResult(
 		},
 		...(result.isError ? { isError: true } : {}),
 	};
-}
-
-async function mcpModelContent(result: CallToolResult): Promise<ToolResultContent> {
-	const converted =
-		result.content.length > 0
-			? (await Promise.all(result.content.map((block) => blockToContent(block)))).flat()
-			: (toLlmContent(result) as ToolResultContent);
-	const content = [...converted];
-	if (result.isError && textOf(content) === "") content.push({ type: "text", text: "MCP tool returned an error" });
-	return content;
 }
 
 /** MCP input schemas must be objects; some providers reject object schemas without properties. */
@@ -1300,16 +1223,40 @@ class DurableExecutionRuntime implements DurableExecution {
 			name,
 			description: tool.description?.trim() || tool.title || `MCP tool ${tool.name} from server ${server.entry.name}`,
 			parameters: toParameters(tool.inputSchema),
-			structuredOutputSchema: createMcpResultSchema(tool.outputSchema as CodemodeJsonSchema | undefined),
+			structuredOutputSchema: createMcpResultSchema(tool.outputSchema),
 			replay: "unsafe",
 			...(exposure === "direct" ? {} : { deferred: true }),
-			execute: async (args, _api, context) =>
-				convertMcpResult(
-					server.entry.name,
-					tool.name,
-					await server.callTool(tool.name, key, args as Record<string, unknown>, context.abortSignal),
-				),
+			execute: async (args, api, context) => {
+				const result = await server.callTool(tool.name, key, args as Record<string, unknown>, context.abortSignal);
+				const readableResources =
+					result.content.some((block) => block?.type === "resource_link") &&
+					(await this.canReadResourceLinks(server, api, context));
+				context.abortSignal?.throwIfAborted();
+				return convertMcpResult(server.entry.name, tool.name, result, readableResources);
+			},
 		};
+	}
+
+	private async canReadResourceLinks(
+		server: McpServerConnection,
+		api: Durable.ToolExecutionApi,
+		context: Context,
+	): Promise<boolean> {
+		if (!this.resourceServers().includes(server)) return false;
+		const agent = await api.agent(context);
+		const readsResources = (tool: NestedTool) => tool.name === READ_MCP_RESOURCE_TOOL;
+		// A contribution can replace a built-in without supplying its reach to other tools.
+		const owner = (name: string) =>
+			agent.extensions.findLast((extension) => extension.tools?.some((tool) => tool.name === name))?.name;
+		const offers = (name: string) => agent.tools.some((tool) => tool.name === name);
+		if (owner(READ_MCP_RESOURCE_TOOL) !== EXTENSION_NAME) return false;
+		return (
+			offers(READ_MCP_RESOURCE_TOOL) ||
+			(offers(CODEMODE_TOOL_NAME) && owner(CODEMODE_TOOL_NAME) === "codemode" && agent.callable.some(readsResources)) ||
+			(offers(TOOL_SEARCH_TOOL_NAME) &&
+				owner(TOOL_SEARCH_TOOL_NAME) === "tool-search" &&
+				agent.deferred.some(readsResources))
+		);
 	}
 
 	/** A tool phase pins its agent before MCP discovery; the public conversation read resolves the completed catalog. */
@@ -1494,18 +1441,19 @@ class DurableExecutionRuntime implements DurableExecution {
 		await this.waitForResourceServers(serverName, context);
 		const server = this.findResourceServer(serverName, this.resourceServers());
 		const result = await server.readResource(uri, { signal: context.abortSignal });
+		context.abortSignal?.throwIfAborted();
 		const blocks: ContentBlock[] = result.contents.flatMap((contents) => [
 			...(result.contents.length > 1 ? [{ type: "text" as const, text: `${contents.uri}:` }] : []),
 			{ type: "resource" as const, resource: contents },
 		]);
-		const converted = (await Promise.all(blocks.map((block) => blockToContent(block)))).flat();
+		const converted = await toMcpModelContent(server.entry.name, { content: blocks }, { saveOutput: saveToTempFile });
 		const limited = await limitMcpContent(
 			converted.length > 0 ? converted : [{ type: "text", text: `Resource ${uri} is empty.` }],
 			saveToTempFile,
 		);
 		const contents = result.contents.map(({ _meta: _ignored, ...rest }) => rest);
 		return {
-			output: [...limited.content],
+			output: limited.content,
 			structuredOutput: { server: server.entry.name, uri, contents } as unknown as JsonValue,
 			details: {
 				server: server.entry.name,

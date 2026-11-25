@@ -217,7 +217,7 @@ function discoveryHeader(
 			MODEL_CATALOG_BOUNDARY,
 			"Order: available with provider configuration evidence first, then other available, then remaining configured-auth records, then the rest; alphabetical provider/id within each group.",
 			"Provider configuration evidence: providerScoped=true from resolved scope in ordinary sessions; providerSettings=true from literal settings prefixes in Durable. Neither filters the catalog nor establishes operator preference.",
-			"Model metadata and cached availability are synchronous local snapshots. configuredAuth is presence, not credential validity; no refresh, auth resolution, or probe. Quota, balance, and remote health remain unchecked.",
+			"Model metadata and cached availability are synchronous local snapshots. configuredAuth is presence, not credential validity. authSource=stored with configuredAuth=false means the stored credential did not resolve. No refresh or probe. Quota, balance, and remote health remain unchecked.",
 			MODEL_SCOPE_BOUNDARY,
 			"price: catalog USD/Mtok, input/output/cacheRead/cacheWrite; not billed spend. subscription means Pi-recognized, not inferred from OAuth; false does not imply metered billing. tiers marks price tiers; exact model lookup returns them.",
 			...settingsScopeLines(request.models),

@@ -183,7 +183,7 @@ function client(config: ComposerConfig) {
 				text?: string;
 				sequence: number;
 				message?: string;
-				events?: { type: string; text?: string; level?: string }[];
+				events?: { type: string; text?: string; level?: string; entries?: string[] }[];
 				state?: ComposerState;
 				reset?: boolean;
 				stopped?: boolean;
@@ -638,6 +638,67 @@ test("updates model, thinking, history and queue state, and returns hidden edits
 	const restored = await ask("/events", { after: working.sequence });
 	assert.deepEqual(restored.state?.queued, []);
 	assert.equal(restored.events?.[0]?.text, "queued");
+});
+
+test("startup and tree replay recall each exact Composer prompt once without changing the draft", {
+	timeout: 6000,
+}, async (t) => {
+	const files = await setup(t);
+	const pi = host(files.env);
+	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
+	const padded = "  first  ";
+	for (const content of [
+		"first",
+		"second",
+		"first",
+		[
+			{ type: "text", text: "  fir" },
+			{ type: "text", text: "st  " },
+		],
+	]) {
+		pi.branch.push({ type: "message", message: { role: "user", content } });
+	}
+	await pi.command();
+	const ask = client(await consume(files.launch()));
+	const draft = "  unfinished\nprompt  ";
+	const { sequence, history } = await ask("/hello", { pid: 100, draft: { text: draft } });
+	assert.deepEqual(history, ["second", "first", padded]);
+
+	const editor = pi.editor();
+	// Pi seeds the installed editor with the selected branch when it rerenders the transcript.
+	for (const text of ["first", padded, "second", "second"]) editor.addToHistory(text);
+	const { events } = await ask("/events", { after: sequence });
+	assert.deepEqual(
+		events?.map(({ entries }) => entries),
+		[
+			["second", padded, "first"],
+			["second", "first", padded],
+			["first", padded, "second"],
+		],
+	);
+	assert.equal(pi.text(), draft);
+});
+
+test("Composer history caps entry count and total UTF-8 bytes after moving a repeat", { timeout: 6000 }, async (t) => {
+	const files = await setup(t);
+	const pi = host(files.env);
+	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
+	const prompts = Array.from({ length: 103 }, (_, index) => `prompt ${index}`);
+	for (const content of prompts) pi.branch.push({ type: "message", message: { role: "user", content } });
+	await pi.command();
+	const ask = client(await consume(files.launch()));
+	const { sequence, history } = await ask("/hello", { pid: 100, draft: { text: "" } });
+	assert.deepEqual(history, prompts.slice(3));
+
+	const first = "🌱".repeat(32 * 1024);
+	const second = "🌲".repeat(32 * 1024);
+	const editor = pi.editor();
+	for (const text of [first, second, first, `${first}${second}!`, "\uD800", " ", "new"]) editor.addToHistory(text);
+	const { events } = await ask("/events", { after: sequence });
+	assert.equal(events?.length, 4);
+	assert.deepEqual(events?.[1]?.entries, [first, second]);
+	assert.deepEqual(events?.[2]?.entries, [second, first]);
+	assert.deepEqual(events?.[3]?.entries, [first, "new"]);
 });
 
 test("resize validates the request and refuses hidden or unconfirmed panes", { timeout: 6000 }, async (t) => {

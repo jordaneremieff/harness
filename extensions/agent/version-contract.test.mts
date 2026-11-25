@@ -234,7 +234,7 @@ it("advertises actual upstream releases separately from current operation contra
 	assert.match(parsed.operations.status.response, /^[a-f0-9]{64}$/u);
 	assert.equal(parsed.operations.status.durable, parsed.upstream.durable);
 	assert.equal(parsed.operations.submit.durable, undefined);
-	assert.deepEqual(parsed.requires, { codingAgent: "1.5.0", durable: "1.6.0" });
+	assert.deepEqual(parsed.requires, { codingAgent: "1.5.0", durable: "1.6.1" });
 });
 
 it("refuses only recovery-state for a peer without the active-delivery response", () => {
@@ -339,10 +339,10 @@ it("isolates missing operations, changed requests, changed responses, and native
 });
 
 it("requires current host APIs without pinning newer releases", () => {
-	assert.deepEqual(HOST_CONTRACT.requires, { codingAgent: "1.5.0", durable: "1.6.0" });
+	assert.deepEqual(HOST_CONTRACT.requires, { codingAgent: "1.5.0", durable: "1.6.1" });
 	for (const [upstream, floor] of [
 		["codingAgent", "1.5.0"],
-		["durable", "1.6.0"],
+		["durable", "1.6.1"],
 	] as const) {
 		for (const version of [
 			"0.99.9",
@@ -352,15 +352,15 @@ it("requires current host APIs without pinning newer releases", () => {
 			"1.4.99",
 			`${floor}-alpha`,
 			`${floor}-rc.1+build`,
-			...(upstream === "durable" ? ["1.5.1", "1.5.2", "1.5.2+build"] : []),
+			...(upstream === "durable" ? ["1.5.1", "1.5.2", "1.5.2+build", "1.6.0", "1.6.0+build"] : []),
 		]) {
 			assert.throws(
 				() => parseRuntimeContract({ ...HOST_CONTRACT, upstream: { ...HOST_CONTRACT.upstream, [upstream]: version } }),
-				/requirements are unmet: Pi >=1\.5\.0, Durable >=1\.6\.0.*Update/u,
+				/requirements are unmet: Pi >=1\.5\.0, Durable >=1\.6\.1.*Update/u,
 				`${upstream} ${version}`,
 			);
 		}
-		for (const version of [floor, `${floor}+build`, "1.6.1", "1.10.0", "2.0.0"]) {
+		for (const version of [floor, `${floor}+build`, "1.6.2", "1.10.0", "2.0.0"]) {
 			const peer = { ...HOST_CONTRACT, upstream: { ...HOST_CONTRACT.upstream, [upstream]: version } };
 			const parsed = parseRuntimeContract(peer);
 			assert.equal(parsed.upstream[upstream], version);

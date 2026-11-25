@@ -3790,6 +3790,15 @@ loads its selected tools. Resource tool declarations do not depend on connection
 progress. Choose exposure in `mcp.json`; any direct tool override keeps that
 server's startup eager. Ordinary primaries retain Pi's own MCP lifecycle.
 
+Native MCP tools use the same result schema and content converter as ordinary
+Pi. Scripts receive the complete MCP result without top-level `_meta`, including
+structured data and `isError` on server error results. Local schema references
+resolve inside `structuredContent`. The model sees converted text and image
+blocks, not the script envelope. Long text uses the MCP output limit; full text
+and binary resources use private temporary files. Resource links name the
+existing `read_mcp_resource` tool only when the server offers readable resources
+and the conversation has a route to that tool.
+
 An idle discovery-only stdio connection closes after ten seconds. The host retains its descriptors. Before a
 call on a reopened transport, it checks the current descriptor and refuses stale
 arguments if the descriptor changed. The host does not automatically repeat an
@@ -4514,7 +4523,7 @@ coalesce local calls or promise exactly-once execution for all methods.
 
 An admitted input has a stable Durable request ID. Reconnecting or retrying the
 same admission reuses that identity. One native commit admits the input through
-Pi's transactional `Conversation.submit(tx, draft)` together with its delivery
+Pi's transactional `Conversation.admit(tx, draft)` together with its delivery
 intent (already linked to the submission), request route, admission metadata,
 check-in and unplaced-input row. A refusal, such as `ConversationBusy` for
 `whenBusy: "reject"`, throws inside that commit, so it stores none of them and

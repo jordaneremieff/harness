@@ -197,7 +197,7 @@ async function fireTimer(
 		firedAt,
 		"retained",
 		async () =>
-			(id = await conversation.submit(tx, {
+			(id = await conversation.admit(tx, {
 				type: "input",
 				content: input.message,
 				requestId: input.requestId,

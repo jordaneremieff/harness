@@ -1026,13 +1026,13 @@ describe("unified tools and command gates", () => {
 		const { pi, ctx, dir, notifications } = await setup();
 		const registry = new RuleRegistry(dir);
 		const command = pi.command();
-		const prompts: string[] = [];
+		const prompts: Array<{ title: string; kind: string }> = [];
 		const guided = {
 			...ctx,
 			ui: {
 				...(ctx as { ui: object }).ui,
-				select: async (title: string, choices: string[]) => {
-					prompts.push(title);
+				select: async (title: string, choices: string[], options?: Parameters<ExtensionContext["ui"]["select"]>[2]) => {
+					prompts.push({ title, kind: options?.blockedKind ?? "question" });
 					for (const choice of choices) assert.doesNotMatch(choice, /[\u0000-\u001f\u007f-\u009f]/);
 					return choices.find((choice) => choice.startsWith("local.guided")) ?? choices[0];
 				},
@@ -1055,7 +1055,10 @@ describe("unified tools and command gates", () => {
 		);
 		await command.handler("approve", guided as never);
 		assert.equal((await registry.snapshot()).pending.length, 0);
-		assert.ok(prompts.some((title) => title.includes("which policy proposal")));
+		assert.deepEqual(prompts.slice(0, 2), [
+			{ title: "Approve which policy proposal?", kind: "question" },
+			{ title: "Effect for local.guided", kind: "question" },
+		]);
 		for (const args of ["disable local.guided", "enable local.guided", "effect local.guided", "reset local.guided"]) {
 			await command.handler(args, guided as never);
 			assert.equal(notifications.at(-1)?.type, "info", notifications.at(-1)?.message);
@@ -1085,6 +1088,7 @@ describe("unified tools and command gates", () => {
 			ctx,
 		);
 		await command.handler("reject", guided as never);
+		assert.deepEqual(prompts.at(-1), { title: "Reject which policy proposal?", kind: "permission" });
 		assert.equal((await registry.snapshot()).pending.length, 0);
 		const data = { name: "guided", kind: "table", rows: [{ key: "a", value: "b" }] };
 		const dataUi = { ...guided, ui: { ...guided.ui, editor: async () => JSON.stringify({ data }) } };
@@ -1396,8 +1400,10 @@ describe("catalog command controls", () => {
 		ctx.ui.confirm = async () => assert.fail("Native confirmation hides long artifacts");
 		ctx.ui.custom = async <T,>(
 			factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
+			options?: Parameters<ExtensionContext["ui"]["custom"]>[1],
 		): Promise<T> =>
 			new Promise<T>((resolve) => {
+				assert.deepEqual(options?.blocked, { kind: "permission", message: "Import bundled policy definitions" });
 				const frame = factory(
 					{ terminal: { rows: 24, columns: 80 }, requestRender() {} },
 					theme,

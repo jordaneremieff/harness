@@ -173,7 +173,7 @@ type Fixture = {
 type FixtureOptions = {
 	observe?: boolean;
 	compaction?: boolean;
-	onYield?: () => Promise<{ continue: string } | undefined>;
+	onYield?: () => Promise<{ kind: "continue"; continue: string } | undefined>;
 };
 async function fixture(
 	t: TestContext,
@@ -743,7 +743,7 @@ it("keeps one run identity when the first entry of the run appears after its fir
 				if (yields !== 2) return undefined;
 				paused.enter();
 				await paused.released;
-				return { continue: "continue the work" };
+				return { kind: "continue", continue: "continue the work" };
 			},
 		},
 	);

@@ -199,6 +199,10 @@ extensions that duplicate these controls:
   retention tier. `/session` exposes the decision and estimated cost. Do not
   add a second refresh timer or infer that an absent refresh is a fault.
   See Pi's `docs/settings.md` and `docs/models.md`.
+- **Transcript notices:** `/settings` → Notices controls cache misses, cache warming
+  costs, compaction costs, and dropped reasoning independently. The `notices`
+  booleans control what Pi shows, not whether it warms the cache, compacts, or
+  records usage. Config reads these settings from Pi's installed schema.
 - **Bug reports:** `/bug` offers upload or local zip export. Both include
   configuration and error diagnostics even without the optional transcript.
   The summary option sends transcript content to the current provider.

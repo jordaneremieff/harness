@@ -458,10 +458,13 @@ export interface HttpMcpFixture {
 	close(): Promise<void>;
 }
 
-export async function httpMcpServer(
-	token: string,
-	options: { beforeResponse?: (method: string) => Promise<void>; silent?: boolean } = {},
-): Promise<HttpMcpFixture> {
+interface HttpMcpOptions {
+	beforeResponse?: (method: string) => Promise<void>;
+	silent?: boolean;
+	richResults?: boolean;
+}
+
+export async function httpMcpServer(token: string, options: HttpMcpOptions = {}): Promise<HttpMcpFixture> {
 	const server = createServer((request, response) => handleHttpMcp(request, response, token, options));
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const address = server.address();
@@ -480,7 +483,7 @@ function handleHttpMcp(
 	request: IncomingMessage,
 	response: ServerResponse,
 	token: string,
-	options: { beforeResponse?: (method: string) => Promise<void>; silent?: boolean },
+	options: HttpMcpOptions,
 ): void {
 	if (request.headers.authorization !== `Bearer ${token}`) {
 		response.writeHead(401, { "content-type": "application/json", "www-authenticate": 'Bearer realm="mcp"' });
@@ -506,8 +509,17 @@ function handleHttpMcp(
 			return;
 		}
 		const respond = () => {
+			const id = options.richResults ? String(message.id) : message.id;
+			const result = httpMcpResult(message, options.richResults === true);
+			if (options.richResults && message.method === "tools/call") {
+				response.writeHead(200, { "content-type": "text/event-stream" });
+				response.write('data: {"jsonrpc":"2.0",\r');
+				response.write(`\ndata: "id":${JSON.stringify(id)},"result":${JSON.stringify(result)}}\r`);
+				response.end("\n\r\n");
+				return;
+			}
 			response.writeHead(200, { "content-type": "application/json" });
-			response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: httpMcpResult(message) }));
+			response.end(JSON.stringify({ jsonrpc: "2.0", id, result }));
 		};
 		if (options.beforeResponse)
 			void options
@@ -517,7 +529,7 @@ function handleHttpMcp(
 	});
 }
 
-function httpMcpResult(message: { method?: string; params?: Record<string, unknown> }): unknown {
+function httpMcpResult(message: { method?: string; params?: Record<string, unknown> }, richResults: boolean): unknown {
 	switch (message.method) {
 		case "initialize":
 			return {
@@ -535,10 +547,16 @@ function httpMcpResult(message: { method?: string; params?: Record<string, unkno
 						name: "echo",
 						description: "Echo one value",
 						inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+						...(richResults ? { outputSchema: mcpFixtureOutputSchema } : {}),
 					},
+					...(richResults ? [{ name: "untyped", inputSchema: { type: "object", properties: {} } }] : []),
 				],
 			};
 		case "tools/call":
+			if (richResults) {
+				if (message.params?.name === "untyped") return { structuredContent: [null, 7, "sample"] };
+				return richMcpToolResult((message.params?.arguments as { value?: string } | undefined)?.value);
+			}
 			return {
 				content: [
 					{
@@ -552,6 +570,19 @@ function httpMcpResult(message: { method?: string; params?: Record<string, unkno
 		case "resources/templates/list":
 			return { resourceTemplates: [] };
 		case "resources/read":
+			if (richResults && message.params?.uri === "docs://bundle") {
+				return {
+					contents: [
+						{
+							uri: "docs://bundle/summary",
+							mimeType: "text/plain",
+							blob: "dGV4dCBmcm9tIHJlYWQ=",
+							_meta: { private: true },
+						},
+						{ uri: "docs://bundle/picture", mimeType: "image/png", blob: MCP_FIXTURE_IMAGE },
+					],
+				};
+			}
 			return {
 				contents: [
 					{ uri: String(message.params?.uri ?? "docs://readme"), mimeType: "text/plain", text: "hello resource" },
@@ -559,6 +590,49 @@ function httpMcpResult(message: { method?: string; params?: Record<string, unkno
 			};
 		default:
 			return {};
+	}
+}
+
+export const MCP_FIXTURE_IMAGE =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+const mcpFixtureOutputSchema = {
+	type: "object",
+	$defs: { Label: { type: "string" } },
+	properties: { label: { $ref: "#/$defs/Label" }, next: { $ref: "#" } },
+	required: ["label"],
+};
+
+function richMcpToolResult(value: string | undefined) {
+	const data = { structuredContent: { label: "root", next: { label: "leaf" } }, _meta: { private: true } };
+	const link = { type: "resource_link", uri: "docs://bundle", name: "bundle", size: 2048 };
+	switch (value) {
+		case "mixed":
+			return {
+				...data,
+				content: [
+					{ type: "resource", resource: { uri: "docs://inline", mimeType: "text/plain", blob: "aW5saW5lIHRleHQ=" } },
+					{
+						type: "resource",
+						resource: {
+							uri: "docs://inline/archive.dat?override=.txt",
+							mimeType: "application/octet-stream",
+							blob: "YmluYXJ5AHBheWxvYWQ=",
+						},
+					},
+					{
+						type: "resource",
+						resource: { uri: "docs://inline/picture", mimeType: "image/png", blob: MCP_FIXTURE_IMAGE },
+					},
+					link,
+				],
+			};
+		case "error":
+			return { ...data, content: [{ type: "text", text: "" }], isError: true };
+		case "invalid":
+			return { ...data, content: [], structuredContent: { label: "root", next: { label: 7 } } };
+		default:
+			return { ...data, content: [link] };
 	}
 }
 

@@ -866,10 +866,11 @@ only that inspection binding and clears no terminal records. Successful binding 
 finishes after the cutoff retains its confirmed outcome and reports deadline coverage.
 No background watcher exists for this capability.
 
-Pi 1.4.0's ordinary interactive `ProgramStatusReporter` already owns real OSC 7501
-run, compaction, dialog and settled-state reports. This extension does not emit a
-second ordinary projection. RPC and headless sessions do not gain an attached
-terminal through this extension.
+Pi owns OSC 7501 reports for ordinary interactive runs, compaction, and dialogs,
+including dialogs before the session starts. Rex setup and removal use Pi's
+confirmation dialogs, which report `permission` with the first line of the title.
+This extension does not emit a second ordinary report. RPC and headless sessions
+do not gain an attached terminal through this extension.
 
 The inspected installed Rex catalogue and terminal schemas expose
 `program_status` readback but no terminal-output or status setter. Terminal

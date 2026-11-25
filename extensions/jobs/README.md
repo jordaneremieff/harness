@@ -34,12 +34,14 @@ error), the elapsed time, a bounded control-free preview of the command (at
 most 200 characters), the working directory (or `unknown` when the record has
 none), the retained backend error on its own line, the total output byte count,
 and the last output lines (at most 40 lines from the last 4 KiB of the retained
-tail). The excerpt exhausts that complete bounded window through as many log
-pages as needed. A timeout reports the settled duration and names the configured limit.
+tail). The excerpt can start partway through a line so a long final line stays
+visible even before trailing blank lines. The excerpt reads as many log pages as
+it needs. A timeout reports the settled duration and names the configured limit.
 A job lost to a host restart states that its output is unavailable and that zero
 retained bytes does not mean the command produced no output. The excerpt is
-labelled as untrusted command output, and the text says when earlier lines are
-omitted. `details` carries the same facts as `{ job, command, tail }`, where
+labelled as untrusted command output, and the text says when earlier output is
+omitted. Managed jobs retain a bounded log tail; they do not write a complete
+output file. `details` carries the same facts as `{ job, command, tail }`, where
 `tail` is `{ text, omitted, outputBytes }`; the raw text keeps terminal
 controls, the model-visible text drops them. Read the full retained tail with
 `jobs` logs.
@@ -429,19 +431,26 @@ the stored receipt nor the model copy.
 
 ## Programmatic results
 
-Every tool of the extension declares an output schema and returns `structuredContent`. Native
-codemode scripts receive these objects directly, without parsing the displayed
-text. Direct tool calls keep their existing text and `details`.
+Both hosts declare output schemas for the tools they offer. Codemode scripts
+receive structured results without parsing the displayed text.
 
-- Foreground `bash` uses Pi's native output schema: `output`, `truncated`,
-  `exit_code`, `wall_time_seconds`, and optional `full_output_path`. Its
-  programmatic output retains up to 1 MiB under Pi's native truncation rules,
-  separately from the smaller model-facing text limit.
-- A nonzero foreground exit remains an error result for direct calls. A
-  codemode script resolves to the native object and must check `exit_code`.
-  Thrown failures, including timeout and abort, still reject in scripts.
-- Background `bash` resolves to `{ job }`. The schema is a union of the native
-  foreground schema and this admission object, not a second native schema.
+- Ordinary foreground `bash` returns `output`, `truncated`, `exit_code`, and
+  `wall_time_seconds`. Program output uses Pi's separate 1 MiB limit. If that
+  output is incomplete, `full_output_path` identifies a saved file or
+  `full_output_error` explains why Pi did not save one. Direct tool output has
+  the smaller 50 KiB or 2,000-line limit and reports the path or save error
+  independently in `details`.
+- Durable foreground `bash` returns the same bounded tail shown to the model,
+  with `output`, `truncated`, `exitCode` and optional `fullOutputPath`. In its
+  Node environment, a spill failure stops the command and reports a tool error
+  rather than a structured exit result. It does not establish the command's
+  exit code. The retained model text and diagnostics remain available.
+- A nonzero exit is an error for direct foreground calls. Codemode resolves to
+  the structured result for a known exit; check `exit_code` in ordinary Pi or
+  `exitCode` in Durable. Thrown failures, including timeout and abort, reject
+  instead.
+- Background `bash` resolves to `{ job }`. Each wrapper uses its host's
+  foreground schema and this admission object as the two alternatives.
 - `jobs` returns `{ jobs, nextTaskCursor? }` for native `list` (`{ jobs }` for ordinary list), `{ job }` for `status` and `cancel`,
   and the log page object for `logs`. Unknown IDs and invalid requests still
   produce errors. These objects keep the bounds and ownership below.

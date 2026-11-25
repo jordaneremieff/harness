@@ -52,14 +52,9 @@ async function fixture(t: TestContext, held = false) {
 			(await tx.doc(AgentMetaDoc, id)).owner = "creating-owner";
 		},
 	});
-	let admissions = 0;
-	conversation.submit = new Proxy(conversation.submit, {
-		apply(target, receiver, args) {
-			admissions++;
-			return Reflect.apply(target, receiver, args);
-		},
-	});
-	return { harness, conversation, gate, entered, admissions: () => admissions };
+	const admit = t.mock.method(conversation, "admit");
+	const submit = t.mock.method(conversation, "submit");
+	return { harness, conversation, gate, entered, admissions: () => admit.mock.callCount() + submit.mock.callCount() };
 }
 
 const original = {
@@ -89,7 +84,7 @@ it("returns the settled original input, recipient and deduplication fact without
 		recipient: original.replyTo,
 		placement: "placed",
 	});
-	assert.equal(admissions(), 1, "settled replay never calls the native submit surface");
+	assert.equal(admissions(), 1, "settled replay does not attempt a second native admission");
 	assert.deepEqual(await readOutcome(harness, replay.submissionId, context), outcome);
 	assert.deepEqual((await harness.inspect(context)).submissions, before.submissions);
 	assert.deepEqual(await deliveryState(harness, context, true), retained);

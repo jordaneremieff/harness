@@ -281,8 +281,11 @@ records the exposure, naming, and waiting rules with their sources.
 
 Classifiers answer typed questions about JSON state and, when their `input`
 includes `"image"`, supplied image blocks. Use
-`models.getAvailableOfType("classifier")` to discover configured choices. Cached
-availability does not establish remote health or authorize a metered request.
+`models.getAvailableOfType("classifier")` to discover choices for the configured account.
+For example, GitHub Copilot can expose GPT-6 Luna Decisions, and Radius can
+supply decision models from its catalog. A Copilot login filters by the account's
+catalog; a token supplied through the environment does not give the same plan
+check. A listing does not establish remote health or authorize a metered request.
 
 Replace `PROVIDER` and `MODEL_ID` below with an available classifier permitted
 for the task. Supply an existing PNG file that the task permits sending to that
@@ -311,21 +314,23 @@ const result = await models.classify(classifier, {
     },
   },
 });
-if (result.stopReason !== "stop") {
-  return { stopReason: result.stopReason, errorMessage: result.errorMessage, usage: result.usage };
-}
-return { answers: result.answers, usage: result.usage };
+const { stopReason, responseId, usage } = result;
+if (stopReason !== "stop") return { stopReason, errorMessage: result.errorMessage, responseId, usage };
+return { answers: result.answers, responseId, usage };
 ```
 
 `classify()` returns provider errors through `stopReason` and `errorMessage`,
 not a rejected promise. Preserve those fields and any reported usage rather
-than interpreting an empty answer as a classification. Local argument or tool
-errors still reject normally.
+than interpreting an empty answer as a classification. `responseId`, when present,
+identifies the provider's response, not the Pi tool call. A service can report
+usage even when its answers could not be parsed. A cost with
+`usage.cost.totalFromProvider` comes from the provider; a catalog estimate is not a bill.
+Local argument or tool errors still reject normally.
 
 Image format and count limits depend on the selected service, not only the
 `input` catalog field. This example sends one PNG; do not infer WebP, GIF, or
 multiple-image support from it. Read the installed Pi `docs/models.md` section
-“Use classifier models” for current formats and limits. Custom classifier
+“Use decision models” for current formats and limits. Custom classifier
 endpoints also need the matching image transport under `compat.imageInput`;
 Pi's `docs/models-configuration.md` owns those fields. Do not build a manual
 provider payload or a second model catalog in the script.

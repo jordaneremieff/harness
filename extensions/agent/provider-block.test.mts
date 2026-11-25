@@ -500,15 +500,14 @@ it("replays an authorized notice after native admission failure without a duplic
 		whenBusy: "followUp" as const,
 		provenance: { classification: "report" as const, sender: "producer" },
 	};
-	const submit = conversation.submit.bind(conversation);
-	conversation.submit = async () => {
+	const failure = t.mock.method(conversation, "admit", async () => {
 		throw new Error("injected native admission failure");
-	};
+	});
 	await assert.rejects(
 		submitConversation(conversation, params, BACKGROUND_CONTEXT),
 		/injected native admission failure/u,
 	);
-	conversation.submit = submit;
+	failure.mock.restore();
 	const admitted = await submitConversation(conversation, params, BACKGROUND_CONTEXT);
 	const replay = await submitConversation(conversation, params, BACKGROUND_CONTEXT);
 	assert.equal(admitted.submissionId, replay.submissionId);

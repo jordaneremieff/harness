@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
-import type * as Durable from "@earendil-works/pi-durable";
+import { type ToolPark, type ToolRegistration, wrapSection } from "@earendil-works/pi-durable";
 import { acquireHost } from "./host-client.ts";
 import { runtimeFixture, trackHost, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { limitExtensionToolTime, limitToolTime, ToolTimeLimitError } from "./tool-time-limit.ts";
 
-type Tool = Durable.ToolRegistration;
+type Tool = ToolRegistration;
 const api = {} as Parameters<Tool["execute"]>[1];
 
 function tool(execute: Tool["execute"]): Tool {
@@ -48,13 +48,28 @@ it("returns a result within the limit and keeps the caller's own cancellation re
 it("leaves tools unchanged without a limit and bounds wrapped tools", async () => {
 	const base = tool(async () => new Promise(() => {}));
 	assert.equal(limitToolTime(base, 0), base);
+	const section = wrapSection("plain", (inner) => inner);
 	const extension = limitExtensionToolTime(
-		{ name: "x", wraps: [{ tool: "probe", wrap: (inner: Tool) => ({ ...inner, execute: inner.execute }) }] },
+		{
+			name: "probe-extension",
+			wraps: [{ kind: "tool", tool: "probe", wrap: (inner) => ({ ...inner, execute: inner.execute }) }, section],
+		},
 		20,
 	);
 	const wrap = extension.wraps?.[0];
-	assert.ok(wrap !== undefined && "tool" in wrap);
+	assert.ok(wrap?.kind === "tool");
+	assert.equal(wrap.tool, "probe");
 	await assert.rejects(wrap.wrap(base).execute({}, api, BACKGROUND_CONTEXT), ToolTimeLimitError);
+	assert.equal(extension.wraps?.[1], section);
+});
+
+it("returns a base tool's park without modifying it", async () => {
+	const park: ToolPark = { kind: "sleep", until: 100, checkpoint: "pending" };
+	const bounded = limitToolTime(
+		tool(async () => park),
+		60_000,
+	);
+	assert.equal(await bounded.execute({}, api, BACKGROUND_CONTEXT), park);
 });
 
 it("ends a real host's tool call that never settles, so the run finishes", { timeout: 60_000 }, async (t) => {

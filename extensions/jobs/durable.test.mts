@@ -194,6 +194,7 @@ async function openHarness(
 				name: "admission-probe",
 				wraps: [
 					{
+						kind: "tool",
 						tool: "bash",
 						wrap: (tool: Durable.ToolRegistration) => ({
 							...tool,

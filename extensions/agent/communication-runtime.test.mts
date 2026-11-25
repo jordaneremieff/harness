@@ -52,16 +52,12 @@ import { stripVTControlCharacters } from "node:util";
 
 const ROOT = 1 as ConversationId;
 
-/** Pi admits `submit(tx, draft)` only for its own transaction object, so an observing proxy passes the original on. */
+/** Durable accepts only the owning transaction, not the proxy that observes its reads. */
 function observeTx(t: TestContext, conversation: Durable.Conversation): (observed: Tx, original: Tx) => Tx {
-	const originals = new WeakMap<object, Tx>();
-	const submit = conversation.submit.bind(conversation) as (...args: unknown[]) => Promise<unknown>;
-	t.mock.method(conversation, "submit", (...args: unknown[]) =>
-		submit(
-			...(typeof args[0] === "object" && args[0] !== null && originals.has(args[0])
-				? [originals.get(args[0]), ...args.slice(1)]
-				: args),
-		),
+	const originals = new WeakMap<Tx, Tx>();
+	const admit = conversation.admit.bind(conversation);
+	t.mock.method(conversation, "admit", (tx: Tx, draft: Durable.SubmissionDraft) =>
+		admit(originals.get(tx) ?? tx, draft),
 	);
 	return (observed, original) => {
 		originals.set(observed, original);
@@ -1215,18 +1211,14 @@ for (const status of ["done", "placed"] as const)
 					const conversation = await original(...args);
 					if (conversation !== undefined) {
 						// The race runs after the commit that admits the input and before its capture commit.
-						const submit = conversation.submit.bind(conversation) as (...args: unknown[]) => Promise<unknown>;
+						const admit = conversation.admit.bind(conversation);
 						const commit = conversation.commit.bind(conversation) as (...args: unknown[]) => Promise<unknown>;
 						let admittedId: SubmissionId | undefined,
 							raced = false;
-						t.mock.method(conversation, "submit", async (...args: unknown[]) => {
-							const value = await submit(...args);
-							const draft =
-								(args[0] as { type?: unknown }).type === undefined
-									? (args[1] as Durable.SubmissionDraft)
-									: (args[0] as Durable.SubmissionDraft);
-							if (draft.requestId === "capture-race" && typeof value === "number") admittedId = value as SubmissionId;
-							return value;
+						t.mock.method(conversation, "admit", async (tx: Tx, draft: Durable.SubmissionDraft) => {
+							const id = await admit(tx, draft);
+							if (draft.requestId === "capture-race") admittedId = id;
+							return id;
 						});
 						t.mock.method(conversation, "commit", async (...args: unknown[]) => {
 							const value = await commit(...args);

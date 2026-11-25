@@ -1,7 +1,12 @@
 import type { ModelRecord, ModelSnapshot } from "./models.ts";
 
 export interface HealthFinding {
-	code: "expiry_marker" | "selected_not_in_catalog" | "selected_auth_missing" | "metadata_conflict";
+	code:
+		| "expiry_marker"
+		| "selected_not_in_catalog"
+		| "selected_auth_missing"
+		| "selected_auth_unresolved"
+		| "metadata_conflict";
 	reason: string;
 	boundary: string;
 	fields?: string[];
@@ -55,6 +60,19 @@ export const HEALTH_BOUNDARIES = [
 	"Provider-refresh membership/time and recent dispatch use/age are unavailable in this snapshot. No sibling store is read; no refresh, credential resolution, or live probe occurs.",
 ];
 
+function selectedAuthFinding(record: ModelRecord): HealthFinding | undefined {
+	if (!record.selected || record.configuredAuth !== false) return undefined;
+	const stored = record.authSource === "stored";
+	return {
+		code: stored ? "selected_auth_unresolved" : "selected_auth_missing",
+		reason: stored
+			? "Pi found a stored credential for the selected provider but could not resolve it."
+			: "The selected model has no configured auth according to the host.",
+		boundary:
+			"Current selection and configured-auth presence only, not recent dispatch use, credential validity, or a remote auth failure.",
+	};
+}
+
 /** Derive review signals only from the existing safe projection. No retained state. */
 export function catalogHealth(snapshot: ModelSnapshot | undefined): HealthRecord[] {
 	const records = snapshot?.records ?? [];
@@ -77,14 +95,8 @@ export function catalogHealth(snapshot: ModelSnapshot | undefined): HealthRecord
 					"Current selection compared with returned getAll rows. The host can silently omit failed providers; this does not establish removal, last-refresh membership, or remote resolution.",
 			});
 		}
-		if (record.selected && record.configuredAuth === false) {
-			findings.push({
-				code: "selected_auth_missing",
-				reason: "The selected model has no configured auth according to the host.",
-				boundary:
-					"Current selection and configured-auth presence only, not recent dispatch use, credential validity, or a remote auth failure.",
-			});
-		}
+		const auth = selectedAuthFinding(record);
+		if (auth) findings.push(auth);
 		const difference =
 			record.catalog && record.metadataAvailable
 				? differences.get(JSON.stringify([record.provider, record.id]))

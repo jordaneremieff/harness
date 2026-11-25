@@ -475,7 +475,7 @@ export async function recordAdmissionMeta(
  * The timer task uses this through its own task commit, so a fired input and
  * its answer keep the same origin rule as any other admission.
  *
- * With `admit`, the native admission (`Conversation.submit(tx, draft)`) runs in
+ * With `admit`, the native admission (`Conversation.admit(tx, draft)`) runs in
  * the same commit after every table read and before the check-in task, and the
  * intent is stored linked to its submission. A refusal from `admit` throws, so
  * the commit stores neither the intent, its request route nor its check-in.
@@ -961,7 +961,7 @@ async function admitConversation(
 		}
 		const retain = await prepareQueuedInputs(tx, conversation.id, params.senderIdentity);
 		let admitted: SubmissionId | undefined;
-		const admit = async () => (admitted = await conversation.submit(tx, draft));
+		const admit = async () => (admitted = await conversation.admit(tx, draft));
 		if (ownerId !== undefined) await ownedAdmissionIntent(tx, conversation.id, params, ownerId, now, admit);
 		else {
 			if (params.requestContext !== undefined) await recordRequestContext(tx, conversation.id, params.requestContext);

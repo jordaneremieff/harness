@@ -13,6 +13,7 @@
  * package-loading logic.
  */
 import type {
+	ExtensionUIContext,
 	LoadExtensionsResult,
 	ProjectTrustContext,
 	ProjectTrustEvent,
@@ -25,11 +26,6 @@ import type {
 export interface ProjectTrustDecision {
 	readonly trusted: boolean;
 	readonly remember?: boolean;
-}
-
-/** Primary-side UI surface used for one ask. */
-export interface ProjectTrustPrompt {
-	select(prompt: string, options: readonly string[]): Promise<string | undefined>;
 }
 
 export interface ProjectTrustResolverOptions {
@@ -147,11 +143,12 @@ const PRIMARY_TRUST_OPTIONS = [
 /** Primary-side: ask once through a UI select; undefined means the asker refuses. */
 export async function promptProjectTrust(
 	cwd: string,
-	prompt: ProjectTrustPrompt,
+	prompt: Pick<ExtensionUIContext, "select">,
 ): Promise<ProjectTrustDecision | undefined> {
 	const selected = await prompt.select(
 		`Trust project folder?\n${cwd}\n\nThis allows Pi to load project settings and resources, install project packages, and execute project extensions.`,
 		PRIMARY_TRUST_OPTIONS.map((option) => option.label),
+		{ blockedKind: "permission" },
 	);
 	const choice = PRIMARY_TRUST_OPTIONS.find((option) => option.label === selected);
 	return choice === undefined ? undefined : { trusted: choice.trusted, remember: choice.remember };

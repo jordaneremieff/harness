@@ -156,7 +156,7 @@ for (const admitted of [false, true]) {
 		if (admitted)
 			await harness.commit(
 				(tx) =>
-					f.host.root().submit(tx, {
+					f.host.root().admit(tx, {
 						type: "input",
 						requestId: input.requestId,
 						content: input.message,

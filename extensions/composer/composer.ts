@@ -67,19 +67,20 @@ function assistantCost(message: Message): number {
 function historyPush(history: string[], text: string): boolean {
 	const bytes = Buffer.byteLength(text);
 	if (!text.trim() || /\p{Cs}/u.test(text) || bytes > HISTORY_BYTES || history.at(-1) === text) return false;
+	const existing = history.indexOf(text);
+	if (existing !== -1) history.splice(existing, 1);
 	history.push(text);
 	let total = history.reduce((sum, entry) => sum + Buffer.byteLength(entry), 0);
 	while (total > HISTORY_BYTES || history.length > 100) total -= Buffer.byteLength(history.shift() ?? "");
 	return true;
 }
-function userText(message: { role: string; content?: unknown }): string | undefined {
+function userTextParts(message: { role: string; content?: unknown }): string[] | undefined {
 	if (message.role !== "user") return undefined;
-	if (typeof message.content === "string") return message.content;
+	if (typeof message.content === "string") return [message.content];
 	if (!Array.isArray(message.content)) return undefined;
 	return message.content
 		.filter((part) => part?.type === "text" && typeof part.text === "string")
-		.map((part) => part.text)
-		.join("\n");
+		.map((part) => part.text);
 }
 
 /**
@@ -334,7 +335,8 @@ class Connection {
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "message") continue;
 			this.state.cost += assistantCost(entry.message);
-			const text = userText(entry.message);
+			// Use the same prompt text that Pi supplies to addToHistory when it redraws this branch.
+			const text = userTextParts(entry.message)?.join("");
 			if (text !== undefined) historyPush(this.history, text);
 		}
 		this.bridge = new ComposerBridge(this.record.id, PATHS, {
@@ -750,7 +752,7 @@ class Connection {
 		this.refreshContext();
 	}
 	userMessage(message: { role: string; content?: unknown }): void {
-		const text = userText(message)?.trim();
+		const text = userTextParts(message)?.join("\n").trim();
 		const index = this.state.queued.findIndex((entry) => entry.text === text);
 		if (index !== -1) this.update({ queued: this.state.queued.filter((_entry, i) => i !== index) });
 	}

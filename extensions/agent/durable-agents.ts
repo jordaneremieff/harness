@@ -450,7 +450,7 @@ function structuredControl<P extends Schema, D extends JsonValue>(
 		structuredOutputSchema: schema,
 		execute: async (args, api, context) => {
 			const result = await tool.execute(args, api, context);
-			if (result.sleep !== undefined || result.wait !== undefined || result.isError) return result;
+			if (result.kind !== undefined || result.isError) return result;
 			const text = result.output?.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n") ?? "";
 			const native = nativeStructuredObservation(schema, result.details, text);
 			return { ...result, output: native.output, structuredOutput: native.structuredOutput };
@@ -1309,7 +1309,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					},
 					now,
 					"retained",
-					async () => (admitted = await conversation.submit(tx, draft)),
+					async () => (admitted = await conversation.admit(tx, draft)),
 				);
 				if (admitted === undefined) throw new Error("The input admission did not run");
 				await confirmDispatch(tx, api.conversationId, request.requestId, {
@@ -2319,7 +2319,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				return errorResult(briefRefusal(inputProblems, sourceProblems));
 
 			const receipt = await dispatchBrief(args, rendered.text, api, context);
-			if (receipt.sleep !== undefined || receipt.wait !== undefined) return receipt;
+			if (receipt.kind !== undefined) return receipt;
 			return { ...receipt, details: { ...receipt.details, brief: rendered.brief } };
 		},
 	});

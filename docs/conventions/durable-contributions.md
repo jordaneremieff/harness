@@ -290,6 +290,13 @@ surface. A model answer or an idle root does not prove publication succeeded.
   Otherwise use `"unsafe"`; the model then receives an interrupted result. A
   metered, billed, rate-limited, or account-bound request counts as an external
   effect, even when it only reads.
+- Tool registrations return results without a `kind`. A tool that parks returns
+  `{ kind: "sleep", checkpoint?, until?, signals? }` or
+  `{ kind: "wait", checkpoint?, on, policy }`. Check `kind` before a wrapper
+  changes a result; pass the base tool's park through unchanged. A tool wrapper
+  uses `kind: "tool"` and targets a tool name; a section wrapper uses
+  `kind: "section"` and targets a section key. Use `wrapTool()` for a known tool
+  registration and `wrapSection()` for a section.
 - Conversation state that must survive process loss lives in Durable documents.
   Prefix each document kind with the contribution name, for example
   `memory.index`. A hook decision that must not change on replay uses
@@ -337,7 +344,11 @@ surface. A model answer or an idle root does not prove publication succeeded.
   necessarily unavailable.
 - Use native hooks for their native meanings: `beforeTool` and `afterTool` on
   `ToolTask`; `beforeRequest`, `afterResponse`, `onYield`, and `afterTools` on
-  `GenerationTask`; `beforeCompact` on `CompactionTask`.
+  `GenerationTask`; `beforeCompact` on `CompactionTask`. An `onYield` decision
+  has `kind: "continue"` with `continue`, or `kind: "tasks"` with `tasks`.
+  A `beforeCompact` decision has `kind: "decline"` or `kind: "summary"` with
+  `summary`. Returning `undefined` leaves either decision to the runtime or
+  the next hook.
 - The host installs its built-in extensions first and contributions after them,
   in load order. A contribution tool with a built-in tool's name replaces the
   built-in where both are selected.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { completionContent, completionTail, type JobCompletionDetails } from "./completion.ts";
+import { COMPLETION_LIMITS, completionContent, completionTail, type JobCompletionDetails } from "./completion.ts";
 import { pageLogs } from "./manager.ts";
 
 test("completion retains the actual final line across every page of the tail window", () => {
@@ -10,6 +10,16 @@ test("completion retains the actual final line across every page of the tail win
 	assert.equal(tail.text.split("\n").at(-1), "LAST");
 	assert.equal(tail.omitted, true);
 	assert.equal(tail.outputBytes, output.length);
+});
+
+test("completion keeps the end of an overlong line before blank lines without splitting UTF-8", () => {
+	const suffix = "Ω final evidence\n\n";
+	const output = Buffer.from(`${"🧪".repeat(COMPLETION_LIMITS.tailBytes)}${suffix}`);
+	const tail = completionTail((cursor) => pageLogs("long", output, output.length, false, cursor));
+	assert.equal(tail.outputBytes, output.length);
+	assert.equal(tail.omitted, true);
+	assert.ok(Buffer.byteLength(tail.text) <= COMPLETION_LIMITS.tailBytes);
+	assert.match(tail.text, /^🧪+Ω final evidence\n$/u);
 });
 
 test("a nonadvancing log reader fails instead of looping or returning a false tail", () => {
