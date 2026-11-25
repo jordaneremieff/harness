@@ -14,6 +14,7 @@ import {
 import register from "./index.ts";
 import { DurableHost } from "./durable-host.ts";
 import { DurableObservation } from "./durable-observation.ts";
+import { eventLog } from "./host-fixture.mts";
 import { fixtureRuntime, fixtureRegistry, hostOptions } from "./durable-host-fixture.mts";
 import { AgentManager } from "./manager.ts";
 import type { HostConnection } from "./host-client.ts";
@@ -394,7 +395,7 @@ test("session start restores sent-work figures in a fresh manager and admissions
 		};
 		const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
 		const tools = new Map<string, ToolDefinition>();
-		const statuses: Array<string | undefined> = [];
+		const statuses = eventLog<string | undefined>();
 		await register({
 			events: { emit() {}, on: () => () => {} },
 			on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => {
@@ -417,6 +418,7 @@ test("session start restores sent-work figures in a fresh manager and admissions
 		} as unknown as ExtensionContext;
 		await events.get("session_start")?.({ reason: "resume" }, ctx);
 		assert.equal(reads, 1, "all session entries are scanned once at start");
+		await statuses.waitFor((rows) => rows.includes("○ agents: 0/1"));
 		assert.equal(statuses.at(-1), "○ agents: 0/1");
 		const page = await manager.dashboardPage();
 		manager.catalog.page = async () => {
@@ -468,7 +470,7 @@ test("session start restores sent-work figures in a fresh manager and admissions
 	owners.managers.set(root, manager);
 	session = SessionManager.open(path, join(root, "sessions"));
 	let startHandler: ((event: unknown, ctx: ExtensionContext) => Promise<void>) | undefined;
-	const statuses: Array<string | undefined> = [];
+	const statuses = eventLog<string | undefined>();
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: (name: string, handler: typeof startHandler) => {
@@ -489,6 +491,7 @@ test("session start restores sent-work figures in a fresh manager and admissions
 		ui: { setStatus: (_key: string, value: string | undefined) => statuses.push(value) },
 		modelRegistry: { getAll: () => [] },
 	} as unknown as ExtensionContext);
+	await statuses.waitFor((rows) => rows.includes("○ agents: 0/2"));
 	assert.equal(
 		statuses.at(-1),
 		"○ agents: 0/2",

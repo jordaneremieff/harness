@@ -651,9 +651,7 @@ async function launchAttempt(
 
 async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions, deadline: number): Promise<Link> {
 	const paths = hostPaths(metadata);
-	const attempt = await launchAttempt(metadata, options, deadline);
-	// Another process is starting this storage's runner; its endpoint is the one to reach.
-	if (attempt === undefined) return attachForeignLaunch(metadata, deadline, options.signal);
+	const attempt = await awaitLaunchAttempt(metadata, options, deadline);
 	if ("client" in attempt) return attempt;
 	try {
 		await withinBudget(attempt.ready, deadline, options.signal);
@@ -727,49 +725,20 @@ async function reservedLaunch(
 	return attempt;
 }
 
-/** How often a launcher that lost the reservation looks for the winner's endpoint. */
-const FOREIGN_LAUNCH_POLL_MS = 100;
-
-/**
- * Reach the runner that another launcher starts. That launcher holds the reservation until its runner is ready or
- * has exited, so a free reservation without an endpoint means that launch ended without a host. An endpoint file
- * that a lost host left does not answer; the wait continues while the reservation is held.
- */
-async function attachForeignLaunch(metadata: HostMetadata, deadline: number, signal?: AbortSignal): Promise<Link> {
-	for (;;) {
-		signal?.throwIfAborted();
-		const link = await foreignLaunchLink(metadata, deadline, signal);
-		if (link !== undefined) return link;
-		if (performance.now() >= deadline)
-			throw new HostReadinessUnavailableError(new Error("Another process is still launching this storage's host"));
-		await delay(Math.min(FOREIGN_LAUNCH_POLL_MS, Math.max(1, deadline - performance.now())), undefined, {
-			...(signal === undefined ? {} : { signal }),
-		});
-	}
-}
-
-/** One look for the foreign launch's endpoint; undefined while that launch still holds the reservation. */
-async function foreignLaunchLink(
+/** A recovery candidate can release the reservation without spawning. Recheck our own demand and the endpoint. */
+async function awaitLaunchAttempt(
 	metadata: HostMetadata,
+	options: HostLaunchOptions,
 	deadline: number,
-	signal?: AbortSignal,
-): Promise<Link | undefined> {
-	const endpoint = lstatSync(hostPaths(metadata).socket, { throwIfNoEntry: false }) !== undefined;
-	const reservation = reserveLaunch(metadata);
-	if (reservation !== undefined) {
-		reservation.release();
-		if (endpoint || lstatSync(hostPaths(metadata).socket, { throwIfNoEntry: false }) !== undefined)
-			return attachLink(metadata, deadline, signal);
-		throw new HostReadinessUnavailableError(
-			new Error("Another process launched this storage's host, and that launch ended without an endpoint"),
-		);
-	}
-	if (!endpoint) return undefined;
-	try {
-		return await attachLink(metadata, deadline, signal);
-	} catch (error) {
-		if (signal?.aborted || performance.now() >= deadline) throw error;
-		return undefined;
+): Promise<OwnedLaunch | Link> {
+	for (;;) {
+		options.signal?.throwIfAborted();
+		const remaining = deadline - performance.now();
+		if (remaining <= 0)
+			throw new HostReadinessUnavailableError(new Error("Timed out waiting for the launch reservation"));
+		const attempt = await launchAttempt(metadata, options, deadline);
+		if (attempt !== undefined) return attempt;
+		await delay(Math.min(100, remaining), undefined, { signal: options.signal });
 	}
 }
 

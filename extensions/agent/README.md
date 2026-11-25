@@ -5323,8 +5323,8 @@ and disabled host checks.
 Before it spawns a runner, a launcher takes the storage's nonblocking launch
 reservation, `.leases/<storageId>.sqlite.launching` beside the storage, and
 holds it until that runner is ready or has exited. A launcher in another
-process that finds the reservation held waits for that runner's endpoint
-instead of starting another.
+process that finds the reservation held waits for release. It attaches to the
+published endpoint or rechecks its own launch demand if no runner started.
 
 Recovery acquisitions run at most two at a time.
 Reads of the hints overlap: a primary registration starts one and each

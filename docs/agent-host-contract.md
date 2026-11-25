@@ -292,7 +292,7 @@ The existing `runtime-contract` member returns the required current hello `{form
 
 A manager records each known link-loss epoch before hint recovery runs. An execution hint does not override a foreign, clean, positively released, or pending-exit refusal. Only the matching failed-child outcome releases that loss hold; a newer successful attachment supersedes older callbacks. Automatic acquisition needs a registered party's execution hint from the source: the registering primary's at its registration, and any registered party's at a catalogue notice, a launch-wait replay, an ended host or the paced read. Under the launch reservation, the launcher checks for an existing endpoint and verifies an outstanding request for the registered recipient. The runner verifies the same owner, conversation and request under the writer lease before opening the execution host. Delivery-only demand acquires an existing endpoint only and otherwise runs the cold delivery writer. `agent_attach` retains explicit acquisition. Source: `extensions/agent/manager.ts`.
 
-Before it spawns a runner, a launcher takes the storage's nonblocking launch reservation (`launchReservationPath`) and holds it until that runner reports readiness or exits. A launcher that finds the reservation held starts no runner: it attaches to the endpoint of the runner that the holder starts, and reports unavailable when that launch ended without one. The reservation is separate from the start gate and the writer leases, which still exclude a second writer. Source: `extensions/agent/{host-protocol,host-client}.ts`.
+Before it spawns a runner, a launcher takes the storage's nonblocking launch reservation (`launchReservationPath`) and holds it until that runner reports readiness or exits. A launcher that finds the reservation held starts no runner: it attaches to the endpoint of the runner that the holder starts, or, if no runner started, rechecks its own demand under the reservation. The reservation is separate from the start gate and the writer leases, which still exclude a second writer. Source: `extensions/agent/{host-protocol,host-client}.ts`.
 
 The cold writer also delivers. Its `deliver` mode takes the writer lease, opens the storage only when no task is `running` or `completing` and no live task carries an abort mark, and never resumes the scheduler. Its delivery driver routes only the named recipient storages' rows, signals no task and submits nothing to the source; it ends after its first complete traversal and publishes the source's recipient hints. A storage with such a task reports `interrupted` and is left unopened, because a writer open recovers that task. Source: `extensions/agent/{cold-delivery,cold-stop,durable-runner,durable-runtime}.ts`.
 
@@ -588,8 +588,8 @@ Overrides and remaining members:
 Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema, not a hash of a response instance. The current schema-derived identities are:
 
 ```text
-H-inspect       8b1c0f056e34dd2eceb4d2e4108dedc31325b5d96a30daccf457f00739be9ef7
-H-status        23f657fb5139ea7fffef3c57796b84fddaa73a1c51efcfc34d5dcde288cabf24
+H-inspect       47284b1b6331c982372b1439980d53f7eded2b803089cade05025cb396526301
+H-status        baea93061420be1f3db57c37ef2f9e596f0d6b28facdf033a89edd6ca4f40045
 H-list          1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6
 H-dashboard     4c8bb08f1d45d17bbd2233fc90851992ec5440b58a6b99c3f77080d001f4866e
 H-profile-read  396c6aa90325ba4f92e72f38538561c810d31eb6dde087341591b34af479400b

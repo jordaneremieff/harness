@@ -10,6 +10,7 @@ import {
 	type ExtensionToolContext,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { eventLog } from "./host-fixture.mts";
 import register from "./index.ts";
 import { ORDINARY_CONTINUITY_ENTRY } from "./continuity-facts.ts";
 import { AgentManager } from "./manager.ts";
@@ -131,7 +132,7 @@ async function cellFixture(t: TestContext, providerBlocked = false) {
 		getThinkingLevel: () => "off",
 		appendEntry: (kind: string, data: unknown) => session.appendCustomEntry(kind, data),
 	} as unknown as ExtensionAPI);
-	const statuses: Array<string | undefined> = [];
+	const statuses = eventLog<string | undefined>();
 	const ui = {
 		setStatus: (_key: string, value: string | undefined) => statuses.push(value),
 		theme: { fg: (color: string, text: string) => `<${color}>${text}` },
@@ -143,6 +144,7 @@ async function cellFixture(t: TestContext, providerBlocked = false) {
 		modelRegistry: { getAll: () => [], find: () => undefined },
 	} as unknown as ExtensionContext;
 	for (const handler of events.get("session_start") ?? []) await handler({ reason: "startup" }, ctx);
+	await statuses.waitFor((rows) => rows.includes("○ agents: 0/1"));
 	const call = (name: string, id: string, input: Record<string, unknown>) =>
 		tools.get(name)?.execute(id, input, new AbortController().signal, undefined, ctx as ExtensionToolContext);
 	/** Other turn_end handlers expect a full boundary event; only the cell refresh matters here. */

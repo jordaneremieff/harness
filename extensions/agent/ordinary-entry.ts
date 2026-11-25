@@ -475,8 +475,12 @@ function ordinaryThreadSources(ctx: ExtensionContext): ThreadNoticeSource<Contex
 	return sources;
 }
 
-function isFreshPrimary(reason: string, ctx: ExtensionContext): boolean {
-	return (reason === "new" || reason === "startup") && !sessionFileSaved(ctx);
+function isFreshPrimary(reason: string, ctx: ExtensionContext, retained: readonly { type: string }[]): boolean {
+	return (
+		(reason === "new" || reason === "startup") &&
+		!sessionFileSaved(ctx) &&
+		!retained.some((entry) => entry.type === "message")
+	);
 }
 
 function sessionFileSaved(ctx: ExtensionContext): boolean {
@@ -1783,7 +1787,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		if (ctx.sessionManager.getSessionFile() !== undefined && !sessionFileSaved(ctx)) unsavedSessions.add(sessionId);
 		else unsavedSessions.delete(sessionId);
 		await getManager().registerPrimary(sessionId, {
-			freshSession: isFreshPrimary(_event.reason, ctx),
+			freshSession: isFreshPrimary(_event.reason, ctx, retained),
 			sentWork: retainedSentWork(retained),
 			retainSentWork: (sessionId) => pi.appendEntry(SENT_WORK_ENTRY, { sessionId }),
 			retainContinuity: (fact) => {

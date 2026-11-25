@@ -14,6 +14,7 @@ import type { TUI } from "@earendil-works/pi-tui";
 import type { AgentDashboard } from "./dashboard.ts";
 import { page, keys, theme } from "./dashboard-test-fixture.mts";
 import registerAgentExtension from "./index.ts";
+import { eventLog } from "./host-fixture.mts";
 import { AgentManager } from "./manager.ts";
 import { MANAGER_CONTRACT } from "./version-contract.ts";
 
@@ -81,12 +82,16 @@ it("serves only roster facts already observed by a footer refresh without lookup
 		coverage: { complete: true, omitted: 0 },
 	});
 	assert.deepEqual(manager.observedToolCardRows(), [], "unobserved catalog data stays out of the lookup");
+	const statuses = eventLog<string | undefined>();
 	await manager.registerPrimary("owner", {
 		send: () => {},
-		status: () => {},
+		status: (value) => {
+			statuses.push(value);
+		},
 		signal: new AbortController().signal,
 		cwd: root,
 	});
+	await statuses.waitForCount(1);
 	const rows = manager.observedToolCardRows();
 	assert.equal(rows[0]?.name, "Parser review");
 	assert.equal(rows[0]?.model?.provider, "fixture");
