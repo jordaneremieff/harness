@@ -5211,9 +5211,14 @@ removes the file when no parked row remains. Terminal rows never enter this
 projection. Publishing the sidecar first preserves wake discovery if the writer
 crashes before the marker clears.
 
-Startup recovery reads the marker and matching wake sidecars within existing
-bounded catalog pages; it does not enumerate the wake directory or open, copy,
-or status-probe every storage. Recovery acquisitions run at most two at a time.
+Startup recovery checks the marker and the matching wake sidecar of every
+catalog record in the manager's shared inventory, which reads every record, so
+neither the number of retained storages nor a record's place in the listing
+leaves a due storage unrecovered. It does not enumerate the wake directory or
+open, copy, or status-probe a storage. A record that cannot be read is not
+checked; the status overview then reports a `startup` failure with their count
+until a later scan reads every record. Recovery acquisitions run at most two at
+a time.
 Reads of the due records overlap: a primary registration starts one and each
 catalog notice starts one, and their batches run in turn. An acquisition that
 settled after a read began completes that read's entry for the storage, so reads

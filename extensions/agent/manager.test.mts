@@ -3371,6 +3371,44 @@ for (const [resolver, locations] of [
 		);
 	});
 
+it("recovers a due record that sorts after hundreds of other catalog records", { timeout: 60000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const acquired: string[] = [];
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			locations: immediateLocations,
+			acquire: async (metadata) => {
+				acquired.push(metadata.storageId);
+				return fakeConnection(metadata, async (method) => {
+					if (method !== "recovery-state") return {};
+					manager.catalog.markRecoveryDue(metadata.storageId, false);
+					return { workPending: false, deliveriesPending: false, deliveriesActive: false };
+				});
+			},
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+		}),
+	);
+	t.after(() => manager.close());
+	const records = Array.from({ length: 400 }, (_, index) => createRecord(manager, root, `owner-${index}`));
+	const last = records
+		.map((record) => record.storageId)
+		.sort()
+		.at(-1);
+	assert.ok(last);
+	manager.catalog.markRecoveryDue(last, true);
+	const primary = fakePrimary(new AbortController().signal);
+	await manager.registerPrimary("owner-1", primary.client);
+	assert.deepEqual(acquired, [last], "the due record recovers although 399 records sort before it");
+	const overview = (await manager.status()) as { failures: Array<{ storageId: string }> };
+	assert.equal(
+		overview.failures.some(({ storageId }) => storageId === "startup"),
+		false,
+		"a scan that read every record reports no incomplete recovery",
+	);
+});
+
 it("tries a failing launch once for two reads that overlap, and again for a later read", {
 	timeout: 60000,
 }, async (t) => {

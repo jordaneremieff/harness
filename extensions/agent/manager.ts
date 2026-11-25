@@ -2558,25 +2558,28 @@ export class AgentManager {
 		const order = this.recoveryOrder.begin();
 		try {
 			const due: CatalogRecord[] = [];
+			// The inventory has already read every catalog record, so every record is checked: a due storage is never
+			// left behind because of its position in the listing or the number of retained storages.
 			const inventory = await this.inventory.read(read);
-			let visited = 0;
-			let complete = true;
+			let unreadable = 0;
+			let stopped = false;
 			for (const fact of inventory.facts.values()) {
-				if (this.stopping(owner) || visited >= MAX_INVENTORY_PAGES * 20) {
-					complete = false;
+				if (this.stopping(owner)) {
+					stopped = true;
 					break;
 				}
 				if (!fact) {
-					complete = false;
+					unreadable++;
 					continue;
 				}
-				visited++;
 				if (this.recoveryCandidate(fact.record, registeringPrimary)) due.push(fact.record);
 			}
-			if (!complete)
+			// A stopped scan proves nothing about the records it did not reach, so it leaves the reported state alone.
+			if (!stopped && unreadable === 0) this.failures.delete("startup");
+			else if (!stopped)
 				this.failures.set(
 					"startup",
-					"Startup recovery reached its inventory bound or unreadable metadata; use agent_list for the remaining storage",
+					`Recovery could not read the catalog record of ${unreadable} ${unreadable === 1 ? "storage" : "storages"}, so it did not check whether they need recovery; agent_list names them`,
 				);
 			await this.enqueueRecovery(due, owner, order.at, registeringPrimary);
 		} finally {
