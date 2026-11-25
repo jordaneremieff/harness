@@ -209,8 +209,9 @@ Answer in chat, not as a transcript, in this order:
    and routes that failed and how.
 7. A date or event after which the answer goes stale.
 
-Keep the candidate ledger and long extracts in scratch and name the path. Do
-not claim more than the grades support.
+Keep the candidate ledger and long extracts in scratch and give the absolute
+path, because a reader cannot open a relative one. Do not claim more than the
+grades support.
 
 ## Helpers
 
