@@ -106,12 +106,27 @@ one run and resets at `agent_settled` and `session_start`.
 
 ### Footer status and terminal records
 
-While at least one job of the session runs, the footer shows `● jobs: N`
-through `ctx.ui.setStatus("jobs", ...)`; the status clears when none runs. The
-filled dot follows the [footer status convention](../../docs/conventions/status-keys.md):
-each job's completion starts the session's next turn, so the dot marks work
-that is still out. The interactive terminal draws it in the accent colour.
-Sessions without a UI show no status.
+From the session's first job on, the footer shows `● jobs: <running>/<started>`
+through `ctx.ui.setStatus("jobs", ...)`: the jobs that run now, out of every
+job that the session started. The entry stays for the rest of the session. At
+each session start (startup, reload, resume, new session or fork) the extension
+counts the accepted `bash` job results on every branch of the session file, so
+the count goes on across reloads and resumes, while jobs themselves stop at
+shutdown. The dot follows the
+[footer status convention](../../docs/conventions/status-keys.md), because each
+job's completion starts the session's next turn:
+
+- yellow and filled (`●`, theme colour `warning`) while a job runs;
+- red and filled (`●`, theme colour `error`) when no job runs and a job that
+  ended since jobs last stopped failed, timed out or was lost; the next job
+  after that starts a new run of jobs, whose dot is yellow again;
+- grey and hollow (`○`, theme colour `muted`) otherwise. A cancelled job is
+  the caller's own act and does not turn the dot red.
+
+Only the interactive terminal draws the colours; RPC hosts receive the plain
+glyphs. A restored count carries no outcome of the earlier runtime's jobs, so
+the dot starts grey. Sessions without a UI show no status, and shutdown clears
+the entry.
 
 In the interactive TUI, each job also becomes a child record in the terminal's
 program status records, through the generic

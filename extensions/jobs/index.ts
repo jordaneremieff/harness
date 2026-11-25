@@ -7,6 +7,7 @@ import {
 	type BashToolOptions,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { arr, bool, int, nul, num, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
 import { createJobActivity, type Delivery } from "./activity.ts";
@@ -151,6 +152,16 @@ function textResult<T extends Static<typeof JobsOutputSchema>>(details: T, nextS
 	};
 }
 
+/** The id of the job that an accepted background `bash` result carries; undefined for any other session entry. */
+function startedJobId(entry: SessionEntry): string | undefined {
+	if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "bash")
+		return undefined;
+	const details: unknown = entry.message.details;
+	const job = typeof details === "object" && details !== null ? (details as { job?: unknown }).job : undefined;
+	const id = typeof job === "object" && job !== null ? (job as { id?: unknown }).id : undefined;
+	return typeof id === "string" ? id : undefined;
+}
+
 /** Print and JSON runs answer once and stop unfinished jobs, so only sessions that offer `jobs_yield` get a next step. */
 const offersYield = (ctx: ExtensionContext) => ctx.mode === "tui" || ctx.mode === "rpc";
 
@@ -260,6 +271,16 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 		return ids;
 	}
 	const retained = (ctx: ExtensionContext, jobId: string) => retainedCompletions(ctx).has(jobId);
+
+	/** Jobs that earlier runtimes of this session started: the accepted bash results on every branch of the session. */
+	function startedJobs(ctx: ExtensionContext): number {
+		const ids = new Set<string>();
+		for (const entry of ctx.sessionManager.getEntries()) {
+			const id = startedJobId(entry);
+			if (id !== undefined) ids.add(id);
+		}
+		return ids.size;
+	}
 
 	/**
 	 * Moves awaiting records to `added` when their message is retained. Pi appends messages that start no turn,
@@ -384,6 +405,10 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 		renderShell: yieldDisplay?.renderShell,
 	});
 
+	// The footer entry counts the session's jobs from its first one, across reloads and resumes.
+	pi.on("session_start", async (_event, ctx) => {
+		if (ctx.hasUI) activity.restore(ctx, startedJobs(ctx));
+	});
 	pi.on("agent_start", async (_event, ctx) => {
 		lastRunAborted = false;
 		streak.end();

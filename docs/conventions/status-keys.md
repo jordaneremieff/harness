@@ -23,7 +23,7 @@ key, and a consumer must not parse a sibling's status text.
 |---|---|---|---|
 | `agent` | [Agent roster and coverage](../../extensions/agent/README.md#roster-and-coverage) | A dot for work that this session sent with the agent tools, then working and total agents created by the current primary session, including agents they create, with observed native cost. Each primary receives its own figures. | No agents in that session scope and no such work out, primary lifecycle cleanup, or manager close. Retained idle agents remain in scope. |
 | `explorer` | [Explorer app update](../../extensions/explorer/README.md#open-explorer) | The Explorer native app update is active. | Update completion or session shutdown. |
-| `jobs` | [Background job status](../../extensions/jobs/README.md#footer-status-and-terminal-records) | A filled dot, then the number of background commands that still run in this session. | The last job settles or is cancelled, or the session shuts down. |
+| `jobs` | [Background job status](../../extensions/jobs/README.md#footer-status-and-terminal-records) | A dot, then the background commands that run now out of every one that the session started, from its first job on. | Session shutdown; the next runtime of the session shows it again. |
 | `stash` | [Background distillation](../../extensions/stash/README.md#background-distillation) | A `/stash new` request is starting. The status covers admission, not the work that follows. | The last pending admission returns or fails, or the session shuts down. |
 
 ## Rules
@@ -38,10 +38,17 @@ key, and a consumer must not parse a sibling's status text.
 - Text stays short and bounded: the footer is width-constrained, and the
   statusline sanitizes display text.
 - A key that reports work which will come back and start the session's next
-  turn leads its text with a filled dot (`●`, theme colour `accent`) while
-  such work is out. A key whose text stays when no such work is out leads it
-  with a hollow dot (`○`, theme colour `muted`). Colour is drawn only in the
-  interactive terminal; other hosts receive the plain glyph. Each publisher
-  decides with its own code which of its work counts.
+  turn leads its text with a dot whose colour says what to do, like a traffic
+  light:
+  - yellow filled dot (`●`, theme colour `warning`): such work is out and will
+    come back by itself; wait;
+  - red filled dot (`●`, theme colour `error`): such work failed, or waits on
+    something that needs intervention; look;
+  - grey hollow dot (`○`, theme colour `muted`): no such work is out; the
+    next step is the operator's.
+
+  Colour is drawn only in the interactive terminal; other hosts receive the
+  plain glyph. Each publisher decides with its own code which of its work
+  counts and when it shows red.
 - A new key is added to this registry by its publisher in the same change
   that introduces it.

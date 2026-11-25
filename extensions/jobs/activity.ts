@@ -2,9 +2,9 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompletionJob } from "./completion.ts";
 
 /**
- * Job activity outside the transcript: a footer status while jobs run, and one child record per job in the
- * terminal's program status records (OSC 7501, a generic terminal protocol). Records carry only facts of the job
- * record, never command text or output, because terminals can forward them to notifications and other devices.
+ * Job activity outside the transcript: a footer status from the session's first job on, and one child record per job
+ * in the terminal's program status records (OSC 7501, a generic terminal protocol). Records carry only facts of the
+ * job record, never command text or output, because terminals can forward them to notifications and other devices.
  */
 
 export const ACTIVITY_LIMITS = Object.freeze({
@@ -108,9 +108,18 @@ export function settledMessage(job: CompletionJob, delivery?: Delivery): string 
 	return parts.join(" · ");
 }
 
-/** The footer entry while jobs run: a filled dot, because each completion starts the next turn, then the count. */
-export function footerText(running: number, dot = "●"): string | undefined {
-	return running > 0 ? `${dot} jobs: ${running}` : undefined;
+/**
+ * The state that the footer dot shows: `running` while a job runs, because its completion starts the next turn;
+ * `failed` when no job runs and a job that ended since jobs last stopped failed, timed out or was lost; `quiet`
+ * otherwise.
+ */
+export type FooterDot = "running" | "failed" | "quiet";
+const DOT_GLYPH: Record<FooterDot, string> = { running: "●", failed: "●", quiet: "○" };
+const DOT_COLOUR = { running: "warning", failed: "error", quiet: "muted" } as const;
+
+/** The footer entry from the session's first job on: the dot, then the jobs that run out of every job started. */
+export function footerText(running: number, started: number, dot: string): string | undefined {
+	return started > 0 ? `${dot} jobs: ${running}/${started}` : undefined;
 }
 
 export interface ActivityOutput {
@@ -138,22 +147,37 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 	const settled = new Map<string, { id: string; job: CompletionJob; delivery?: Delivery }>();
 	let footer: FooterContext | undefined;
 	let closed = false;
+	/** Jobs that this session started, including those before this runtime. */
+	let started = 0;
+	/** Whether a job that ended since jobs last stopped failed, timed out or was lost. */
+	let failed = false;
 
 	const terminalEnabled = (ctx: FooterContext) =>
 		ctx.mode === "tui" && output.isTTY() && output.env().PI_PROGRAM_STATUS !== "0";
 	const write = (record: StatusRecord) => output.write(formatStatusRecord(record));
 	const showFooter = () => {
 		if (!footer?.hasUI) return;
+		const state: FooterDot = running.size > 0 ? "running" : failed ? "failed" : "quiet";
 		// Only the interactive terminal draws colour; other hosts receive the plain dot.
-		const dot = footer.mode === "tui" ? footer.ui.theme.fg("accent", "●") : "●";
-		footer.ui.setStatus(FOOTER_STATUS_KEY, footerText(running.size, dot));
+		const dot = footer.mode === "tui" ? footer.ui.theme.fg(DOT_COLOUR[state], DOT_GLYPH[state]) : DOT_GLYPH[state];
+		footer.ui.setStatus(FOOTER_STATUS_KEY, footerText(running.size, started, dot));
 	};
 
 	return {
+		/** Shows the entry of a session whose earlier runtimes started jobs; their outcomes are not known again. */
+		restore(ctx: FooterContext, startedBefore: number): void {
+			if (closed) return;
+			footer = ctx;
+			started += Math.max(0, startedBefore);
+			showFooter();
+		},
 		start(job: CompletionJob, ctx: FooterContext): void {
 			if (closed) return;
 			footer = ctx;
 			const id = terminalEnabled(ctx) ? recordId(job.id) : undefined;
+			// The first job after all jobs stopped starts a new run of jobs; the failure of an earlier run is history.
+			if (running.size === 0) failed = false;
+			started += 1;
 			running.set(job.id, id);
 			if (id) write({ id, state: "working", title: RECORD_TITLE, msg: "Background job running" });
 			showFooter();
@@ -162,6 +186,7 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 			if (closed || !running.has(job.id)) return;
 			const id = running.get(job.id);
 			running.delete(job.id);
+			if (job.status !== "succeeded") failed = true;
 			if (id) {
 				write({ id, state: settledState(job), title: RECORD_TITLE, msg: settledMessage(job, delivery) });
 				settled.set(job.id, { id, job, delivery });
@@ -228,14 +253,17 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 			if (id) write({ id, state: "clear" });
 			showFooter();
 		},
-		/** Clears records of jobs that still run; settled records stay for the terminal to show or clear. */
+		/**
+		 * Clears records of jobs that still run and the footer entry; settled records stay for the terminal to show or
+		 * clear. The next runtime of the session shows the entry again.
+		 */
 		shutdown(ctx?: FooterContext): void {
 			if (closed) return;
 			closed = true;
 			for (const id of running.values()) if (id) write({ id, state: "clear" });
 			running.clear();
 			if (ctx) footer = ctx;
-			showFooter();
+			if (footer?.hasUI) footer.ui.setStatus(FOOTER_STATUS_KEY, undefined);
 		},
 	};
 }

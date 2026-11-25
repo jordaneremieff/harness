@@ -140,8 +140,8 @@ describe("job activity presenter", () => {
 		activity.start(job(), ctx);
 		activity.start(job({ id: "2b4e28ba-2fa1-11d2-883f-0016d3cca427" }), ctx);
 		assert.deepEqual(statuses, [
-			["jobs", "<accent>● jobs: 1"],
-			["jobs", "<accent>● jobs: 2"],
+			["jobs", "<warning>● jobs: 1/1"],
+			["jobs", "<warning>● jobs: 2/2"],
 		]);
 		assert.equal(
 			writes[0],
@@ -163,8 +163,8 @@ describe("job activity presenter", () => {
 		);
 		assert.match(writes[3], /^\x1b\]7501;state=error:id=jobs\/2b4e28ba/u);
 		assert.deepEqual(statuses.slice(2), [
-			["jobs", "<accent>● jobs: 1"],
-			["jobs", undefined],
+			["jobs", "<warning>● jobs: 1/2"],
+			["jobs", "<error>● jobs: 0/2"],
 		]);
 		activity.settle(job({ status: "succeeded", endedAt: 1 }), "added");
 		assert.equal(writes.length, 4, "a second settlement of one job writes nothing");
@@ -235,7 +235,7 @@ describe("job activity presenter", () => {
 		activity.start(job(), ctx);
 		activity.cancel(job({ status: "cancelled", endedAt: 1 }));
 		assert.equal(writes.at(-1), formatStatusRecord({ id: RECORD, state: "clear" }));
-		assert.deepEqual(statuses.at(-1), ["jobs", undefined]);
+		assert.deepEqual(statuses.at(-1), ["jobs", "<muted>○ jobs: 0/1"], "a cancellation is the caller's own act");
 		activity.start(job({ id: "settled" }), ctx);
 		activity.settle(job({ id: "settled", status: "succeeded", exitCode: 0, endedAt: 1 }), "added");
 		activity.start(job({ id: "still-running" }), ctx);
@@ -273,7 +273,59 @@ describe("job activity presenter", () => {
 		assert.deepEqual(statuses, []);
 		const rpc = fixture({ mode: "rpc", hasUI: true });
 		rpc.activity.start(job(), rpc.ctx);
-		assert.deepEqual(rpc.statuses, [["jobs", "● jobs: 1"]], "a host without the terminal gets the plain dot");
+		assert.deepEqual(rpc.statuses, [["jobs", "● jobs: 1/1"]], "a host without the terminal gets the plain dot");
+		rpc.activity.settle(job({ status: "succeeded", exitCode: 0, endedAt: 1 }), "added");
+		assert.deepEqual(rpc.statuses.at(-1), ["jobs", "○ jobs: 0/1"]);
+	});
+});
+
+describe("footer entry", () => {
+	const ids = ["a", "b", "c", "d"].map((letter) => `${letter}b4e28ba-2fa1-11d2-883f-0016d3cca427`);
+	const end = (id: string, status: CompletionJob["status"]) => job({ id, status, exitCode: 0, endedAt: 1 });
+
+	it("stays from the first job and turns red when jobs stop after a failure, until the next run of jobs", () => {
+		const { activity, statuses, ctx } = fixture();
+		activity.start(job({ id: ids[0] }), ctx);
+		activity.settle(end(ids[0], "failed"), "added");
+		assert.deepEqual(statuses.at(-1), ["jobs", "<error>● jobs: 0/1"]);
+		activity.start(job({ id: ids[1] }), ctx);
+		assert.deepEqual(statuses.at(-1), ["jobs", "<warning>● jobs: 1/2"], "a new run of jobs leaves the old failure");
+		activity.start(job({ id: ids[2] }), ctx);
+		activity.settle(end(ids[2], "timed_out"), "added");
+		assert.deepEqual(statuses.at(-1), ["jobs", "<warning>● jobs: 1/3"], "a job that still runs keeps the dot yellow");
+		activity.settle(end(ids[1], "succeeded"), "added");
+		assert.deepEqual(statuses.at(-1), ["jobs", "<error>● jobs: 0/3"], "a failure in the run shows once jobs stop");
+		activity.start(job({ id: ids[3] }), ctx);
+		activity.settle(end(ids[3], "succeeded"), "added");
+		assert.deepEqual(statuses.at(-1), ["jobs", "<muted>○ jobs: 0/4"]);
+	});
+
+	it("counts a lost job as a failure", () => {
+		const { activity, statuses, ctx } = fixture();
+		activity.start(job(), ctx);
+		activity.settle(end(JOB_ID, "lost"), "added");
+		assert.deepEqual(statuses.at(-1), ["jobs", "<error>● jobs: 0/1"]);
+	});
+
+	it("restores the count of jobs that earlier runtimes of the session started", () => {
+		const { activity, statuses, ctx } = fixture();
+		activity.restore(ctx, 3);
+		assert.deepEqual(statuses, [["jobs", "<muted>○ jobs: 0/3"]]);
+		activity.start(job(), ctx);
+		assert.deepEqual(statuses.at(-1), ["jobs", "<warning>● jobs: 1/4"]);
+		const fresh = fixture();
+		fresh.activity.restore(fresh.ctx, 0);
+		assert.deepEqual(fresh.statuses, [["jobs", undefined]], "a session without jobs shows no entry");
+	});
+
+	it("clears the entry at shutdown", () => {
+		const { activity, statuses, ctx } = fixture();
+		activity.start(job(), ctx);
+		activity.settle(end(JOB_ID, "succeeded"), "added");
+		activity.shutdown(ctx);
+		assert.deepEqual(statuses.at(-1), ["jobs", undefined]);
+		activity.restore(ctx, 5);
+		assert.deepEqual(statuses.at(-1), ["jobs", undefined], "nothing is shown after shutdown");
 	});
 });
 

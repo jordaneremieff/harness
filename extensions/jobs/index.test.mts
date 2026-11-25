@@ -62,6 +62,8 @@ class TestPi {
 	idle = true;
 	/** Session entries on the current branch; an idle send that starts no turn appends at once, as Pi does. */
 	branch: Array<{ type: string; customType?: string; details?: unknown; message?: unknown }> = [];
+	/** Every entry of the session file, on every branch. */
+	entries: Array<{ type: string; message?: unknown }> = [];
 	ctx: ExtensionContext | undefined;
 	registerTool(tool: Tool) {
 		this.tools.set(tool.name, tool);
@@ -162,7 +164,12 @@ function setup(
 		model: { provider: "fixture", id: "deterministic" },
 		thinkingLevel: "low",
 		isIdle: () => pi.idle,
-		sessionManager: { getSessionId: () => "job-session", getSessionFile: () => undefined, getBranch: () => pi.branch },
+		sessionManager: {
+			getSessionId: () => "job-session",
+			getSessionFile: () => undefined,
+			getBranch: () => pi.branch,
+			getEntries: () => pi.entries,
+		},
 	} as unknown as ExtensionContext;
 	pi.ctx = base;
 	const ctx = {
@@ -409,7 +416,7 @@ describe("Command Jobs adapter", () => {
 			const failed = jobOf(await call("bash", { command: "printf hidden; exit 3", background: true }));
 			const id = recordId(failed.id);
 			assert.ok(id);
-			assert.deepEqual(terminal.statuses[0], ["jobs", "<accent>● jobs: 1"]);
+			assert.deepEqual(terminal.statuses[0], ["jobs", "<warning>● jobs: 1/1"]);
 			await completion(pi, failed.id);
 			await delay(0);
 			assert.equal(
@@ -425,7 +432,11 @@ describe("Command Jobs adapter", () => {
 					msg: "Background job failed · exit 3 · < 1 min · completion sent, not in the conversation",
 				}),
 			);
-			assert.deepEqual(terminal.statuses.at(-1), ["jobs", undefined]);
+			assert.deepEqual(
+				terminal.statuses.at(-1),
+				["jobs", "<error>● jobs: 0/1"],
+				"the entry stays and shows the failure",
+			);
 			assert.ok(!terminal.writes.join("").includes(Buffer.from("hidden").toString("base64")));
 
 			const cancelled = jobOf(await call("bash", { command: "sleep 30", background: true }));
@@ -444,6 +455,35 @@ describe("Command Jobs adapter", () => {
 		} finally {
 			await pi.shutdown();
 		}
+	});
+
+	it("counts the jobs that earlier runtimes of the session started from its entries", async () => {
+		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]> };
+		const { pi, call } = setup(root, false, terminal);
+		const result = (toolName: string, details: unknown) => ({
+			type: "message",
+			message: { role: "toolResult", toolName, details },
+		});
+		pi.entries = [
+			result("bash", { job: { id: "earlier-1", status: "running" } }),
+			result("bash", { job: { id: "earlier-2", status: "running" } }),
+			result("bash", { job: { id: "earlier-2", status: "running" } }),
+			result("bash", { exitCode: 0 }),
+			result("jobs", { job: { id: "earlier-1", status: "succeeded" } }),
+			{ type: "custom_message", message: { details: { job: { id: "earlier-3" } } } },
+		];
+		try {
+			await pi.emit("session_start", { reason: "resume" });
+			assert.deepEqual(terminal.statuses, [["jobs", "<muted>○ jobs: 0/2"]]);
+			const job = jobOf(await call("bash", { command: "printf done", background: true }));
+			assert.deepEqual(terminal.statuses.at(-1), ["jobs", "<warning>● jobs: 1/3"]);
+			await completion(pi, job.id);
+			await delay(0);
+			assert.deepEqual(terminal.statuses.at(-1), ["jobs", "<muted>○ jobs: 0/3"]);
+		} finally {
+			await pi.shutdown();
+		}
+		assert.deepEqual(terminal.statuses.at(-1), ["jobs", undefined], "shutdown clears the entry");
 	});
 
 	it("settles the terminal record and the footer when the completion message cannot be sent", async () => {
@@ -467,7 +507,7 @@ describe("Command Jobs adapter", () => {
 					msg: "Background job succeeded · exit 0 · < 1 min · completion not sent",
 				}),
 			);
-			assert.deepEqual(terminal.statuses.at(-1), ["jobs", undefined]);
+			assert.deepEqual(terminal.statuses.at(-1), ["jobs", "<muted>○ jobs: 0/1"]);
 			const writes = terminal.writes.length;
 			await pi.emit("agent_settled", { type: "agent_settled", aborted: false });
 			assert.equal(terminal.writes.length, writes, "a completion that was never sent is not reconsidered");
