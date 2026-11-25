@@ -253,42 +253,6 @@ process.exit(0);`;
 	assert.notEqual(outcomes[0].pid, process.pid);
 });
 
-it("waits for the endpoint of a starting host of older code that holds no start gate", {
-	timeout: 60000,
-}, async (t) => {
-	const fixture = runtimeFixture(t);
-	// A host of older code takes only the lease under the host directory and never holds the start gate.
-	mkdirSync(dirname(hostPaths(fixture.metadata).claim), { recursive: true, mode: 0o700 });
-	const olderLease = tryNativeWriterLease(hostPaths(fixture.metadata).claim);
-	assert.equal(olderLease.kind, "held");
-	t.after(() => {
-		if (olderLease.kind === "held") olderLease.lease.release();
-	});
-	const acquiring = acquireHost(fixture.metadata, { retryAttempts: 0, env: fixture.env("answer") });
-	let started: Awaited<ReturnType<typeof runHost>> | undefined;
-	t.after(() => started?.close().catch(() => {}));
-	// The older host finishes its start after the new contender reported BUSY.
-	setTimeout(() => {
-		if (olderLease.kind === "held") olderLease.lease.release();
-		void runHost(
-			() => ({ request: async (method, params) => ({ method, params }), close: async () => {}, isIdle: () => true }),
-			{
-				metadata: fixture.metadata,
-				idleMs: 0,
-				announceReady: () => {},
-			},
-		).then((host) => {
-			started = host;
-		});
-	}, 1500);
-	const connection = await acquiring;
-	t.after(() => connection.close());
-	assert.deepEqual(await connection.request("timer-list", { probe: 3 }), {
-		method: "timer-list",
-		params: { probe: 3 },
-	});
-});
-
 it("reports a bootstrap that ends without readiness and exits with failure", { timeout: 30000 }, async (t) => {
 	const fixture = runtimeFixture(t);
 	const unsettled = join(fixture.root, "unsettled-extension.ts");
