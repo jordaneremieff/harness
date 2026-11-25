@@ -71,6 +71,36 @@ it("finds the ordinary session at the top of a chain of creating owners", (t) =>
 	assert.throws(() => catalog.ordinaryOwner("not an identity"), /Invalid Durable agent identity/u);
 });
 
+it("counts a record that moved ahead of the cursor between two pages as remaining", async (t) => {
+	const { catalog, input } = fixture(t);
+	const records = Array.from({ length: 6 }, () => catalog.create(input));
+	// The newest record sorts first: records[5] leads and records[0] is last.
+	for (const [index, record] of records.entries()) utimesSync(catalog.path(record.storageId), 100 + index, 100 + index);
+	const observation = new CatalogObservation(catalog);
+	const ids = (page: ReturnType<typeof projectCatalogPriority>) => page.items.map((item) => item.record.storageId);
+	const first = projectCatalogPriority(await observation.read(), { limit: 4 });
+	assert.deepEqual(
+		ids(first),
+		[5, 4, 3, 2].map((index) => records[index].storageId),
+	);
+	assert.ok(first.nextCursor);
+	const cursor = first.nextCursor;
+
+	const steady = projectCatalogPriority(await observation.read(), { cursor, limit: 4 });
+	assert.deepEqual(ids(steady), [records[1].storageId, records[0].storageId]);
+	assert.deepEqual([steady.coverage.remaining, steady.nextCursor], [0, null]);
+
+	// One record is published again and one is created: both now sort before the cursor.
+	utimesSync(catalog.path(records[0].storageId), 200, 200);
+	utimesSync(catalog.path(catalog.create(input).storageId), 201, 201);
+	observation.invalidate();
+	const moved = projectCatalogPriority(await observation.read(), { cursor, limit: 4 });
+	assert.deepEqual(ids(moved), [records[1].storageId]);
+	assert.equal(moved.nextCursor, null, "no later page returns a record before the cursor");
+	assert.equal(moved.coverage.remaining, 2, "the two records that no page returned stay in the remaining count");
+	assert.equal(moved.coverage.remainingRows, 2);
+});
+
 it("shares raw record and claim reads while preserving caller-specific priorities and cursors", async (t) => {
 	const { catalog, input } = fixture(t);
 	const records = [
