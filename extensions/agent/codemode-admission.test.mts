@@ -441,43 +441,33 @@ it("reports no admission failure for a successful run or a storage failure", { t
 	assert.deepEqual(failures, []);
 });
 
-it("refuses execution at start with a refusal found before the sandbox was requested", { timeout: 5000 }, async () => {
-	const failures: unknown[] = [];
-	let launched = false;
-	const sandbox = new QueuedCodemodeSandbox(
-		{
-			...admission(),
-			refusal: {
-				code: "CODEMODE_ADMISSION_TIMEOUT",
-				message: "The codemode script timed out before worker admission.",
+for (const [code, kind, message] of [
+	["CODEMODE_ADMISSION_TIMEOUT", "timeout", "The codemode script timed out before worker admission."],
+	["CODEMODE_DISCOVERY_FAILED", "sandbox", "MCP discovery could not finish: docs did not answer"],
+] as const)
+	it(`reports ${code} only when execution requests a sandbox`, { timeout: 5000 }, async () => {
+		const failures: unknown[] = [];
+		let launched = false;
+		const sandbox = new QueuedCodemodeSandbox(
+			{ ...admission(), refusal: { code, message } },
+			new CodemodeWorkerQueue(1),
+			{
+				wasm: {},
+				workerUrl,
+				onWorkerStarted: () => {
+					launched = true;
+				},
 			},
-		},
-		new CodemodeWorkerQueue(1),
-		{
-			wasm: {},
-			workerUrl,
-			onWorkerStarted: () => {
-				launched = true;
-			},
-		},
-		(failure) => failures.push(failure),
-	);
-	assert.deepEqual(failures, [], "constructing the sandbox reports nothing");
-	const result = await sandbox.start("return 'never';", runOptions()).result;
-	assert.equal(result.ok, false);
-	if (!result.ok) assert.equal(result.error.kind, "timeout");
-	assert.equal(launched, false);
-	assert.deepEqual(failures, [
-		{
-			code: "CODEMODE_ADMISSION_TIMEOUT",
-			message: "The codemode script timed out before worker admission.",
-			active: 0,
-			waiting: 0,
-			limit: 1,
-		},
-	]);
-	await sandbox.close();
-});
+			(failure) => failures.push(failure),
+		);
+		assert.deepEqual(failures, [], "constructing the sandbox reports nothing");
+		const result = await sandbox.start("return 'never';", runOptions()).result;
+		assert.equal(result.ok, false);
+		if (!result.ok) assert.deepEqual(result.error, { kind, message });
+		assert.equal(launched, false);
+		assert.deepEqual(failures, [{ code, message, active: 0, waiting: 0, limit: 1 }]);
+		await sandbox.close();
+	});
 
 it("caps the worker timeout by the original execution deadline", { timeout: 5000 }, async (t) => {
 	const queue = new CodemodeWorkerQueue(1);

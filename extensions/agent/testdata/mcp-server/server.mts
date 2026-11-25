@@ -17,11 +17,15 @@
  * collide after normalization, and one name that does not.
  */
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { connect } from "node:net";
 import { createInterface } from "node:readline";
 
-const silent = process.env.MCP_FIXTURE_MODE === "silent";
+const mode = process.env.MCP_FIXTURE_MODE;
+const silent = mode === "silent";
+const descriptorChange = process.env.MCP_FIXTURE_DESCRIPTOR_CHANGE;
+const reportCalls = mode === "drop-after-effect" || mode === "stateful" || descriptorChange !== undefined;
+let calls = 0;
 const ignoreClose = process.env.MCP_FIXTURE_IGNORE_CLOSE === "true";
 if (ignoreClose) {
 	process.on("SIGTERM", () => {});
@@ -47,7 +51,14 @@ const tools = [
 		inputSchema: { type: "object", properties: { topic: { type: "string" } }, required: ["topic"] },
 	},
 	{ name: "lookup_doc", description: "Second tool whose name differs only by - and _", inputSchema: emptyInput },
-	{ name: "list-topics", description: "List documentation topics", inputSchema: emptyInput },
+	{
+		name: "list-topics",
+		description: "List documentation topics",
+		inputSchema:
+			descriptorChange && existsSync(descriptorChange)
+				? { type: "object", properties: { category: { type: "string" } }, required: ["category"] }
+				: emptyInput,
+	},
 ];
 
 const input = createInterface({ input: process.stdin });
@@ -73,11 +84,17 @@ input.on("line", (line) => {
 	} else if (request.method === "tools/list") {
 		send({ id: request.id, result: { tools } });
 	} else if (request.method === "tools/call") {
+		calls++;
+		if (reportCalls) report(`call ${request.params?.name} ${calls}`);
+		if (mode === "drop-after-effect") process.exit(0);
 		send({
 			id: request.id,
 			result: {
 				content: [
-					{ type: "text", text: `called ${request.params?.name} ${JSON.stringify(request.params?.arguments ?? {})}` },
+					{
+						type: "text",
+						text: `called ${request.params?.name} ${JSON.stringify(request.params?.arguments ?? {})}${mode === "stateful" ? ` count ${calls}` : ""}`,
+					},
 				],
 			},
 		});

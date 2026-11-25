@@ -8,7 +8,7 @@ import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { Context } from "@earendil-works/chord/context";
-import { awaitWithContext, withCancel } from "@earendil-works/chord/context";
+import { awaitWithContext, BACKGROUND_CONTEXT, withAbortSignal, withCancel } from "@earendil-works/chord/context";
 import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode";
 import { CodemodeSandbox, parseCodemodeSource } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension, createCodemodeTool } from "@earendil-works/pi-durable/codemode";
@@ -62,6 +62,7 @@ import {
 } from "./codemode-source.ts";
 import { guardStdio, McpGuardian } from "./mcp-guardian.ts";
 import { NativeMcpAuth } from "./mcp-auth.ts";
+import { McpDiscoveryPool, scriptDiscoveryServers } from "./mcp-discovery.ts";
 
 // ─── Public contract ────────────────────────────────────────────────────────
 
@@ -528,27 +529,48 @@ function createTransport(entry: McpServerEntry, cwd: string, authProvider: AuthP
 	});
 }
 
-type ServerState = "idle" | "connecting" | "connected" | "failed" | "disconnected" | "closed";
+function descriptorKey(tool: McpTool): string {
+	return JSON.stringify(tool, (_name, value) =>
+		isRecord(value)
+			? Object.fromEntries(
+					Object.keys(value)
+						.sort()
+						.map((key) => [key, value[key]]),
+				)
+			: value,
+	);
+}
+
+interface DiscoveryAttempt {
+	readonly owner: AbortController;
+	readonly promise: Promise<void>;
+	waiters: number;
+}
 
 /** One configured MCP server: connection, reconnection, and tool refresh. */
 class McpServerConnection {
 	readonly entry: McpServerEntry;
 	readonly timeoutMs: number;
-	state: ServerState = "idle";
-	private readiness: Promise<void> | undefined;
-	error: string | undefined;
+	private discovery: DiscoveryAttempt | undefined;
+	private catalogKnown = false;
+	private catalogRevision = 0;
 	tools: McpTool[] = [];
+	private toolKeys = new Map<string, string>();
 	hasResources = false;
 	instructions: string | undefined;
 	private readonly cwd: string;
 	private client: McpClient | undefined;
 	private connecting: McpClient | undefined;
 	private opening: Promise<McpClient> | undefined;
+	private disconnecting: Promise<void> | undefined;
+	private users = 0;
+	private pinned: boolean;
 	private closed = false;
 
 	readonly onTools: () => void;
 	readonly authProvider: AuthProvider | undefined;
 	private readonly guardian: McpGuardian;
+	private readonly pool: McpDiscoveryPool;
 
 	constructor(
 		entry: McpServerEntry,
@@ -556,8 +578,11 @@ class McpServerConnection {
 		onTools: () => void,
 		authProvider: AuthProvider | undefined,
 		guardian: McpGuardian,
+		pool: McpDiscoveryPool,
 	) {
 		this.guardian = guardian;
+		this.pool = pool;
+		this.pinned = "url" in entry.config || configuredExposures(entry.config).has("direct");
 		this.entry = entry;
 		this.cwd = cwd;
 		this.onTools = onTools;
@@ -565,55 +590,107 @@ class McpServerConnection {
 		this.timeoutMs = (entry.config.timeout ?? 60) * 1000;
 	}
 
-	/** Demand starts one shared connection attempt; construction alone starts no transport. */
-	get ready(): Promise<void> {
-		this.readiness ??= this.getClient().then(
-			() => undefined,
-			(error: unknown) => {
-				if (!this.closed) {
-					this.state = "failed";
-					this.error = error instanceof Error ? error.message : String(error);
-				}
-			},
-		);
-		return this.readiness;
+	/** Share pending discovery and retain the catalogue when a discovery-only transport is reclaimed. */
+	async discover(signal?: AbortSignal): Promise<void> {
+		signal?.throwIfAborted();
+		if (this.catalogKnown) return;
+		const attempt = this.discovery?.owner.signal.aborted === false ? this.discovery : this.startDiscovery();
+		attempt.waiters++;
+		try {
+			await awaitWithContext(
+				attempt.promise,
+				signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT,
+			);
+		} finally {
+			if (--attempt.waiters === 0) attempt.owner.abort();
+		}
 	}
 
-	getClient(): Promise<McpClient> {
+	private startDiscovery(): DiscoveryAttempt {
+		const owner = new AbortController();
+		const promise = this.pool
+			.run(
+				() =>
+					this.use(async () => {
+						await this.getClient();
+					}),
+				owner.signal,
+			)
+			.finally(() => {
+				if (this.discovery?.owner === owner) this.discovery = undefined;
+			});
+		const attempt = { owner, promise, waiters: 0 };
+		this.discovery = attempt;
+		return attempt;
+	}
+
+	private getClient(): Promise<McpClient> {
 		if (this.closed) return Promise.reject(new Error(`MCP server "${this.entry.name}" is shut down`));
-		if (this.client?.connectionState === "connected") return Promise.resolve(this.client);
-		this.opening ??= this.open().finally(() => {
+		const client = this.client?.connectionState === "connected" ? this.client : undefined;
+		if (client && this.catalogKnown) return Promise.resolve(client);
+		this.opening ??= (client ? this.readToolCatalog(client) : this.waitToOpen()).finally(() => {
 			this.opening = undefined;
 		});
 		return this.opening;
 	}
 
-	callTool(name: string, args: Record<string, unknown>, options: { signal?: AbortSignal }): Promise<CallToolResult> {
-		return this.withClient((client) =>
-			client.callTool(name, args, { signal: options.signal, timeoutMs: this.timeoutMs }),
-		);
+	private async waitToOpen(): Promise<McpClient> {
+		await this.disconnecting;
+		if (this.closed) throw new Error(`MCP server "${this.entry.name}" is shut down`);
+		return this.open();
+	}
+
+	toolKey(name: string): string | undefined {
+		return this.toolKeys.get(name);
+	}
+
+	callTool(
+		name: string,
+		key: string | undefined,
+		args: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<CallToolResult> {
+		return this.withClient((client) => {
+			if (key === undefined || this.toolKey(name) !== key)
+				throw new Error(`MCP tool "${name}" on "${this.entry.name}" changed; discover it again before calling it`);
+			this.pinned = true;
+			return client.callTool(name, args, { signal, timeoutMs: this.timeoutMs });
+		}, signal);
+	}
+
+	private setTools(tools: McpTool[]): void {
+		this.tools = tools;
+		this.toolKeys = new Map(tools.map((tool) => [tool.name, descriptorKey(tool)]));
 	}
 
 	/** Every resource, following `nextCursor` through all pages. */
 	allResources(options: { signal?: AbortSignal } = {}): Promise<Resource[]> {
-		return this.withClient(
-			(client) => client.listResources({ signal: options.signal, timeoutMs: this.timeoutMs }),
-			true,
+		return this.pool.run(
+			() =>
+				this.withClient(
+					(client) => client.listResources({ signal: options.signal, timeoutMs: this.timeoutMs }),
+					options.signal,
+				),
+			options.signal,
 		);
 	}
 
 	resourcesPage(cursor: string | undefined, options: { signal?: AbortSignal } = {}): Promise<ListResourcesResult> {
-		return this.withClient(
+		return this.withResourceSession(
 			(client) => client.listResourcesPage(cursor, { signal: options.signal, timeoutMs: this.timeoutMs }),
-			true,
+			options.signal,
 		);
 	}
 
 	/** Every resource template, following `nextCursor` through all pages. */
 	allResourceTemplates(options: { signal?: AbortSignal } = {}): Promise<ResourceTemplate[]> {
-		return this.withClient(
-			(client) => client.listResourceTemplates({ signal: options.signal, timeoutMs: this.timeoutMs }),
-			true,
+		return this.pool.run(
+			() =>
+				this.withClient(
+					(client) => client.listResourceTemplates({ signal: options.signal, timeoutMs: this.timeoutMs }),
+					options.signal,
+				),
+			options.signal,
 		);
 	}
 
@@ -621,7 +698,7 @@ class McpServerConnection {
 		cursor: string | undefined,
 		options: { signal?: AbortSignal } = {},
 	): Promise<{ resourceTemplates: ResourceTemplate[]; nextCursor?: string }> {
-		return this.withClient(async (client) => {
+		return this.withResourceSession(async (client) => {
 			try {
 				return await client.listResourceTemplatesPage(cursor, { signal: options.signal, timeoutMs: this.timeoutMs });
 			} catch (error) {
@@ -630,49 +707,80 @@ class McpServerConnection {
 					return { resourceTemplates: [] };
 				throw error;
 			}
-		}, true);
+		}, options.signal);
 	}
 
 	readResource(uri: string, options: { signal?: AbortSignal } = {}): Promise<ReadResourceResult> {
-		return this.withClient(
+		return this.withResourceSession(
 			(client) => client.readResource(uri, { signal: options.signal, timeoutMs: this.timeoutMs }),
-			true,
+			options.signal,
 		);
 	}
 
-	/** Run one request, reconnecting when the client dropped; sign-in failures become readable errors. */
-	private async withClient<T>(run: (client: McpClient) => Promise<T>, readOnly = false): Promise<T> {
-		try {
-			return await this.getClient().then(run);
-		} catch (error) {
-			if (readOnly && this.state === "disconnected") {
-				// Reconnect once for a read that found a dropped connection.
-				return await this.getClient().then(run);
+	private withResourceSession<T>(run: (client: McpClient) => Promise<T>, signal?: AbortSignal): Promise<T> {
+		return this.withClient((client) => {
+			if (!this.hasResources) throw new Error(`MCP server "${this.entry.name}" no longer offers resources`);
+			this.pinned = true;
+			return run(client);
+		}, signal);
+	}
+
+	/** Reconnect before dispatch, not after a request with an uncertain result. */
+	private withClient<T>(run: (client: McpClient) => Promise<T>, signal?: AbortSignal): Promise<T> {
+		return this.use(async () => {
+			signal?.throwIfAborted();
+			try {
+				const client = await this.getClient();
+				signal?.throwIfAborted();
+				return await run(client);
+			} catch (error) {
+				throw mcpTransportError(this.entry, error);
 			}
-			throw mcpTransportError(this.entry, error);
+		});
+	}
+
+	private async use<T>(run: () => Promise<T>): Promise<T> {
+		this.pool.unpark(this);
+		this.users++;
+		try {
+			return await run();
+		} finally {
+			if (--this.users === 0 && !this.pinned && this.client && !this.closed)
+				this.pool.park(this, () => this.disconnect());
 		}
+	}
+
+	private disconnect(): Promise<void> {
+		const client = this.client;
+		if (client === undefined) return Promise.resolve();
+		this.client = undefined;
+		this.disconnecting = client
+			.close()
+			.catch(() => undefined)
+			.finally(() => {
+				this.disconnecting = undefined;
+			});
+		return this.disconnecting;
 	}
 
 	async close(): Promise<void> {
 		this.closed = true;
-		this.state = "closed";
+		this.pool.unpark(this);
+		this.discovery?.owner.abort();
 		const active = this.client ?? this.connecting;
 		this.client = undefined;
 		this.connecting = undefined;
-		await active?.close().catch(() => undefined);
+		await Promise.allSettled([active?.close(), this.opening, this.disconnecting]);
 	}
 
 	private async open(): Promise<McpClient> {
-		this.state = "connecting";
 		const client = new McpClient({
 			name: "pi",
 			version: VERSION,
 			requestTimeoutMs: this.timeoutMs,
 			roots: [{ uri: pathToFileURL(this.cwd).href, name: basename(this.cwd) }],
 		});
-		client.onNotification("notifications/tools/list_changed", () => {
-			void this.refreshTools(client);
-		});
+		client.onNotification("notifications/tools/list_changed", () => this.toolsChanged(client));
 		client.onClose(() => this.handleClose(client));
 		this.connecting = client;
 		let transport: StdioTransport | StreamableHttpTransport | undefined;
@@ -680,24 +788,22 @@ class McpServerConnection {
 			transport = createTransport(this.entry, this.cwd, this.authProvider);
 			if (transport instanceof StdioTransport) guardStdio(transport, this.guardian);
 			await client.connect(transport);
-			if (this.closed) throw new Error("shut down while connecting");
-			this.instructions = client.instructions?.trim() || undefined;
-			const tools = client.serverCapabilities?.tools === undefined ? [] : await client.listTools();
-			if (this.closed) throw new Error("shut down while connecting");
-			this.tools = tools;
-			this.hasResources = client.serverCapabilities?.resources !== undefined;
-			this.state = "connected";
-			this.error = undefined;
+			await this.readToolCatalog(client);
 			this.client = client;
-			this.onTools();
 			return client;
 		} catch (error) {
 			await client.close().catch(() => undefined);
-			this.tools = [];
-			this.onTools();
 			const stderr = transport instanceof StdioTransport ? transport.stderr.trim() : "";
 			const mapped = mcpTransportError(this.entry, error);
-			throw stderr === "" ? mapped : new Error(`${mapped.message}\n${stderr}`);
+			const failure = stderr === "" ? mapped : new Error(`${mapped.message}\n${stderr}`);
+			if (!this.closed) {
+				this.catalogKnown = false;
+				this.setTools([]);
+				this.hasResources = false;
+				this.instructions = undefined;
+				this.onTools();
+			}
+			throw failure;
 		} finally {
 			if (this.connecting === client) this.connecting = undefined;
 		}
@@ -706,21 +812,31 @@ class McpServerConnection {
 	private handleClose(client: McpClient): void {
 		if (this.client !== client || this.closed) return;
 		this.client = undefined;
-		this.state = "disconnected";
-		this.error = "Connection closed";
-		this.onTools();
+		this.pool.unpark(this);
+		this.catalogKnown = false;
 	}
 
-	private async refreshTools(client: McpClient): Promise<void> {
-		try {
-			const tools = await client.listTools();
-			if (this.client !== client || this.closed) return;
-			this.tools = tools;
-			this.state = "connected";
-			this.onTools();
-		} catch (error) {
-			this.error = `Failed to refresh tools: ${error instanceof Error ? error.message : String(error)}`;
-		}
+	private toolsChanged(client: McpClient): void {
+		if (this.closed || (this.client !== client && this.connecting !== client)) return;
+		this.catalogRevision++;
+		this.catalogKnown = false;
+		// Discovery-only transports update their catalogue on demand. Live sessions refresh immediately.
+		if (this.pinned && this.client === client) void this.use(() => this.getClient()).catch(() => undefined);
+	}
+
+	private async readToolCatalog(client: McpClient): Promise<McpClient> {
+		const revision = this.catalogRevision;
+		const tools = client.serverCapabilities?.tools === undefined ? [] : await client.listTools();
+		if (this.closed || client.connectionState !== "connected")
+			throw new Error("MCP connection closed during discovery");
+		if (revision !== this.catalogRevision)
+			throw new Error("The MCP tool list changed during discovery; retry discovery");
+		this.setTools(tools);
+		this.instructions = client.instructions?.trim() || undefined;
+		this.hasResources = client.serverCapabilities?.resources !== undefined;
+		this.catalogKnown = true;
+		this.onTools();
+		return client;
 	}
 }
 
@@ -855,6 +971,7 @@ function errorText(error: unknown): string {
 }
 /** The invocation budget expired while an MCP connection was still being discovered. */
 class CodemodeDiscoveryTimeoutError extends Error {}
+class McpDiscoveryError extends Error {}
 function hasIndirectTools(config: McpServerConfig): boolean {
 	const exposures = configuredExposures(config);
 	return exposures.has("codemode") || exposures.has("deferred");
@@ -869,6 +986,7 @@ class DurableExecutionRuntime implements DurableExecution {
 	readonly ready: Promise<void>;
 	private readonly host: DurableExecutionHost;
 	private readonly servers: McpServerConnection[] = [];
+	private readonly discovery = new McpDiscoveryPool();
 	private readonly guardian: McpGuardian;
 	private readonly auth: NativeMcpAuth;
 	private readonly sandbox = new CodemodeSandbox({
@@ -897,7 +1015,7 @@ class DurableExecutionRuntime implements DurableExecution {
 	private async waitForDirectServers(): Promise<void> {
 		const pending = this.servers
 			.filter((server) => configuredExposures(server.entry.config).has("direct"))
-			.map((server) => server.ready);
+			.map((server) => server.discover(this.host.signal).catch(() => undefined));
 		if (pending.length === 0 || this.readyTimeoutMs <= 0) return;
 		await new Promise<void>((resolve) => {
 			const timer = setTimeout(resolve, this.readyTimeoutMs);
@@ -1061,8 +1179,8 @@ class DurableExecutionRuntime implements DurableExecution {
 	}
 
 	/**
-	 * MCP discovery spends the script's own budget. An expired budget or a cancellation is returned, not thrown: it
-	 * refuses execution only when the native tool asks for a sandbox, so a result it already retained still returns.
+	 * MCP discovery spends the script's own budget. A refusal applies only if the native tool starts a sandbox;
+	 * a retained result still returns even if discovery now fails.
 	 */
 	private async preflightCodemode(
 		code: string,
@@ -1076,6 +1194,7 @@ class DurableExecutionRuntime implements DurableExecution {
 			if (error instanceof CodemodeDiscoveryTimeoutError)
 				return { code: "CODEMODE_ADMISSION_TIMEOUT", message: error.message };
 			if (context.abortSignal?.aborted === true) return { code: "CODEMODE_CANCELLED", message: errorText(error) };
+			if (error instanceof McpDiscoveryError) return { code: "CODEMODE_DISCOVERY_FAILED", message: error.message };
 			throw error;
 		}
 		if (deadline - api.now() <= 0)
@@ -1087,6 +1206,7 @@ class DurableExecutionRuntime implements DurableExecution {
 		if (this.closePromise) return this.closePromise;
 		this.closed = true;
 		this.host.signal.removeEventListener("abort", this.closeOnHostAbort);
+		this.discovery.close();
 		const pending = new Set(this.servers.map((server) => server.entry.name));
 		const closing = Promise.all([
 			this.sandbox.close(),
@@ -1132,6 +1252,7 @@ class DurableExecutionRuntime implements DurableExecution {
 			},
 			createServerAuthProvider(entry, this.auth, this.host.services.modelRuntime),
 			this.guardian,
+			this.discovery,
 		);
 		this.servers.push(server);
 		const description = (entry.config.description ?? "").split(/\r\n?|\n/u, 1)[0].trim();
@@ -1174,6 +1295,7 @@ class DurableExecutionRuntime implements DurableExecution {
 	}
 
 	private defineMcpTool(server: McpServerConnection, tool: McpTool, name: string, exposure: McpExposure): NestedTool {
+		const key = server.toolKey(tool.name);
 		return {
 			name,
 			description: tool.description?.trim() || tool.title || `MCP tool ${tool.name} from server ${server.entry.name}`,
@@ -1185,7 +1307,7 @@ class DurableExecutionRuntime implements DurableExecution {
 				convertMcpResult(
 					server.entry.name,
 					tool.name,
-					await server.callTool(tool.name, args as Record<string, unknown>, { signal: context.abortSignal }),
+					await server.callTool(tool.name, key, args as Record<string, unknown>, context.abortSignal),
 				),
 		};
 	}
@@ -1211,14 +1333,11 @@ class DurableExecutionRuntime implements DurableExecution {
 	}
 
 	private async waitForScriptServers(code: string, context: Context, timeoutMs: number): Promise<void> {
-		const wantsAll = /\b(searchTools|describeNamespace|describeTool|ALL_TOOLS)\b/.test(code);
-		const waiting = this.servers.filter(
-			(server) =>
-				wantsAll ||
-				new RegExp(`\\b${mcpNamespace(server.entry.name)}(?:__|\\b)`, "u").test(code) ||
-				/\b(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource)\b/.test(code),
+		await this.waitForServers(
+			scriptDiscoveryServers(code, this.servers, (server) => server.entry.name),
+			context,
+			timeoutMs,
 		);
-		await this.waitForServers(waiting, context, timeoutMs);
 	}
 	private async waitForAllServers(context: Context): Promise<void> {
 		await this.waitForServers(this.servers, context);
@@ -1233,7 +1352,7 @@ class DurableExecutionRuntime implements DurableExecution {
 		signal?.throwIfAborted();
 		if (timeoutMs !== undefined && timeoutMs <= 0)
 			throw new CodemodeDiscoveryTimeoutError("The codemode script timed out while waiting for MCP servers.");
-		// Cancelling this waiter ends only the wait: a shared MCP connection keeps its own lifetime.
+		// A cancelled wait withdraws queued demand; it does not close an opening or shared connection.
 		const waiter = timeoutMs === undefined ? undefined : withCancel(context);
 		const timer =
 			waiter === undefined
@@ -1247,7 +1366,15 @@ class DurableExecutionRuntime implements DurableExecution {
 					);
 		timer?.unref?.();
 		try {
-			await awaitWithContext(Promise.all(servers.map((server) => server.ready)), waiter?.context ?? context);
+			const discoveryContext = waiter?.context ?? context;
+			const results = await awaitWithContext(
+				Promise.allSettled(servers.map((server) => server.discover(discoveryContext.abortSignal))),
+				discoveryContext,
+			);
+			const failures = results.flatMap((result, index) =>
+				result.status === "rejected" ? [`${servers[index].entry.name}: ${errorText(result.reason)}`] : [],
+			);
+			if (failures.length > 0) throw new McpDiscoveryError(`MCP discovery could not finish: ${failures.join("; ")}`);
 		} finally {
 			if (timer !== undefined) clearTimeout(timer);
 		}
@@ -1300,8 +1427,8 @@ class DurableExecutionRuntime implements DurableExecution {
 		params: Record<string, unknown>,
 		context: Context,
 	): Promise<Durable.ToolExecutionResult<JsonValue>> {
-		await this.waitForAllServers(context);
 		const serverName = resourceStringArgument(params, "server");
+		await this.waitForResourceServers(serverName, context);
 		const cursor = resourceStringArgument(params, "cursor");
 		const servers = [...this.resourceServers()].sort((a, b) => a.entry.name.localeCompare(b.entry.name));
 		if (serverName === undefined) {
@@ -1360,11 +1487,11 @@ class DurableExecutionRuntime implements DurableExecution {
 		params: Record<string, unknown>,
 		context: Context,
 	): Promise<Durable.ToolExecutionResult<JsonValue>> {
-		await this.waitForAllServers(context);
 		const serverName = resourceStringArgument(params, "server");
 		const uri = resourceStringArgument(params, "uri");
 		if (serverName === undefined) throw new Error("server must be provided");
 		if (uri === undefined) throw new Error("uri must be provided");
+		await this.waitForResourceServers(serverName, context);
 		const server = this.findResourceServer(serverName, this.resourceServers());
 		const result = await server.readResource(uri, { signal: context.abortSignal });
 		const blocks: ContentBlock[] = result.contents.flatMap((contents) => [
@@ -1386,6 +1513,15 @@ class DurableExecutionRuntime implements DurableExecution {
 				...(limited.fullOutputPath === undefined ? {} : { fullOutputPath: limited.fullOutputPath }),
 			},
 		};
+	}
+
+	private waitForResourceServers(name: string | undefined, context: Context): Promise<void> {
+		return this.waitForServers(
+			this.servers.filter(
+				(server) => server.entry.config.exposure !== "hidden" && (name === undefined || server.entry.name === name),
+			),
+			context,
+		);
 	}
 
 	private findResourceServer(name: string, servers: readonly McpServerConnection[]): McpServerConnection {

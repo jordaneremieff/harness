@@ -3776,15 +3776,27 @@ settings.
 Durable hosts start servers with `direct` tool exposure at host startup because
 those tool schemas belong in the first model request. The startup wait is bounded;
 a direct server that misses that wait adds its tools when it connects later.
-Servers with only
-`codemode` or `deferred` exposure start on first use, not on host creation or
-recovery. A script naming `mcp__<server>` starts only that server; script
-discovery helpers, `ALL_TOOLS`, `tool_search`, and resource tools start all
-configured servers. Resource tool declarations do not depend on connection
-progress. Indirect tool discovery alone does not change model declarations;
-`tool_search` explicitly loads selected tools. Choose exposure per server in
-`mcp.json`; any direct tool override keeps that server's startup eager.
-Ordinary primaries retain Pi's own eager MCP startup.
+Servers with only `codemode` or `deferred` exposure start on demand, not at host
+creation or recovery. A complete literal call such as
+`return await describeNamespace("docs");` discovers only the named server.
+The adapter also narrows an unambiguous literal `describeTool` or MCP tool call.
+Dynamic scripts, global discovery and `tool_search` consult all relevant servers.
+A resource request with an exact server name consults only that server. Discovery
+uses a per-host pool of four concurrent operations. It reports which servers
+failed rather than treating an incomplete tool catalogue as complete.
+
+Discovery alone does not change model declarations. `tool_search` explicitly
+loads its selected tools. Resource tool declarations do not depend on connection
+progress. Choose exposure in `mcp.json`; any direct tool override keeps that
+server's startup eager. Ordinary primaries retain Pi's own MCP lifecycle.
+
+An idle discovery-only stdio connection closes after ten seconds or sooner when
+another discovery needs capacity. The host retains its descriptors. Before a
+call on a reopened transport, it checks the current descriptor and refuses stale
+arguments if the descriptor changed. The host does not automatically repeat an
+uncertain call. The discovery pool does not evict HTTP connections, direct
+servers, active operations or stdio sessions after tool use, a resource read,
+or a paginated resource request.
 
 MCP configuration is read at host startup or native host reload. In a trusted
 project, an entry in `.pi/mcp.json` without `command`, `url`, or `type` overrides

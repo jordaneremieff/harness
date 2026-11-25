@@ -7,7 +7,11 @@ import {
 } from "@earendil-works/pi-codemode";
 
 /** Why a native script did not obtain a worker. */
-export type CodemodeAdmissionFailureCode = "CODEMODE_QUEUE_FULL" | "CODEMODE_ADMISSION_TIMEOUT" | "CODEMODE_CANCELLED";
+export type CodemodeAdmissionFailureCode =
+	| "CODEMODE_QUEUE_FULL"
+	| "CODEMODE_ADMISSION_TIMEOUT"
+	| "CODEMODE_CANCELLED"
+	| "CODEMODE_DISCOVERY_FAILED";
 
 /** Admission state reported with a failure, through the tool's public diagnostics. */
 export interface CodemodeAdmissionFailure {
@@ -52,7 +56,11 @@ function waitFailure(
 				};
 	diagnostic?.(failure);
 	const kind =
-		failure.code === "CODEMODE_CANCELLED" ? "aborted" : failure.code === "CODEMODE_QUEUE_FULL" ? "sandbox" : "timeout";
+		failure.code === "CODEMODE_CANCELLED"
+			? "aborted"
+			: failure.code === "CODEMODE_ADMISSION_TIMEOUT"
+				? "timeout"
+				: "sandbox";
 	return { ok: false, error: { kind, message: failure.message }, output: [], calls: [] };
 }
 

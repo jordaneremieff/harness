@@ -292,6 +292,10 @@ The existing `runtime-contract` member returns the required current hello `{form
 
 A manager records each known link-loss epoch before catalogue recovery runs. A retained `recoveryDue` marker does not override a foreign, clean, positively released, or pending-exit refusal. Only the matching failed-child outcome releases that loss hold; a newer successful attachment supersedes older callbacks. Primary registration retains its explicit startup-recovery role, and `agent_attach` retains explicit acquisition. Recipient-triggered parked-delivery wake retains its separate predicate. Source: `extensions/agent/manager.ts`.
 
+### Durable MCP connection lifetime
+
+MCP discovery belongs to each Durable execution adapter, not its clients or an ordinary Pi session. A complete literal request may select one server; discovery without a proven scope uses the relevant catalogue. The host bounds concurrent discovery across its conversations and reports an incomplete catalogue as an error. A stdio transport used only for discovery may close while its descriptors remain available. The same adapter reopens it under its existing configuration and checks the current descriptor before dispatch. It never retries an uncertain tool call. Discovery eviction does not close an in-flight operation, an HTTP or direct connection, or a stdio session used for calls or cursor-based resource access. Sources: `extensions/agent/{durable-execution,mcp-discovery}.ts`.
+
 ### Storage status continuation
 
 Unselected status returns `conversations` and page-local `coverage: {complete, returned, scanned, next}`. A missing status still counts as scanned. A non-null `next` is `{tool:"agent_status",view:"storage-page",storageId,cursor,limit}`. Call that tool with the other fields unchanged; the backend owns the JSON-record cursor and the unfiltered conversation scan. No total or frozen membership snapshot is implied.
