@@ -430,6 +430,12 @@ it("an attach-only connection to a host that ended while it waited reports no en
 	await assert.rejects(attaching, HostEndpointUnavailableError);
 });
 
+it("names both bootstrap bounds in the unconfirmed-launch refusal", () => {
+	const refusal = new HostReadinessUnavailableError(new Error("no readiness"));
+	assert.match(refusal.message, /90 s, or 7 min during a trust prompt/u);
+	assert.ok(refusal.message.length <= 160, "the refusal fits the failure summary without a cut");
+});
+
 it("refuses to connect when no host is live", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	await assert.rejects(connectHost(fixtureMetadata(root), launch()), /No verified native host endpoint/u);

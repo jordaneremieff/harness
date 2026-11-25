@@ -553,7 +553,9 @@ for (const withdrawal of ["gate bound", "caller signal"] as const)
 		if (withdrawal === "caller signal") setTimeout(() => controller.abort(new Error("caller withdrew")), 500);
 		await assert.rejects(
 			stopping,
-			withdrawal === "gate bound" ? /still starting after 1 s; nothing was stopped/u : /caller withdrew/u,
+			withdrawal === "gate bound"
+				? /still starting after 1 s; nothing was stopped.*90 s, or within 7 minutes while it waits for a project trust decision/u
+				: /caller withdrew/u,
 		);
 		assert.ok(Date.now() - began < 10000, "the stop ends at its bound, not at the other host's bootstrap deadline");
 		for (const path of writerLeasePaths(metadata)) {

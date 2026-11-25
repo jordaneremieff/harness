@@ -451,7 +451,7 @@ export class HostLaunchDemandEnded extends HostError {
 export class HostReadinessUnavailableError extends HostError {
 	constructor(cause: unknown) {
 		super(
-			"An owned runner remains unconfirmed; no replacement was started. A runner that cannot finish bootstrap exits within 90 s; then retry, or use agent_attach.",
+			"An owned runner remains unconfirmed; no replacement was started. A stuck start exits in 90 s, or 7 min during a trust prompt; then retry or use agent_attach.",
 			"unavailable",
 			{ cause },
 		);

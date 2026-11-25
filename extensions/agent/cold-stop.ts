@@ -145,7 +145,7 @@ export function stopColdStorage(
 			() =>
 				withdraw(
 					new HostError(
-						`A host of this storage is still starting after ${Math.round((options.gateWaitMs ?? COLD_STOP_GATE_WAIT_MS) / 1000)} s; nothing was stopped. A start that cannot finish ends itself within 90 s; then repeat the abort.`,
+						`A host of this storage is still starting after ${Math.round((options.gateWaitMs ?? COLD_STOP_GATE_WAIT_MS) / 1000)} s; nothing was stopped. A start that cannot finish ends itself within 90 s, or within 7 minutes while it waits for a project trust decision; then repeat the abort.`,
 						"unavailable",
 					),
 				),
