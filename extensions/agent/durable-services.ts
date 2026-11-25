@@ -597,7 +597,7 @@ function buildBuiltin(
 			durableReadTool(pi, services.cwd, signal),
 			{ ...createWriteTool(), replay: "unsafe" },
 			{ ...createEditTool(), replay: "unsafe" },
-			{ ...createBashTool(), replay: "unsafe" },
+			{ ...createBashTool({ commandPrefix: services.settingsManager.getShellCommandPrefix() }), replay: "unsafe" },
 		],
 		sections: [
 			Durable.section(
@@ -1251,7 +1251,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 		const targetCwd = target.cwd ?? services.cwd;
 		let environment = envs.get(targetCwd);
 		if (environment === undefined) {
-			environment = new NodeExecutionEnv({ cwd: targetCwd });
+			environment = new NodeExecutionEnv({ cwd: targetCwd, shellPath: services.settingsManager.getShellPath() });
 			envs.set(targetCwd, environment);
 		}
 		return environment;

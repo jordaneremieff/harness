@@ -21,6 +21,7 @@ import {
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { createDurableServices, LOAD_FAILURE_MAX_CHARS } from "./durable-services.ts";
+import { answerMessage, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { promptProjectTrust } from "./trust-support.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
@@ -838,6 +839,59 @@ it("runs the built-in read tool through a real Harness and returns images", { ti
 	} finally {
 		await services.close();
 		await harness.close(BACKGROUND_CONTEXT);
+	}
+});
+
+it("runs foreground Bash with the shell and prefix selected by project trust", {
+	skip: process.platform === "win32",
+	timeout: 20000,
+}, async (t) => {
+	const f = fixture(t, { projectSettings: {} });
+	const shell = join(f.root, "fixture-shell");
+	writeFileSync(shell, '#!/bin/sh\nexport PI_FIXTURE_SHELL=custom\nexec /bin/sh "$@"\n', { mode: 0o700 });
+	writeFileSync(
+		join(f.cwd, ".pi", "settings.json"),
+		JSON.stringify({ shellPath: shell, shellCommandPrefix: "export PI_FIXTURE_PREFIX=project" }),
+	);
+	writeFileSync(
+		join(f.agentDir, "settings.json"),
+		JSON.stringify({
+			shellPath: "/bin/sh",
+			shellCommandPrefix: "unset PI_FIXTURE_SHELL; export PI_FIXTURE_PREFIX=global",
+		}),
+	);
+	for (const trusted of [false, true]) {
+		const services = await createDurableServices({
+			cwd: f.cwd,
+			agentDir: f.agentDir,
+			trusted,
+			storageId: "shell",
+			extensionPaths: [],
+		});
+		const models = await scriptedRuntime([
+			toolCallMessage("bash", { command: 'printf "%s:%s" "$PI_FIXTURE_SHELL" "$PI_FIXTURE_PREFIX"' }),
+			answerMessage(),
+		]);
+		const harness = await Harness.open(
+			new MemoryStorage(),
+			{ models, registry: services.registry, env: services.env },
+			BACKGROUND_CONTEXT,
+		);
+		try {
+			await services.install(harness);
+			const conversation = await harness.root(BACKGROUND_CONTEXT, {
+				agent: { model: { provider: testModel.provider, modelId: testModel.id } },
+			});
+			const input = await conversation.submit({ type: "input", content: "check shell" }, BACKGROUND_CONTEXT);
+			assert.equal((await input.wait(BACKGROUND_CONTEXT)).status, "done");
+			const result = (await conversation.context(BACKGROUND_CONTEXT)).messages.find(
+				(message) => message.role === "toolResult",
+			);
+			assert.deepEqual(result?.content, [{ type: "text", text: trusted ? "custom:project" : ":global" }]);
+		} finally {
+			await services.close();
+			await harness.close(BACKGROUND_CONTEXT);
+		}
 	}
 });
 

@@ -3733,6 +3733,8 @@ The shared stream path forwards events without an additional timeout
 The host supplies:
 
 - Native `write`, `edit`, and `bash`, with unsafe replay classifications.
+  Foreground `bash` uses Pi's effective `shellPath` and `shellCommandPrefix`.
+  Project values apply only when Pi trusts the project.
 - A native `read` around Pi's public stateless reader, including image blocks.
 - Prompt sections for the coding task, context files, skills, appended system
   prompts, cwd, date, and capability limits.
@@ -3752,7 +3754,11 @@ for their `structuredOutput` values. Ordinary tools retain Pi's
 contracts, not aliases stored in `details`. A schema tool's explicitly supplied
 structured error value still resolves in a script; a failed call without such
 a value rejects with diagnostic text. Native `bash` returns its structured
-output and exit code on a nonzero exit. The native read adapter maps Pi's public
+output and exit code on a nonzero exit. Durable retains whole lines where
+possible. If a line exceeds the byte limit and blank lines follow it, the tail
+can contain only blank lines. Use `fullOutputPath` for the complete output
+when the spill succeeds. A spill failure stops the command and returns an
+error, not a known exit code. The native read adapter maps Pi's public
 schema and result into the native contract while preserving truncation details.
 Text reads resolve to strings; image reads resolve to an image block with its
 note. Use `image(await tools.read({ path }))` in a script. Direct image reads

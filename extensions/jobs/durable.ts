@@ -369,6 +369,7 @@ export function createJobsContribution(options: { source: string }): DurableCont
 		source: options.source,
 		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
 		create(host) {
+			const commandPrefix = host.services.settingsManager.getShellCommandPrefix();
 			const live = new LiveJobs();
 			/** Checks of running jobs in a row per conversation of this host; only conversations in a streak keep an entry. */
 			const streaks = new Map<number, CheckStreak>();
@@ -467,7 +468,7 @@ export function createJobsContribution(options: { source: string }): DurableCont
 					const opened = live.open(id, input.conversationId);
 					entry = opened;
 					const exec = await env.exec(
-						input.command,
+						commandPrefix ? `${commandPrefix}\n${input.command}` : input.command,
 						{
 							cwd: env.cwd,
 							env: {},

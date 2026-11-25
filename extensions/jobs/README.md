@@ -227,7 +227,9 @@ Each accepted job is a conversation-owned background task (`jobs.run`) in the
 agent host process; the task ID is the job ID. Its input retains the command,
 because the task rather than the tool call runs it. The command runs through
 the conversation's execution environment with the same cwd and inherited
-environment as native `bash`. A running job task keeps the host alive, is
+environment as native `bash`. Foreground and background commands use the host's
+trusted `shellPath` and `shellCommandPrefix` settings; the prefix is not part
+of the retained command or its preview. A running job task keeps the host alive, is
 excluded from ordinary idle waits, and survives a plain conversation abort;
 `jobs` cancel, or an abort that crosses background work, ends it.
 

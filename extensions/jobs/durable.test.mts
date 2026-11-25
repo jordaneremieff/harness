@@ -14,7 +14,7 @@ import {
 	fauxToolCall,
 	type FauxResponseFactory,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { ExecutionError } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -142,6 +142,7 @@ async function openHarness(
 		env?: Durable.HarnessOptions["env"];
 		responses?: number;
 		failAdmission?: () => boolean;
+		shellCommandPrefix?: string;
 	} = {},
 ) {
 	const faux = fauxProvider();
@@ -179,7 +180,9 @@ async function openHarness(
 	const closers: Array<() => void | Promise<void>> = [];
 	const host = {
 		durable: options.probe ? probedDurable(options.probe) : Durable,
-		services: {} as AgentSessionServices,
+		services: {
+			settingsManager: SettingsManager.inMemory({ shellCommandPrefix: options.shellCommandPrefix }),
+		} as AgentSessionServices,
 		cwd: root,
 		agentDir: join(root, "agent"),
 		storageId: "jobs-durable-test",
@@ -401,6 +404,61 @@ async function stopJobs(harness: Durable.Harness, ids: string[]): Promise<void> 
 	await Promise.all(ids.map((id) => harness.abortTask(Number(id) as Durable.TaskId, context)));
 	await harness.waitForIdle(context);
 }
+
+test("cancelling a task wait leaves the running job and its completion intact", { timeout: 10_000 }, async () => {
+	const entered = barrier();
+	const release = barrier();
+	const tail = Array.from({ length: 41 }, (_, index) => `line ${index} Ω\n`).join("");
+	const instance = await openHarness(new Durable.MemoryStorage(), admissionScript, {
+		env: (target) => {
+			const env = new NodeExecutionEnv({ cwd: target.cwd ?? root });
+			env.exec = async (_command, options, executionContext) => {
+				entered.resolve();
+				await release.promise;
+				options?.onOutput?.(tail, executionContext, { stream: "stdout" });
+				return { ok: true, value: { exitCode: 0 } };
+			};
+			return env;
+		},
+	});
+	try {
+		const { harness } = instance;
+		const conversation = await harness.root(context, {
+			agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root },
+		});
+		const id = await launch(conversation, "observer cancellation");
+		assert.ok(id);
+		await entered.promise;
+		const taskId = Number(id) as Durable.TaskId;
+		const abort = new AbortController();
+		const reason = new Error("Cancelled only the job observer");
+		const waiting = assert.rejects(harness.waitForTask(taskId, withAbortSignal(abort.signal, context)), reason);
+		const running = await taskRecord(harness, id);
+		assert.equal(running.state.status, "running");
+		assert.equal((running.input as JobInput).command, "synthetic");
+		abort.abort(reason);
+		await waiting;
+		assert.equal((await taskRecord(harness, id)).abortRequested, false);
+
+		release.resolve();
+		const settled = await harness.waitForTask(taskId, context);
+		assert.equal(settled.state.outcome.status, "completed");
+		const completions = await completionEntries(conversation);
+		assert.equal(completions.length, 1);
+		assert.equal(completions[0].job.id, id);
+		assert.equal(completions[0].job.cwd, root);
+		assert.equal(completions[0].job.status, "succeeded");
+		assert.equal(completions[0].command, "synthetic");
+		assert.deepEqual(completions[0].tail, {
+			text: tail.slice("line 0 Ω\n".length, -1),
+			omitted: true,
+			outputBytes: Buffer.byteLength(tail),
+		});
+	} finally {
+		release.resolve();
+		await instance.close();
+	}
+});
 
 for (const abortHeld of [false, true])
 	test(`committed admissions retain slots until transfer or abort (${abortHeld})`, { timeout: 30000 }, async () => {
@@ -850,6 +908,31 @@ test("reads of a running job tell the agent to end the run, and the third check 
 			"the settled job admits its completion after the run ended",
 		);
 		await harness.waitForIdle(context);
+	} finally {
+		await close();
+	}
+});
+
+test("background bash applies the host shell prefix only to execution", { timeout: 15_000 }, async () => {
+	const command = `printf '%s' "$JOB_PREFIX_VALUE"`;
+	const { harness, close } = await openHarness(
+		new Durable.MemoryStorage(),
+		(user, result) =>
+			user === "START" && !result
+				? fauxAssistantMessage(fauxToolCall("bash", { command, background: true }), { stopReason: "toolUse" })
+				: fauxAssistantMessage("Done."),
+		{ shellCommandPrefix: "JOB_PREFIX_VALUE=from-settings" },
+	);
+	try {
+		const conversation = await harness.root(context, {
+			agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root },
+		});
+		await say(conversation, "START");
+		await until(async () => (await completionEntries(conversation)).length === 1, "the prefixed job settles");
+		const [completion] = await completionEntries(conversation);
+		assert.equal(completion.tail.text, "from-settings");
+		assert.equal(completion.command, command);
+		assert.equal(completion.job.commandPreview, command);
 	} finally {
 		await close();
 	}
