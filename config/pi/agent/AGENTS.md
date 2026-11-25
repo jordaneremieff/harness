@@ -67,10 +67,6 @@ ranges for relevant code.
 
 - Lead with the answer. Use plain words, and explain any project term you
   must use.
-- Do not end an answer with a note about background jobs or agents that
-  still run: the statusline shows them. The note of `agent_yield` and
-  `jobs_yield` says in one plain sentence what still runs and what happens
-  next.
 - When he asks whether a session is done, still needed or safe to close,
   answer yes or no first, then say what still runs.
 - Say what you checked and what you inferred. Claim only what the evidence
