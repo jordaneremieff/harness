@@ -1931,6 +1931,9 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const { candidates, complete } = await fallbackCandidates(owner, row);
 		preflightFallback(candidates, owner);
 		const { delivered, unavailable, incompatible } = await broadcastFallback(candidates, row, identity, owner);
+		// A watcher that closed during the broadcast did not reach every candidate. Each accepted copy is already
+		// recorded with its recipient; the broadcast itself stays open, and the next watcher finishes it.
+		if (closed || signal.aborted) return;
 		if (delivered === 0 && !(await reportCurrent(row))) return;
 		if (incompatible !== undefined) throw incompatibleFallbackError(incompatible.id, incompatible.version, owner);
 		if (unavailable !== undefined)

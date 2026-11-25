@@ -80,7 +80,7 @@ function watch(
 	return { delivery, errors };
 }
 
-async function registerPrimary(t: TestContext, root: string): Promise<PrimaryDelivery[]> {
+async function registerPrimary(t: TestContext, root: string, onDeliver?: () => void): Promise<PrimaryDelivery[]> {
 	const received: PrimaryDelivery[] = [];
 	const channel = await createPrimaryChannel({
 		id: randomUUID(),
@@ -88,6 +88,7 @@ async function registerPrimary(t: TestContext, root: string): Promise<PrimaryDel
 		sessionsRoot: join(root, "sessions"),
 		deliver: (message) => {
 			received.push(message);
+			onDeliver?.();
 		},
 		promptTrust: async () => undefined,
 	});
@@ -220,5 +221,39 @@ it("reads the primary endpoint directory once for each pass, not once for each p
 	assert.ok(
 		scans - scansBefore <= passes,
 		`${scans - scansBefore} directory reads in ${passes} passes with ${count} parked rows`,
+	);
+});
+
+it("does not record a broadcast that the close of its watcher cut short", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const owner = randomUUID();
+	const host = await openSource(t, root, 1);
+	const id = await settledResult(host, owner, "for-an-ended-owner");
+	// The watcher closes while it gives the copy to the first of two registered primaries.
+	let closing: Promise<void> | undefined;
+	let first: DurableDelivery | undefined;
+	const closeFirst = (): void => {
+		closing ??= first?.close();
+	};
+	const copies = [await registerPrimary(t, root, closeFirst), await registerPrimary(t, root, closeFirst)];
+	first = watch(t, host, root).delivery;
+	while (closing === undefined) await new Promise((resolve) => setTimeout(resolve, 5));
+	await closing;
+	assert.deepEqual(copies.map((received) => received.length).sort(), [0, 1], "the closed watcher reached one primary");
+
+	// A later watcher of the same storage finishes the broadcast.
+	const counter = passCounter();
+	const second = watch(t, host, root, { onIdle: counter.onIdle }).delivery;
+	await counter.pass(second);
+	await counter.pass(second);
+	assert.deepEqual(
+		copies.map((received) => received.length),
+		[1, 1],
+		"the primary that the closed watcher did not reach never received its copy",
+	);
+	assert.equal(
+		(await deliveryState(host.harness, BACKGROUND_CONTEXT, true))?.receipts[String(id)]?.fallbackBroadcast,
+		true,
+		"the finished broadcast is recorded",
 	);
 });

@@ -4645,7 +4645,9 @@ of one complete discovery has its copy, the row records the completed
 broadcast (`fallbackBroadcast`): a later pass does not look for recipients
 again, and a primary that registers later receives no copy of that row. A row
 that no primary accepted, or whose discovery was incomplete, records nothing
-and tries again on the next pass. One pass reads the endpoint directory once
+and tries again on the next pass. A watcher that closes during a broadcast
+records nothing for it either: the copies that it gave stay recorded with their
+recipients, and the next watcher of the storage gives the rest. One pass reads the endpoint directory once
 for all its parked rows, and a candidate that refuses a connection is not
 tried again for the other rows of that pass. Other owners of the same answer
 receive their normal delivery rather than a fallback substitute. A partial scan still attempts the discovered recipients and reports its incomplete coverage.
