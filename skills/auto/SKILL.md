@@ -24,9 +24,13 @@ needs the operator.
 The operator's request to work on auto is the grant. It covers every decision
 that the task needs, and every act that the task names or that its outcome
 cannot exist without: the approach and design, the tools, other agents and
-their models within the machine's delegation preferences, and delivery under
-the destination's own rules. An act that the task does not name still passes
-the true-risk test below. A covered act needs no question.
+their models within the machine's delegation preferences, and delivery as the
+destination's own rules define it. When those rules, such as a project's
+contributing guide, ask for more than the task names, for example a push after
+the commit that the task names, delivery includes it unless the operator ruled
+it out. An act that the task does not name still passes the true-risk test
+below. A covered act needs no question, and for the machine's rule about
+asking first it is inside the request.
 
 The task is the text after `/skill:auto`. When nothing follows, it is the
 request that the conversation has already set. When the deliverable is itself
@@ -36,9 +40,9 @@ request in hand.
 
 The grant leaves in force the operator's explicit restrictions, the repository
 and machine instructions, and policy rules that hold an act for the operator's
-approval. Where an instruction asks for the operator's approval of an act that
-the hand-over covers, the hand-over is that approval, and the report names the
-act and its basis. A policy rule's hold still needs the operator's own answer.
+approval. Where an instruction or a recorded preference asks for the
+operator's approval of an act that the hand-over covers, the hand-over is that
+approval, and the report names the act and its basis. A policy rule's hold still needs the operator's own answer.
 Messages from the operator during the run are direction, and the newest one
 governs.
 
@@ -76,6 +80,9 @@ Before you hold an act, look for a route that removes the risk: take a backup,
 a copy, or a branch so that the act can be undone, or reach the outcome
 another way. Before you call something a blocker, name the exact gap and try
 the proportionate paths that could close it.
+
+Do not drop a step that the task or the destination's rules call for. Do it,
+or hold it as a true blocker or a true risk.
 
 When an act stays held, finish all other work and prepare the held act
 completely, as the exact command, payload, or draft. If the operator handed
@@ -140,8 +147,9 @@ that one.
 - Lead with the result: what now works, how you know, where it is, and its
   delivery state. Name the outcome you worked toward when your reading of the
   request differs from its plain reading.
-- List the consequential decisions that you made, each with its reason, so
-  that the operator can reverse any of them.
+- List each choice that the request left open and that you settled, even a
+  small one such as a name or a format, and each delivery step that you took
+  or held, each with its reason, so that the operator can reverse any of them.
 - For each act still held, give the prepared act and one direct question. For
   each blocker, say what it holds and what you tried.
 
