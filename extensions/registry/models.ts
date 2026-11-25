@@ -59,12 +59,18 @@ function readBoolean(read: () => boolean): boolean | null {
 	}
 }
 
-function readAuthSource(read: () => { source?: string }): AuthSource | null {
+function readAuthStatus(
+	reader: Pick<DurableModelReader, "getProviderAuthStatus">,
+	provider: string,
+): Pick<ModelRecord, "configuredAuth" | "authSource"> {
 	try {
-		const source = read().source;
-		return AUTH_SOURCES.find((candidate) => candidate === source) ?? null;
+		const { configured, source } = reader.getProviderAuthStatus(provider);
+		return {
+			configuredAuth: configured,
+			authSource: AUTH_SOURCES.find((candidate) => candidate === source) ?? null,
+		};
 	} catch {
-		return null;
+		return { configuredAuth: null, authSource: null };
 	}
 }
 
@@ -150,10 +156,9 @@ export interface DurableModelReader {
 	getAvailableSnapshot(): readonly ModelInfo[];
 	getError(): string | undefined;
 	getRegisteredProviderIds(): readonly string[];
-	hasConfiguredAuth(providerId: string): boolean;
 	isUsingOAuth(providerId: string): boolean;
 	isUsingSubscription(providerId: string): boolean;
-	getProviderAuthStatus(providerId: string): { source?: string };
+	getProviderAuthStatus(providerId: string): { configured: boolean; source?: string };
 }
 
 /** The agent's model choice, independent of the process-wide catalog. */
@@ -222,8 +227,8 @@ interface ModelBuildInput {
 	scopeOrder: string[] | null;
 	selectedRef: { provider: string; modelId: string } | undefined;
 	thinkingLevel: string | undefined;
-	hasConfiguredAuth: (model: ModelInfo) => boolean | null;
-	billing: (model: ModelInfo) => Pick<ModelRecord, "oauth" | "subscriptionRecognized" | "authSource">;
+	auth: Pick<DurableModelReader, "getProviderAuthStatus">;
+	billing: (model: ModelInfo) => Pick<ModelRecord, "oauth" | "subscriptionRecognized">;
 	settingsScope?: SettingsScopeEvidence;
 	at: number;
 }
@@ -257,7 +262,7 @@ function buildModelRecord(
 		maxTokens: model.maxTokens,
 		supportedThinkingLevels: [...getSupportedThinkingLevels(model)],
 		available: input.availableSnapshot ? input.available.has(name) : null,
-		configuredAuth: input.hasConfiguredAuth(model),
+		...readAuthStatus(input.auth, model.provider),
 		...input.billing(model),
 		catalogCost: cost,
 		catalogCostHasTiers: cost === null ? null : (cost.tiers?.length ?? 0) > 0,
@@ -294,10 +299,9 @@ function selectedIdentity(
 		maxTokens: null,
 		supportedThinkingLevels: null,
 		available: input.availableSnapshot ? input.available.has(name) : null,
-		configuredAuth: readBoolean(() => reader.hasConfiguredAuth(ref.provider)),
+		...readAuthStatus(reader, ref.provider),
 		oauth: readBoolean(() => reader.isUsingOAuth(ref.provider)),
 		subscriptionRecognized: readBoolean(() => reader.isUsingSubscription(ref.provider)),
-		authSource: readAuthSource(() => reader.getProviderAuthStatus(ref.provider)),
 		catalogCost: null,
 		catalogCostHasTiers: null,
 		providerHasScopedModels: null,
@@ -373,17 +377,9 @@ export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
 					oauth === null
 						? null
 						: readBoolean(() => oauth && registry.getProvider(model.provider)?.auth.oauth?.isSubscription === true),
-				authSource: readAuthSource(() => registry.getProviderAuthStatus(model.provider)),
 			};
 		},
-		hasConfiguredAuth: (model) => {
-			try {
-				return registry.hasConfiguredAuth(model);
-			} catch {
-				/* Configuration presence is not remote auth health. */
-				return null;
-			}
-		},
+		auth: registry,
 		at,
 	});
 }
@@ -459,16 +455,8 @@ export function readDurableModels(
 		billing: (model) => ({
 			oauth: readBoolean(() => reader.isUsingOAuth(model.provider)),
 			subscriptionRecognized: readBoolean(() => reader.isUsingSubscription(model.provider)),
-			authSource: readAuthSource(() => reader.getProviderAuthStatus(model.provider)),
 		}),
-		hasConfiguredAuth: (model) => {
-			try {
-				return reader.hasConfiguredAuth(model.provider);
-			} catch {
-				/* Configuration presence is not remote auth health. */
-				return null;
-			}
-		},
+		auth: reader,
 		at,
 	};
 	const result = buildModelSnapshot(input);

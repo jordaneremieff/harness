@@ -26,7 +26,7 @@ function context() {
 			getAll: () => catalog,
 			getAvailable: () => catalog,
 			getError: () => undefined,
-			hasConfiguredAuth: () => true,
+			getProviderAuthStatus: () => ({ configured: true }),
 			getRegisteredProviderIds: () => ["extension-fixture"],
 		},
 	} as unknown as ExtensionContext;

@@ -44,9 +44,11 @@ function fixture() {
 			getAvailable: () => [...available],
 			getError: () => undefined,
 			getRegisteredProviderIds: () => [],
-			hasConfiguredAuth: (model: Model<Api>) => configured.has(model),
 			isUsingOAuth: () => false,
-			getProviderAuthStatus: () => ({ source: "environment", label: "private-auth-label" }),
+			getProviderAuthStatus: (provider: string) =>
+				[...configured].some((model) => model.provider === provider)
+					? { configured: true, source: "environment", label: "private-auth-label" }
+					: { configured: false },
 			getProvider: () => ({ auth: { oauth: { isSubscription: true } } }),
 			getProviderAuth: () => {
 				throw new Error("Unexpected credential resolution");
@@ -96,10 +98,9 @@ function durableReader(catalog: Model<Api>[]): DurableModelReader {
 		getAvailableSnapshot: () => catalog,
 		getError: () => undefined,
 		getRegisteredProviderIds: () => [],
-		hasConfiguredAuth: () => true,
 		isUsingOAuth: () => true,
 		isUsingSubscription: () => true,
-		getProviderAuthStatus: () => ({ source: "stored" }),
+		getProviderAuthStatus: () => ({ configured: true, source: "stored" }),
 	};
 }
 
@@ -131,7 +132,12 @@ describe("portable model selection evidence", () => {
 		assert.equal(resolved?.metadataAvailable, true);
 		assert.equal(resolved?.displayName, outside.name);
 		const agent = { model: { provider: "missing", modelId: "unknown" }, thinkingLevel: "high" };
-		const snapshot = readDurableModels({ ...reader, hasConfiguredAuth: () => false }, agent, 1, scope);
+		const snapshot = readDurableModels(
+			{ ...reader, getProviderAuthStatus: () => ({ configured: false }) },
+			agent,
+			1,
+			scope,
+		);
 		const selected = snapshot.records.filter((row) => row.selected);
 		assert.equal(selected.length, 1);
 		const row = selected[0];
@@ -165,9 +171,6 @@ describe("portable model selection evidence", () => {
 				...reader,
 				getModel: () => {
 					throw new Error("metadata unavailable");
-				},
-				hasConfiguredAuth: () => {
-					throw new Error("auth unavailable");
 				},
 				isUsingOAuth: () => {
 					throw new Error("oauth unavailable");
@@ -248,7 +251,10 @@ describe("portable model selection evidence", () => {
 		let snapshot = readModels(ctx, 1);
 		assert.ok(
 			snapshot.records.every(
-				(row) => row.oauth === false && row.subscriptionRecognized === false && row.authSource === "environment",
+				(row) =>
+					row.oauth === false &&
+					row.subscriptionRecognized === false &&
+					row.authSource === (row.configuredAuth ? "environment" : null),
 			),
 		);
 		ctx.modelRegistry.isUsingOAuth = () => true;
@@ -426,7 +432,9 @@ describe("provider configuration order", () => {
 			const reader = {
 				...durableReader(catalog),
 				getAvailableSnapshot: () => [...available],
-				hasConfiguredAuth: (provider: string) => [...configured].some((model) => model.provider === provider),
+				getProviderAuthStatus: (provider: string) => ({
+					configured: [...configured].some((model) => model.provider === provider),
+				}),
 			};
 			const read = (at: number) =>
 				host === "ordinary" ? readModels(ctx, at) : readDurableModels(reader, {}, at, { ...scope, observedAt: at });

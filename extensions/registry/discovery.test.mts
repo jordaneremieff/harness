@@ -45,7 +45,7 @@ function context() {
 			getAll: () => catalog,
 			getAvailable: () => [catalog[0]],
 			getError: () => undefined,
-			hasConfiguredAuth: (m: Model<Api>) => m.id === "a",
+			getProviderAuthStatus: () => ({ configured: true }),
 			getRegisteredProviderIds: () => [],
 			getProviderAuth: () => {
 				throw new Error("must not resolve auth");
@@ -158,7 +158,7 @@ describe("model discovery", () => {
 			throw new Error("secret-availability");
 		};
 		ctx.modelRegistry.getError = () => "secret-error";
-		ctx.modelRegistry.hasConfiguredAuth = () => {
+		ctx.modelRegistry.getProviderAuthStatus = () => {
 			throw new Error("secret-auth");
 		};
 		let result = await run({ kind: "model" }, host(), readModels(ctx, 1));

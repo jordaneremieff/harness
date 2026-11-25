@@ -139,10 +139,9 @@ function modelReader(models: ReturnType<typeof createModels>, probes: string[] =
 		},
 		isUsingOAuth: () => false,
 		isUsingSubscription: () => false,
-		getProviderAuthStatus: () => ({ source: "environment" as const }),
-		hasConfiguredAuth: () => {
+		getProviderAuthStatus: () => {
 			probes.push("auth");
-			return true;
+			return { configured: true, source: "environment" };
 		},
 	};
 }
@@ -638,7 +637,7 @@ test("native structured output retains an unresolved selected identity and page 
 			getModels: () => [],
 			getModel: () => undefined,
 			getAvailableSnapshot: () => [],
-			hasConfiguredAuth: () => false,
+			getProviderAuthStatus: () => ({ configured: false }),
 		},
 	};
 	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services));
@@ -689,7 +688,7 @@ test("native codemode receives structured registry pages and distinguishes calla
 			getModels: () => [],
 			getModel: () => undefined,
 			getAvailableSnapshot: () => [],
-			hasConfiguredAuth: () => false,
+			getProviderAuthStatus: () => ({ configured: false }),
 		},
 	};
 	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services));

@@ -53,9 +53,9 @@ function fixture(catalog = [model("preview-expires-on-1231"), model("stable")]) 
 				calls.push("error");
 				return undefined;
 			},
-			hasConfiguredAuth: () => {
+			getProviderAuthStatus: () => {
 				calls.push("auth");
-				return true;
+				return { configured: true };
 			},
 			getRegisteredProviderIds: () => {
 				calls.push("providers");
@@ -105,10 +105,9 @@ describe("offline catalog health", () => {
 			getAvailableSnapshot: () => [],
 			getError: () => undefined,
 			getRegisteredProviderIds: () => [],
-			hasConfiguredAuth: () => false,
 			isUsingOAuth: () => false,
 			isUsingSubscription: () => false,
-			getProviderAuthStatus: () => ({}),
+			getProviderAuthStatus: () => ({ configured: false }),
 		};
 		const scope = { status: "absent", patterns: null, observedAt: 1 } as const;
 		const agent = { model: { provider: "fixture", modelId: "unknown" } };
@@ -119,7 +118,7 @@ describe("offline catalog health", () => {
 		const failed = readDurableModels(
 			{
 				...reader,
-				hasConfiguredAuth: () => {
+				getProviderAuthStatus: () => {
 					throw new Error("unavailable");
 				},
 			},
@@ -163,7 +162,7 @@ describe("offline catalog health", () => {
 	it("reports only current selected auth and membership gaps, not unused unauthenticated catalog entries", async () => {
 		const { ctx } = fixture([model("stable")]);
 		ctx.model = model("preview-expires-on-1231");
-		ctx.modelRegistry.hasConfiguredAuth = () => false;
+		ctx.modelRegistry.getProviderAuthStatus = () => ({ configured: false });
 		const result = await run(readModels(ctx, 1));
 		assert.equal(result.outcome, "ok");
 		assert.equal(result.details.total, 1);
@@ -173,10 +172,20 @@ describe("offline catalog health", () => {
 		assert.match(result.text, /silently omit failed providers/);
 		assert.match(result.text, /not recent dispatch use/);
 	});
+	it("reports a configured provider before the availability cache includes it", () => {
+		const { ctx, catalog } = fixture([model("stable")]);
+		ctx.model = catalog[0];
+		ctx.modelRegistry.getAvailable = () => [];
+		ctx.modelRegistry.hasConfiguredAuth = () => false;
+		ctx.modelRegistry.getProviderAuthStatus = () => ({ configured: true, source: "models_json_key" });
+		const snapshot = readModels(ctx, 1);
+		const [row] = snapshot.records;
+		assert.deepEqual([row.available, row.configuredAuth, row.authSource], [false, true, "models_json_key"]);
+		assert.deepEqual(catalogHealth(snapshot), []);
+	});
 	it("distinguishes an unresolved stored credential from an absent one without a credential lookup", async () => {
 		const { ctx, catalog } = fixture([model("stable")]);
 		ctx.model = catalog[0];
-		ctx.modelRegistry.hasConfiguredAuth = () => false;
 		ctx.modelRegistry.getProviderAuthStatus = () => ({ configured: false, source: "stored" });
 		const result = await run(readModels(ctx, 1));
 		assert.deepEqual(codes(records(result)[0]), ["selected_auth_unresolved"]);
@@ -224,7 +233,7 @@ describe("offline catalog health", () => {
 		ctx.modelRegistry.getAll = () => {
 			throw new Error("private-catalog-error");
 		};
-		ctx.modelRegistry.hasConfiguredAuth = () => {
+		ctx.modelRegistry.getProviderAuthStatus = () => {
 			throw new Error("private-auth-error");
 		};
 		let result = await run(readModels(ctx, 1));

@@ -428,7 +428,7 @@ its schema and registered guidance without activating it.
 ## Evidence and observation
 
 - Chat model records project `ctx.modelRegistry.getAll()`, `getAvailable()`,
-  `hasConfiguredAuth()`, `isUsingOAuth()`, `getProviderAuthStatus()`,
+  `isUsingOAuth()`, `getProviderAuthStatus()`,
   `getProvider()`, `getError()`, `getRegisteredProviderIds()`, `ctx.model`,
   `ctx.thinkingLevel`, and `ctx.scopedModels`. Names are canonical `provider/id`;
   display names are separate. Records state catalog membership, selected state,
@@ -449,7 +449,9 @@ its schema and registered guidance without activating it.
   reads provider registration once per model snapshot.
   `oauth` projects `isUsingOAuth()`. In ordinary sessions,
   `subscriptionRecognized` combines OAuth use with the provider's public
-  `auth.oauth.isSubscription` flag. `authSource` admits only Pi's source enum:
+  `auth.oauth.isSubscription` flag. `configuredAuth` and `authSource` come from
+  the same provider status. A configured provider can be absent from the cached
+  list of available models. `authSource` admits only Pi's source enum:
   `stored`, `runtime`, `environment`, `fallback`, `models_json_key`, or
   `models_json_command`. Labels, configuration values, and resolved credentials
   are never returned. `catalogCost` copies only public catalog price fields,
