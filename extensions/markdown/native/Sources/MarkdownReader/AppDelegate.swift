@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var paneHost: PaneHost?
     private let livePath: String?
     private var liveConfiguration: CollaborationConfiguration?
-    private var liveUnavailable: String?
+    private var startupDeadline: DispatchTime?
 
     init(mode: LaunchMode, livePath: String? = nil) {
         self.mode = mode; self.livePath = livePath
@@ -74,19 +74,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let livePath {
             Task { @MainActor in
-                var target = "the original Pi conversation"
                 do {
                     let configuration = try CollaborationConfiguration.consume(livePath)
-                    target = configuration.target
-                    try await configuration.reportStarting()
+                    guard mode.isCheck || configuration.live == CollaborationConfiguration.paneProtocol else {
+                        throw StoreError.unreadable("The live launch configuration does not match this reader.")
+                    }
                     liveConfiguration = configuration
+                    startupDeadline = try await configuration.reportStarting()
+                    finishLaunch()
                 } catch {
-                    liveUnavailable = "No connection to \(target). Reopen from the original Pi conversation."
-                    FileHandle.standardError.write(Data("Markdown Reader: agent connection unavailable; document access is unchanged.\n".utf8))
+                    await failLaunch("Request a new reader launch from the original Pi conversation. \(error)")
                 }
-                finishLaunch()
             }
         } else { finishLaunch() }
+    }
+
+    private func failLaunch(_ detail: String, status: Int32 = 1) async -> Never {
+        if let liveConfiguration {
+            _ = await PaneHost.run(until: .now() + .milliseconds(400)) { _ = await liveConfiguration.reportLaunchFailure(detail) }
+        }
+        FileHandle.standardError.write(Data(TerminalText.line("Markdown Reader: \(detail)").utf8))
+        exit(status)
     }
 
     private func finishLaunch() {
@@ -212,31 +220,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     private func startEditor(_ launch: EditorLaunch) {
         let terminal = launch.surface == .pane ? PaneTerminal() : nil
-        if launch.surface == .pane, terminal == nil {
-            FileHandle.standardError.write(Data("Markdown Reader: the editor pane needs terminal input and output.\n".utf8))
-            exit(2)
-        }
         Task { @MainActor in
+            if launch.surface == .pane, terminal == nil {
+                await failLaunch("The editor pane needs terminal input and output.", status: 2)
+            }
             do {
                 let (record, origin) = try await Task.detached { try launch.load() }.value
                 if let terminal {
                     let workspace = EditorWorkspace(directory: Self.stateDirectory().appendingPathComponent("Drafts"), store: launch.store, automaticallySaves: true)
                     workspace.launchOrigin = origin; workspace.add(record)
-                    workspace.notice = liveUnavailable
-                    if let liveConfiguration { workspace.startCollaboration(liveConfiguration) }
+                    if let liveConfiguration { workspace.startCollaboration(liveConfiguration, requiresRenderedStart: true) }
                     let model = ReaderModel(reference: .file(path: "draft:" + record.id.uuidString), platform: windows.platform, state: windows.state)
                     let host = PaneHost(model: model, state: windows.state, terminal: terminal, workspace: workspace)
                     paneHost = host
-                    windows.adoptEditor(host.start(), workspace: workspace)
+                    windows.adoptEditor(host.start(startupDeadline: startupDeadline), workspace: workspace)
                 } else {
                     let workspace = windows.showEditor(record: record, store: launch.store, origin: origin)
-                    workspace.notice = liveUnavailable
                     if let liveConfiguration { workspace.startCollaboration(liveConfiguration) }
                 }
             } catch {
-                if launch.surface == .pane {
-                    FileHandle.standardError.write(Data(TerminalText.line("Markdown Reader: editor not opened: \(error)").utf8)); exit(1)
-                }
+                if launch.surface == .pane || liveConfiguration != nil { await failLaunch("Editor not opened: \(error)") }
                 showError("The editor could not open this document.", detail: String(describing: error))
             }
         }
@@ -245,17 +248,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// Pane mode: checks the store and the document before the terminal changes, so that a wrong
     /// argument ends with one error line and a nonzero status in the pane.
     private func startPane(_ target: LaunchMode.PaneTarget) {
-        guard let terminal = PaneTerminal() else {
-            FileHandle.standardError.write(Data("Markdown Reader: --pane needs a terminal on standard input and output.\n".utf8))
-            exit(2)
-        }
         let label: String
         switch target {
         case .document(_, let document, _): label = document
         case .request(let path): label = URL(fileURLWithPath: path).lastPathComponent
         }
         Task {
-            let outcome = await Task.detached { () -> Result<(DocumentReference, Int?, String?, LaunchOrigin?), OpenIntakeError> in
+            guard let terminal = PaneTerminal() else {
+                await failLaunch("--pane needs a terminal on standard input and output.", status: 2)
+            }
+            let load = Task.detached { () -> Result<(DocumentReference, Int?, String?, LaunchOrigin?), OpenIntakeError> in
                 do {
                     switch target {
                     case .document(let root, let document, let pin):
@@ -282,7 +284,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 } catch {
                     return .failure(.invalidRequest(error.localizedDescription))
                 }
-            }.value
+            }
+            var outcome: Result<(DocumentReference, Int?, String?, LaunchOrigin?), OpenIntakeError>?
+            if let startupDeadline {
+                _ = await PaneHost.run(until: startupDeadline) { outcome = await load.value }
+            } else { outcome = await load.value }
+            guard let outcome else { await failLaunch("The document store did not respond before the startup deadline.") }
             switch outcome {
             case .success(let (reference, revision, digest, origin)):
                 let model = ReaderModel(reference: reference, platform: windows.platform, state: windows.state)
@@ -290,20 +297,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 if livePath != nil {
                     let root: String? = if case .stored(let root, _, _) = reference { root } else { windows.state.selectedStoreRoot }
                     let live = EditorWorkspace(directory: Self.stateDirectory().appendingPathComponent("Drafts"), store: root, automaticallySaves: true)
-                    live.reading = model; live.launchOrigin = origin; live.notice = liveUnavailable
-                    if let liveConfiguration { live.startCollaboration(liveConfiguration) }
+                    live.reading = model; live.launchOrigin = origin
+                    if let liveConfiguration { live.startCollaboration(liveConfiguration, requiresRenderedStart: true) }
                     workspace = live
                 } else { workspace = nil }
                 let host = PaneHost(model: model, state: windows.state, terminal: terminal, workspace: workspace)
                 host.onWorkspaceChange = { [weak self] window, workspace in self?.windows.adoptEditor(window, workspace: workspace) }
                 paneHost = host
-                let window = host.start(revision: revision, digest: digest, origin: origin)
+                let window = host.start(revision: revision, digest: digest, origin: origin, startupDeadline: startupDeadline)
                 if let workspace { windows.adoptEditor(window, workspace: workspace) }
                 else { windows.adopt(window, model: model) }
             case .failure(let error):
-                // Command and store text must not control the terminal.
-                FileHandle.standardError.write(Data(TerminalText.line("Markdown Reader: \(label) cannot be shown: \(error)").utf8))
-                exit(1)
+                await failLaunch("\(label) cannot be shown: \(error)")
             }
         }
     }

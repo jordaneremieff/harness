@@ -150,16 +150,16 @@ public struct ReaderBridgeChange: Equatable, Sendable {
             throw ReaderBridgeError.invalid("edits")
         }
         var edits: [ReaderBridgeEdit] = []
-        var previousEnd = 0
+        var previousEnd = 0, previousStart = -1
         for record in records {
             try BridgeField.keys(record, allowed: ["start", "end", "text", "expected"])
             let range = try BridgeField.range(record)
-            guard range.start >= previousEnd else { throw ReaderBridgeError.invalid("edits order") }
+            guard range.start >= previousEnd, range.start != previousStart else { throw ReaderBridgeError.invalid("edits order") }
             let text = try BridgeField.string(record, "text", limit: ReaderBridgeCodec.sourceLimit, empty: true)
             let expected = try BridgeField.string(record, "expected", limit: ReaderBridgeCodec.sourceLimit, empty: true)
             guard expected.utf16.count == range.end - range.start else { throw ReaderBridgeError.invalid("expected length") }
             edits.append(.init(start: range.start, end: range.end, text: text, expected: expected))
-            previousEnd = range.end
+            previousEnd = range.end; previousStart = range.start
         }
         self.init(baseGeneration: base, generation: generation, origin: origin,
                   operationId: try BridgeField.optionalString(fields, "operationId", limit: 256), edits: edits)
@@ -182,7 +182,7 @@ public enum ReaderBridgeCodec {
     public static let renderedLimit = 16 * 1024 * 1024
     public static let editListLimit = 5 * 1024 * 1024
     public static let reviewDraftLimit = 4 * 1024 * 1024
-    public static let editLimit = 4096
+    public static let editLimit = 1024
     public static let maxInteger = 9_007_199_254_740_991
 
     public static func decode(body: Any) throws -> ReaderBridgeMessage {
@@ -333,6 +333,14 @@ public enum ReaderBridgeCodec {
             guard let source = fields["source"] as? String else { throw ReaderBridgeError.invalid("source") }
             guard source.utf8.count <= sourceLimit else { throw ReaderBridgeError.oversized }
             if fields["position"] != nil { _ = try BridgeField.scroll(fields, "position") }
+            if fields["base"] != nil {
+                let base = try BridgeField.object(fields, "base")
+                try BridgeField.keys(base, allowed: ["presentation", "generation"])
+                try validateIdentity(base, "presentation")
+                guard try BridgeField.integer(fields, "generation") == BridgeField.integer(base, "generation") + 1 else {
+                    throw ReaderBridgeError.invalid("base generation")
+                }
+            }
             var withoutSource = fields
             withoutSource.removeValue(forKey: "source")
             try validateArrayGroup(withoutSource, key: "blocks", limit: renderedLimit)

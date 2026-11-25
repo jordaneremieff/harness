@@ -38,7 +38,7 @@ import { homedir } from "node:os";
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EDITOR_OPEN, PANE_MODE, PANE_OPEN, PANE_REVISION } from "../pane-command.ts";
+import { EDITOR_OPEN, PANE_MODE, PANE_OPEN, PANE_PROTOCOL, PANE_REVISION } from "../pane-command.ts";
 import { readSettings } from "../settings.ts";
 
 /** Version of the contract between openers and the app: open requests, store format, tool output. */
@@ -690,8 +690,7 @@ function install(destination: string, store: string, paneAppearance: string, web
 			paneRevision: PANE_REVISION,
 			paneOpenRequest: PANE_OPEN_REQUEST,
 			editorOpen: EDITOR_OPEN,
-			live: 2,
-			paneProtocol: 3,
+			paneProtocol: PANE_PROTOCOL,
 			sourceDigest: digest,
 			...(source ? { source } : {}),
 			builtAt: new Date().toISOString(),

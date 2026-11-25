@@ -160,6 +160,24 @@ test("a narrow width caps a single long read line and discloses the exact next p
 	assert.doesNotMatch(screen(component), /Truncated:|to expand/u);
 });
 
+test("live inventory discloses a failed launch and departure even when no pane connects", (t) => {
+	keys(t);
+	const component = card("markdown_live", { op: "list" });
+	component.updateResult(
+		result("", {
+			status: "ok",
+			panes: [],
+			pending: [],
+			failed: [{ reason: "boot-failed", message: "Document load failed." }],
+			departed: [{ reason: "contact-lost" }],
+		}),
+	);
+	assert.match(screen(component, 140), /No connected panes; 1 recent launch failure; 1 recent pane departure/u);
+	component.setExpanded(true);
+	assert.match(screen(component), /Document load failed/u);
+	assert.match(screen(component), /contact-lost/u);
+});
+
 test("live source and edit bodies stay out of collapsed cards, with a click hint only after a result", (t) => {
 	keys(t, []);
 	const component = card("markdown_live", {

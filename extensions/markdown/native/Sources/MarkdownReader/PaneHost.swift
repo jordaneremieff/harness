@@ -42,6 +42,8 @@ final class PaneHost {
     private var content: PaneContentView { overlay.content }
     private var surface: ReaderSurface?
     private var ending = false
+    private var initialConnectionDeadline: Task<Void, Never>?
+    private var bootFailure: String?
 
     init(model: ReaderModel, state: ReadingStateStore, terminal: PaneTerminal, workspace: EditorWorkspace? = nil) {
         self.model = model
@@ -51,7 +53,8 @@ final class PaneHost {
         editorFocusPending = workspace?.active != nil
     }
 
-    func start(revision: Int? = nil, digest: String? = nil, origin: LaunchOrigin? = nil) -> NSWindow {
+    func start(revision: Int? = nil, digest: String? = nil, origin: LaunchOrigin? = nil,
+               startupDeadline: DispatchTime? = nil) -> NSWindow {
         model.followsLatest = revision == nil
         installSurface(model)
         window.onClose = { [weak self] in self?.end(status: 0) }
@@ -68,6 +71,12 @@ final class PaneHost {
         draw()
         overlay.onChange = { [weak self] in self?.draw() }
         overlay.start()
+        if let startupDeadline {
+            initialConnectionDeadline = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(Self.seconds(until: startupDeadline))) } catch { return }
+                self?.checkInitialView(deadline: true)
+            }
+        }
         observePhase()
         if let workspace { connect(workspace) }
         if workspace == nil || workspace?.reading === model {
@@ -158,6 +167,7 @@ final class PaneHost {
     /// shown one in place. Opening the shown document again shows its latest revision.
     private func open(_ document: String) {
         guard !ending, !opening else { return }
+        guard initialConnectionDeadline == nil else { message = "Wait for the initial reader connection before opening another document."; return }
         guard PaneCommand.isDocumentIdentity(document) else {
             message = "\(document) is not a document ID (md- and 20 hexadecimal digits)."
             return
@@ -189,13 +199,35 @@ final class PaneHost {
 
     /// Redraws the placeholder whenever the shown model's phase or revision changes. A model that
     /// the pane no longer shows ends its observation.
+    private func checkInitialView(deadline: Bool = false) {
+        guard initialConnectionDeadline != nil, !ending, bootFailure == nil else { return }
+        let client = workspace?.collaboration
+        if client?.connectedOnce == true {
+            initialConnectionDeadline?.cancel(); initialConnectionDeadline = nil
+            return
+        }
+        let failure: String?
+        if case .failed(let reason) = displayedReader?.phase { failure = "The document could not be opened: \(reason)" }
+        else if let reason = client?.initialConnectionFailure { failure = reason }
+        else if deadline { failure = "The reader did not confirm a rendered document before the startup deadline." }
+        else { failure = nil }
+        if let failure {
+            bootFailure = failure
+            end(status: 1)
+        }
+    }
+
     private func observePhase() {
+        checkInitialView()
         observation += 1
         let current = observation
         withObservationTracking {
             _ = displayedDraft?.session.record.generation
             _ = displayedDraft?.session.record.title
             _ = workspace?.notice
+            _ = workspace?.collaboration?.connectedOnce
+            _ = workspace?.collaboration?.connectionStatus
+            _ = workspace?.collaboration?.initialConnectionFailure
             _ = displayedReader?.phase
             _ = displayedReader?.snapshot?.revision
             _ = displayedReader?.latestRevision
@@ -218,6 +250,7 @@ final class PaneHost {
         case .searching: status = "Looking for this pane on screen."
         case .untrusted: status = "This terminal cannot place the reader over its pane: the program has no accessibility access."
         }
+        if let client = workspace?.collaboration { status = client.connectionStatus + ". " + status }
         if case .failed(let reason) = shown?.phase { status = "The document could not be opened: \(reason)" }
         if let notice = workspace?.notice { status = notice + " " + status }
         if let message { status = message + " " + status }
@@ -288,6 +321,7 @@ final class PaneHost {
     private func finishEnd(status: Int32, terminalGone: Bool) {
         guard !ending else { return }
         ending = true
+        initialConnectionDeadline?.cancel(); initialConnectionDeadline = nil
         overlay.stop()
         let gone = Flag(terminalGone)
         terminal.onHangUp = { gone.value = true }
@@ -304,6 +338,7 @@ final class PaneHost {
             }
             if !gone.value {
                 terminal.leave(before: .now() + Self.outputAllowance)
+                if let bootFailure { terminal.report("Markdown Reader: \(bootFailure)", before: .now() + Self.outputAllowance) }
                 if let message { terminal.report(message, before: .now() + Self.outputAllowance) }
             }
             // Output that the terminal did not take must not hold the exit, so no exit handler
@@ -313,7 +348,7 @@ final class PaneHost {
         let deadline = DispatchTime.now() + Self.saveAllowance
         Task { @MainActor in
             let captured = await Self.run(until: .now() + Self.captureAllowance) {
-                await self.workspace?.closeViews()
+                await self.workspace?.closeViews(bootFailure: self.bootFailure)
                 await self.model.close()
             }
             var result = await state.flush(timeout: Self.seconds(until: deadline))

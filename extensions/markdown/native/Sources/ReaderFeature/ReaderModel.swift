@@ -235,10 +235,16 @@ public final class ReaderModel {
     }
 
     /// Reuses the same web view for a different authoritative reading snapshot.
-    public func showSnapshot(_ snapshot: DocumentSnapshot, latestRevision: Int? = nil, initialLock: ReaderBridgeLock? = nil,
-                             origin: LaunchOrigin? = nil, mayInstall: @escaping @MainActor () -> Bool = { true }) async throws {
+    public func showSnapshot(_ requested: DocumentSnapshot, latestRevision: Int? = nil, initialLock: ReaderBridgeLock? = nil,
+                             origin: LaunchOrigin? = nil, preferNewest: Bool = false,
+                             mayInstall: @escaping @MainActor () -> Bool = { true }) async throws {
         await waitForSnapshotDelivery()
-        guard !closed else { throw CancellationError() }
+        guard !closed, mayInstall() else { throw CancellationError() }
+        // A follow already accepted by the page wins over a stale lookup of latest, not an exact pin.
+        let snapshot: DocumentSnapshot
+        if preferNewest, !isDraft, let shown = self.snapshot, shown.reference == requested.reference,
+           (shown.revision ?? 0) > (requested.revision ?? 0) { snapshot = shown }
+        else { snapshot = requested }
         guard snapshot.source.utf8.count <= Limits.sourceBytes else { throw ReaderBridgeError.oversized }
         generation += 1
         let token = generation
@@ -255,7 +261,7 @@ public final class ReaderModel {
         try Task.checkCancellation()
         let latest = latestRevision ?? snapshot.latestRevision
         let nextLock = isCaptured(snapshot) ? .reading : (initialLock ?? .reading)
-        let position = snapshot.reference == reference && !isDraft ? cachedReadingPosition : nil
+        let position = snapshot.reference == reference && !isDraft ? cachedReadingPosition?.carried(from: source, to: snapshot.source) : nil
         let envelope = documentPayload(snapshot: snapshot, rendered: candidate, generation: 0, lock: nextLock,
                                        position: position ?? state.position(for: snapshot.reference), draftId: nil,
                                        isDraft: false, latestRevision: latest, metadata: [:])
@@ -325,7 +331,7 @@ public final class ReaderModel {
     }
 
     /// Once a snapshot enters WebKit, let its model commit finish before another document delivery.
-    private func waitForSnapshotDelivery() async {
+    package func waitForSnapshotDelivery() async {
         while let delivery = snapshotDelivery { _ = try? await delivery.value }
     }
 
@@ -369,6 +375,28 @@ public final class ReaderModel {
         updateAssets()
     }
 
+    /// Refreshes blocks at the accepted source generation without reinstalling the editor or its history.
+    public func refreshDraftAssets(_ resolver: any AssetResolving, draftId: UUID, presentation: String, generation: UInt64) async {
+        func current() -> Bool {
+            !closed && draftIdentity == draftId && isDraft && page.presentation == presentation
+                && displayedPresentation == presentation && sourceGeneration == generation
+        }
+        guard current() else { return }
+        mirrorSequence += 1
+        let mirror = mirrorSequence, source = self.source
+        let nonce = rendered?.nonce ?? MarkdownRenderer.newNonce()
+        let result = await Task.detached(priority: .userInitiated) {
+            MarkdownRenderer.render(source, resolver: resolver, nonce: nonce)
+        }.value
+        guard current(), mirror == mirrorSequence else { return }
+        snapshot?.resolver = resolver
+        rendered = result
+        renderedGeneration = generation
+        updateAssets()
+        resumeRenderingWaiters()
+        await sendCommand("refreshRender")
+    }
+
     private func beginMirrorUpdate(source: String, generation: UInt64) throws -> Int {
         guard !closed else { throw CancellationError() }
         guard source.utf8.count <= Limits.sourceBytes, generation <= UInt64(ReaderBridgeCodec.maxInteger) else {
@@ -394,8 +422,15 @@ public final class ReaderModel {
     /// Sends a complete document on open or resynchronisation, never after an ordinary edit.
     public func sendDocument(source: String, generation: UInt64, meta: [String: Any]? = nil,
                              resolver: (any AssetResolving)? = nil, initialLock: ReaderBridgeLock? = nil,
-                             draftId: UUID? = nil) async throws {
+                             draftId: UUID? = nil, replacing base: (presentation: String, generation: UInt64)? = nil,
+                             mayInstall: @MainActor () -> Bool = { true }) async throws {
         await waitForSnapshotDelivery()
+        func matchesBase() -> Bool {
+            guard let base else { return true }
+            return isDraft && page.documentReady && page.presentation == base.presentation
+                && displayedPresentation == base.presentation && sourceGeneration == base.generation
+        }
+        guard matchesBase(), mayInstall() else { throw CancellationError() }
         let token = try beginMirrorUpdate(source: source, generation: generation)
         let identity = draftId ?? draftIdentity
         let nextMeta = meta ?? metadata
@@ -412,12 +447,14 @@ public final class ReaderModel {
         let defaultLock = draftLock ?? self.initialLock ?? lock
         let captured = nextMeta["capturedSource"] as? Bool ?? isCaptured(candidate)
         let nextLock = captured ? ReaderBridgeLock.reading : (initialLock ?? defaultLock)
-        let position = changedDraft ? nil : (cachedReadingPosition ?? (draft ? nil : state.position(for: reference)))
-        let envelope = documentPayload(snapshot: candidate, rendered: result, generation: generation, lock: nextLock,
+        let position = changedDraft ? nil : (cachedReadingPosition?.carried(from: self.source, to: source) ?? (draft ? nil : state.position(for: reference)))
+        var envelope = documentPayload(snapshot: candidate, rendered: result, generation: generation, lock: nextLock,
                                        position: position, draftId: identity, isDraft: draft, latestRevision: latestRevision, metadata: nextMeta)
+        if let base { envelope["base"] = ["presentation": base.presentation, "generation": base.generation] }
         defer { finishDelivery(token) }
         do {
             _ = try await page.send(envelope) {
+                guard token == self.generation, matchesBase(), mayInstall() else { return false }
                 self.stageDelivery(token, assets: result.assets)
                 return true
             }
@@ -966,6 +1003,23 @@ public final class ReaderModel {
     /// again at the position captured before the load. Returns true when the prepared revision was
     /// committed.
     private func install(_ prepared: PreparedDocument, position: ReadingPosition?, token: Int, started: Date, automatic: Bool) async -> Bool {
+        guard automatic, displayNavigationForCheck == nil else {
+            return await performInstall(prepared, position: position, token: token, started: started, automatic: automatic)
+        }
+        // Explicit show supersedes preparation, but never interrupts a page delivery already in progress.
+        let delivery = Task { @MainActor in
+            defer { snapshotDelivery = nil }
+            guard token == generation, !closed,
+                  await performInstall(prepared, position: position, token: token, started: started, automatic: true) else {
+                throw DisplayWait.Superseded()
+            }
+        }
+        snapshotDelivery = delivery
+        do { try await delivery.value; return true }
+        catch { return false }
+    }
+
+    private func performInstall(_ prepared: PreparedDocument, position: ReadingPosition?, token: Int, started: Date, automatic: Bool) async -> Bool {
         let displayStart = Date()
         defer { finishDelivery(token) }
         let envelope: [String: Any]

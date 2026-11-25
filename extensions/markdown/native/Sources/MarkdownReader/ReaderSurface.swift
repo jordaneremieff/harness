@@ -13,7 +13,7 @@ final class ReaderSurface: NSView {
     var onWorkspace: ((EditorWorkspace) -> Void)?
     var onClose: (() -> Void)?
     var onReturnFocus: (() -> Void)?
-    private var pendingAgent: (id: String, finish: (WebAgentApplyResult) -> Void)?
+    private var pendingAgent: (id: String, attempt: UUID, deadline: Task<Void, Never>, finish: (WebAgentApplyResult) -> Void)?
     private var observedDocument: UUID?
     private weak var displayedDraft: WorkingDocument?
     private var draftInstall: (document: UUID, token: UUID, task: Task<Void, Never>)?
@@ -160,24 +160,36 @@ final class ReaderSurface: NSView {
             guard let self, self.model.live, self.pageReady else { return true }
             return (try? await self.model.page.callJavaScript("return await reader.flushReviewDrafts();")) as? Bool == true
         }
+        workspace.webExternalSnapshot = { [weak self] document, record, resolver, mayInstall, commit in
+            guard let self else { throw CancellationError() }
+            try await self.replaceExternalSnapshot(document, record: record, resolver: resolver, mayInstall: mayInstall, commit: commit)
+        }
         workspace.webAgentApply = { [weak self] operation, generation, edits in
-            guard let self, self.pageReady, self.pendingAgent == nil else { return .refused(reason: "stale") }
+            guard let self, self.pageReady, self.pendingAgent == nil,
+                  let presentation = self.model.displayedPresentation, self.installed(presentation) else { return .refused(reason: "stale") }
             return await withCheckedContinuation { continuation in
-                self.pendingAgent = (operation, { continuation.resume(returning: $0) })
+                let attempt = UUID()
+                let deadline = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(for: .seconds(20)) } catch { return }
+                    self?.finishAgent(operation, attempt: attempt, result: .refused(reason: "unknown"))
+                }
+                self.pendingAgent = (operation, attempt, deadline, { continuation.resume(returning: $0) })
                 Task {
                     do {
                         var envelope: [String: Any] = ["v": 1, "type": "agentApply", "operationId": operation,
-                            "baseGeneration": generation, "edits": edits.map(Self.editPayload)]
+                            "baseGeneration": generation, "basePresentation": presentation, "edits": edits.map(Self.editPayload)]
                         if let workspace = self.workspace, let key = workspace.logicalDocumentKey,
                            let thread = workspace.collaboration?.currentAdmittedThreadId(for: key) { envelope["threadId"] = thread }
-                        _ = try await self.model.sendEnvelope(envelope)
+                        let receipt = try await self.model.sendEnvelope(envelope)
+                        guard let flag = receipt as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else {
+                            self.finishAgent(operation, attempt: attempt, result: .refused(reason: "unknown")); return
+                        }
+                        if !flag.boolValue { self.finishAgent(operation, attempt: attempt, result: .refused(reason: "rejected")) }
+                    } catch is ReaderBridgeError {
+                        self.finishAgent(operation, attempt: attempt, result: .refused(reason: "rejected"))
                     } catch {
-                        self.finishAgent(operation, result: .refused(reason: "unknown"))
+                        self.finishAgent(operation, attempt: attempt, result: .refused(reason: "unknown"))
                     }
-                }
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(20))
-                    self?.finishAgent(operation, result: .refused(reason: "unknown"))
                 }
             }
         }
@@ -194,6 +206,12 @@ final class ReaderSurface: NSView {
         }
         workspace.webRelease = { [weak self] id in
             Task { _ = try? await self?.model.sendEnvelope(["v": 1, "type": "release", "claimId": id]) }
+        }
+        for document in workspace.documents {
+            document.onResolverChange = { [weak self, weak document] in
+                guard let self, let document, self.displayedDraft === document else { return }
+                Task { await self.refreshHostedResolver(for: document) }
+            }
         }
         if workspace.collaboration != nil {
             workspace.reviewComments.onChange = { [weak self, weak workspace] identity in
@@ -216,9 +234,9 @@ final class ReaderSurface: NSView {
         }
     }
 
-    private func finishAgent(_ operation: String, result: WebAgentApplyResult) {
-        guard let pending = pendingAgent, pending.id == operation else { return }
-        pendingAgent = nil; pending.finish(result)
+    private func finishAgent(_ operation: String, attempt: UUID? = nil, result: WebAgentApplyResult) {
+        guard let pending = pendingAgent, pending.id == operation, attempt == nil || pending.attempt == attempt else { return }
+        pendingAgent = nil; pending.deadline.cancel(); pending.finish(result)
     }
 
     func ensureWorkspace() -> EditorWorkspace {
@@ -239,6 +257,7 @@ final class ReaderSurface: NSView {
         case "state":
             pageState = message
             guard let workspace, pageMatchesWorkspace else { break }
+            let previouslyHeld = workspace.pageHeld != nil
             workspace.pageHeld = Self.range(message["held"])
             if let document = workspace.active, let selection = message["selection"] as? [String: Any],
                let range = Self.range(selection), let text = selection["text"] as? String,
@@ -250,6 +269,7 @@ final class ReaderSurface: NSView {
             }
             // Queued source writes keep the live document busy until acknowledgement.
             updateBusy()
+            if previouslyHeld, workspace.pageHeld == nil, !workspace.pageBusy { workspace.active?.checkForUpdates() }
         case "edits":
             let change = try Self.change(message)
             guard let presentation = message["presentation"] as? String else { throw BridgeFailure.invalid }
@@ -360,7 +380,10 @@ final class ReaderSurface: NSView {
     }
 
     private func updateBusy() {
-        workspace?.pageBusy = queuedChanges > 0 || (pageMatchesWorkspace && pageState["editingPending"] as? Bool == true)
+        guard let workspace else { return }
+        let wasBusy = workspace.pageBusy
+        workspace.pageBusy = queuedChanges > 0 || (pageMatchesWorkspace && pageState["editingPending"] as? Bool == true)
+        if wasBusy, !workspace.pageBusy { workspace.active?.checkForUpdates() }
     }
 
     private func installed(_ presentation: String) -> Bool {
@@ -560,8 +583,8 @@ final class ReaderSurface: NSView {
         return reply
     }
 
-    private func metadata(_ document: WorkingDocument) -> [String: Any] {
-        let record = document.session.record
+    private func metadata(_ document: WorkingDocument, record: DraftRecord? = nil) -> [String: Any] {
+        let record = record ?? document.session.record
         var kind = "draft", id = record.id.uuidString
         var result: [String: Any] = ["revision": NSNull()]
         result["documentKey"] = workspace?.documentKey(for: document).uuidString
@@ -577,6 +600,37 @@ final class ReaderSurface: NSView {
         return result
     }
 
+    private func refreshHostedResolver(for document: WorkingDocument) async {
+        await waitForPendingChanges()
+        guard workspace?.active === document, workspace?.webReady == true, displayedDraft === document,
+              let presentation = model.page.presentation, installed(presentation) else { return }
+        await model.refreshDraftAssets(document.assetResolver, draftId: document.session.record.id,
+            presentation: presentation, generation: document.text.generation)
+    }
+
+    private func replaceExternalSnapshot(_ document: WorkingDocument, record: DraftRecord, resolver: any AssetResolving,
+                                         mayInstall: @escaping @MainActor () -> Bool, commit: @escaping @MainActor () -> Void) async throws {
+        guard draftInstall == nil, !applying, pageMatchesWorkspace, displayedDraft === document,
+              let workspace, let presentation = model.page.presentation else { throw CancellationError() }
+        let base = (presentation, document.text.generation)
+        let token = UUID()
+        let task = Task { @MainActor in
+            defer { if draftInstall?.token == token { draftInstall = nil } }
+            do {
+                try await model.sendDocument(source: record.source, generation: record.generation,
+                    meta: metadata(document, record: record), resolver: resolver, draftId: record.id, replacing: base,
+                    mayInstall: { mayInstall() && !workspace.pageBusy && workspace.pageHeld == nil && self.installed(presentation) })
+                commit()
+                workspace.webReady = true
+            } catch {
+                workspace.webReady = installed(presentation)
+                throw error
+            }
+        }
+        draftInstall = (document.id, token, Task { _ = await task.result })
+        try await task.value
+    }
+
     private func showWorkspace() async {
         guard pageReady, !applying, let workspace else { return }
         if let document = workspace.active, workspace.reading == nil {
@@ -585,7 +639,8 @@ final class ReaderSurface: NSView {
             let previous = model.page.presentation, token = UUID()
             let task = Task { @MainActor in
                 defer { if draftInstall?.token == token { draftInstall = nil } }
-                guard workspace.active === document, draftInstall?.token == token else { return }
+                await document.resolverTask?.value
+                guard workspace.active === document, draftInstall?.token == token, !workspace.closing else { return }
                 do {
                     try await model.sendDocument(source: document.text.source, generation: document.text.generation,
                         meta: metadata(document), resolver: document.assetResolver, draftId: document.session.record.id)

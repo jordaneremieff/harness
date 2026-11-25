@@ -355,6 +355,26 @@ test("the native entry propagates an exception after document installation begin
 	assert.equal(source, "replacement");
 	host.dispose();
 });
+test("invalid agent delivery returns false before a listener can mutate the page", () => {
+	const api = bridge(),
+		host = api.createNativeHost();
+	let deliveries = 0;
+	const failure = new Error("The page lost the edit receipt.");
+	host.on("agentApply", () => {
+		deliveries++;
+		throw failure;
+	});
+	const edit = { start: 0, end: 1, expected: "a", text: "b" };
+	const message = { v: 1, type: "agentApply", operationId: "op", baseGeneration: 0, basePresentation: "shown" };
+	assert.equal(api.receive({ ...message, edits: new Array(1025).fill(edit) }), false);
+	assert.equal(deliveries, 0);
+	assert.throws(
+		() => api.receive({ ...message, edits: [edit] }),
+		(error) => error === failure,
+	);
+	assert.equal(deliveries, 1);
+	host.dispose();
+});
 test("documents and page writes require the identity of their source", () => {
 	const { native, page } = bridge().bridge;
 	const doc = documentMessage();
@@ -414,6 +434,14 @@ test("document source uses raw UTF-8 rather than escaped JSON bytes", () => {
 	const escaped = documentMessage('"'.repeat(2 * 1024 * 1024));
 	assert.equal(api.bridge.native(escaped).type, "document");
 });
+test("external snapshot bases are validated before dispatch", () => {
+	const { native } = bridge().bridge;
+	const message = { ...documentMessage(), generation: 2, base: { presentation: "prior", generation: 1 } };
+	assert.equal(native(message).type, "document");
+	assert.throws(() => native({ ...message, base: { ...message.base, generation: 2 } }));
+	assert.throws(() => native({ ...message, base: { ...message.base, presentation: "" } }));
+});
+
 test("local files without a stored revision and revisions without a creation time are accepted", () => {
 	const api = bridge(),
 		message = documentMessage("# Local\n");

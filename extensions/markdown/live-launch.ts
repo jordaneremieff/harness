@@ -29,13 +29,13 @@ export async function liveArguments(
 	argv: string[],
 	live?: LiveConfig,
 	options: Partial<Pick<LiveLaunch, "origin" | "documentId" | "revision">> & { newPane?: boolean } = {},
-): Promise<{ argv: string[]; launchId?: string; remove: () => Promise<void> }> {
+): Promise<{ argv: string[]; launchId?: string; expiresAt?: number; remove: () => Promise<void> }> {
 	if (!live) return { argv, remove: async () => {} };
-	const config = readLiveConfig(live);
-	if (config.live !== PANE_PROTOCOL)
+	if (live.live !== PANE_PROTOCOL)
 		throw new ReservationRefused(
 			"This Markdown host lacks reader launch reservations. Reload the conversation and update the reader app.",
 		);
+	const config = readLiveConfig(live);
 	if (live[LIVE_LIFETIME]?.aborted) throw new Error("The live Markdown host closed.");
 	const launchId = randomUUID();
 	const remove = async () => {
@@ -57,12 +57,15 @@ export async function liveArguments(
 		reply.ok !== true ||
 		typeof reply.path !== "string" ||
 		!isAbsolute(reply.path) ||
+		typeof reply.expiresAt !== "number" ||
+		!Number.isSafeInteger(reply.expiresAt) ||
+		reply.expiresAt <= Date.now() ||
 		live[LIVE_LIFETIME]?.aborted
 	) {
 		await remove();
 		throw new Error("The reader launch was not confirmed.");
 	}
-	return { argv: [...argv, "--live", reply.path], launchId, remove };
+	return { argv: [...argv, "--live", reply.path], launchId, expiresAt: reply.expiresAt, remove };
 }
 async function supportsLive(app?: string): Promise<boolean> {
 	if (!app) return false;
@@ -85,7 +88,7 @@ export async function withLiveShow<
 	connection?: () => Promise<LiveConfig>,
 	signal?: AbortSignal,
 	newPane?: boolean,
-): Promise<T & { launchId?: string }> {
+): Promise<T & { launchId?: string; expiresAt?: number }> {
 	if (!outcome.show) return outcome;
 	if (!connection)
 		return {
@@ -116,7 +119,7 @@ export async function withLiveShow<
 			await launch.remove();
 			signal.throwIfAborted();
 		}
-		return { ...outcome, show: launch.argv, launchId: launch.launchId };
+		return { ...outcome, show: launch.argv, launchId: launch.launchId, expiresAt: launch.expiresAt };
 	} catch (error) {
 		return {
 			...outcome,

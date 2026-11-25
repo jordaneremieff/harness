@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readSettings } from "./settings.ts";
-import type { LiveConfig } from "./live-protocol.ts";
+import { type LiveConfig, PANE_PROTOCOL } from "./live-protocol.ts";
 import { liveArguments } from "./live-launch.ts";
 import { MarkdownStore, type StoredDocument } from "./store.ts";
 import { responseSnapshotWrite, type ResponseSnapshot } from "./responses.ts";
@@ -221,7 +221,7 @@ async function appStatus(
 		const build: unknown = JSON.parse(await readFile(manifest, "utf8"));
 		if (typeof build !== "object" || build === null || !("contract" in build) || build.contract !== 1)
 			return "app-incompatible";
-		if (live && (!("paneProtocol" in build) || build.paneProtocol !== 3)) return "app-incompatible";
+		if (live && (!("paneProtocol" in build) || build.paneProtocol !== PANE_PROTOCOL)) return "app-incompatible";
 		if (
 			presentation === "pane" &&
 			(!("pane" in build) || build.pane !== 1 || !("paneOpenRequest" in build) || build.paneOpenRequest !== 1)
@@ -267,7 +267,16 @@ async function launchPane(
 	target?: StoredTarget,
 ): Promise<PaneDispatch> {
 	signal.throwIfAborted();
-	const launch = await liveArguments(argv, live, { origin: "operator", ...target });
+	const launch = await liveArguments(argv, live, { origin: "operator", ...target }).catch((error: unknown) => {
+		if (signal.aborted) throw error;
+		return undefined;
+	});
+	if (!launch)
+		return {
+			version: 1,
+			outcome: "unavailable",
+			detail: "Pi did not reserve the live launch. No Rex pane was requested.",
+		};
 	if (signal.aborted) {
 		await launch.remove();
 		signal.throwIfAborted();

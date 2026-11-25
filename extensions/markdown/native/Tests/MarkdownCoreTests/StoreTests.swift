@@ -450,10 +450,11 @@ let docC = "md-00000000001111111111"
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         try Self.png.write(to: base.appendingPathComponent("a.png"))
         let rendered = MarkdownRenderer.render("![alt](a.png) ![again](a.png) ![no](../x.png)", resolver: DirectoryAssetResolver(directory: base), nonce: "n")
-        #expect(rendered.body.contains("src=\"reader-asset://doc/a0\" alt=\"alt\""))
-        #expect(rendered.body.contains("reader-asset://doc/a1"))
+        let token = try #require(rendered.assets.keys.first)
+        #expect(rendered.body.contains("src=\"reader-asset://doc/\(token)\" alt=\"alt\""))
+        #expect(rendered.body.contains("src=\"reader-asset://doc/\(token)\" alt=\"again\""))
         #expect(!rendered.body.contains(base.path))
-        #expect(rendered.assets.count == 2)
+        #expect(rendered.assets.count == 1)
         #expect(rendered.unavailableImages.map(\.reason) == ["outside-root"])
     }
 }

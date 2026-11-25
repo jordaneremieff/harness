@@ -2,7 +2,13 @@
 	const root = globalThis as unknown as { reader: ReaderCoreAPI };
 	const api = root.reader ?? ({} as ReaderCoreAPI);
 	root.reader = api;
-	type AgentApply = { operationId: string; threadId?: string; baseGeneration: number; edits: ReaderEdit[] };
+	type AgentApply = {
+		operationId: string;
+		threadId?: string;
+		baseGeneration: number;
+		basePresentation?: string;
+		edits: ReaderEdit[];
+	};
 	function usableBlocks(source: string, blocks: ReaderMappedBlock[]): ReaderMappedBlock[] {
 		if (source !== "" || blocks.length) return blocks;
 		return [{ key: "empty-document", start: 0, end: 0, type: "paragraph", html: "<p></p>", map: [[0, 0, 0, 0]] }];
@@ -256,6 +262,17 @@
 				}
 			},
 		};
+		function allowsDocument(payload: ReaderCoreDocument) {
+			if (editingPending()) return false;
+			const base = payload.base;
+			return (
+				!base ||
+				(c.payload?.presentation === base.presentation &&
+					c.doc?.generation === base.generation &&
+					!c.doc.active &&
+					!c.doc.heldRange(now()))
+			);
+		}
 		function editingPending() {
 			return compositionTarget !== null || c.doc?.composing === true || pendingEdits.size > 0;
 		}
@@ -499,7 +516,11 @@
 		}
 		function applyAgent(message: AgentApply) {
 			const doc = c.doc;
-			if (!doc || message.baseGeneration !== doc.generation) {
+			if (
+				!doc ||
+				message.baseGeneration !== doc.generation ||
+				(message.basePresentation !== undefined && message.basePresentation !== c.payload?.presentation)
+			) {
 				refuseAgent(message.operationId, "stale");
 				return;
 			}
@@ -512,16 +533,14 @@
 			commitAgent(doc, message);
 		}
 		function commitAgent(doc: ReaderExactDocument, message: AgentApply) {
+			const { operationId: id, threadId, baseGeneration, edits } = message;
+			const options = { id, threadId, now: now(), baseGeneration };
 			try {
-				const result = doc.apply(message.edits, "agent", {
-					id: message.operationId,
-					...(message.threadId !== undefined ? { threadId: message.threadId } : {}),
-					now: now(),
-					baseGeneration: message.baseGeneration,
-				});
+				const result = doc.apply(edits, "agent", options);
 				if (result.status !== "ok")
 					refuseAgent(message.operationId, result.reason === "held" ? "held" : "stale", result.range);
-			} catch {
+			} catch (error) {
+				if (doc.generation !== message.baseGeneration) throw error;
 				refuseAgent(message.operationId, "stale");
 			}
 		}
@@ -540,6 +559,9 @@
 					break;
 				case "toggleLock":
 					toggleLock(message);
+					break;
+				case "refreshRender":
+					c.requestRender();
 					break;
 				case "applySettings":
 					if (c.payload) c.payload.settings = { ...c.payload.settings, ...message.args };
@@ -589,7 +611,7 @@
 		const receive = <T>(type: string, handler: (message: T) => unknown) =>
 			host.on(type, (message) => handler(message as T));
 		subscriptions.push(
-			host.on("beforeDocument", () => !editingPending()),
+			receive<ReaderCoreDocument>("beforeDocument", allowsDocument),
 			receive<ReaderCoreDocument>("document", (m) => c.replace(m)),
 			receive<ReaderDocumentMetadata>("documentMetadata", updateMetadata),
 			receive<EditAck>("ack", acknowledge),

@@ -134,7 +134,7 @@ import Testing
         try await withSurface { surface, model, drafts in
             let workspace = EditorWorkspace(directory: drafts, store: fixture.store)
             workspace.collaboration = CollaborationClient(configuration: CollaborationConfiguration(version: 1,
-                endpoint: URL(string: "http://127.0.0.1:1")!, token: "test", live: 3, conversation: "ordinary:review"),
+                endpoint: URL(string: "http://127.0.0.1:1")!, token: "test", live: CollaborationConfiguration.paneProtocol, conversation: "ordinary:review"),
                 workspace: UUID(), document: UUID()) { _ in LiveResult(status: "error") }
             surface.setWorkspace(workspace)
             let local = fixture.root.appendingPathComponent("before.md")
@@ -257,7 +257,7 @@ import Testing
             let workspace = EditorWorkspace(directory: drafts, store: nil)
             @MainActor func bind(_ conversation: String) {
                 workspace.collaboration = CollaborationClient(configuration: CollaborationConfiguration(version: 1,
-                    endpoint: URL(string: "http://127.0.0.1:1")!, token: "test", live: 3, conversation: conversation),
+                    endpoint: URL(string: "http://127.0.0.1:1")!, token: "test", live: CollaborationConfiguration.paneProtocol, conversation: conversation),
                     workspace: UUID(), document: UUID()) { _ in LiveResult(status: "error") }
             }
             bind("ordinary:first")

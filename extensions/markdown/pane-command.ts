@@ -3,6 +3,8 @@ import { join } from "node:path";
 
 /** Version of the native reader's `--pane` mode that this slice runs. */
 export const PANE_MODE = 1;
+/** A live launch requires an exact match between the reader and its host. */
+export const PANE_PROTOCOL = 4;
 /** The reader build still advertises terminal input support to older hosts. */
 export const PANE_OPEN = 1;
 

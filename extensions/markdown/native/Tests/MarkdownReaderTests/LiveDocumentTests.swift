@@ -11,12 +11,13 @@ import ReaderFeature
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
+    private var launchData: Data?
     private let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     init(mode: String = "normal") throws {
         let script = #"""
         import { createServer } from 'node:http';
         import { randomUUID } from 'node:crypto';
-        import { readFile, unlink } from 'node:fs/promises';
+        import { readFile, writeFile } from 'node:fs/promises';
         import { createInterface } from 'node:readline';
         import { pathToFileURL } from 'node:url';
         const { LiveBridge } = await import(pathToFileURL(process.argv[1]));
@@ -36,34 +37,22 @@ import ReaderFeature
         const launchId = randomUUID();
         const reservation = await post('/reserve', { launchId, origin:mode === 'transport' ? 'agent' : 'operator' });
         if (!reservation.ok) throw new Error('Reservation refused: ' + reservation.status);
-        const {path} = await reservation.json();
-        const launch = JSON.parse(await readFile(path, 'utf8')); await unlink(path);
-        const transport = []; let currentConnect, pollFailure;
+        const {path, expiresAt} = await reservation.json();
+        const launch = JSON.parse(await readFile(path, 'utf8'));
+        const transport = []; let currentConnect, pollFailure, resetStartup = mode === 'reset-start';
         const proxy = createServer(async (request, response) => {
           const chunks = [];
           try { for await (const chunk of request) chunks.push(chunk); }
           catch (error) { if (request.aborted && error.code === 'ECONNRESET') return; throw error; }
-          let body = Buffer.concat(chunks).toString();
-          if (request.url === '/starting' && mode === 'reset-start') { response.destroy(); return; }
-          if (request.url === '/connect') {
-            const connect = JSON.parse(body);
-            // Behind this proxy, an unscoped-activity fixture presents the still-running live-2 contract.
-            if (mode === 'unscoped') {
-              if (connect.live !== 2) throw new Error('Expected live-2 connection');
-              Object.assign(connect, {live:3, launchId, pid:process.pid, serial:(currentConnect?.serial ?? 0) + 1,
-                view:{kind:'loading', title:'Opening document', mode:'reading', dirty:false, conflict:false}});
-              body = JSON.stringify(connect);
-            }
-            currentConnect = connect;
-          }
-          if (mode === 'transport') {
-            if (['/connect','/result','/state','/starting'].includes(request.url)) transport.push({path:request.url, body:JSON.parse(body)});
-            if (request.url === '/poll' && pollFailure) {response.writeHead(pollFailure); pollFailure = undefined; response.end(); return;}
-          }
+          const body = Buffer.concat(chunks).toString();
+          if (request.url === '/connect') currentConnect = JSON.parse(body);
+          if (['/connect','/result','/state','/starting'].includes(request.url)) transport.push({path:request.url, body:JSON.parse(body)});
+          if (request.url === '/poll' && pollFailure) {response.writeHead(pollFailure); pollFailure = undefined; response.end(); return;}
           if (request.url === '/prompt') prompts.push(JSON.parse(body));
           const upstream = await fetch(config.endpoint + request.url, { method: 'POST',
             headers: { Authorization: 'Bearer ' + config.token, 'Content-Type': 'application/json' }, body });
           const text = await upstream.text();
+          if (request.url === '/starting' && resetStartup && upstream.ok) { resetStartup = false; response.destroy(); return; }
           if (request.url === '/prompt' && ((mode === 'lost-receipt' && prompts.length === 1) ||
               (mode === 'lost-follow-up-receipt' && prompts.length === 2))) {
             await gate;
@@ -75,12 +64,22 @@ import ReaderFeature
         });
         await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
         const write = value => process.stdout.write(JSON.stringify(value) + '\n');
-        write({ ...(mode === 'unscoped' ? {version:1, token:config.token} : launch), endpoint: 'http://127.0.0.1:' + proxy.address().port });
+        launch.endpoint = 'http://127.0.0.1:' + proxy.address().port;
+        await writeFile(path, JSON.stringify(launch));
+        write({ ...launch, path });
         const lines = createInterface({ input: process.stdin });
         for await (const line of lines) {
           const command = JSON.parse(line);
           if (command.op === 'release') { release(); write({ ok: true }); }
-          else if (command.op === 'state') write({ document: bridge.list()[0]?.document, prompts, submissions, transport });
+          else if (command.op === 'state') {
+            const pane = bridge.list()[0];
+            write({ document: pane?.document, view: pane?.view, prompts, submissions, transport, failed: bridge.failedLaunches(), departed: bridge.paneDepartures() });
+          }
+          else if (command.op === 'expireOffer') {
+            const now = Date.now;
+            try { Date.now = () => expiresAt + 1; write({ pending: bridge.pendingLaunches() }); }
+            finally { Date.now = now; }
+          }
           else if (command.op === 'closeEndpoint') { proxy.close(); proxy.closeAllConnections(); write({ok:true}); }
           else if (command.op === 'failPoll') { pollFailure = command.status; write({ok:true}); }
           else if (command.op === 'navigate' || command.op === 'claim') write(await bridge.execute(bridge.list()[0].handle, command));
@@ -108,8 +107,21 @@ import ReaderFeature
         try? input.fileHandleForWriting.close()
         try? FileManager.default.removeItem(at: home)
     }
-    func configuration() async throws -> CollaborationConfiguration {
-        try JSONDecoder().decode(CollaborationConfiguration.self, from: await line())
+    private func launch() async throws -> Data {
+        if let launchData { return launchData }
+        let data = try await line()
+        launchData = data
+        return data
+    }
+    func configuration(started: Bool = true) async throws -> CollaborationConfiguration {
+        let config = try JSONDecoder().decode(CollaborationConfiguration.self, from: await launch())
+        if started { _ = try await config.reportStarting() }
+        return config
+    }
+    func configurationFile() async throws -> URL {
+        let data = try await launch()
+        let fields = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return URL(fileURLWithPath: try #require(fields["path"] as? String))
     }
     func request(_ value: [String: Any]) async throws -> [String: Any] {
         var bytes = try JSONSerialization.data(withJSONObject: value); bytes.append(10)

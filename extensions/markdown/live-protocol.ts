@@ -1,11 +1,12 @@
 import { type CommentAction, type CommentResult, readCommentAction, readCommentResult } from "./comment-protocol.ts";
+import { PANE_PROTOCOL } from "./pane-command.ts";
 import { SOURCE_BYTES, responseDigest, validUnicode } from "./responses.ts";
 
 export const LIVE_WIRE_BYTES = 32 * 1024 * 1024;
 export const LIVE_PROMPT_BYTES = 128 * 1024;
 /** Runtime ownership never enters the native JSON configuration. */
-export const LIVE_LIFETIME = Symbol.for("pi.markdown.live.lifetime.v3");
-export const PANE_PROTOCOL = 3;
+export const LIVE_LIFETIME = Symbol.for("pi.markdown.live.lifetime.v4");
+export { PANE_PROTOCOL };
 export interface LiveConfig {
 	version: 1;
 	endpoint: string;
@@ -33,6 +34,7 @@ export interface LivePaneView {
 }
 export interface LivePane extends LiveBinding {
 	handle: string;
+	launchId: string;
 	live: typeof PANE_PROTOCOL;
 	pid: number;
 	origin: "agent" | "operator";
@@ -54,7 +56,14 @@ export interface LiveEdit extends LiveRange {
 export type LiveAction =
 	| CommentAction
 	| { op: "read" }
-	| { op: "navigate"; storeId: string; documentId: string; revision?: number; digest?: string }
+	| {
+			op: "navigate";
+			storeId: string;
+			documentId: string;
+			revision?: number;
+			digest?: string;
+			currentRevision?: number;
+	  }
 	| { op: "apply"; operationId: string; baseGeneration: number; baseDigest: string; edits: LiveEdit[] }
 	| { op: "claim"; baseGeneration: number; baseDigest: string; ranges: LiveRange[]; label?: string }
 	| { op: "release"; claimId: string };
@@ -213,7 +222,9 @@ function readNavigation(value: Record<string, unknown>): Extract<LiveAction, { o
 		!storeId(value.storeId) ||
 		!documentId(value.documentId) ||
 		((value.revision !== undefined || value.digest !== undefined) &&
-			(!generation(value.revision) || value.revision < 1 || !liveDigest(value.digest)))
+			(!generation(value.revision) || value.revision < 1 || !liveDigest(value.digest))) ||
+		(value.currentRevision !== undefined &&
+			(value.revision !== undefined || !generation(value.currentRevision) || value.currentRevision < 1))
 	)
 		throw new Error("Navigation requires an exact store and document. A pinned revision also needs its digest.");
 	return {
@@ -221,6 +232,7 @@ function readNavigation(value: Record<string, unknown>): Extract<LiveAction, { o
 		storeId: value.storeId,
 		documentId: value.documentId,
 		...(value.revision !== undefined && { revision: value.revision as number, digest: value.digest as string }),
+		...(value.currentRevision !== undefined && { currentRevision: value.currentRevision as number }),
 	};
 }
 export function readLiveAction(value: unknown): LiveAction {
@@ -274,21 +286,45 @@ export function readLiveAction(value: unknown): LiveAction {
 }
 function readNavigationResult(
 	value: Record<string, unknown>,
-	action: Extract<LiveAction, { op: "navigate" }>,
+	action: Extract<LiveAction, { op: "navigate" }> & Partial<LiveBinding>,
 ): LiveResult {
 	const binding = readLiveBinding(value);
 	const view = readLiveView(value.view);
 	if (value.handle !== liveHandle(binding)) invalidField("handle");
 	if (!["published", "response", "file"].includes(view.kind)) invalidField("view.kind", "expected a stored document");
-	if (view.mode !== "reading") invalidField("view.mode", "expected reading");
+	if (view.mode === "writing" && !sameCurrentWritingView(binding, view, action))
+		invalidField("view.mode", "expected reading or the same current published editor");
 	if (view.dirty) invalidField("view.dirty", "expected a clean buffer");
 	if (view.conflict) invalidField("view.conflict", "expected no conflict");
 	if (view.storeId !== action.storeId) invalidField("view.storeId");
 	if (view.documentId !== action.documentId) invalidField("view.documentId");
-	if (!view.revision || (action.revision !== undefined && action.revision !== view.revision))
+	checkNavigationRevision(view, action);
+	return { status: "navigated", ...binding, handle: value.handle, view };
+}
+function checkNavigationRevision(view: LivePaneView, action: Extract<LiveAction, { op: "navigate" }>): void {
+	if (
+		!view.revision ||
+		(action.revision !== undefined && action.revision !== view.revision) ||
+		(action.currentRevision !== undefined && view.revision < action.currentRevision)
+	)
 		invalidField("view.revision");
 	if (!view.digest || (action.revision !== undefined && action.digest !== view.digest)) invalidField("view.digest");
-	return { status: "navigated", ...binding, handle: value.handle, view };
+	if (action.revision !== undefined && view.follows === true)
+		invalidField("view.follows", "a pin does not follow latest");
+}
+function sameCurrentWritingView(
+	binding: LiveBinding,
+	view: LivePaneView,
+	action: Extract<LiveAction, { op: "navigate" }> & Partial<LiveBinding>,
+): boolean {
+	return (
+		action.revision === undefined &&
+		action.currentRevision !== undefined &&
+		binding.workspace === action.workspace &&
+		binding.document === action.document &&
+		view.kind === "published" &&
+		view.follows === true
+	);
 }
 function readClaimResult(value: Record<string, unknown>): LiveResult {
 	if (!liveId(value.claimId)) invalidField("claimId");
@@ -336,7 +372,7 @@ function readSourceResult(value: Record<string, unknown>): LiveResult {
 		assets: readAssets(value.assets),
 	};
 }
-export function readLiveResult(value: unknown, action: LiveAction): LiveResult {
+export function readLiveResult(value: unknown, action: LiveAction & Partial<LiveBinding>): LiveResult {
 	if (!isRecord(value)) invalidField("result", "expected an object");
 	if (typeof value.status !== "string") invalidField("status");
 	if (["stale", "busy", "closed", "error", "uncertain"].includes(value.status)) {
@@ -345,7 +381,7 @@ export function readLiveResult(value: unknown, action: LiveAction): LiveResult {
 	}
 	return readCommandResult(value, action);
 }
-function readCommandResult(value: Record<string, unknown>, action: LiveAction): LiveResult {
+function readCommandResult(value: Record<string, unknown>, action: LiveAction & Partial<LiveBinding>): LiveResult {
 	switch (action.op) {
 		case "comments":
 		case "setComment":

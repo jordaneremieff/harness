@@ -68,6 +68,13 @@ struct MirrorSnapshot: Sendable {
         return true
     }
 
+    func acceptSnapshot(source: String, generation: UInt64) {
+        precondition(generation == self.generation + 1)
+        self.source = source; self.generation = generation
+        selectedRange = NSRange(location: 0, length: 0)
+        onChange?(snapshot)
+    }
+
     @discardableResult func apply(range: NSRange, replacement: String, selection: NSRange?, actionName: String) -> Bool {
         guard Self.validRange(range, source: source) else { return false }
         return apply(edits: [.init(range: range, expected: (source as NSString).substring(with: range), replacement: replacement)],

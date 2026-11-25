@@ -53,7 +53,7 @@ async function settledAnswer(
 }
 export const PANE_NOTICE_TYPE = "markdown-pane-closed";
 /** A departed connection supplies its last view, not proof of process exit or of a later save reaching a reader. */
-export function paneClosedNotice({ closed, connected, panes }: PaneClosure): string {
+export function paneClosedNotice({ closed, connected, departures }: PaneClosure): string {
 	const event =
 		closed === 1
 			? "A reader pane disconnected from this conversation."
@@ -62,14 +62,22 @@ export function paneClosedNotice({ closed, connected, panes }: PaneClosure): str
 		connected === 0
 			? "No reader pane remained connected at that time."
 			: `${connected} reader ${connected === 1 ? "pane" : "panes"} remained connected at that time.`;
-	const departed = panes.map(({ handle, view }) => {
+	const reasons = {
+		"reader-closed": "The reader reported a close.",
+		"document-closed": "The reader closed the document without a replacement view.",
+		"process-ended": "The reader process ended.",
+		"contact-lost": "The reader stopped responding; its exit is not confirmed.",
+	};
+	const departed = departures.map(({ workspace, reason, lastPane }) => {
+		if (!lastPane) return `${workspace}: ${reasons[reason]} The reader did not confirm a document view.`;
+		const { handle, view } = lastPane;
 		const title = JSON.stringify(view.title.replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 180));
 		const revision =
 			view.revision === undefined
 				? ""
 				: ` ${view.dirty || view.conflict ? "base revision" : "revision"} ${view.revision}`;
 		const state = [view.mode, ...(view.dirty ? ["unsaved"] : []), ...(view.conflict ? ["autosave conflict"] : [])];
-		return `${handle} last reported ${view.kind} ${title}${view.documentId ? ` (${view.documentId}${revision})` : ""}: ${state.join(", ")}.`;
+		return `${reasons[reason]} ${handle} last reported ${view.kind} ${title}${view.documentId ? ` (${view.documentId}${revision})` : ""}: ${state.join(", ")}.`;
 	});
 	return `[markdown] ${event} ${departed.join(" ")} ${state} This notice needs no reply.`;
 }
@@ -105,7 +113,7 @@ interface ReloadRecord {
 	timer: NodeJS.Timeout;
 }
 // Resource reload imports a fresh extension. The manager object survives; a session ID alone is not a route.
-const reloadSlot = Symbol.for("pi.markdown.ordinary.handoff.v3");
+const reloadSlot = Symbol.for("pi.markdown.ordinary.handoff.v4");
 const processScope = globalThis as typeof globalThis & { [reloadSlot]?: WeakMap<Manager, ReloadRecord> };
 processScope[reloadSlot] ??= new WeakMap();
 const reloads = processScope[reloadSlot];

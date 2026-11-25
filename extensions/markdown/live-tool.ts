@@ -27,11 +27,11 @@ import {
 	readLiveAction,
 } from "./live-protocol.ts";
 import { type ShowInput, type ShowOptions, ShowOutcomes, type ShowResult, showStored } from "./live-show.ts";
-import { LaunchSchema, PaneSchema, paneInventory } from "./pane-state.ts";
+import { PaneInventoryFields, PaneSchema, paneInventory } from "./pane-state.ts";
 import { responseDigest, SOURCE_BYTES, validUnicode } from "./responses.ts";
 
 const DESCRIPTION =
-	"Use list for this conversation's connected panes and pending launches. Each handle names an exact live buffer; view.documentId names its stored document. A dirty or conflicted view reports its base, not saved live text. Conflict means autosave stopped: preserve the draft and read the stored revision separately. Use show with a full stored document ID for current/follow, or add revision to pin. To show a document as you publish it, use markdown_publish with show: true instead. Show reuses an agent pane by default, never an operator pane. Set newPane: true to request a separate launch without changing any existing pane. Do not combine it with a handle. Only navigated confirms a switch. Only launch supplies argv for an initial pane; confirm its view with list. Never type navigation into the terminal or repeat an uncertain show. Use read on an exact handle. Only complete has whole source; for page, join all fragments from offset zero with nextOffset and unchanged baseGeneration/baseDigest. Use apply with unique {find,replace} anchors. An explicit base binds the edit; range edits require it. Claim ranges before composing a larger edit; claims never block the person. If busy, edit elsewhere or read after the person leaves the passage. Retry an uncertain edit only with its UUID and identical arguments. Applied confirms private recovery, not a saved revision. Use comments for delivered open or closed comments; continue with nextOffset and the sheet version as expectedVersion. setComment requires the listed item ID, its version as expectedVersion, and the new state. It does not send a message.";
+	"Use list for this conversation's connected panes, pending launches, recent launch failures and the last confirmed view of departed panes. Each handle names an exact live buffer; view.documentId names its stored document. A dirty or conflicted view reports its base, not saved live text. Conflict means autosave stopped: preserve the draft and read the stored revision separately. Use show with a full stored document ID for current/follow, or add revision to pin. To show a document as you publish it, use markdown_publish with show: true instead. Show reuses an agent pane by default, never an operator pane. Set newPane: true to request a separate launch without changing any existing pane. Do not combine it with a handle. Only navigated confirms a switch. Only launch supplies argv for an initial pane; confirm its view with list. Never type navigation into the terminal or repeat an uncertain show. Use read on an exact handle. Only complete has whole source; for page, join all fragments from offset zero with nextOffset and unchanged baseGeneration/baseDigest. Use apply with unique {find,replace} anchors. An explicit base binds the edit; range edits require it. Claim ranges before composing a larger edit; claims never block the person. If busy, edit elsewhere or read after the person leaves the passage. Retry an uncertain edit only with its UUID and identical arguments. Applied confirms private recovery, not a saved revision. Use comments for delivered open or closed comments; continue with nextOffset and the sheet version as expectedVersion. setComment requires the listed item ID, its version as expectedVersion, and the new state. It does not send a message.";
 const Anchor = obj({ find: str({ minLength: 1 }), replace: str() }, { open: false });
 const Range = obj(
 	{ start: int({ minimum: 0 }), end: int({ minimum: 0 }), expected: str(), replacement: str() },
@@ -97,7 +97,7 @@ const LiveOutcomeSchema = union([
 	Complete,
 	Page,
 	...ShowOutcomes,
-	obj({ status: lit("ok"), panes: arr(PaneSchema), pending: arr(LaunchSchema) }),
+	obj({ status: lit("ok"), ...PaneInventoryFields }),
 	obj({ status: lit("applied"), ...VersionFields, operationId: str(), retained: lit(true), pane: opt(PaneSchema) }),
 	obj({ status: lit("claimed"), claimId: str(), expiresAt: int() }),
 	obj({ status: lit("released"), claimId: str() }),

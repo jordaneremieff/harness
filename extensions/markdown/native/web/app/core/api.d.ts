@@ -25,6 +25,7 @@ declare global {
 		source: string;
 		generation: number;
 		presentation: string;
+		base?: { presentation: string; generation: number };
 		meta: { documentKey: string; capturedSource: boolean; [key: string]: unknown };
 		blocks: ReaderMappedBlock[];
 		settings: { lock: "reading" | "writing"; [key: string]: unknown };

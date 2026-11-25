@@ -10,6 +10,7 @@ import * as Durable from "@earendil-works/pi-durable";
 import { compile } from "@earendil-works/pi-schema";
 import { LiveBridge } from "./live-bridge.ts";
 import { liveArguments } from "./live-launch.ts";
+import { PANE_PROTOCOL } from "./live-protocol.ts";
 import { isRecord, type LiveConfig } from "./live-protocol.ts";
 import { createLiveTool, createNativeLiveTool } from "./live-tool.ts";
 import type { PaneInventory } from "./pane-state.ts";
@@ -47,10 +48,11 @@ function pane(origin: "agent" | "operator"): PaneInventory["panes"][number] {
 		document = randomUUID();
 	return {
 		handle: `${workspace}:${document}`,
+		launchId: randomUUID(),
 		workspace,
 		document,
 		origin,
-		live: 3,
+		live: PANE_PROTOCOL,
 		pid: process.pid,
 		reportedAt: Date.now(),
 		view: { kind: "scratchpad", mode: "writing", title: "Notes", dirty: false, conflict: false, follows: false },
@@ -155,10 +157,12 @@ test("show requests current-follow or an exact revision, and reports only what t
 	const follow = { op: "navigate", storeId, documentId: document };
 	assert.deepEqual(
 		calls,
-		[follow, { ...follow, revision: 1, digest: first }, follow, follow].map((action, i) => [
-			i === 0 ? agent.handle : nextHandle,
-			action,
-		]),
+		[
+			follow,
+			{ ...follow, revision: 1, digest: first },
+			{ ...follow, currentRevision: 2 },
+			{ ...follow, currentRevision: 2 },
+		].map((action, i) => [i === 0 ? agent.handle : nextHandle, action]),
 	);
 });
 
@@ -241,7 +245,7 @@ async function launchFixture(t: TestContext, root: string) {
 	await mkdir(resources, { recursive: true });
 	await writeFile(
 		join(resources, "build.json"),
-		JSON.stringify({ contract: 1, pane: 1, live: 2, paneProtocol: 3, paneRevision: 1 }),
+		JSON.stringify({ contract: 1, pane: 1, paneProtocol: PANE_PROTOCOL, paneRevision: 1 }),
 	);
 	const server = new LiveBridge({ submit: async () => ({ status: "requested" }) });
 	t.after(() => server.close());
@@ -296,13 +300,22 @@ test("only show accepts newPane, and true rejects an exact handle", async () => 
 test("explicit new launches preserve connected panes and still use one pending reservation", {
 	timeout: 10000,
 }, async (t) => {
-	const { root, store, document, first } = await fixture(t);
+	const { root, store, storeId, document, first } = await fixture(t);
 	const { app, server, live } = await launchFixture(t, root);
 	const tool = createLiveTool(async () => server, { store, app, connection: async () => live });
 	const durable = createNativeLiveTool(Durable, async () => server, { store, app, connection: async () => live });
 	const { workspace, document: liveDocument, view, pid } = pane("agent");
 	const original = await liveArguments(["reader"], live, { origin: "agent" });
-	const binding = { workspace, document: liveDocument, view, pid, launchId: original.launchId, live: 3, serial: 1 };
+	const binding = {
+		workspace,
+		document: liveDocument,
+		view,
+		pid,
+		launchId: original.launchId,
+		live: PANE_PROTOCOL,
+		serial: 1,
+	};
+	assert.equal(await post(live, "/starting", binding), 200);
 	assert.equal(await post(live, "/connect", binding), 200);
 	const existing = server.list();
 	assert.equal(existing.length, 1);
@@ -314,6 +327,8 @@ test("explicit new launches preserve connected panes and still use one pending r
 	assert.equal(offer.status, "launch", String(offer.message));
 	assert.equal(offer.documentId, document);
 	assert.equal(offer.revision, 1);
+	assert.ok(typeof offer.expiresAt === "number");
+	assert.match(String(offer.message), /before \d{4}-\d{2}-\d{2}T/u);
 	const path = privatePath(offer.argv);
 	assert.deepEqual(offer.argv, [
 		join(app, "Contents", "MacOS", "MarkdownReader"),
@@ -336,12 +351,35 @@ test("explicit new launches preserve connected panes and still use one pending r
 	assert.equal(pending.status, "pending");
 	assert.ok(!("argv" in pending));
 	assert.deepEqual(pending.pending, [
-		{ status: "offered", origin: "agent", documentId: document, revision: 1, launchId: offer.launchId },
+		{
+			status: "offered",
+			origin: "agent",
+			documentId: document,
+			revision: 1,
+			launchId: offer.launchId,
+			expiresAt: offer.expiresAt,
+		},
 	]);
 	await assert.rejects(liveArguments(["reader"], live, { origin: "agent", newPane: true }), /refused/u);
 	assert.deepEqual(server.pendingLaunches(), pending.pending);
 
-	const separate = { ...binding, workspace: randomUUID(), document: randomUUID(), launchId: offer.launchId };
+	const separate = {
+		...binding,
+		workspace: randomUUID(),
+		document: randomUUID(),
+		launchId: offer.launchId,
+		view: {
+			...view,
+			kind: "published",
+			mode: "reading",
+			storeId,
+			documentId: document,
+			revision: 1,
+			digest: first,
+			follows: false,
+		},
+	};
+	assert.equal(await post(live, "/starting", separate), 200);
 	assert.equal(await post(live, "/connect", separate), 200);
 	assert.equal(await post(live, "/connect", { ...separate, workspace: randomUUID() }), 410);
 	await assert.rejects(stat(path), { code: "ENOENT" });

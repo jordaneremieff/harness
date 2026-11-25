@@ -15,6 +15,7 @@ final class WorkingDocument: Identifiable {
     private(set) var previewIsHost: Bool
     let updates = UpdateObserver()
     @ObservationIgnored private var checkTask: Task<Void, Never>?
+    @ObservationIgnored var externalUpdateTask: Task<Void, Never>?
     @ObservationIgnored private var checkRequested = false
     @ObservationIgnored private(set) var closed = false
     var readingDraft = false
@@ -23,6 +24,7 @@ final class WorkingDocument: Identifiable {
     @ObservationIgnored var onAnnotationSelection: ((String?) -> Void)?
     @ObservationIgnored var onCommentSelection: ((String) -> Void)?
     @ObservationIgnored var onExternalChange: (() async -> Void)?
+    @ObservationIgnored var onResolverChange: (() -> Void)?
     @ObservationIgnored var persistenceTask: Task<Void, Never>?
     @ObservationIgnored var persistenceRequested = false
     var visible = false
@@ -42,20 +44,22 @@ final class WorkingDocument: Identifiable {
     @ObservationIgnored var findTask: Task<Void, Never>?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var baseResolver: any AssetResolving = NoAssetResolver()
+    @ObservationIgnored var resolverTask: Task<Void, Never>?
     var assetResolver: any AssetResolving {
         guard let root = session.record.assetRoot else { return baseResolver }
         return EditorDraftAssetResolver(base: baseResolver, root: URL(fileURLWithPath: root), images: session.record.stagedAssets ?? [])
     }
     var showsPreview: Bool { true }
     @ObservationIgnored var onApply: (([MarkdownSourceEdit], UInt64) async -> Bool)?
-    init(record: DraftRecord, drafts: DraftStore, id: UUID = UUID(), hostModel: ReaderModel? = nil) {
+    init(record: DraftRecord, drafts: DraftStore, id: UUID = UUID(), hostModel: ReaderModel? = nil, resolver: (any AssetResolving)? = nil) {
         self.id = id
         session = EditSession(record: record, drafts: drafts)
         text = MirrorText(source: record.source, initialGeneration: record.generation)
         previewIsHost = hostModel != nil
         preview = hostModel ?? ReaderModel(reference: .file(path: "draft:" + record.id.uuidString), platform: MacPlatform.operations(), state: ReadingStateStore(directory: nil))
         if !previewIsHost { preview.outlineVisible = false }
-        if case .file(let base) = record.destination { baseResolver = DirectoryAssetResolver(directory: URL(fileURLWithPath: base.path).deletingLastPathComponent()) }
+        if let resolver { baseResolver = resolver }
+        else if case .file(let base) = record.destination { baseResolver = DirectoryAssetResolver(directory: URL(fileURLWithPath: base.path).deletingLastPathComponent()) }
         text.select(NSRange(location: record.selection.location, length: record.selection.length))
         text.onChange = { [weak self] snapshot in
             guard let self else { return }
@@ -85,7 +89,12 @@ final class WorkingDocument: Identifiable {
         schedulePreview()
     }
 
-    func setResolver(_ value: any AssetResolving) { baseResolver = value; schedulePreview(force: true) }
+    func setResolver(_ value: any AssetResolving, refreshHost: Bool = true) {
+        baseResolver = value
+        if previewIsHost {
+            if refreshHost { onResolverChange?() }
+        } else { schedulePreview(force: true) }
+    }
 
     func schedulePreview(force: Bool = false) {
         guard !previewIsHost else { return }
@@ -142,8 +151,8 @@ final class WorkingDocument: Identifiable {
     }
 
     func close() async {
-        closed = true; checkTask?.cancel(); findTask?.cancel(); persistenceTask?.cancel(); updates.stop()
-        previewTask?.cancel()
+        closed = true; checkTask?.cancel(); externalUpdateTask?.cancel(); findTask?.cancel(); persistenceTask?.cancel(); updates.stop()
+        previewTask?.cancel(); resolverTask?.cancel()
         if !previewIsHost { await preview.close() }
     }
 
@@ -172,6 +181,7 @@ final class EditorWorkspace {
     var pageHeld: NSRange?
     var pageBusy = false
     @ObservationIgnored var webAgentApply: ((String, UInt64, [MarkdownSourceEdit]) async -> WebAgentApplyResult)?
+    @ObservationIgnored var webExternalSnapshot: ((WorkingDocument, DraftRecord, any AssetResolving, @escaping @MainActor () -> Bool, @escaping @MainActor () -> Void) async throws -> Void)?
     @ObservationIgnored var webClaim: ((String, [NSRange], String?, Int64) -> Void)?
     @ObservationIgnored var webRelease: ((String) -> Void)?
     /// Tells the page that an agent edit or claim waited because the person holds the passage.
@@ -182,6 +192,7 @@ final class EditorWorkspace {
     @ObservationIgnored private var restoreWindowInput: (() -> Void)?
     @ObservationIgnored var pageChangeInProgress = false
     @ObservationIgnored var liveApplyInProgress = false
+    @ObservationIgnored var externalPageEdit: WebExternalPageEdit?
     @ObservationIgnored var observedPageChanges: [String: WebObservedChange] = [:]
     @ObservationIgnored var liveClaims: [String: WebLiveClaim] = [:]
     @ObservationIgnored var pendingLiveEdits: [String: WebPendingLiveEdit] = [:]
@@ -277,9 +288,9 @@ final class EditorWorkspace {
         return allowAction(action)
     }
 
-    func add(_ record: DraftRecord, liveIdentity: UUID? = nil, pagePromotion: Bool = false) {
+    func add(_ record: DraftRecord, liveIdentity: UUID? = nil, pagePromotion: Bool = false, resolver: (any AssetResolving)? = nil) {
         guard pagePromotion ? allowAction("opening another document") : allowNavigation("opening another document") else { return }
-        let document = WorkingDocument(record: record, drafts: drafts, id: liveIdentity ?? UUID(), hostModel: webHostModel)
+        let document = WorkingDocument(record: record, drafts: drafts, id: liveIdentity ?? UUID(), hostModel: webHostModel, resolver: resolver)
         document.annotationsEnabled = collaboration != nil
         document.onAnnotationSelection = { [weak self, weak document] quote in
             guard let self, let document, self.annotationReader === document.preview else { return }
@@ -314,8 +325,10 @@ final class EditorWorkspace {
         documents.append(document); selected = document.id; liveDocumentID = document.id; libraryVisible = false
         collaboration?.bind(document: liveDocumentID, closing: nil)
         document.setVisible(true)
-        if case .published(let base) = record.destination { loadResolver(base, document: document) }
-        if case .copy(let base) = record.destination { loadResolver(base, document: document) }
+        if resolver == nil {
+            if case .published(let base) = record.destination { loadResolver(base, document: document) }
+            if case .copy(let base) = record.destination { loadResolver(base, document: document) }
+        }
         if !pagePromotion { focusWhenActive(document) }
     }
 
@@ -366,14 +379,20 @@ final class EditorWorkspace {
     }
 
     func loadResolver(_ base: StoredEditBase, document: WorkingDocument) {
-        Task { @MainActor in
+        document.resolverTask?.cancel()
+        document.resolverTask = Task { @MainActor [weak document] in
             do {
                 let resolver = try await Task.detached {
                     try DocumentLoader.load(.stored(root: base.root, storeId: base.storeId, document: base.document), revision: base.revision, pinnedDigest: base.digest).resolver
                 }.value
-                guard document.session.record.destination == .published(base) || document.session.record.destination == .copy(base) else { return }
+                guard let document, !Task.isCancelled, !document.closed,
+                      document.session.record.destination == .published(base) || document.session.record.destination == .copy(base) else { return }
                 document.setResolver(resolver)
-            } catch { document.session.setError("The base images are unavailable: \(error). Your draft remains intact.") }
+            } catch {
+                guard let document, !Task.isCancelled, !document.closed,
+                      document.session.record.destination == .published(base) || document.session.record.destination == .copy(base) else { return }
+                notice = "The base images are unavailable: \(error). The draft text remains intact."
+            }
         }
     }
 
@@ -384,13 +403,14 @@ final class EditorWorkspace {
         }
     }
 
-    func closeViews() async {
+    func closeViews(bootFailure: String? = nil) async {
         closing = true
+        let closeConnection = collaboration?.stop(bootFailure: bootFailure)
         discardUncommittedImages()
-        collaboration?.stop()
         for document in documents { document.setVisible(false); await document.close() }
         await reading?.close()
         releaseWindowInput()
+        await closeConnection?.value
     }
 
     func newScratchpad() { add(DraftRecord()) }
@@ -508,6 +528,13 @@ final class EditorWorkspace {
 
     @discardableResult func openReading(_ reference: DocumentReference, revision: Int? = nil, digest: String? = nil,
                                          origin: LaunchOrigin? = nil, followsLatest: Bool = false, remotely: Bool = false) async -> NavigationResult {
+        if let reading, reading === webHostModel, reading.reference == reference {
+            let navigation = navigationGeneration, handle = liveDocumentID
+            await reading.waitForSnapshotDelivery()
+            guard navigation == navigationGeneration, handle == liveDocumentID, self.reading === reading else {
+                return .busy("Another document switch took precedence.")
+            }
+        }
         guard mayOpenReading(remotely: remotely) else { return .busy(notice ?? "The reader is busy.") }
         notice = nil
         navigationGeneration &+= 1
@@ -531,7 +558,7 @@ final class EditorWorkspace {
                     return .shown
                 }
                 installingReading = (navigation, host.page.presentation)
-                try await host.showSnapshot(snapshot, origin: origin ?? launchOrigin, mayInstall: mayInstall)
+                try await host.showSnapshot(snapshot, origin: origin ?? launchOrigin, preferNewest: revision == nil, mayInstall: mayInstall)
                 guard navigation == navigationGeneration, !closing, reading === previous else {
                     return .busy("Another document switch took precedence.")
                 }
@@ -584,8 +611,7 @@ final class EditorWorkspace {
                   presentation == nil || (model.page.presentation == presentation && model.displayedPresentation == presentation),
                   allowAction("opening an edit") else { return false }
             if case .stored(let root, _, _) = model.reference { selectedStore = root }
-            add(record, liveIdentity: liveDocumentID, pagePromotion: pagePromotion)
-            active?.setResolver(snapshot.resolver)
+            add(record, liveIdentity: liveDocumentID, pagePromotion: pagePromotion, resolver: snapshot.resolver)
             return true
         } catch { notice = "Edit not opened: \(error). The document remains readable."; return false }
     }

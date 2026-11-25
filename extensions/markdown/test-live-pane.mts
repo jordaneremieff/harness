@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before } from "node:test";
-import type { LiveBinding, LiveConfig } from "./live-protocol.ts";
+import { PANE_PROTOCOL, type LiveBinding, type LiveConfig } from "./live-protocol.ts";
 
 let home: string;
 const previous = process.env.PI_CODING_AGENT_DIR;
@@ -59,7 +59,7 @@ export async function connectTestPane(
 	launch.serial = Math.max(next, launch.serial);
 	return post("/connect", {
 		...binding,
-		live: 3,
+		live: PANE_PROTOCOL,
 		pid: launch.pid,
 		launchId: launch.launchId,
 		serial: next,

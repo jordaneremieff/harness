@@ -30,6 +30,7 @@ import {
 	type LivePane,
 	type LiveState,
 	readLiveConfig,
+	PANE_PROTOCOL,
 } from "./live-protocol.ts";
 import { responseDigest } from "./responses.ts";
 import { connectTestPane } from "./test-live-pane.mts";
@@ -595,7 +596,8 @@ test("an ordinary conversation reads a pane closure before its next response, wi
 test("a pane closure notice names the closed and still connected panes", () => {
 	const gone: LivePane = {
 		...pane(),
-		live: 3,
+		live: PANE_PROTOCOL,
+		launchId: randomUUID(),
 		handle: "departed-handle",
 		pid: process.pid,
 		origin: "operator",
@@ -610,7 +612,14 @@ test("a pane closure notice names the closed and still connected panes", () => {
 			revision: 2,
 		},
 	};
-	const single = paneClosedNotice({ closed: 1, connected: 0, panes: [gone] });
+	const departed = (lastPane: LivePane) => ({
+		workspace: lastPane.workspace,
+		launchId: lastPane.launchId,
+		reason: "reader-closed" as const,
+		departedAt: Date.now(),
+		lastPane,
+	});
+	const single = paneClosedNotice({ closed: 1, connected: 0, departures: [departed(gone)] });
 	assert.match(single, /departed-handle last reported published "Draft" \(md-123 revision 2\): reading/u);
 	assert.match(single, /No reader pane remained connected at that time/u);
 	assert.match(single, /needs no reply\.$/u);
@@ -619,7 +628,7 @@ test("a pane closure notice names the closed and still connected panes", () => {
 		handle: "second",
 		view: { ...gone.view, mode: "writing" as const, dirty: true, conflict: true },
 	};
-	const several = paneClosedNotice({ closed: 2, connected: 1, panes: [gone, dirty] });
+	const several = paneClosedNotice({ closed: 2, connected: 1, departures: [departed(gone), departed(dirty)] });
 	assert.match(several, /2 reader panes disconnected from this conversation/u);
 	assert.match(
 		several,

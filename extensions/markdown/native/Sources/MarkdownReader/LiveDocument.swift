@@ -2,6 +2,7 @@ import AppKit
 import EditorFeature
 import MarkdownCore
 import MacPlatform
+import ReaderFeature
 
 private struct ExternalDocumentVersion: Sendable {
     let source: String
@@ -39,16 +40,28 @@ private struct ExternalDocumentVersion: Sendable {
     }
 }
 
-private enum LiveMergeFailure: Error { case assetConflict }
+private enum LiveMergeFailure: Error { case assetConflict, editLimit }
 
 extension EditorWorkspace {
     func receiveExternalChange(_ document: WorkingDocument) async {
-        guard isDisplayed(document), !closing, !document.closed, !document.text.hasMarkedText, !document.stagingImages,
+        if let update = document.externalUpdateTask { await update.value; return }
+        let update = Task { @MainActor in
+            defer { document.externalUpdateTask = nil }
+            await reconcileExternalChange(document)
+        }
+        document.externalUpdateTask = update
+        await update.value
+    }
+
+    private func reconcileExternalChange(_ document: WorkingDocument) async {
+        guard !Task.isCancelled, isDisplayed(document), !closing, !document.closed, !document.text.hasMarkedText, !document.stagingImages,
+              !pickingImages, !pageBusy, !pageChangeInProgress, !liveApplyInProgress,
               document.session.beginExternalUpdate() else { return }
         defer { document.session.endExternalUpdate() }
         let record = document.session.record, generation = document.text.generation
+        let clean = !document.session.isDirty && record.pendingImageReferences?.isEmpty != false
         func stillCurrent() -> Bool {
-            isDisplayed(document) && !closing && !document.closed && !document.text.hasMarkedText && !document.stagingImages
+            isDisplayed(document) && !closing && !document.closed && !document.text.hasMarkedText && !document.stagingImages && !pickingImages
                 && !document.session.saving && document.session.record.pendingPublication == nil
                 && generation == document.text.generation && record.destination == document.session.record.destination
                 && record.title.utf8.elementsEqual(document.session.record.title.utf8)
@@ -73,19 +86,42 @@ extension EditorWorkspace {
                 }
                 title = titles.remote
             }
-            let changes: [LiveTextMerge.Change]
-            switch LiveTextMerge.merge(base: candidate.baseSource, local: record.source, remote: candidate.source) {
-            case .merged(let values): changes = values
+            if case .published = candidate.destination, clean, let webExternalSnapshot {
+                guard generation < UInt64(ReaderBridgeCodec.maxInteger) else {
+                    pause("The page has reached its source generation limit."); return
+                }
+                guard await document.session.persist() else {
+                    if stillCurrent(), case .failed = document.session.recovery { pause("Draft recovery failed before the update.") }
+                    return
+                }
+                guard stillCurrent(), pageHeld == nil, !pageBusy else { return }
+                var next = record
+                next.source = candidate.source; next.generation = generation + 1
+                next.destination = candidate.destination; next.title = title
+                try await webExternalSnapshot(document, next, candidate.resolver, stillCurrent) {
+                    document.text.acceptSnapshot(source: next.source, generation: next.generation)
+                    document.session.rebaseImages(root: record.assetRoot ?? "", references: Set((record.stagedAssets ?? []).map(\.reference)), overrides: [])
+                    document.session.advanceBase(source: next.source, destination: next.destination, title: next.title)
+                    document.setResolver(candidate.resolver, refreshHost: false)
+                    document.observeBase()
+                }
+                return
+            }
+            let merge = await Task.detached {
+                LiveTextMerge.merge(base: candidate.baseSource, local: record.source, remote: candidate.source)
+            }.value
+            guard stillCurrent() else { document.checkForUpdates(); return }
+            let edits: [MarkdownSourceEdit]
+            switch merge {
+            case .merged(let values): edits = values.map { .init(range: $0.range, expected: $0.expected, replacement: $0.replacement) }
             case .conflict:
                 pause("Both authors changed the same passage. Your text remains intact."); return
-            case .limited:
-                pause("The changes exceed the safe merge limit. Your text remains intact."); return
+            case .limited: throw LiveMergeFailure.editLimit
             }
             let root = try imageRoot(for: record)
             let (references, overrides) = try await Task.detached {
-                let merged = NSMutableString(string: record.source)
-                for change in changes.reversed() { merged.replaceCharacters(in: change.range, with: change.replacement) }
-                let references = Set(MarkdownRenderer.render(merged as String, resolver: NoAssetResolver()).images.map(\.reference))
+                let merged = try Self.prepareMergeSource(edits, record: record)
+                let references = Set(MarkdownRenderer.render(merged, resolver: NoAssetResolver()).images.map(\.reference))
                 guard !references.isEmpty else { return (references, [StagedImage]()) }
                 var base = record; base.source = candidate.baseSource; base.stagedAssets = nil; base.assetRoot = nil
                 var incoming = record; incoming.source = candidate.source; incoming.destination = candidate.destination
@@ -119,23 +155,27 @@ extension EditorWorkspace {
                 return
             }
             guard stillCurrent() else { document.checkForUpdates(); return }
-            if !changes.isEmpty {
-                let edits = changes.map { MarkdownSourceEdit(range: $0.range, expected: $0.expected, replacement: $0.replacement) }
-                guard await document.applyEdits(edits, generation: generation) else {
-                    pause("The page did not confirm the merge. Finish the current edit before retrying."); return
-                }
-                guard !document.closed, document.text.generation == generation + 1,
-                      document.session.record.title.utf8.elementsEqual(record.title.utf8),
-                      document.session.record.stagedAssets == record.stagedAssets,
-                      document.session.record.pendingImageReferences == record.pendingImageReferences else {
-                    pause("The draft changed during the merge."); return
+            func commit() {
+                document.session.rebaseImages(root: root.path, references: references, overrides: overrides)
+                document.session.advanceBase(source: candidate.source, destination: candidate.destination, title: title)
+                document.setResolver(candidate.resolver, refreshHost: edits.isEmpty)
+                document.observeBase()
+                schedulePersistence(document)
+            }
+            if edits.isEmpty { commit() }
+            else {
+                guard !pageBusy, !pageChangeInProgress, !liveApplyInProgress else { return }
+                guard await applyThroughPage(edits, generation: generation, document: document, external: (stillCurrent, commit)) else {
+                    if !stillCurrent() { document.checkForUpdates() }
+                    else if pageHeld == nil && !pageBusy { pause("The page did not confirm the merge. Your text remains intact.") }
+                    return
                 }
             }
-            document.session.rebaseImages(root: root.path, references: references, overrides: overrides)
-            document.session.advanceBase(source: candidate.source, destination: candidate.destination, title: title)
-            document.setResolver(candidate.resolver)
-            document.observeBase()
-            schedulePersistence(document)
+        } catch is CancellationError {
+            // The page kept its exact buffer. The next idle page report rechecks the pointer.
+        } catch LiveMergeFailure.editLimit {
+            guard stillCurrent() else { return }
+            pause("The changes exceed the safe merge limit. Your text remains intact.")
         } catch LiveMergeFailure.assetConflict {
             guard stillCurrent() else { return }
             pause("Both authors changed the same image reference. Your text and images remain intact.")
@@ -143,6 +183,20 @@ extension EditorWorkspace {
             guard stillCurrent() else { return }
             pause("External update failed: \(error). Your text remains local.")
         }
+    }
+
+    nonisolated static func prepareMergeSource(_ edits: [MarkdownSourceEdit], record: DraftRecord) throws -> String {
+        guard !edits.isEmpty else { return record.source }
+        guard edits.count <= ReaderBridgeCodec.editLimit, record.generation < UInt64(ReaderBridgeCodec.maxInteger),
+              let result = MirrorText.applying(edits, to: record.source) else { throw LiveMergeFailure.editLimit }
+        let fields: [[String: Any]] = edits.map { ["start": $0.range.location, "end": NSMaxRange($0.range),
+            "text": $0.replacement, "expected": $0.expected] }
+        do {
+            _ = try ReaderBridgeCodec.decode(body: ["v": 1, "type": "edits", "origin": "agent",
+                "operationId": UUID().uuidString, "presentation": UUID().uuidString,
+                "baseGeneration": record.generation, "generation": record.generation + 1, "edits": fields])
+        } catch { throw LiveMergeFailure.editLimit }
+        return result
     }
 
     func needsAutomaticSave(_ document: WorkingDocument) -> Bool {

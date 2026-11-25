@@ -129,6 +129,34 @@ test("person, interleaved agent and scoped history keep the validated mirror byt
 	dispose();
 });
 
+test("an external snapshot needs the exact idle page and retains newer typing on refusal", () => {
+	const { api, payload, host, controller: c, dispose } = setup();
+	const candidate = {
+		...api.fixtures.document("replacement"),
+		presentation: "new-present",
+		generation: 1,
+		base: { presentation: payload.presentation, generation: 0 },
+	};
+	c.setLock("writing");
+	c.activate(c.blocks[0].key);
+	assert.equal(host.emit("document", candidate), false);
+	assert.equal(person(c, 0, 0, "new ").status, "ok");
+	c.activate(null);
+	assert.equal(host.emit("document", candidate), false);
+	assert.equal(c.doc?.source, "new abc\r\n\r\nremote");
+	assert.equal(
+		host.emit("document", { ...candidate, generation: 2, base: { ...candidate.base, generation: 1 } }),
+		true,
+	);
+	assert.equal(c.doc?.source, "replacement");
+	assert.equal(
+		host.emit("document", { ...candidate, generation: 3, base: { ...candidate.base, generation: 2 } }),
+		false,
+	);
+	mirror(host, c);
+	dispose();
+});
+
 test("wrong base or expected text never changes the page or mirror; a host refusal reloads the retained source", () => {
 	const { host, controller: c, dispose } = setup();
 	c.setLock("writing");

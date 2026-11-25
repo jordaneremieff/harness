@@ -135,12 +135,12 @@ applied operation removes the handle's claims.
 Image insertion returns prepared edits from native without applying them. The page commits
 those edits as person history. Captured sources acquire a copy only when the edits arrive.
 
-A protocol 3 host requires `paneProtocol: 3` in the app manifest. The app retains the
-`live: 2` marker for an older host and selects that protocol for its older launch file.
-Both launch formats use `version: 1`; an offer for the current pane protocol adds `live: 3`. The process
-consumes the private, one-use file and reports startup for its reservation. The first
-connection binds its launch origin and process ID to a workspace. The workspace and
-live document UUID identify the buffer; neither is a stored document ID.
+A live host requires `paneProtocol: 4` in the app manifest. Its private, one-use
+file uses `version: 1` and `live: 4`. The reader consumes the file and confirms its
+reservation with the host before it opens the document. A live pane confirms the
+first rendered view before it joins the connected inventory. A failed start exits
+nonzero and prints the diagnostic in the terminal. The workspace and live document
+UUID identify the buffer; neither is a stored document ID.
 
 The reported `view` describes the displayed page, not a background editor. It includes
 Reading or Writing, the kind of document, its dirty and conflict flags and the stored
@@ -153,6 +153,15 @@ with the same operation identity. Native answers `applied` only after the mirror
 recovery contain that change. Replays retain the operation identity and input digest;
 a different edit never reuses an accepted identity. Stale, busy, closed, error and
 uncertain outcomes remain distinct.
+
+When a published draft is clean, the reader installs an external revision as a
+complete snapshot, not an agent edit. The page checks the previous presentation
+and source generation before accepting the new text and its image resolver.
+This also restores a clean draft whose previous update left an autosave conflict.
+For a dirty draft, the reader checks the merge against the page's edit count,
+source and encoded message limits. If the merge overlaps another change or exceeds
+a limit, the reader retains the local draft, identifies the external revision and
+pauses autosave. Save retries the merge; Save As keeps the draft separately.
 
 The page sends a `prompt` with `requestId`, `threadId`, `documentKey`, `presentation`,
 `generation` and either `text`

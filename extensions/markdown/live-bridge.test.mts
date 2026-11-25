@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { test } from "node:test";
 import { LiveBridge, LiveBridges, type LivePrompt, type PaneClosure } from "./live-bridge.ts";
 import {
+	PANE_PROTOCOL,
 	readLiveAction,
 	readLiveConfig,
 	readLiveResult,
@@ -229,7 +230,12 @@ test("selection deactivates a handle without retiring its prompt receipts, while
 		const separatePoll = (await post(config, "/poll", { ...separate, after: 0 })).data;
 		assert.equal(separatePoll.state.status, "idle");
 		assert.equal(separatePoll.state.text, "");
-		await post(config, "/close", { ...separate, pane: true });
+		await post(config, "/close", {
+			...separate,
+			pane: true,
+			launchId: bridge.list().find((p) => p.workspace === separate.workspace)?.launchId,
+			pid: process.pid,
+		});
 		await separateRead;
 		assert.equal((await connect(config, pane)).status, 200);
 		await post(config, "/prompt", prompt);
@@ -494,9 +500,10 @@ test("the host refuses older pane versions and preserves exact claim and release
 			ranges: [{ start: 0, end: 5 }],
 			label: "Revise passage",
 		};
-		for (const live of [undefined, 1, 2]) assert.equal((await post(config, "/connect", { ...pane, live })).status, 410);
-		assert.equal((await post(config, "/connect", { ...pane, live: 4 })).status, 426);
-		assert.equal(bridge.list()[0].live, 3);
+		for (const live of [undefined, 1, 2, 3])
+			assert.equal((await post(config, "/connect", { ...pane, live })).status, 410);
+		assert.equal((await post(config, "/connect", { ...pane, live: PANE_PROTOCOL + 1 })).status, 426);
+		assert.equal(bridge.list()[0].live, PANE_PROTOCOL);
 		const claimId = randomUUID();
 		const results = [
 			{
@@ -755,7 +762,7 @@ test("an explicit identical edit retry restores delivery after an aborted lost-p
 	}
 });
 /** A bridge that records each settled pane closure; `next` resolves with the following report. */
-function closureBridge(graceMs: number) {
+function closureBridge(graceMs: number, commandTimeoutMs?: number) {
 	const reports: PaneClosure[] = [];
 	let notify: (() => void) | undefined;
 	const bridge = new LiveBridge(
@@ -766,7 +773,7 @@ function closureBridge(graceMs: number) {
 				notify?.();
 			},
 		},
-		undefined,
+		commandTimeoutMs,
 		undefined,
 		graceMs,
 	);
@@ -797,15 +804,114 @@ test("a pane that closes and stays away is reported once with the panes that rem
 		let report = next();
 		await post(config, "/close", first);
 		assert.equal(bridge.list().length, 1, "the count drops at once; only the report waits");
-		assert.deepEqual(await report, { closed: 1, connected: 1, panes: [firstPane] });
+		assert.deepEqual(await report, {
+			closed: 1,
+			connected: 1,
+			departures: [
+				{
+					workspace: first.workspace,
+					launchId: firstPane?.launchId,
+					reason: "document-closed",
+					departedAt: bridge.paneDepartures()[0]?.departedAt,
+					lastPane: firstPane,
+				},
+			],
+		});
 		report = next();
 		await post(config, "/close", second);
-		assert.deepEqual(await report, { closed: 1, connected: 0, panes: [secondPane] });
+		assert.deepEqual(await report, {
+			closed: 1,
+			connected: 0,
+			departures: [
+				{
+					workspace: second.workspace,
+					launchId: secondPane?.launchId,
+					reason: "document-closed",
+					departedAt: bridge.paneDepartures()[1]?.departedAt,
+					lastPane: secondPane,
+				},
+			],
+		});
 		await settled(100);
 		assert.equal(reports.length, 2);
 	} finally {
 		bridge.close();
 	}
+});
+test("command wait expiry does not evict a live reader, and departure keeps the last confirmed view", {
+	timeout: 10000,
+}, async (t) => {
+	const { bridge, next } = closureBridge(0, 40);
+	t.after(() => bridge.close());
+	const config = await bridge.start();
+	const pane = binding();
+	const {
+		data: { handle },
+	} = await connect(config, pane);
+	const last = bridge.list()[0];
+	const pulse = { workspace: pane.workspace, launchId: last.launchId, pid: last.pid };
+	t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+	const read = bridge.execute(handle, { op: "read" });
+	assert.equal((await post(config, "/poll", { ...pane, after: 0 })).data.command.op, "read");
+	assert.equal((await read).status, "error");
+	t.mock.timers.tick(10_000);
+	assert.equal((await post(config, "/pulse", { ...pulse, launchId: randomUUID() })).status, 410);
+	assert.equal((await post(config, "/pulse", pulse)).status, 200);
+	t.mock.timers.tick(10_000);
+	assert.deepEqual(bridge.list(), [last]);
+	await post(config, "/state", {
+		...pane,
+		serial: 2,
+		view: { kind: "loading", title: "Opening", mode: "reading", dirty: false, conflict: false },
+	});
+	assert.equal(bridge.list()[0].view.kind, "loading");
+	const departure = next();
+	t.mock.timers.tick(13_000);
+	assert.deepEqual(bridge.list(), []);
+	const closure = await departure;
+	assert.equal(closure.departures[0].reason, "contact-lost");
+	assert.deepEqual(closure.departures[0].lastPane, last);
+	assert.equal(
+		(await post(config, "/pulse", pulse)).status,
+		409,
+		"contact cannot claim a current view after the binding drops",
+	);
+});
+test("expired edits stop undelivered commands and accept a late receipt after delivery", {
+	timeout: 10000,
+}, async (t) => {
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) }, 60, 10);
+	t.after(() => bridge.close());
+	const config = await bridge.start();
+	const pane = binding();
+	const {
+		data: { handle },
+	} = await connect(config, pane);
+	const action = {
+		op: "apply" as const,
+		operationId: randomUUID(),
+		baseGeneration: 0,
+		baseDigest: responseDigest("x"),
+		edits: [{ start: 0, end: 1, expected: "x", replacement: "y" }],
+	};
+	assert.equal((await bridge.execute(handle, action)).status, "closed");
+	assert.equal((await post(config, "/poll", { ...pane, after: 0 })).data.command, null);
+	const dispatched = bridge.execute(handle, action);
+	const {
+		data: { command },
+	} = await post(config, "/poll", { ...pane, after: 0 });
+	assert.equal(command.op, "apply");
+	assert.equal((await dispatched).status, "uncertain");
+	assert.equal((await post(config, "/poll", { ...pane, after: 0 })).data.command, null);
+	const result = {
+		status: "applied",
+		operationId: action.operationId,
+		generation: 1,
+		digest: responseDigest("y"),
+		retained: true,
+	};
+	assert.equal((await post(config, "/result", { ...pane, requestId: command.requestId, result })).status, 200);
+	assert.deepEqual(await bridge.execute(handle, action), result);
 });
 test("a pane that switches documents is not reported as closed", { timeout: 10000 }, async () => {
 	const { bridge, reports } = closureBridge(30);
@@ -836,7 +942,7 @@ test("panes that close together are reported together", { timeout: 10000 }, asyn
 		const closed = await report;
 		assert.equal(closed.closed, 2);
 		assert.equal(closed.connected, 1);
-		assert.deepEqual(new Set(closed.panes), new Set(departed));
+		assert.deepEqual(new Set(closed.departures.map((row) => row.lastPane)), new Set(departed));
 		await settled(150);
 		assert.equal(reports.length, 1);
 	} finally {
@@ -888,6 +994,50 @@ const target = {
 	revision: 2,
 	digest: responseDigest("Published revision"),
 };
+test("same-current navigation rejects an older revision in either mode and preserves the exact Writing view", () => {
+	const source = binding();
+	const action = {
+		...source,
+		...readLiveAction({ op: "navigate", storeId: target.storeId, documentId: target.documentId, currentRevision: 2 }),
+	};
+	const view = {
+		...target,
+		kind: "published",
+		mode: "writing",
+		title: "Confirmed",
+		dirty: false,
+		conflict: false,
+		follows: true,
+	};
+	const result = { ...source, status: "navigated", handle: `${source.workspace}:${source.document}`, view };
+	assert.equal(readLiveResult(result, action).status, "navigated");
+	assert.equal(readLiveResult({ ...result, view: { ...view, revision: 3 } }, action).status, "navigated");
+	for (const change of [
+		{ dirty: true },
+		{ conflict: true },
+		{ follows: false },
+		{ revision: 1 },
+		{ digest: undefined },
+		{ kind: "response" },
+	]) {
+		assert.throws(() => readLiveResult({ ...result, view: { ...view, ...change } }, action));
+	}
+	const reading = { ...view, mode: "reading" };
+	assert.equal(readLiveResult({ ...result, view: reading }, action).status, "navigated");
+	assert.throws(() => readLiveResult({ ...result, view: { ...reading, revision: 1 } }, action), /view.revision/u);
+	const different = randomUUID();
+	assert.throws(
+		() => readLiveResult({ ...result, document: different, handle: `${source.workspace}:${different}` }, action),
+		/view.mode/u,
+	);
+	const pin = { ...source, op: "navigate" as const, ...target };
+	assert.throws(() => readLiveResult(result, pin), /view.mode/u);
+	assert.equal(
+		readLiveResult({ ...result, view: { ...view, mode: "reading", follows: false } }, pin).status,
+		"navigated",
+	);
+	assert.throws(() => readLiveAction({ ...pin, currentRevision: 2 }));
+});
 const navigate = { op: "navigate" as const, ...target };
 const shown = {
 	kind: "published",
@@ -915,7 +1065,7 @@ test("only the original agent pane and exact target receipt confirm navigation",
 		const original = (await connect(config, source, { origin: "agent", launchId })).data.handle;
 		const before = bridge.list().find((pane) => pane.handle === original);
 		assert.ok(before);
-		const reconnect = { ...source, launchId, pid: process.pid, live: 3, serial: 2, view: before.view };
+		const reconnect = { ...source, launchId, pid: process.pid, live: PANE_PROTOCOL, serial: 2, view: before.view };
 		for (const changed of [{ launchId: randomUUID() }, { pid: process.ppid }]) {
 			assert.equal((await post(config, "/connect", { ...reconnect, ...changed })).status, 409);
 		}
@@ -974,7 +1124,12 @@ test("a pane departure distinguishes undelivered navigation from a lost receipt"
 			assert.equal((await post(config, "/poll", { ...other, after: 0 })).data.command, null);
 			await connect(config, source);
 			assert.equal((await post(config, "/poll", { ...source, after: 0 })).data.command, null);
-			await post(config, "/close", { ...source, pane: true });
+			await post(config, "/close", {
+				...source,
+				pane: true,
+				launchId: bridge.list().find((p) => p.workspace === source.workspace)?.launchId,
+				pid: process.pid,
+			});
 		}
 	} finally {
 		bridge.close();
@@ -1004,8 +1159,8 @@ test("a killed reader releases a delivered edit without another poll or command 
 		reader.kill("SIGKILL");
 		const [outcome, closed] = await Promise.all([pending, closure]);
 		assert.equal(outcome.status, "uncertain");
-		assert.equal(closed.panes[0]?.handle, handle);
-		assert.equal(closed.panes[0]?.pid, reader.pid);
+		assert.equal(closed.departures[0]?.lastPane?.handle, handle);
+		assert.equal(closed.departures[0]?.lastPane?.pid, reader.pid);
 		assert.equal(closed.connected, 0);
 		assert.deepEqual(bridge.list(), []);
 	} finally {

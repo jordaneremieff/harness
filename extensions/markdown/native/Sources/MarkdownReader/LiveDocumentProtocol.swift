@@ -38,6 +38,7 @@ struct LiveCommand: Codable, Sendable {
     var documentId: String?
     var revision: Int?
     var digest: String?
+    var currentRevision: Int?
     var operationId: String?
     var baseGeneration: UInt64?
     var baseDigest: String?
@@ -110,16 +111,24 @@ struct WebPendingLiveEdit {
     let generation: UInt64
     let edits: [MarkdownSourceEdit]
 }
+struct WebExternalPageEdit {
+    let operation: String
+    let generation: UInt64
+    let edits: [MarkdownSourceEdit]
+    let canCommit: @MainActor () -> Bool
+    let commit: @MainActor () -> Void
+}
 struct WebLiveClaim {
     let document: UUID
     let expiresAt: Date
 }
 
 extension EditorWorkspace {
-    func startCollaboration(_ configuration: CollaborationConfiguration) {
+    func startCollaboration(_ configuration: CollaborationConfiguration, requiresRenderedStart: Bool = false) {
         guard collaboration == nil else { return }
         let client = CollaborationClient(configuration: configuration, workspace: id, document: liveDocumentID,
-            documentKey: { [weak self] in self?.logicalDocumentKey }, view: { [weak self] in self?.livePaneView ?? .loading }) { [weak self] command in
+            documentKey: { [weak self] in self?.logicalDocumentKey }, view: { [weak self] in self?.livePaneView ?? .loading },
+            requiresRenderedStart: requiresRenderedStart) { [weak self] command in
             guard let self else { return LiveResult(status: "closed", message: "The workspace closed.") }
             guard self.webHostModel != nil else { return LiveResult(status: "busy", message: "The reader page has not opened yet.") }
             return await self.handleLive(command)
@@ -150,9 +159,15 @@ extension EditorWorkspace {
         if change.origin == "agent", let operation = change.operationId, let pending = pendingLiveEdits[operation] {
             guard pending.document == identity, pending.generation == generation, Self.equalEdits(pending.edits, change.edits) else { throw WebMirrorError.invalidChange }
         }
+        let external = change.origin == "agent" && change.operationId == externalPageEdit?.operation ? externalPageEdit : nil
+        if let external {
+            guard external.generation == generation, Self.equalEdits(external.edits, change.edits), external.canCommit() else {
+                throw WebMirrorError.stale
+            }
+        }
         pageChangeInProgress = true
         defer { pageChangeInProgress = false }
-        let imageAdoption = try await prepareImageAdoption(source: nextSource, identity: identity)
+        let imageAdoption = external == nil ? try await prepareImageAdoption(source: nextSource, identity: identity) : nil
         guard identity == liveDocumentID, !closing, matchesPresentation() else { throw WebMirrorError.closed }
         var copied = false
         if let reading {
@@ -165,6 +180,8 @@ extension EditorWorkspace {
             document.session.retainImages(root: imageAdoption.root.path, images: imageAdoption.images)
         }
         guard document.text.apply(edits: change.edits, expectedGeneration: change.baseGeneration) else { throw WebMirrorError.stale }
+        // Commit the base and resolver before recovery, rendering, or the next page edit.
+        external?.commit()
         if let imageAdoption {
             document.session.consumeImages(imageAdoption.images.map(\.reference))
             finishImageAdoption(imageAdoption)
@@ -185,17 +202,32 @@ extension EditorWorkspace {
         return WebPageAck(generation: change.generation, digest: digest, copied: copied, recoveryRetained: retained)
     }
 
-    func applyThroughPage(_ edits: [MarkdownSourceEdit], generation: UInt64, document: WorkingDocument) async -> Bool {
+    func applyThroughPage(_ edits: [MarkdownSourceEdit], generation: UInt64, document: WorkingDocument,
+                          external: (canCommit: @MainActor () -> Bool, commit: @MainActor () -> Void)? = nil) async -> Bool {
         guard isDisplayed(document), !closing, webReady, !pageBusy, !pageChangeInProgress, !liveApplyInProgress, let webAgentApply,
               !overlapsHold(edits.map(\.range)), document.text.generation == generation else { return false }
         liveApplyInProgress = true
-        defer { liveApplyInProgress = false }
         let operation = UUID().uuidString, identity = liveDocumentID
+        defer {
+            liveApplyInProgress = false
+            if externalPageEdit?.operation == operation {
+                externalPageEdit = nil
+                issuedPageOperations[operation] = nil
+            }
+        }
+        if let external {
+            externalPageEdit = WebExternalPageEdit(operation: operation, generation: generation, edits: edits,
+                canCommit: external.canCommit, commit: external.commit)
+        }
         registerPageOperation(operation)
         let result = await webAgentApply(operation, generation, edits)
-        guard case .accepted(let change) = result, identity == liveDocumentID,
-              matchesObserved(change, operation: operation, generation: generation, edits: edits) != nil else { return false }
-        return true
+        let change: WebPageChange?
+        switch result {
+        case .accepted(let accepted): change = accepted
+        case .refused: change = observedPageChanges[operation]?.change
+        }
+        guard let change, identity == liveDocumentID else { return false }
+        return matchesObserved(change, operation: operation, generation: generation, edits: edits) != nil
     }
 
     private func registerPageOperation(_ operation: String) {
@@ -281,7 +313,8 @@ extension EditorWorkspace {
 
     private func navigateLive(_ command: LiveCommand) async -> LiveResult {
         guard let target = command.documentId, PaneCommand.isDocumentIdentity(target), let storeId = command.storeId,
-              (command.revision == nil) == (command.digest == nil), command.revision.map({ $0 > 0 }) ?? true else {
+              (command.revision == nil) == (command.digest == nil), command.revision.map({ $0 > 0 }) ?? true,
+              command.currentRevision.map({ $0 > 0 && command.revision == nil }) ?? true else {
             return LiveResult(status: "error", message: "Specify a stored document and a complete revision pin.")
         }
         guard let root = selectedStore else { return LiveResult(status: "error", message: "This reader has no selected store.") }
@@ -294,6 +327,11 @@ extension EditorWorkspace {
             guard actual == storeId else { return LiveResult(status: "error", message: "This reader belongs to another store.") }
         } catch { return LiveResult(status: "error", message: "The reader could not verify its store: \(error)") }
         let reference = DocumentReference.stored(root: root, storeId: storeId, document: target)
+        if command.revision == nil, automaticallySaves, let document = active,
+           case .published(let base) = document.session.record.destination,
+           (base.root, base.storeId, base.document) == (root, storeId, target) {
+            return await followDisplayedDraft(document, base: base, reference: reference, requestedRevision: command.currentRevision)
+        }
         switch await openReading(reference, revision: command.revision, digest: command.digest, followsLatest: command.revision == nil, remotely: true) {
         case .failed(let detail): return LiveResult(status: "error", message: detail)
         case .busy(let detail): return LiveResult(status: "busy", message: detail)
@@ -307,6 +345,42 @@ extension EditorWorkspace {
         }
         let workspace = id.uuidString, document = liveDocumentID.uuidString
         return LiveResult(status: "navigated", workspace: workspace, document: document, handle: workspace + ":" + document, view: view)
+    }
+
+    /// Current/follow of the same published document joins the displayed draft's own update.
+    /// An explicit pin still goes through reading navigation.
+    private func followDisplayedDraft(_ document: WorkingDocument, base: StoredEditBase, reference: DocumentReference,
+                                      requestedRevision: Int?) async -> LiveResult {
+        let handle = liveDocumentID, workspace = id.uuidString
+        let editing = LiveResult(status: "busy", message: "The reader kept this draft open. Finish the current edit or resolve its conflict before trying again.")
+        func safe() -> Bool {
+            !closing && !document.closed && isDisplayed(document) && handle == liveDocumentID
+                && !document.session.isDirty && document.session.record.conflict == nil
+                && document.session.record.pendingPublication == nil && !document.session.saving
+                && !document.text.hasMarkedText && !document.stagingImages && !pickingImages
+                && !pageBusy && pageHeld == nil && !pageChangeInProgress && !liveApplyInProgress
+        }
+        guard safe() else { return editing }
+        guard let marker = await document.updates.readMarker(reference), let currentRevision = Int(marker) else {
+            return LiveResult(status: "error", message: "The reader could not verify the current stored revision.")
+        }
+        let revision = max(currentRevision, requestedRevision ?? 0)
+        guard safe() else { return editing }
+        if let update = document.externalUpdateTask { await update.value }
+        guard safe() else { return editing }
+        if case .published(let current) = document.session.record.destination, current.revision < revision {
+            await receiveExternalChange(document)
+        }
+        guard safe() else { return editing }
+        let view = livePaneView
+        guard view.kind == "published", view.follows, view.storeId == base.storeId, view.documentId == base.document,
+              view.mode == "reading" || requestedRevision != nil,
+              let installedRevision = view.revision, installedRevision >= revision, view.digest == document.text.digest,
+              webHostModel?.sourceGeneration == document.text.generation, webHostModel?.snapshot?.digest == view.digest else {
+            return LiveResult(status: "busy", message: "The pane has not accepted the current revision. It kept its existing draft.")
+        }
+        let identity = handle.uuidString
+        return LiveResult(status: "navigated", workspace: workspace, document: identity, handle: workspace + ":" + identity, view: view)
     }
 
     func handleLive(_ command: LiveCommand) async -> LiveResult {
@@ -413,8 +487,15 @@ extension EditorWorkspace {
                 let held = range ?? pageHeld ?? NSRange(location: 0, length: 0)
                 return LiveResult(status: "busy", message: "The person has this passage open for writing (UTF-16 \(held.location)–\(NSMaxRange(held))). Read again after they leave it, or edit elsewhere.", reason: "held")
             }
-            if reason == "stale" { pendingLiveEdits[operation] = nil }
-            return LiveResult(status: reason == "stale" ? "stale" : "uncertain", message: "The page refused the edit: " + reason)
+            if reason == "rejected" {
+                pendingLiveEdits[operation] = nil
+                return LiveResult(status: "error", message: "The page rejected the edit before it changed the document.")
+            }
+            if reason == "stale" {
+                pendingLiveEdits[operation] = nil
+                return LiveResult(status: "stale", message: "The page changed before this edit. Read the current buffer.")
+            }
+            return LiveResult(status: "uncertain", message: "The page did not confirm whether it applied the edit. Read the buffer before retrying this operation.")
         case .accepted:
             return LiveResult(status: "uncertain", message: "The page edit is not confirmed in the native mirror. Read before retrying this operation.")
         }

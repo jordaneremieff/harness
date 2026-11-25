@@ -401,7 +401,10 @@ public enum MarkdownRenderer {
         let details = linked ? "" : "<a class=\"img-inspect\" href=\"\(action)\" data-label=\"Details\"></a>"
         switch context.resolver.resolve(reference) {
         case .local(let asset):
-            let token = "a\(context.assets.count)"
+            // The old and new renderings share the asset table during page delivery.
+            // A different revision's bytes must not reuse an address in the old page.
+            let identity = "\(asset.path)\u{0}\(asset.expectedDigest ?? "")"
+            let token = "a" + Digest.sha256(Data(identity.utf8)).dropFirst("sha256:".count)
             context.assets[token] = asset
             record(.local(token: token))
             return opening("<img data-asset=\"\(token)\" data-image-rendering=\"\(escape(context.nonce))\" data-reference=\"\(escape(reference))\" src=\"\(assetScheme)://doc/\(token)\" alt=\"\(escape(alt))\"\(titleAttribute(title)) decoding=\"async\" data-image=\"\(index)\">")

@@ -31,7 +31,7 @@ struct Verification {
         "code-copy-exact", "code-syntax-and-rendered-markdown", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
         "position-survives-refresh", "position-survives-reopen", "launch-origin-per-open", "webcontent-recovery",
-        "selected-revision-exports", "shared-appearance-follows-file",
+        "selected-revision-exports", "hosted-draft-follows-stored-images", "page-edit-delivery-receipt", "shared-appearance-follows-file",
     ]
 
     func run(output: String?) async -> Int32 {
@@ -110,6 +110,8 @@ struct Verification {
                 await run("launch-origin-per-open") { await context.launchOrigins(keep: &keep) }
                 await run("webcontent-recovery") { await context.recovery(keep: &keep) }
                 await run("selected-revision-exports") { await context.revisionExports(keep: &keep) }
+                await run("hosted-draft-follows-stored-images") { await context.storedDraftImages(keep: &keep) }
+                await run("page-edit-delivery-receipt") { await context.editDeliveryReceipt(keep: &keep) }
                 await run("shared-appearance-follows-file") { await context.sharedAppearance(keep: &keep) }
             } else {
                 checks += Self.pageCheckNames.map {
@@ -305,7 +307,7 @@ struct Context {
 
     /// ReaderSurface installs the active draft; opening the model's file reference competes with that install.
     @discardableResult
-    private func prepareActiveDraft(_ editor: EditorWorkspace, on model: ReaderModel, source: String) async throws -> WorkingDocument {
+    func prepareActiveDraft(_ editor: EditorWorkspace, on model: ReaderModel, source: String) async throws -> WorkingDocument {
         guard let draft = editor.active else { throw CheckRunner.CheckError.unavailable("The check did not select a draft.") }
         let key = editor.documentKey(for: draft).uuidString
         guard await wait(seconds: 5, until: {
@@ -2403,7 +2405,10 @@ struct Context {
             let retained = dir.appendingPathComponent("assets/\(good).png")
             try Data(repeating: 0, count: png.count).write(to: retained)
             let beforeMutation = model.refusedAssetRequests
-            _ = await js(model, "const i = document.querySelector('img[data-asset]'); i.src = 'reader-asset://doc/a0?modified'; return true;")
+            guard let address = await js(model, "return document.querySelector('img[data-reference=\"good.png\"]')?.src") as? String else {
+                throw CheckRunner.CheckError.unavailable("The reader did not install the retained image.")
+            }
+            _ = await js(model, "document.querySelector('img[data-asset]').src = address + '?modified'; return true;", ["address": address])
             let mutationRefused = await wait(seconds: 3) { model.refusedAssetRequests > beforeMutation }
             let evidence = await model.inspectImages()
             let detailRows = Provenance.details(model.snapshot, rendered: model.rendered, latestRevision: model.latestRevision, origin: nil, imageEvidence: evidence)
@@ -2413,7 +2418,7 @@ struct Context {
             try FileManager.default.removeItem(at: retained)
             try FileManager.default.createSymbolicLink(at: retained, withDestinationURL: outside)
             let beforeSwap = model.refusedAssetRequests
-            _ = await js(model, "const img = document.createElement('img'); img.src = 'reader-asset://doc/a0?again'; document.body.appendChild(img); return true;")
+            _ = await js(model, "const img = document.createElement('img'); img.src = address + '?again'; document.body.appendChild(img); return true;", ["address": address])
             let swapRefused = await wait(seconds: 3) { model.refusedAssetRequests > beforeSwap }
             let pass = loaded && displayedEvidence && displayRetained && linkedShown && refused && swapRefused && mutationRefused && qualified
             return .init(name: "asset-scheme-containment", pass: pass, detail: "retained image decoded: \(loaded), displayed evidence: \(displayedEvidence), repeated Details evidence retained: \(displayRetained); symlink escape shown as unavailable: \(linkedShown); traversal, unknown token and other host refused: \(refused); same-size mutation refused: \(mutationRefused), qualified asset failure: \(qualified); file swapped for a symlink refused: \(swapRefused)")

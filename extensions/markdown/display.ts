@@ -255,6 +255,8 @@ function nextLivePage(v: Fields, args: Fields) {
 function liveList(v: Fields): Copy | undefined {
 	if (!Array.isArray(v.panes)) return;
 	const pending = Array.isArray(v.pending) ? v.pending.length : 0;
+	const failed = Array.isArray(v.failed) ? v.failed.length : 0;
+	const departed = Array.isArray(v.departed) ? v.departed.length : 0;
 	const count = v.panes.length;
 	const preview = v.panes
 		.map((item: unknown) => {
@@ -265,10 +267,16 @@ function liveList(v: Fields): Copy | undefined {
 		.filter(Boolean)
 		.join("\n");
 	const connected = count ? `${count} connected ${count === 1 ? "pane" : "panes"}` : "No connected panes";
+	const outcomes = [
+		connected,
+		...(pending ? [units(pending, "outstanding launch")] : []),
+		...(failed ? [units(failed, "recent launch failure")] : []),
+		...(departed ? [units(departed, "recent pane departure")] : []),
+	];
 	return {
-		outcome: `${connected}${pending ? `; ${units(pending, "outstanding launch")}` : ""}.`,
+		outcome: `${outcomes.join("; ")}.`,
 		preview,
-		more: count || pending ? receipt(v) : "",
+		more: count || pending || failed || departed ? receipt(v) : "",
 	};
 }
 function liveRead(v: Fields, args: Fields, complete = v.status === "complete"): Copy {

@@ -196,16 +196,24 @@ private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 
         #expect(prepared.html.contains("src=\"reader-asset://doc/rt-0\""))
     }
 
+    private func fragmentImage(_ prepared: PreparedReview, side: String, content: Data) throws -> ResolvedAsset {
+        let digest = ReviewStore.digest(content)
+        let matching = prepared.assets.filter { token, asset in
+            token.hasPrefix(side + "-") && asset.expectedDigest == digest &&
+                prepared.html.contains("src=\"reader-asset://doc/\(token)\"")
+        }
+        #expect(matching.count == 1)
+        return try #require(matching.first?.value)
+    }
+
     @Test func aChangedBlockWithAnImageServesBothRevisionsImages() throws {
         let store = try ReviewStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         try store.publish(1, reportSource, images: ["diagram.png": imageOne])
         try store.publish(2, reportSource.replacingOccurrences(of: "![Diagram]", with: "![Flow]"), images: ["diagram.png": imageTwo])
         let prepared = try ReviewPage.prepare(store.reference, base: 1, target: 2, settings: PageSettings())
-        #expect(prepared.html.contains("src=\"reader-asset://doc/b-a0\""))
-        #expect(prepared.html.contains("src=\"reader-asset://doc/t-a0\""))
-        #expect(prepared.assets["b-a0"]?.bytes == 9)
-        #expect(prepared.assets["t-a0"]?.bytes == 10)
+        #expect(try fragmentImage(prepared, side: "b", content: imageOne).bytes == 9)
+        #expect(try fragmentImage(prepared, side: "t", content: imageTwo).bytes == 10)
     }
 
     @Test(arguments: [false, true]) func equivalentEmphasisUsesOneRendering(withImage: Bool) throws {
@@ -220,8 +228,7 @@ private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 
         #expect(!prepared.html.contains("rv-side rv-before"))
         #expect(prepared.html.contains("<em>word</em>"))
         if withImage {
-            #expect(prepared.html.contains("src=\"reader-asset://doc/t-a0\""))
-            #expect(prepared.assets["t-a0"]?.expectedDigest == ReviewStore.digest(imageOne))
+            _ = try fragmentImage(prepared, side: "t", content: imageOne)
         }
     }
 
@@ -232,8 +239,8 @@ private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 
         try store.publish(2, "A _word_ ![Diagram](diagram.png).\n", images: ["diagram.png": imageTwo])
         let prepared = try ReviewPage.prepare(store.reference, base: 1, target: 2, settings: PageSettings())
         #expect(!prepared.html.contains("Both revisions render this part alike"))
-        #expect(prepared.html.contains("src=\"reader-asset://doc/b-a0\""))
-        #expect(prepared.html.contains("src=\"reader-asset://doc/t-a0\""))
+        _ = try fragmentImage(prepared, side: "b", content: imageOne)
+        _ = try fragmentImage(prepared, side: "t", content: imageTwo)
     }
 
     @Test func comparisonFragmentsKeepContentAndSafeLinksWithoutAppControls() throws {
@@ -262,7 +269,7 @@ private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 
         #expect(!prepared.html.contains("class=\"img-open\""))
         #expect(prepared.html.contains("href=\"https://example.com/report\""))
         #expect(prepared.html.contains("<pre><code>print(&quot;old&quot;)"))
-        #expect(prepared.html.contains("src=\"reader-asset://doc/b-a0\""))
+        _ = try fragmentImage(prepared, side: "b", content: imageOne)
         #expect(prepared.html.contains("<sup"))
     }
 

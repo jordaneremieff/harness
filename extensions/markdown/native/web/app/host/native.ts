@@ -257,6 +257,12 @@
 	function documentMessage(m: Fields) {
 		ensure(typeof m.source === "string" && string(m.source, SOURCE, true) && integer(m.generation));
 		ensure(string(m.presentation, 200));
+		if (m.base !== undefined) {
+			const base = object(m.base);
+			ensure(
+				string(base.presentation, 200) && integer(base.generation) && m.generation === Number(base.generation) + 1,
+			);
+		}
 		meta(m.meta, true);
 		settings(m.settings, true);
 		blocks(m.blocks, m.source.length, true);
@@ -322,6 +328,7 @@
 		"escape",
 		"format",
 		"applySettings",
+		"refreshRender",
 		"showReview",
 		"showDetails",
 		"inspectImage",
@@ -368,7 +375,7 @@
 		},
 		agentApply(m) {
 			identity(m);
-			ensure(integer(m.baseGeneration));
+			ensure(integer(m.baseGeneration) && optional(m.basePresentation, (v) => string(v, 200)));
 			edits(m.edits);
 		},
 		claim,
@@ -818,9 +825,9 @@
 				capabilities.windowChrome = String(message.chrome);
 				capabilities.menuBar = message.chrome === "window";
 				capabilities.returnFocus = message.chrome === "pane";
-				return dispatch(message);
 			}
-			if (message.type === "documentMetadata") return dispatch(message);
+			// Once a mutation reaches a listener, an exception is not proof of refusal.
+			if (["document", "documentMetadata", "agentApply"].includes(message.type)) return dispatch(message);
 			try {
 				return dispatch(message);
 			} catch (error) {

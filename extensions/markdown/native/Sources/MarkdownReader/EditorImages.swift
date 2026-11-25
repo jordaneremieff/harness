@@ -26,10 +26,10 @@ struct PickedImageAdoption: Sendable {
 extension EditorWorkspace {
     func preparePickedImages(generation: UInt64, range: NSRange, source: String,
                              resolver: (any AssetResolving)? = nil) async throws -> PickedImageReply {
-        guard !pickingImages, !closing, matchesImageBase(generation: generation, source: source),
+        guard !pickingImages, !closing, active?.session.updatingExternal != true, matchesImageBase(generation: generation, source: source),
               MirrorText.validRange(range, source: source) else { throw WebMirrorError.stale }
         pickingImages = true
-        defer { pickingImages = false }
+        defer { pickingImages = false; active?.checkForUpdates() }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = ["png", "jpg", "jpeg", "gif", "webp", "svg"].compactMap { UTType(filenameExtension: $0) }
         panel.allowsMultipleSelection = true
@@ -149,13 +149,14 @@ extension EditorWorkspace {
 
     func stageImages(_ document: WorkingDocument, files: [URL] = [], data: Data? = nil, extension ext: String? = nil) {
         guard allowAction("inserting an image", document: document) else { return }
+        guard !document.session.updatingExternal else { notice = "Wait for the external update before inserting an image."; return }
         guard files.count <= 64 else { document.session.setError("Insert no more than 64 images at once."); return }
         guard let root = try? imageRoot(for: document.session.record) else { document.session.setError("The draft image directory is outside private storage."); return }
         let snapshot = document.text.snapshot
         document.stagingImages = true
         Task { [weak self, weak document] in
             guard let self, let document else { return }
-            defer { document.stagingImages = false }
+            defer { document.stagingImages = false; document.checkForUpdates() }
             do {
                 let images = try await Task.detached {
                     let store = EditorAssetStore(root: root)

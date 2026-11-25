@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { LaunchLedger, type SuspendedLaunch } from "./launch-ledger.ts";
+import { LaunchLedger, type LaunchFailure, type LiveLaunch, type SuspendedLaunch } from "./launch-ledger.ts";
 import {
 	isRecord,
 	PANE_PROTOCOL,
@@ -27,11 +27,19 @@ import {
 import { validUnicode } from "./responses.ts";
 
 export type LivePublisher = (status: LiveState["status"], text: string, operationId: string) => void;
-/** Reader panes that left the conversation, and the panes that remain connected to it. */
+export type PaneDepartureReason = "reader-closed" | "document-closed" | "process-ended" | "contact-lost";
+export interface PaneDeparture {
+	workspace: string;
+	launchId: string;
+	reason: PaneDepartureReason;
+	departedAt: number;
+	lastPane?: LivePane;
+}
+/** A departure describes the last confirmed view, not the current display or an exit status. */
 export interface PaneClosure {
 	closed: number;
 	connected: number;
-	panes: LivePane[];
+	departures: PaneDeparture[];
 }
 export interface LivePrompt {
 	operationId: string;
@@ -75,7 +83,7 @@ type Apply = Extract<LiveAction, { op: "apply" }>;
 export type AnchorIdentity = { key: string };
 type EditReceipt = { fingerprint: string; pending: Pending; anchor?: AnchorIdentity };
 const RELOAD_PAUSE = { ok: false, error: "Pi is reloading this conversation." };
-const POLL_GRACE_MS = 6_000;
+const CONTACT_GRACE_MS = 12_000;
 const RECONNECT_GRACE_MS = 30_000;
 interface Reader {
 	workspace: string;
@@ -84,6 +92,7 @@ interface Reader {
 	launchId: string;
 	serial: number;
 	lastContact: number;
+	lastPane?: LivePane;
 	navigation?: { command: Extract<LiveCommand, { op: "navigate" }>; result?: LiveResult; rejected?: true };
 }
 type SavedEdit = Omit<EditReceipt, "pending"> & Pick<Pending, "command" | "delivered" | "result" | "rejected">;
@@ -97,6 +106,9 @@ interface SavedState {
 	edits: [string, SavedEdit][];
 	states: [string, [string, LiveState][]][];
 	launches: SuspendedLaunch[];
+	failed: LaunchFailure[];
+	departures: PaneDeparture[];
+	vacated: PaneDeparture[];
 	sequence: number;
 	navigations: [string, NonNullable<Reader["navigation"]>][];
 }
@@ -137,6 +149,19 @@ function processAlive(pid: number): boolean {
 }
 const failure = (status: "closed" | "uncertain", message: string): LiveResult => ({ status, message });
 const queryOnly = (op: string): boolean => op === "read" || op === "comments";
+function confirmsLaunchView(launch: LiveLaunch, view: LivePaneView): boolean {
+	if (
+		!(["published", "response", "file"] as const).some((kind) => kind === view.kind) ||
+		view.mode !== "reading" ||
+		view.dirty ||
+		view.conflict
+	)
+		return false;
+	if (view.documentId !== launch.documentId || view.revision === undefined || !view.digest) return false;
+	return launch.revision === undefined
+		? view.kind !== "published" || view.follows === true
+		: view.revision === launch.revision && view.follows !== true;
+}
 function invalidReceipt(op: LiveAction["op"], error: unknown): LiveResult {
 	const detail = error instanceof Error ? error.message : "Invalid result.";
 	const uncertain = op === "apply" || op === "navigate" || op === "setComment";
@@ -201,10 +226,9 @@ export class LiveBridge {
 	private readonly wakes = new Map<string, () => void>();
 	private readonly states = new Map<string, Map<string, LiveState>>();
 	/** Panes whose document closed and that have not connected another document since. */
-	private readonly vacated = new Map<string, LivePane>();
+	private readonly vacated = new Map<string, PaneDeparture>();
+	private readonly departures = new Map<string, PaneDeparture>();
 	private vacancy?: ReturnType<typeof setTimeout>;
-	/** Requests whose body, and so whose pane, is not yet known. */
-	private arriving = 0;
 	private sequence = 0;
 	private readonly route: LiveRoute;
 	private readonly commandTimeoutMs: number;
@@ -310,6 +334,15 @@ export class LiveBridge {
 	pendingLaunches() {
 		return this.launches.pendingLaunches();
 	}
+	failedLaunches() {
+		return this.launches.failedLaunches();
+	}
+	paneDepartures() {
+		return [...this.departures.values()].map(({ lastPane, ...row }) => ({
+			...row,
+			...(lastPane && { lastPane: { ...lastPane, view: { ...lastPane.view } } }),
+		}));
+	}
 	private monitor(): void {
 		if (this.observer || !this.readers.size) return;
 		this.observer = setInterval(() => this.prune(), 1000);
@@ -320,28 +353,28 @@ export class LiveBridge {
 		for (const reader of this.readers.values()) {
 			const pane = this.bindings.get(reader.workspace);
 			if (!processAlive(reader.pid)) {
-				this.leave(reader.workspace);
+				this.leave(reader.workspace, "process-ended");
 				continue;
 			}
 			if (!pane) {
-				if (now - reader.lastContact >= RECONNECT_GRACE_MS) this.leave(reader.workspace);
+				if (now - reader.lastContact >= RECONNECT_GRACE_MS) this.leave(reader.workspace, "contact-lost");
 				continue;
 			}
-			if (this.wakes.has(pane.handle) || now - reader.lastContact < POLL_GRACE_MS) continue;
-			// A live reader can be inside a command instead of a poll. Its PID still detects death.
-			const executing = [...this.pending.values()].some((p) => p.delivered && liveHandle(p.command) === pane.handle);
-			if (executing && now - reader.lastContact <= this.commandTimeoutMs + 1000) continue;
+			if (this.wakes.has(pane.handle) || now - reader.lastContact < CONTACT_GRACE_MS) continue;
 			this.disconnect(pane, false);
-			this.vacate(pane);
+			this.vacate(reader, "contact-lost");
 		}
 		if (!this.readers.size) {
 			clearInterval(this.observer);
 			this.observer = undefined;
 		}
 	}
-	private leave(workspace: string): void {
+	private leave(workspace: string, reason: PaneDepartureReason): void {
+		const reader = this.readers.get(workspace);
+		if (!reader) return;
 		const pane = this.bindings.get(workspace);
 		if (pane) this.disconnect(pane);
+		if (reason !== "contact-lost" || pane) this.vacate(reader, reason);
 		for (const handle of this.documents) if (handle.startsWith(`${workspace}:`)) this.retired.add(handle);
 		this.readers.delete(workspace);
 	}
@@ -475,6 +508,7 @@ export class LiveBridge {
 				}
 				if (!selected.delivered || queryOnly(selected.command.op))
 					this.complete(selected, failure("closed", "The live read or undelivered command was cancelled."));
+				else this.pending.delete(selected.command.requestId);
 			};
 			const timer = setTimeout(() => {
 				if (selected.command.op === "navigate") {
@@ -487,19 +521,27 @@ export class LiveBridge {
 						message: "The live read timed out. No edit was requested. Retry the read when the exact pane is available.",
 					};
 					this.complete(selected, result);
-				} else if (selected.command.op === "apply")
-					finish(
-						failure(
-							"uncertain",
-							"The native result is unconfirmed. Retry only the same operation ID and identical edit; do not infer that it failed.",
-						),
-					);
+				} else if (selected.command.op === "apply") this.expireEditWait(selected, finish);
 				else this.complete(selected, missingReceipt(selected.command.op));
 			}, this.commandTimeoutMs);
 			selected.waiters.add(finish);
 			signal?.addEventListener("abort", abort, { once: true });
 			if (signal?.aborted) abort();
 		});
+	}
+	private expireEditWait(pending: Pending, finish: (result: LiveResult) => void): void {
+		if (!pending.delivered) {
+			this.complete(pending, failure("closed", "The edit did not reach the reader before the wait ended."));
+			return;
+		}
+		finish(
+			failure(
+				"uncertain",
+				"The native result is unconfirmed. Retry only the same operation ID and identical edit; do not infer that it failed.",
+			),
+		);
+		// Retain the receipt by operation, not the delivery slot. A late result can still reconcile it.
+		if (!pending.waiters.size) this.pending.delete(pending.command.requestId);
 	}
 	private endNavigationWait(pending: Pending): void {
 		this.complete(
@@ -543,10 +585,7 @@ export class LiveBridge {
 			this.documents.add(handle);
 		}
 		const pane = this.bindings.get(binding.workspace);
-		if (pane?.document === binding.document) {
-			this.bindings.delete(binding.workspace);
-			if (retire) this.vacate(pane);
-		}
+		if (pane?.document === binding.document) this.bindings.delete(binding.workspace);
 		if (retire) this.retired.add(handle);
 		for (const pending of this.pending.values()) {
 			if (pending !== completing && liveHandle(pending.command) === handle) this.disconnectCommand(pending);
@@ -557,29 +596,41 @@ export class LiveBridge {
 	 * A pane reports the close of its shown document and connects the next one at once when it
 	 * switches documents, so a closure counts only when the pane stays away for the grace period.
 	 */
-	private vacate(pane: LivePane): void {
-		if (this.closed || !this.route.panesClosed) return;
-		this.vacated.set(pane.workspace, pane);
-		this.settleVacancyAfter(this.paneGraceMs);
+	private vacate(reader: Reader, reason: PaneDepartureReason): void {
+		if (this.closed) return;
+		const { workspace, launchId, lastPane } = reader;
+		this.vacated.set(workspace, { workspace, launchId, reason, departedAt: Date.now(), ...(lastPane && { lastPane }) });
+		this.queueVacancy();
 	}
-	private settleVacancyAfter(delay: number): void {
+	private queueVacancy(): void {
 		clearTimeout(this.vacancy);
-		// The immediate lets input that arrived while the process was busy reach the bridge first.
-		this.vacancy = setTimeout(() => setImmediate(() => this.settleVacancy()), delay);
-		this.vacancy.unref();
+		const newest = Math.max(...Array.from(this.vacated.values(), (row) => row.departedAt));
+		const delay = Math.max(0, newest + this.paneGraceMs - Date.now());
+		const timer = setTimeout(
+			() =>
+				setImmediate(() => {
+					if (this.vacancy === timer) this.settleVacancy();
+				}),
+			delay,
+		).unref();
+		this.vacancy = timer;
 	}
 	private settleVacancy(): void {
 		if (this.closed) return;
-		if (this.arriving > 0) {
-			this.settleVacancyAfter(50);
-			return;
-		}
 		this.vacancy = undefined;
-		const panes = [...this.vacated.values()].filter((pane) => !this.bindings.has(pane.workspace));
-		this.vacated.clear();
-		if (!panes.length) return;
+		const departures: PaneDeparture[] = [];
+		for (const [workspace, departure] of this.vacated) {
+			this.vacated.delete(workspace);
+			if (this.bindings.has(workspace)) continue;
+			departures.push(departure);
+			this.departures.delete(workspace);
+			this.departures.set(workspace, departure);
+			const oldest = this.departures.keys().next().value;
+			if (this.departures.size > 16 && oldest) this.departures.delete(oldest);
+		}
+		if (!departures.length) return;
 		try {
-			this.route.panesClosed?.({ closed: panes.length, connected: this.bindings.size, panes });
+			this.route.panesClosed?.({ closed: departures.length, connected: this.bindings.size, departures });
 		} catch {
 			// A route that cannot take the notice leaves the connection state unchanged.
 		}
@@ -594,12 +645,13 @@ export class LiveBridge {
 			endpoint: this.config.endpoint,
 			token: this.token,
 			conversation: this.conversation,
-			readers: [...this.readers.values()].map(({ workspace, pid, origin, launchId, serial }) => ({
+			readers: [...this.readers.values()].map(({ workspace, pid, origin, launchId, serial, lastPane }) => ({
 				workspace,
 				pid,
 				origin,
 				launchId,
 				serial,
+				lastPane,
 			})),
 			promptHandles: [
 				...this.fencedPrompts,
@@ -637,6 +689,9 @@ export class LiveBridge {
 				),
 				states: [...this.states].map(([key, states]) => [key, [...states]]),
 				launches: this.launches.suspend(),
+				failed: this.launches.failedLaunches(),
+				departures: [...this.departures.values()],
+				vacated: [...this.vacated.values()],
 				navigations: [...this.readers].flatMap(([workspace, reader]) =>
 					reader.navigation ? [[workspace, reader.navigation]] : [],
 				),
@@ -696,7 +751,10 @@ export class LiveBridge {
 			const reader = this.readers.get(workspace);
 			if (reader) reader.navigation = navigation;
 		}
-		this.launches.resume(state.launches);
+		this.launches.resume(state.launches, state.failed);
+		for (const departure of state.departures) this.departures.set(departure.workspace, departure);
+		for (const departure of state.vacated) this.vacated.set(departure.workspace, departure);
+		if (this.vacated.size) this.queueVacancy();
 	}
 	close(): void {
 		if (this.closed) return;
@@ -768,6 +826,7 @@ export class LiveBridge {
 		const pane: LivePane = {
 			...binding,
 			handle,
+			launchId: reader.launchId,
 			live: PANE_PROTOCOL,
 			pid: reader.pid,
 			origin: reader.origin,
@@ -775,6 +834,7 @@ export class LiveBridge {
 			view,
 		};
 		reader.serial = serial;
+		if (view.kind !== "loading") reader.lastPane = pane;
 		this.bindings.set(binding.workspace, pane);
 		this.documents.add(handle);
 		this.vacated.delete(binding.workspace);
@@ -783,7 +843,7 @@ export class LiveBridge {
 		if (body.live !== PANE_PROTOCOL)
 			throw new RequestFailure(
 				// Earlier readers stop retrying on 410; they do not recognise the upgrade response.
-				body.live === undefined || body.live === 1 || body.live === 2 ? 410 : 426,
+				body.live === undefined || body.live === 1 || body.live === 2 || body.live === 3 ? 410 : 426,
 				"This reader and Pi use different live pane protocols. Update the reader and reopen it from this Pi session.",
 			);
 		if (!livePid(body.pid) || !liveId(body.launchId)) throw new Error("Invalid native pane process or launch.");
@@ -793,7 +853,7 @@ export class LiveBridge {
 		const serial = serialNumber(body.serial),
 			view = readLiveView(body.view);
 		this.prune();
-		const reader = this.currentReader(binding, launchId, pid);
+		const reader = this.currentReader(binding, launchId, pid, view);
 		this.installView(binding, reader, serial, view);
 		// A reconnect confirms the current view, not the outcome of a command whose packet or receipt was lost.
 		if (reader.navigation && !reader.navigation.result) {
@@ -804,7 +864,7 @@ export class LiveBridge {
 		this.contact(binding.workspace);
 		return { ok: true, handle: liveHandle(binding) };
 	}
-	private currentReader(binding: LiveBinding, launchId: string, pid: number): Reader {
+	private currentReader(binding: LiveBinding, launchId: string, pid: number, view: LivePaneView): Reader {
 		let reader = this.readers.get(binding.workspace);
 		if (!reader && [...this.documents].some((handle) => handle.startsWith(`${binding.workspace}:`)))
 			throw new RequestFailure(410, "This pane's connection ended. Reopen from the original Pi conversation.");
@@ -813,22 +873,49 @@ export class LiveBridge {
 			throw new Error("The launch no longer belongs to this pane process.");
 		if (!reader) {
 			if (this.readers.size >= 8) throw new Error("The native workspace limit is reached.");
-			const origin = this.consumeLaunch(launchId, pid);
-			reader = { workspace: binding.workspace, origin, pid, launchId, serial: -1, lastContact: Date.now() };
+			const launch = this.consumeLaunch(launchId, pid, view);
+			reader = {
+				workspace: binding.workspace,
+				origin: launch.origin,
+				pid,
+				launchId,
+				serial: -1,
+				lastContact: Date.now(),
+			};
 			this.readers.set(binding.workspace, reader);
 			this.monitor();
 		}
 		return reader;
 	}
-	private consumeLaunch(launchId: string, pid: number): LivePane["origin"] {
+	private consumeLaunch(launchId: string, pid: number, view: LivePaneView) {
+		let launch: LiveLaunch;
 		try {
-			return this.launches.consume(launchId, pid);
+			launch = this.launches.started(launchId, pid);
 		} catch {
 			throw new RequestFailure(
 				410,
 				"This reader's launch is no longer active. Reopen from the original Pi conversation.",
 			);
 		}
+		if (launch.origin === "agent" && launch.documentId && !confirmsLaunchView(launch, view))
+			throw new RequestFailure(422, "The rendered view does not confirm the reserved document and revision mode.");
+		this.launches.consume(launchId, pid);
+		return launch;
+	}
+	private liveReader(body: Record<string, unknown>): Reader {
+		const reader = typeof body.workspace === "string" ? this.readers.get(body.workspace) : undefined;
+		if (
+			!reader ||
+			!livePid(body.pid) ||
+			!liveId(body.launchId) ||
+			reader.pid !== body.pid ||
+			reader.launchId !== body.launchId.toLowerCase()
+		)
+			throw new RequestFailure(
+				410,
+				"The reader no longer belongs to this conversation. Reopen from the original Pi conversation.",
+			);
+		return reader;
 	}
 	private updateView(binding: LiveBinding, body: Record<string, unknown>): object {
 		const reader = this.readers.get(binding.workspace);
@@ -990,6 +1077,19 @@ export class LiveBridge {
 		});
 		return { ok: true, ...(await promise) };
 	}
+	private closeReader(binding: LiveBinding, body: Record<string, unknown>): object {
+		const reader = this.readers.get(binding.workspace);
+		if (!reader) return { ok: true };
+		if (body.pane === true) {
+			this.liveReader(body);
+			this.leave(binding.workspace, "reader-closed");
+		} else if (this.documents.has(liveHandle(binding))) {
+			const selected = this.bindings.get(binding.workspace)?.document === binding.document;
+			this.disconnect(binding);
+			if (selected) this.vacate(reader, "document-closed");
+		}
+		return { ok: true };
+	}
 	private async dispatch(path: string, body: Record<string, unknown>, response: ServerResponse): Promise<object> {
 		if (this.closed || !this.config)
 			throw new RequestFailure(410, "This Pi conversation disconnected. Reopen the reader from the session.");
@@ -1004,8 +1104,16 @@ export class LiveBridge {
 					throw new Error("An agent reader is already open. Check its connection and navigate that pane instead.");
 				return this.launches.reserve(body, this.config);
 			case "/starting":
-				this.launches.starting(body);
+				return this.launches.starting(body);
+			case "/launch-failed":
+				return this.launches.failed(body);
+			case "/pulse": {
+				const reader = this.liveReader(body);
+				if (!this.bindings.has(reader.workspace))
+					throw new RequestFailure(409, "The reader must reconnect its selected view.");
+				this.contact(reader.workspace);
 				return { ok: true };
+			}
 			case "/cancel":
 				this.launches.cancel(body);
 				return { ok: true };
@@ -1015,9 +1123,7 @@ export class LiveBridge {
 			case "/connect":
 				return this.connect(binding, body);
 			case "/close":
-				if (body.pane === true) this.leave(binding.workspace);
-				else if (this.documents.has(liveHandle(binding))) this.disconnect(binding);
-				return { ok: true };
+				return this.closeReader(binding, body);
 			case "/result":
 				return this.result(binding, body);
 			case "/prompt":
@@ -1033,20 +1139,24 @@ export class LiveBridge {
 				return;
 			}
 			if (
-				!["/reserve", "/starting", "/cancel", "/connect", "/state", "/poll", "/result", "/prompt", "/close"].includes(
-					request.url ?? "",
-				)
+				![
+					"/reserve",
+					"/starting",
+					"/launch-failed",
+					"/cancel",
+					"/connect",
+					"/pulse",
+					"/state",
+					"/poll",
+					"/result",
+					"/prompt",
+					"/close",
+				].includes(request.url ?? "")
 			) {
 				this.send(response, 404, { ok: false, error: "Unknown live Markdown operation." });
 				return;
 			}
-			this.arriving++;
-			let body: Record<string, unknown>;
-			try {
-				body = await this.body(request);
-			} finally {
-				this.arriving--;
-			}
+			const body = await this.body(request);
 			const result = await this.dispatch(request.url ?? "", body, response);
 			this.send(response, 200, result);
 		} catch (error) {

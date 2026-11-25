@@ -42,6 +42,7 @@ import type { WritingBrief } from "./brief.ts";
 import { createBriefTool, createNativeBriefTool } from "./brief-tool.ts";
 import { LIMITS, MarkdownStore, type PublicationPlan, type WriteResult } from "./store.ts";
 import type { PaneInventory } from "./pane-state.ts";
+import { PANE_PROTOCOL } from "./live-protocol.ts";
 import type { ShowResult } from "./live-show.ts";
 import type { LocalShow } from "./live-tool.ts";
 const scratch = tmpdir();
@@ -1115,7 +1116,8 @@ function reader(storeId: string, documentId: string, mode: "writing" | "reading"
 		workspace,
 		document,
 		handle: `${workspace}:${document}`,
-		live: 3,
+		live: PANE_PROTOCOL,
+		launchId: "650518be-77db-4d0d-989d-21cc8c957822",
 		origin: "operator",
 		pid: 71,
 		reportedAt: 17,
@@ -1149,8 +1151,8 @@ test("publication reports each last-observed view and pending launch, not an ass
 		const inventory: PaneInventory = {
 			panes: [reading, other, elsewhere],
 			pending: [
-				{ launchId: "offered", origin: "agent", status: "offered" },
-				{ launchId: "started", documentId: document, origin: "operator", status: "launching" },
+				{ launchId: "offered", origin: "agent", status: "offered", expiresAt: 1000 },
+				{ launchId: "started", documentId: document, origin: "operator", status: "launching", expiresAt: 2000 },
 			],
 		};
 		const options = { cwd, store, observePanes: async () => inventory };
@@ -1464,6 +1466,7 @@ test("publish with show saves and shows in one call, and a show failure keeps th
 			status: "launch",
 			documentId: "md-00000000000000000000",
 			launchId: "launch-1",
+			expiresAt: 1000,
 			argv: ["reader", "--pane"],
 			message: "Run this exact one-use argv as the initial pane program.",
 		};

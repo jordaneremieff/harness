@@ -19,8 +19,8 @@ import Testing
 
     @Test func pageStateAndConfirmedNavigationPrecedeTheNewConnection() async throws {
         let server = try LiveTestBridge(mode: "transport"); defer { server.stop() }
-        let config = try await server.configuration()
-        try await config.reportStarting()
+        let config = try await server.configuration(started: false)
+        _ = try await config.reportStarting()
         let page = Page(), workspace = UUID(), original = UUID(), target = UUID()
         let client = CollaborationClient(configuration: config, workspace: workspace, document: original, view: { page.view }) { command in
             guard command.op == "navigate" else { return LiveResult(status: "closed") }
@@ -152,15 +152,22 @@ import Testing
 
     @Test(arguments: [false, true]) func initialConnectDistinguishesStartupResetFromEndpointClosure(closed: Bool) async throws {
         let server = try LiveTestBridge(mode: closed ? "normal" : "reset-start"); defer { server.stop() }
-        let config = try await server.configuration()
-        try await config.reportStarting()
+        let config = try await server.configuration(started: false)
+        _ = try await config.reportStarting()
         if closed { _ = try await server.request(["op": "closeEndpoint"]) }
         let client = CollaborationClient(configuration: config, workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }
         client.start(); defer { client.stop() }
         if closed {
             try await eventually { client.isClosed }
             #expect(client.connectionStatus.contains(config.target) && client.connectionStatus.contains("Reopen"))
-        } else { try await eventually { client.status == "Agent connected" } }
+            await client.stop()?.value
+        } else {
+            try await eventually { client.status == "Agent connected" }
+            let state = try await server.request(["op": "state"])
+            let events = try #require(state["transport"] as? [[String: Any]])
+            let attempts = events.filter { $0["path"] as? String == "/starting" }.compactMap { $0["body"] as? [String: Any] }
+            #expect(attempts.count >= 2 && attempts.allSatisfy { $0["launchId"] as? String == config.launchId })
+        }
     }
 
     @Test func stalePollReconnectsSameBindingAndVersionRefusalKeepsDraft() async throws {

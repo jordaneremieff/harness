@@ -4,6 +4,7 @@ import MarkdownCore
 import Observation
 
 struct CollaborationConfiguration: Decodable, Sendable {
+    static let paneProtocol = 4
     let version: Int
     let endpoint: URL
     let token: String
@@ -14,23 +15,53 @@ struct CollaborationConfiguration: Decodable, Sendable {
 
     var target: String { conversation ?? "the original conversation" }
 
-    func reportStarting() async throws {
-        guard live == 3, let launchId else { return }
+    private struct StartupReceipt: Decodable { let ok: Bool; let expiresAt: Int64 }
+
+    func reportStarting() async throws -> DispatchTime? {
+        guard live == Self.paneProtocol else { return nil }
         let session = CollaborationClient.transport()
         defer { session.invalidateAndCancel() }
-        var request = URLRequest(url: endpoint.appendingPathComponent("starting"), timeoutInterval: 3)
+        let deadline = ContinuousClock.now + .seconds(8)
+        repeat {
+            do {
+                let (status, data) = try await launchReply("starting", session: session, timeout: 2)
+                if status == 200 {
+                    let receipt = try JSONDecoder().decode(StartupReceipt.self, from: data)
+                    let remaining = Double(receipt.expiresAt) / 1000 - Date.now.timeIntervalSince1970
+                    guard receipt.ok, remaining > 0 else { throw StoreError.unreadable("The reader startup deadline passed.") }
+                    return .now() + min(120, remaining)
+                }
+                guard status == 503 else {
+                    throw StoreError.unreadable("The original conversation rejected this launch. The offer may have expired or been used already.")
+                }
+            } catch let error as URLError where [.networkConnectionLost, .timedOut].contains(error.code) {
+                // The host may have accepted the same launch before its acknowledgement was lost.
+            }
+            if ContinuousClock.now >= deadline { break }
+            try await Task.sleep(for: .milliseconds(200))
+        } while ContinuousClock.now < deadline
+        throw StoreError.unreadable("The original conversation did not confirm startup before the deadline.")
+    }
+
+    @discardableResult func reportLaunchFailure(_ message: String) async -> Bool {
+        guard live == Self.paneProtocol else { return false }
+        let transport = CollaborationClient.transport()
+        defer { transport.invalidateAndCancel() }
+        let reply = try? await launchReply("launch-failed", session: transport, timeout: 0.2, message: message)
+        return reply?.0 == 200
+    }
+
+    private func launchReply(_ operation: String, session: URLSession, timeout: TimeInterval, message: String? = nil) async throws -> (Int, Data) {
+        var request = URLRequest(url: endpoint.appendingPathComponent(operation), timeoutInterval: timeout)
         request.httpMethod = "POST"
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["launchId": launchId, "pid": getpid()])
-        let response: URLResponse
-        do { (_, response) = try await session.data(for: request) }
-        catch let error as URLError where [.networkConnectionLost, .timedOut].contains(error.code) { return }
-        // The original listener can be between route owners. Connect consumes this same reservation after reclaim.
-        if (response as? HTTPURLResponse)?.statusCode == 503 { return }
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw StoreError.unreadable("The original conversation did not accept the pane launch.")
-        }
+        var body: [String: Any] = ["pid": getpid()]
+        body["launchId"] = launchId
+        body["message"] = message.map { String($0.prefix(400)) }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: request)
+        return ((response as? HTTPURLResponse)?.statusCode ?? 0, data)
     }
 
     static func consume(_ path: String) throws -> Self {
@@ -54,7 +85,7 @@ struct CollaborationConfiguration: Decodable, Sendable {
               value.token.utf8.count == 64, value.token.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             throw StoreError.unreadable("The live connection configuration is invalid.")
         }
-        guard value.live == nil || (value.live == 3 && value.launchId.flatMap(UUID.init(uuidString:)) != nil && value.hostPid.map { $0 > 0 } == true && value.conversation?.isEmpty == false) else {
+        guard value.live == nil || (value.live == Self.paneProtocol && value.launchId.flatMap(UUID.init(uuidString:)) != nil && value.hostPid.map { $0 > 0 } == true && value.conversation?.isEmpty == false) else {
             throw StoreError.unreadable("The live connection version is unavailable. Reopen from the original Pi conversation.")
         }
         var current = stat()
@@ -80,7 +111,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     private struct Poll: Decodable { var ok: Bool; var command: LiveCommand?; var state: AgentState }
     private struct PromptReceipt: Decodable { var ok: Bool; var status: String; var message: String?; var retryable: Bool? }
     private struct Acknowledgement: Decodable { var ok: Bool; var accepted: Bool? }
-    private enum Failure: Error { case refused, version, stale, oversized, response, handoff }
+    private enum Failure: Error { case refused, version, stale, oversized, response, handoff, invalidInitialView }
     private let configuration: CollaborationConfiguration
     private let workspace: UUID
     private var document: UUID
@@ -91,7 +122,11 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     private let view: () -> LivePaneView
     private var logicalDocument: UUID
     private var connectedDocument: UUID?
-    private var connectedOnce = false
+    private(set) var connectedOnce = false
+    var initialConnectionFailure: String? { closed && !connectedOnce ? connectionStatus : nil }
+    private let requiresRenderedStart: Bool
+    private var pulseTask: Task<Void, Never>?
+    private var closeTask: Task<Void, Never>?
     private var holdsNavigation = false
     /// An exact selection or its navigation proof changed. Reconnecting the same buffer is not a change.
     private var admissionGeneration = 0
@@ -334,7 +369,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     private func receiveActivity(_ state: AgentState, document: UUID) {
         guard let request = state.operationId else {
             // An already running host can still send conversation-wide activity. Never quote it as this answer.
-            if configuration.live != 3, state.status == "answer", let thread = currentAdmittedThreadId(for: document),
+            if configuration.live != CollaborationConfiguration.paneProtocol, state.status == "answer", let thread = currentAdmittedThreadId(for: document),
                let request = threads[threadKey(thread)]?.lastRequest {
                 emitPromptState("unanswered", detail: "This Pi session did not link its reply to a question. Reload Pi and reopen the pane for replies here.", request: request)
             }
@@ -549,8 +584,9 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
 
     init(configuration: CollaborationConfiguration, workspace: UUID, document: UUID,
          documentKey: @escaping () -> UUID? = { nil }, view: @escaping () -> LivePaneView = { .loading },
-         handle: @escaping (LiveCommand) async -> LiveResult) {
+         requiresRenderedStart: Bool = false, handle: @escaping (LiveCommand) async -> LiveResult) {
         self.configuration = configuration; self.workspace = workspace; self.document = document; self.handle = handle
+        self.requiresRenderedStart = requiresRenderedStart
         self.documentKey = documentKey; self.view = view; self.logicalDocument = documentKey() ?? document
         connectionStatus = "Connecting to \(configuration.target)…"
         session = Self.transport()
@@ -605,16 +641,21 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
                     if !connected {
                         var connection = self.identity(selected); connection["live"] = self.configuration.live ?? 2
                         let shown = self.view()
-                        if self.configuration.live == 3 {
+                        if self.requiresRenderedStart, !self.connectedOnce, shown.kind == "loading" {
+                            try await self.awaitFirstViewChange()
+                            continue
+                        }
+                        if self.configuration.live == CollaborationConfiguration.paneProtocol {
                             connection["pid"] = getpid(); connection["launchId"] = self.configuration.launchId
                             connection["serial"] = self.nextSerial(); connection["view"] = try self.json(shown)
                         }
-                        let ack: Acknowledgement = try await self.post("connect", body: connection)
+                        let ack: Acknowledgement = try await self.post("connect", body: connection, timeout: 3)
                         guard self.epoch == token, !Task.isCancelled, !self.closed else { return }
                         guard ack.ok else { throw Failure.response }
                         connected = true; self.connectedOnce = true; self.connectedDocument = selected
                         self.connectionStatus = "Connected to \(self.configuration.target)"
                         self.status = self.pendingPrompt?.status ?? "Agent connected"
+                        self.maintainContact()
                         self.observeView(document: selected, initial: shown, epoch: token)
                     }
                     for retired in self.retiring where retired != selected {
@@ -681,6 +722,31 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         }
     }
 
+    private func awaitFirstViewChange() async throws {
+        let (changes, signal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let current = withObservationTracking { view() } onChange: { signal.yield(()); signal.finish() }
+        if current.kind == "loading" {
+            for await _ in changes { break }
+        }
+        try Task.checkCancellation()
+    }
+
+    /// The command loop cannot poll while it waits for WebKit or recovery. Contact is a separate lease.
+    private func maintainContact() {
+        guard configuration.live == CollaborationConfiguration.paneProtocol, pulseTask == nil else { return }
+        pulseTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                guard let self, !self.closed else { return }
+                do { let _: Acknowledgement = try await self.post("pulse", body: self.readerIdentity(), timeout: 3) }
+                catch {
+                    guard !Task.isCancelled, !self.closed else { return }
+                    if self.finishIfUnavailable(error) { return }
+                }
+            }
+        }
+    }
+
     private func json(_ value: some Encodable) throws -> Any {
         try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
     }
@@ -690,7 +756,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     /// Re-arm observation after acknowledgement; the new sample covers changes during the POST.
     private func observeView(document: UUID, initial: LivePaneView, epoch: Int) {
         reportTask?.cancel()
-        guard configuration.live == 3 else { return }
+        guard configuration.live == CollaborationConfiguration.paneProtocol else { return }
         reportTask = Task { [weak self] in
             guard let self else { return }
             var reported = initial
@@ -722,11 +788,12 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         switch error {
         case Failure.version: reason = "Incompatible reader connection"
         case Failure.refused: reason = "Conversation connection refused"
-        case let error as URLError where error.code == .cannotConnectToHost && (connectedOnce || configuration.live == 3):
+        case Failure.invalidInitialView: reason = "The first rendered view did not match the reserved document or revision"
+        case let error as URLError where error.code == .cannotConnectToHost && (connectedOnce || configuration.live == CollaborationConfiguration.paneProtocol):
             reason = "Conversation endpoint closed"
         default: return false
         }
-        closed = true; connectedDocument = nil; reportTask?.cancel(); task?.cancel()
+        closed = true; connectedDocument = nil; reportTask?.cancel(); task?.cancel(); pulseTask?.cancel()
         session.invalidateAndCancel()
         connectionStatus = "\(reason): \(configuration.target). Reopen from the original Pi conversation."
         status = connectionStatus
@@ -805,33 +872,50 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         }
     }
 
-    func stop() {
-        guard !closed else { return }
-        closed = true; connectedDocument = nil; task?.cancel(); task = nil; reportTask?.cancel(); reportTask = nil
-        let selected = document
-        Task { [self] in
-            var body = identity(selected); body["pane"] = true
-            let _: Acknowledgement? = try? await post("close", body: body)
-            session.invalidateAndCancel()
+    @discardableResult func stop(bootFailure: String? = nil) -> Task<Void, Never>? {
+        if let closeTask { return closeTask }
+        let needsFailure = !connectedOnce
+        guard !closed || needsFailure else { return nil }
+        closed = true; connectedDocument = nil
+        task?.cancel(); task = nil; reportTask?.cancel(); reportTask = nil; pulseTask?.cancel(); pulseTask = nil
+        let selected = document, lastFailure = bootFailure ?? "The reader closed before it confirmed its first view."
+        session.invalidateAndCancel()
+        let delivery = Task { [self] in
+            if needsFailure, await configuration.reportLaunchFailure(lastFailure) { return }
+            let transport = Self.transport()
+            defer { transport.invalidateAndCancel() }
+            var body = readerIdentity(); body["document"] = selected.uuidString; body["pane"] = true
+            let _: Acknowledgement? = try? await post("close", body: body, timeout: needsFailure ? 0.2 : 0.3, transport: transport)
         }
+        closeTask = delivery
+        return delivery
+    }
+
+    private func readerIdentity() -> [String: Any] {
+        var body: [String: Any] = ["workspace": workspace.uuidString, "pid": getpid()]
+        body["launchId"] = configuration.launchId
+        return body
     }
 
     private func identity(_ document: UUID) -> [String: Any] {
         ["workspace": workspace.uuidString, "document": document.uuidString]
     }
 
-    private func post<Result: Decodable>(_ path: String, body: [String: Any]) async throws -> Result {
-        var request = URLRequest(url: configuration.endpoint.appendingPathComponent(path))
+    private func post<Result: Decodable>(_ path: String, body: [String: Any], timeout: TimeInterval = 30, transport: URLSession? = nil) async throws -> Result {
+        try Task.checkCancellation()
+        guard transport != nil || !closed else { throw Failure.refused }
+        var request = URLRequest(url: configuration.endpoint.appendingPathComponent(path), timeoutInterval: timeout)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer " + configuration.token, forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         guard (request.httpBody?.count ?? 0) <= 32 * 1024 * 1024 else { throw Failure.oversized }
-        let (bytes, response) = try await session.bytes(for: request)
+        let (bytes, response) = try await (transport ?? session).bytes(for: request)
         guard let response = response as? HTTPURLResponse else { throw Failure.response }
         switch response.statusCode {
         case 401, 403, 410: throw Failure.refused
         case 409: throw Failure.stale
+        case 422: throw Failure.invalidInitialView
         case 426: throw Failure.version
         case 503: throw Failure.handoff
         default: break

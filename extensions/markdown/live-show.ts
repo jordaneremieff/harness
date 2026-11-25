@@ -15,6 +15,7 @@ export const ShowOutcomes = [
 		revision: opt(int()),
 		argv: arr(str()),
 		launchId: str(),
+		expiresAt: int(),
 		message: str(),
 	}),
 ] as const;
@@ -59,10 +60,12 @@ export async function showStored(
 	if (selection.status === "new") return offerLaunch(options, documentId, pin, signal, input.newPane);
 	if (selection.status !== "reuse") return selection;
 	if (!bridge) return { status: "closed", message: "The exact conversation is no longer available." };
+	const same = selection.pane.view.storeId === identity.storeId && selection.pane.view.documentId === documentId;
+	const current = !pin && same ? { currentRevision: selected.revision.revision } : undefined;
 	// Navigation success comes from the rendered page, even if inventory already names this document.
 	const result = await bridge.execute(
-		selection.handle,
-		{ op: "navigate", storeId: identity.storeId, documentId, ...pin },
+		selection.pane.handle,
+		{ op: "navigate", storeId: identity.storeId, documentId, ...pin, ...current },
 		signal,
 	);
 	if (result.status === "uncertain")
@@ -76,7 +79,7 @@ export async function showStored(
 type Inventory = ReturnType<typeof paneInventory>;
 type Selection =
 	| { status: "new" }
-	| { status: "reuse"; handle: string }
+	| { status: "reuse"; pane: Inventory["panes"][number] }
 	| { status: "pending"; pending: Inventory["pending"]; message: string }
 	| { status: "busy" | "closed" | "error"; message: string };
 function selectPane(inventory: Inventory, handle?: string, newPane?: boolean): Selection {
@@ -107,7 +110,7 @@ function selectPane(inventory: Inventory, handle?: string, newPane?: boolean): S
 			status: "error",
 			message: "This is an operator pane. Only an agent pane from this conversation accepts show.",
 		};
-	return pane ? { status: "reuse", handle: pane.handle } : { status: "new" };
+	return pane ? { status: "reuse", pane } : { status: "new" };
 }
 
 async function offerLaunch(
@@ -122,7 +125,7 @@ async function offerLaunch(
 	const target = { documentId, ...(pin && { revision: pin.revision }) };
 	const offer: typeof target & { show?: string[]; showUnavailable?: string } = { ...target, show: command.show };
 	const launch = await withLiveShow(offer, app, connection, signal, newPane);
-	if (!launch.show || !launch.launchId)
+	if (!launch.show || !launch.launchId || !launch.expiresAt)
 		return {
 			status: "error",
 			message: launch.showUnavailable ?? "No live launch was reserved. Check the pane list before requesting a launch.",
@@ -131,9 +134,10 @@ async function offerLaunch(
 		status: "launch",
 		...target,
 		launchId: launch.launchId,
+		expiresAt: launch.expiresAt,
 		argv: launch.show,
 		message:
-			"Run this exact one-use argv as the initial pane program. This offer does not confirm startup or display. Use list to confirm the document and revision; " +
+			`Run this exact one-use argv as the initial pane program before ${new Date(launch.expiresAt).toISOString()}. This offer does not confirm startup or display. Use list to confirm the document and revision; ` +
 			(newPane === true ? "use the offer only once." : "do not start a second pane."),
 	};
 }
