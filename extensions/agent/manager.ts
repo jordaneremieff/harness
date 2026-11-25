@@ -1447,6 +1447,8 @@ export class AgentManager {
 		signal: AbortSignal | undefined,
 		run: (client: HostConnection) => Promise<T>,
 	): Promise<T> {
+		// A caller that withdrew starts no further acquisition; a step that a host already applied stays applied.
+		signal?.throwIfAborted();
 		const client = await this.connection(record, undefined, launch);
 		try {
 			return await run(client);

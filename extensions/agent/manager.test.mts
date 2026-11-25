@@ -546,6 +546,45 @@ it("selects a stop again when the competing writer's host ends its retirement du
 	assert.equal(outcome.cold, true);
 });
 
+it("starts no host for the status read of an attach that its caller withdrew", async (t) => {
+	const root = fixtureRoot(t);
+	const controller = new AbortController();
+	const calls: string[] = [];
+	let acquisitions = 0;
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: async (metadata) => {
+				const generation = ++acquisitions;
+				const connection: FakeConnection = fakeConnection(metadata, async (method) => {
+					calls.push(`${generation}:${method}`);
+					if (method === "configure") {
+						await connection.close();
+						controller.abort(new Error("caller withdrew"));
+						return { outcome: "applied" };
+					}
+					return { state: "idle" };
+				});
+				return connection;
+			},
+		}),
+	);
+	t.after(() => manager.close());
+	const target = createRecord(manager, root, "owner").storageId;
+	await assert.rejects(
+		manager.control(
+			"attach",
+			{ sessionId: target, model: { provider: "acme", modelId: "model-x" } },
+			{ id: "terminal", cwd: root },
+			{ signal: controller.signal },
+		),
+		/caller withdrew/u,
+	);
+	// The withdrawn call settles its remaining steps on the next turns of the event loop.
+	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(calls, ["1:configure"], "the applied configuration stays; no host is acquired for status");
+	assert.equal(acquisitions, 1);
+});
+
 it("refuses a cold stop whose working directory was removed with the directory, not the executable", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root));
