@@ -27,7 +27,7 @@ after(() => {
 	if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride;
 });
 import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
-import { stopColdStorage } from "./cold-stop.ts";
+import { CALLER_ANSWER_WAIT_MS, stopColdStorage } from "./cold-stop.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
 import { publishCatalogChange, subscribeCatalogChanges } from "./catalog-events.ts";
 import { dashboardText } from "./dashboard-roster.ts";
@@ -595,6 +595,21 @@ it("a cold stop writer whose caller does not answer leaves the start gate and st
 		assert.equal(lease.kind, "held", "the writer left every lock free");
 		if (lease.kind === "held") lease.lease.release();
 	}
+	assert.equal(existsSync(record.storagePath), false, "the writer never opened the storage");
+});
+
+it("a cold stop caller that answers after its writer left gets the writer's no-stop outcome", {
+	timeout: 30000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root, "owner");
+	const metadata = { ...hostMetadata(record), packageDir: getPackageDir() };
+	const stopping = stopColdStorage(metadata, record.storageId, false);
+	// Block this caller's event loop past the writer's answer bound, as a stopped or busy caller does.
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, CALLER_ANSWER_WAIT_MS + 3000);
+	await assert.rejects(stopping, /did not receive this caller's confirmation in time .*nothing was stopped/u);
 	assert.equal(existsSync(record.storagePath), false, "the writer never opened the storage");
 });
 

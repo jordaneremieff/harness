@@ -165,7 +165,8 @@ export function stopColdStorage(
 			if (isPhase(message, GATE_PASSED.phase)) {
 				if (withdrawn) return;
 				passGate();
-				child.send(PROCEED);
+				// A writer that left before this answer reports its own outcome; a failed send changes nothing.
+				if (child.connected) child.send(PROCEED, () => undefined);
 			} else reply = message as Reply | Unconfirmed;
 		});
 		child.once("error", reject);
