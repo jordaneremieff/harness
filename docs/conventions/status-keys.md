@@ -28,7 +28,8 @@ key, and a consumer must not parse a sibling's status text.
 
 ## Rules
 
-- A key is one lowercase word naming the publisher slice.
+- A key is one lowercase word naming the publisher slice. The footer orders cells
+  alphabetically by key, independent of when each publisher first reports status.
 - The publisher sets its key on relevant changes and clears it with
   `setStatus(key, undefined)` on `session_shutdown` and when its registered
   meaning no longer has state to show. A cost/status projection may remain

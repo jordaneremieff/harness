@@ -160,7 +160,8 @@ function buildLine2(
 	// its color into the next cell or the rest of the footer.
 	const statuses: string[] = [];
 	const keys: string[] = [];
-	for (const [key, text] of footerData.getExtensionStatuses()) {
+	const entries = [...footerData.getExtensionStatuses()].sort(([a], [b]) => a.localeCompare(b));
+	for (const [key, text] of entries) {
 		const clean = sanitizeDisplay(text);
 		if (!clean) continue;
 		statuses.push(`${RESET}${clean}${RESET}`);

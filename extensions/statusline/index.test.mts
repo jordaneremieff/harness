@@ -968,8 +968,8 @@ describe("footer controls", () => {
 describe("status clicks", () => {
 	it("runs the extension command named like the clicked status key, and leaves other cells to Pi", async () => {
 		const statuses = new Map([
-			["agent", "\u25cf agents: 0/1"],
 			["jobs", "\u25cf jobs: 1/2"],
+			["agent", "\u25cf agents: 0/1"],
 			["notes", "notes ready"],
 		]);
 		const { handlers, sent } = makePi(() => [
@@ -987,6 +987,7 @@ describe("status clicks", () => {
 				assert.ok(x >= 0, `${text} is shown in ${line}`);
 				return x;
 			};
+			assert.ok(at("agents: 0/1") < at("jobs: 1/2"), "agents stay left of jobs even when jobs report first");
 			const press = { ...click(at("jobs: 1/2") + 2, 1, 120), type: "press" as const };
 			assert.equal(footer.handleMouse?.(press)?.handled, true, "the press on a target is claimed");
 			assert.equal(sent.length, 0, "a press alone runs nothing");
