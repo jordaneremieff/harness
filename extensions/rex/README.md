@@ -1107,6 +1107,34 @@ Mac workspace window. A reader's application-level action therefore stays
 **Return to Rex**. A failed or stale exact return must not prevent reading.
 The helper is separate from tool configuration and caller ownership records.
 
+## Review a Rex upgrade
+
+From a checkout on the Mac that runs Rex, run:
+
+```sh
+node extensions/rex/upgrade-review.mts
+```
+
+The report lists the running server, connected Mac app versions, and the newest
+installed and Sparkle-staged server builds it finds. It compares the newest
+local build with the server named in `reviewed-rex.json`. The changelog section
+links to server and Mac releases after their respective reviewed releases.
+
+The helper creates test terminals only on isolated servers. It starts each
+build with a private socket, empty config and temporary state, then stops it and
+removes its files. It makes only read-only calls to the running server and does
+not start it if it is stopped. The report compares the variables actually set
+in the test terminals, the entries in `help.all`, and the CLI's agent guide.
+Source matches include comments and code that clears variables; a match does not
+prove that the harness needs the variable or method.
+
+Review the differences and run any affected harness flows before advancing the
+`server` and `mac` versions in `reviewed-rex.json`. Keep the old server binary
+until the comparison is complete. Use `--baseline PATH` to review against
+another file with those two version fields, or `--help` for usage. Exit status 1
+means some evidence was unavailable or the helper failed. Changes in the report
+are findings to review, not an automatic pass or fail for the upgrade.
+
 ## Configuration and loading
 
 Load `extensions/rex/index.ts` through Pi's normal extension configuration.
