@@ -74,6 +74,12 @@ it("says that retry is off only for an error that Pi would retry, within the rea
 			`model_error: ${detail}`,
 			"an error that Pi does not retry carries no note",
 		);
+	const overflow = "500 server error: prompt is too long: 213462 tokens > 200000 maximum";
+	assert.equal(
+		modelFailureText("model_error", overflow, undefined, true),
+		`model_error: ${overflow}`,
+		"Pi never retries a context overflow",
+	);
 	const refusal = "This content was flagged for possible cybersecurity risk";
 	assert.doesNotMatch(modelFailureText("model_error", refusal, undefined, true), /automatic retry is off/u);
 	assert.equal(modelFailureText("model_error", "WebSocket closed 1012", fact(), true), "model_error");

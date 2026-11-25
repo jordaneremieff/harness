@@ -1585,6 +1585,80 @@ it("keeps the whole inline answer in the structured body of a group whose refere
 	assert.ok(Buffer.byteLength(JSON.stringify(communication)) <= COMMUNICATION_VALUE_BYTES);
 });
 
+for (const attempts of [1, 2] as const)
+	it(`a host without retry ${attempts === 1 ? "says so for" : "says nothing about retry for"} a stored run that failed after ${attempts === 1 ? "one attempt" : "two attempts"}`, {
+		timeout: 30000,
+	}, async (t) => {
+		const root = fixtureRoot(t);
+		const path = join(root, "source.sqlite");
+		const sessionsRoot = join(root, "sessions");
+		const storageId = randomUUID();
+		const owner = randomUUID();
+		const received = eventLog<PrimaryDelivery>();
+		const channel = await createPrimaryChannel({
+			id: owner,
+			cwd: root,
+			sessionsRoot,
+			deliver: (message) => {
+				received.push(message);
+			},
+			promptTrust: async () => undefined,
+		});
+		t.after(() => channel.close());
+		const failures = [1, 2].map((attempt) => ({
+			...answerMessage(),
+			content: [],
+			stopReason: "error" as const,
+			errorMessage: `503 Service Unavailable attempt ${attempt}`,
+		}));
+		const open = async (retries: number) =>
+			DurableHost.open(
+				{
+					storagePath: path,
+					storageId,
+					cwd: root,
+					models: await scriptedRuntime(failures),
+					registry: fixtureRegistry(),
+					agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
+					settings: { retry: { enabled: retries > 0, maxRetries: retries, baseDelayMs: 1, maxAgentDelayMs: 1 } },
+				},
+				BACKGROUND_CONTEXT,
+			);
+		// The run fails in one host. Another host, which has retry off, opens the storage later and sends the notice.
+		const first = await open(attempts - 1);
+		const admitted = (await first.request("submit", {
+			message: "fail transiently",
+			requestId: "stored-failure",
+			ownerId: owner,
+			origin: "model",
+		})) as { submissionId: SubmissionId };
+		await first.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+		const stored = (await first.root().context(BACKGROUND_CONTEXT)).entries
+			.flatMap((entry) => entry.model ?? [])
+			.flatMap((message) => (message.role === "assistant" && message.errorMessage ? [message.errorMessage] : []));
+		assert.equal(stored.length, attempts, "the stored run holds one error entry for each attempt");
+		await first.close();
+		const reopened = await open(0);
+		t.after(() => reopened.close());
+		const watcher = startDurableDelivery({
+			host: reopened,
+			metadata: sourceMetadata(root, storageId, path),
+			catalog: new AgentCatalog(root),
+			sessionsRoot,
+			signal: new AbortController().signal,
+			retriesProviderErrors: () => false,
+		});
+		t.after(() => watcher.close());
+		await received.waitForCount(1);
+		assert.match(
+			received[0].text,
+			new RegExp(`No answer: model_error: 503 Service Unavailable attempt ${attempts}`, "u"),
+		);
+		if (attempts === 1)
+			assert.match(received[0].text, /The host did not try this request again: automatic retry is off/u);
+		else assert.doesNotMatch(received[0].text, /did not try this request again|automatic retry is off/u);
+	});
+
 it("bounds a check-in digest while retaining the full source", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sessionsRoot = join(root, "sessions");

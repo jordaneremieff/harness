@@ -2393,11 +2393,17 @@ selected native submission:
 - `content_refusal: <provider text> <recovery>` for a recognised content
   refusal.
 
-The result notice adds one sentence to `model_error: <provider text>` when the
-host does not retry provider errors (Pi's `retry.enabled` is false, or
-`retry.maxRetries` is 0) and Pi's retry rule would try that error again:
+The result notice adds one sentence to `model_error: <provider text>` when
+three facts hold: the stored run shows that the error ended it at the first
+attempt, the host that sends the notice does not retry provider errors (Pi's
+`retry.enabled` is false, or `retry.maxRetries` is 0), and Pi's retry rule
+would try that error again:
 `The host did not try this request again: automatic retry is off in Pi
-settings ...`. A host applies Pi's retry settings as it loaded them, so with
+settings ...`. The run evidence is the conversation's newest failed run
+(`runFailure` of the live document) when it names this input, and the failed
+attempts that its last task left as entries. A run that another host made with
+several attempts gets no sentence, and neither does a conversation whose later
+run replaced that record. A host applies Pi's retry settings as it loaded them, so with
 retry off each transient provider error ends its run at the first attempt. The
 sentence makes that state visible to the requester, who otherwise cannot tell
 it from a provider that failed every attempt. Pi keeps the setting in its

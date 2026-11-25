@@ -53,7 +53,7 @@ import {
 	type FinalReportRead,
 	type RequestWork,
 } from "./open-work.ts";
-import type { ConversationId, Harness, Tx } from "@earendil-works/pi-durable";
+import { LiveDoc, type ConversationId, type EntryId, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
 import { isThreadStorage, threadStorageUnanswered } from "./identity.ts";
 import { foldContinuity } from "./continuity-facts.ts";
@@ -198,9 +198,9 @@ export interface DurableDeliveryOptions {
 	/** Failed native acquisitions stay parked until a new watcher or explicit refresh. */
 	readonly unavailableTargets?: Map<string, NativeTargetFailure>;
 	/**
-	 * Whether this host retries transient provider errors, from Pi's retry settings. When it does not, the notice
-	 * of an input that such an error ended says so; a requester otherwise cannot tell a disabled retry from a
-	 * provider that failed every attempt.
+	 * Whether this host retries transient provider errors, from Pi's retry settings. When it does not, and the
+	 * stored run of an input shows that such an error ended it at the first attempt, the notice says so; a
+	 * requester otherwise cannot tell a disabled retry from a provider that failed every attempt.
 	 */
 	readonly retriesProviderErrors?: () => boolean;
 }
@@ -725,6 +725,39 @@ function receiptContinuationText(metadata: HostMetadata, row: ReceiptRow, states
 	const continuation = receiptContinuation(metadata, row, states);
 	if (continuation === undefined) return row.receipt.answerTruncated === true ? "\n\n[State note excerpt]" : "";
 	return `\n\n${continuation.offset === 0 ? "Read retained answer" : "Answer continues"}: ${JSON.stringify(continuation)}`;
+}
+
+/** Entries read for the attempts of one failed run; more entries since its last task started give no evidence. */
+const ATTEMPT_SCAN_ENTRIES = 64;
+
+/**
+ * True when the stored run of an unanswered input shows that a provider error ended it at the first attempt. The
+ * newest failed run of the conversation has to be the run of this input, and the task that ended it has to have
+ * left exactly one failed attempt. A conversation whose later run replaced that record gives no evidence, and
+ * neither does a task with more entries since its start than this read visits.
+ */
+async function failedAtFirstAttempt(
+	harness: Harness,
+	conversationId: ConversationId,
+	submissionId: number,
+): Promise<boolean> {
+	const failure = (await harness.snapshot(LiveDoc, conversationId, BACKGROUND_CONTEXT))?.runFailure;
+	if (failure?.reason !== "model_error" || !failure.inputs.some((id) => id === submissionId)) return false;
+	const conversation = await harness.conversation(conversationId, BACKGROUND_CONTEXT);
+	if (conversation === undefined) return false;
+	// Identities come from one sequence, so every entry of the task is newer than the task itself.
+	const page = await conversation.entries(
+		{ minEntryId: failure.taskId as number as EntryId, order: "descending" },
+		ATTEMPT_SCAN_ENTRIES,
+		undefined,
+		BACKGROUND_CONTEXT,
+	);
+	if (page.next !== undefined) return false;
+	const attempts = page.items.filter((entry) => {
+		const message = entry.byTaskId === failure.taskId ? entry.model?.at(-1) : undefined;
+		return message?.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted");
+	});
+	return attempts.length === 1;
 }
 
 /** Catalog follow-up text; the peer body is bounded. */
@@ -2248,25 +2281,31 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			);
 		}
 	};
+	/**
+	 * True when this host does not retry provider errors and the stored run of the input shows one attempt. The
+	 * settings of this host say nothing about a run that another host made, so the stored run decides.
+	 */
+	const endedWithoutRetry = async (conversationId: ConversationId, submissionId: number): Promise<boolean> =>
+		options.retriesProviderErrors?.() === false &&
+		(await failedAtFirstAttempt(host.harness, conversationId, submissionId));
 	const prepareDisplayReason = async (row: ReceiptRow): Promise<void> => {
 		if (row.receipt.status !== "unanswered") return;
 		const input = await host.harness.submission(row.receipt.submissionId, BACKGROUND_CONTEXT);
 		const native = await input?.status(BACKGROUND_CONTEXT);
 		if (
-			native?.type === "input" &&
-			native.status === "unanswered" &&
-			native.conversationId === row.receipt.conversationId &&
-			native.requestId === row.receipt.requestId
+			native?.type !== "input" ||
+			native.status !== "unanswered" ||
+			native.conversationId !== row.receipt.conversationId ||
+			native.requestId !== row.receipt.requestId
 		)
-			row.displayReason =
-				eligibilityOptions.threadStorageOwner === undefined
-					? modelFailureText(
-							native.reason,
-							native.detail,
-							row.receipt.providerBlock,
-							options.retriesProviderErrors?.() === false,
-						)
-					: `${native.reason}: ${threadStorageUnanswered(metadata.storageId, eligibilityOptions.threadStorageOwner)}`;
+			return;
+		if (eligibilityOptions.threadStorageOwner !== undefined) {
+			row.displayReason = `${native.reason}: ${threadStorageUnanswered(metadata.storageId, eligibilityOptions.threadStorageOwner)}`;
+			return;
+		}
+		const retryOff =
+			native.reason === "model_error" && (await endedWithoutRetry(native.conversationId, row.receipt.submissionId));
+		row.displayReason = modelFailureText(native.reason, native.detail, row.receipt.providerBlock, retryOff);
 	};
 	const prepareReceiptGroups = async (rows: readonly DeliveryRow[]): Promise<void> => {
 		for (const row of rows) if (row.kind === "receipt") await prepareReceiptRow(row);
