@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import register from "./index.ts";
 import { AgentManager } from "./manager.ts";
-import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
+import {
+	connectPrimaryChannel,
+	createPrimaryChannel,
+	primaryEndpointPath,
+	readPrimaryEndpointDescriptor,
+} from "./primary-channel.ts";
 
 test("primary close awaits its endpoint removal and leaves a replacement registration intact", async (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-shutdown-")));
@@ -587,4 +592,116 @@ test("a message withdrawn while its ordinary primary reloads is not delivered af
 	// The retry interval is 200 ms; three intervals give a retry that survived the abort time to arrive.
 	await new Promise((done) => setTimeout(done, 600));
 	assert.deepEqual(delivered, []);
+});
+
+test("a message whose link a reload closes in flight arrives once through the next registration", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-reload-link-")));
+	const target = randomUUID();
+	const sender = randomUUID();
+	const delivered: string[] = [];
+	const first = new AbortController();
+	let replacement: Promise<void> | undefined;
+	let markClosed!: () => void;
+	const firstClosed = new Promise<void>((done) => {
+		markClosed = done;
+	});
+	let channels = 0;
+	const manager: AgentManager = new AgentManager({
+		root,
+		agentDir: root,
+		packageDir: root,
+		createPrimary: async (options) => {
+			const own = options.id === target ? ++channels : 0;
+			if (own !== 1) return createPrimaryChannel(options);
+			// The first channel of the target starts the reload while a message is in flight on it, and its close ends
+			// that link before the request answers.
+			const channel = await createPrimaryChannel({
+				...options,
+				deliver: async () => {
+					replacement ??= (async () => {
+						assert.equal(manager.suspendPrimary(target, first), true);
+						await manager.registerPrimary(target, {
+							signal: new AbortController().signal,
+							cwd: root,
+							send: (text) => delivered.push(text),
+						});
+					})();
+					await firstClosed;
+					throw new Error("the replaced channel answered");
+				},
+			});
+			const close = channel.close;
+			channel.close = () => {
+				const closing = close();
+				markClosed();
+				return closing;
+			};
+			return channel;
+		},
+	});
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	await manager.registerPrimary(sender, { signal: new AbortController().signal, cwd: root, send() {} });
+	await manager.registerPrimary(target, { signal: first.signal, cwd: root, send() {} });
+	const receipt = (await manager.control(
+		"submit",
+		{ sessionId: target, message: "in flight during the reload", origin: "model" },
+		{ id: sender, cwd: root },
+	)) as { admitted?: boolean };
+	await replacement;
+	assert.equal(channels, 2, "the reload published a second channel");
+	assert.equal(receipt.admitted, true);
+	assert.equal(delivered.length, 1);
+	assert.match(delivered[0] ?? "", /in flight during the reload/u);
+});
+
+test("a message whose first connection meets a channel that the reload closed arrives through the next registration", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-reload-connect-")));
+	const target = randomUUID();
+	const sender = randomUUID();
+	const channels: Array<{ close(): Promise<void> }> = [];
+	const manager = new AgentManager({
+		root,
+		agentDir: root,
+		packageDir: root,
+		createPrimary: async (options) => {
+			const channel = await createPrimaryChannel(options);
+			if (options.id === target) channels.push(channel);
+			return channel;
+		},
+	});
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	await manager.registerPrimary(sender, { signal: new AbortController().signal, cwd: root, send() {} });
+	const first = new AbortController();
+	await manager.registerPrimary(target, { signal: first.signal, cwd: root, send() {} });
+	assert.equal(manager.suspendPrimary(target, first), true);
+	// The record still names the reloading session's channel, which no longer accepts connections.
+	const record = readFileSync(primaryEndpointPath(root, target), "utf8");
+	await channels[0]?.close();
+	writeFileSync(primaryEndpointPath(root, target), record);
+	const delivered: string[] = [];
+	const registered = new Promise<void>((done) => {
+		setTimeout(() => {
+			void manager
+				.registerPrimary(target, {
+					signal: new AbortController().signal,
+					cwd: root,
+					send: (text) => delivered.push(text),
+				})
+				.then(done);
+		}, 300);
+	});
+	const receipt = (await manager.control(
+		"submit",
+		{ sessionId: target, message: "sent while the old channel was gone", origin: "model" },
+		{ id: sender, cwd: root },
+	)) as { admitted?: boolean };
+	await registered;
+	assert.equal(receipt.admitted, true);
+	assert.equal(delivered.length, 1);
 });

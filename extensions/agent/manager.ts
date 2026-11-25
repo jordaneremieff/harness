@@ -245,6 +245,14 @@ interface ListCursor {
 const DEFAULT_DELIVERED_LIMIT = 1024;
 /** The refusal of a delivery to a session whose extension reloads; its source keeps the delivery for a retry. */
 export const PRIMARY_RELOADING_REFUSAL = "Primary session is reloading; the delivery stays unacknowledged for a retry";
+/**
+ * Whether a failed delivery waits for the next registration: the primary refused as reloading, or its link closed
+ * before an answer, as a reload closes the channel a sender holds. After a closed link the outcome is unknown; the
+ * receiver admits one source identity once, so a message that did arrive does not arrive twice.
+ */
+function retriesPrimaryDelivery(error: unknown, connection: PrimaryChannelConnection): boolean {
+	return errorText(error).includes(PRIMARY_RELOADING_REFUSAL) || !connection.connected;
+}
 /** How long a message to a reloading ordinary primary waits for its next registration, and between attempts. */
 const PRIMARY_RELOAD_WAIT_MS = 15_000;
 const PRIMARY_RELOAD_RETRY_MS = 200;
@@ -1492,11 +1500,16 @@ export class AgentManager {
 		caller: AgentCaller,
 		signal?: AbortSignal,
 	): Promise<unknown> {
-		const channel = await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root });
-		if (method !== "submit" && method !== "report") {
-			await channel.close();
+		if (method !== "submit" && method !== "report")
 			throw new Error("A registered primary accepts messages, not Durable session controls");
-		}
+		const deadline = Date.now() + PRIMARY_RELOAD_WAIT_MS;
+		const channel = await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root }).catch(
+			(error: unknown) => {
+				// The record can name a channel that a reload closes before the connection; a live owner publishes the next.
+				if (primaryEndpointStatus(this.options.root, sessionId).state !== "live") throw error;
+				return this.reconnectReloadingPrimary(sessionId, deadline, signal);
+			},
+		);
 		const sourceId = typeof input.requestId === "string" ? input.requestId : randomUUID();
 		const origin: DeliveryOrigin = input.origin === "operator" ? "operator" : "model";
 		const sender = this.primaryChannels.get(caller.id)?.info();
@@ -1531,7 +1544,7 @@ export class AgentManager {
 			},
 			...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}),
 		};
-		await this.deliverPrimaryMessage(sessionId, channel, message, signal);
+		await this.deliverPrimaryMessage(sessionId, channel, message, deadline, signal);
 		return {
 			sessionId,
 			admitted: true,
@@ -1544,16 +1557,17 @@ export class AgentManager {
 
 	/**
 	 * Deliver one message through `channel` and close every connection it used. A reloading primary refuses until
-	 * it registers again, so the message waits for that registration within a bound; its source identity makes
-	 * a retry arrive once. An aborted `signal` starts no further attempt.
+	 * it registers again, and a reload closes the channel a sender may hold, so the message waits for the next
+	 * registration within a bound; its source identity makes a retry arrive once. An aborted `signal` starts no
+	 * further attempt.
 	 */
 	private async deliverPrimaryMessage(
 		sessionId: string,
 		channel: PrimaryChannelConnection,
 		message: Parameters<PrimaryChannelConnection["deliver"]>[0],
+		deadline: number,
 		signal?: AbortSignal,
 	): Promise<void> {
-		const deadline = Date.now() + PRIMARY_RELOAD_WAIT_MS;
 		let open: PrimaryChannelConnection | undefined = channel;
 		try {
 			for (let connection = channel; ; ) {
@@ -1562,7 +1576,7 @@ export class AgentManager {
 					await connection.deliver(message);
 					return;
 				} catch (error) {
-					if (!errorText(error).includes(PRIMARY_RELOADING_REFUSAL)) throw error;
+					if (!retriesPrimaryDelivery(error, connection)) throw error;
 				}
 				open = undefined;
 				await connection.close();
@@ -1584,7 +1598,7 @@ export class AgentManager {
 		for (;;) {
 			if (Date.now() >= deadline)
 				throw new Error(
-					`Primary session ${sessionId} was still reloading after ${Math.round(PRIMARY_RELOAD_WAIT_MS / 1000)} s; the message was not delivered. Send it again after the reload.`,
+					`Primary session ${sessionId} took no message for ${Math.round(PRIMARY_RELOAD_WAIT_MS / 1000)} s: it was reloading or its channel was unreachable. The message was not delivered; send it again after the reload.`,
 				);
 			await delay(PRIMARY_RELOAD_RETRY_MS, undefined, signal === undefined ? undefined : { signal });
 			try {

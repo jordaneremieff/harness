@@ -250,6 +250,8 @@ export interface PrimaryChannel {
 
 export interface PrimaryChannelConnection {
 	readonly id: string;
+	/** False once the link to the primary closed; a call that failed then never reached a decision of the primary. */
+	readonly connected: boolean;
 	info(): Promise<PrimaryInfo>;
 	deliver(message: PrimaryDelivery): Promise<void>;
 	/**
@@ -1189,6 +1191,9 @@ export async function connectPrimaryChannel(options: {
 		};
 		return {
 			id: endpoint.id,
+			get connected() {
+				return client.connected;
+			},
 			info: async () => (await invoke("info", undefined, timeoutMs)) as PrimaryInfo,
 			deliver: async (message) => {
 				if (message.requireRetained !== undefined && typeof message.requireRetained !== "boolean")
