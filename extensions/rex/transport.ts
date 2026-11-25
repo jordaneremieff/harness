@@ -46,7 +46,8 @@ export class CliTransport implements RexTransport {
 		if (
 			!Number.isSafeInteger(call.timeoutMs) ||
 			call.timeoutMs < 1 ||
-			call.timeoutMs > 600000 ||
+			// A question to the operator waits up to an hour, plus its settlement margin.
+			call.timeoutMs > 3630000 ||
 			!Number.isSafeInteger(call.maxOutputBytes) ||
 			call.maxOutputBytes < 1024 ||
 			call.maxOutputBytes > 1048576

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -13,7 +13,7 @@ import { createRexBudget } from "./deadline.ts";
 import { durableLaunch, nativeOwnershipStore, nativeStatusStore, rexContribution } from "./durable.ts";
 import { registerSessionPane } from "./session-pane.ts";
 import { beginOwnership, requestDigest } from "./ownership.ts";
-import { deadlineResult, RexCore, type RexRequest, type RexResult } from "./core.ts";
+import { deadlineResult, RexCore, type RexCallContext, type RexRequest, type RexResult } from "./core.ts";
 import type { CliResult, RexTransport } from "./transport.ts";
 import { rexStatus, type StatusBinding } from "./status.ts";
 
@@ -740,6 +740,73 @@ test("native Durable prepares a create sent without op and reports a budget-ende
 		assert.equal(result("split").isError, false);
 		assert.equal(result("text").isError, false, "not_observed is a normal wait ending");
 		assert.equal(result("status").isError, true, "other wait endings stay tool errors");
+	} finally {
+		controller.abort();
+		for (const close of closers.reverse()) await close();
+		await harness.close(BACKGROUND_CONTEXT);
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("a native question asks under its working directory's name and waits up to its own hour", {
+	timeout: 30000,
+}, async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "rex-native-ask-"));
+	const models = createModels();
+	const faux = fauxProvider();
+	models.setProvider(faux.provider);
+	const registry = Durable.createRegistry();
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+	const controller = new AbortController();
+	const closers: Array<() => void | Promise<void>> = [];
+	const calls: Array<{ request: RexRequest; context: RexCallContext }> = [];
+	const contribution = rexContribution("/test/rex/index.ts", createEventBus(), () => {}, {
+		createCore: () => ({
+			dispose: () => {},
+			execute: async (request, context) => {
+				calls.push({ request, context });
+				return {
+					ok: true,
+					outcome: "answered",
+					data: { answer: { choice: "keep", note: "" } },
+					effects: { state: "none" },
+					coverage: { bounded: true },
+				};
+			},
+		}),
+	});
+	const question = {
+		about: "Keep or delete the folders.",
+		question: "Delete the folders?",
+		choices: [
+			{ id: "keep", title: "Keep them", subtitle: "No change." },
+			{ id: "delete", title: "Delete them", subtitle: "Moves them to the Trash." },
+		],
+	};
+	try {
+		const extension = await contribution.create({
+			durable: Durable,
+			cwd: agentDir,
+			agentDir,
+			storageId: "ask-storage",
+			harness,
+			signal: controller.signal,
+			onClose: (close) => closers.push(close),
+			ordinarySession: () => undefined,
+		});
+		assert.ok(extension.tools?.some((tool) => tool.name === "rex_ask"));
+		registry.install(extension);
+		const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+		faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("rex_ask", question, { id: "ask" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Complete."),
+		]);
+		await (await root.submit({ type: "input", content: "Ask first." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const [call] = calls;
+		assert.ok(call);
+		assert.deepEqual(call.request, { ...question, op: "ask" });
+		assert.equal(call.context.asker, basename(agentDir));
+		assert.equal(call.context.budget?.effectiveMs, 3_630_000, "the default hour plus the margin of its calls");
 	} finally {
 		controller.abort();
 		for (const close of closers.reverse()) await close();

@@ -1,7 +1,9 @@
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	getAgentDir,
 	type ExtensionAPI,
+	type ExtensionContext,
 	type ExtensionToolContext,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -16,7 +18,8 @@ import {
 	type RexRequest,
 	type RexResult,
 } from "./core.ts";
-import { createRexBudget, type RexBudget } from "./deadline.ts";
+import { askMeaning, askTrouble } from "./ask.ts";
+import type { RexBudget } from "./deadline.ts";
 import {
 	liveCalls,
 	ordinaryOwner,
@@ -24,6 +27,7 @@ import {
 	ordinaryStatusStore,
 	resultChannels,
 	serialiseOwners,
+	toolBudget,
 	type RexAdapterOptions,
 } from "./config.ts";
 import { rexContribution } from "./durable.ts";
@@ -31,6 +35,7 @@ import { toolDisplay } from "./display.ts";
 import { publishRexToolDisplay } from "./presentation.ts";
 import { publishSettings, readSettings } from "./settings.ts";
 import {
+	ASK_GUIDANCE,
 	prepareRequest,
 	REX_GUIDANCE,
 	ResultSchema,
@@ -47,7 +52,7 @@ import {
 	type ConversationKeeperOptions,
 	type FloatedPane,
 } from "./keep-visible.ts";
-import { createSessionPaneRegistrar, type SessionPaneRegistrarOptions } from "./session-pane.ts";
+import { createSessionPaneRegistrar, launchPane, type SessionPaneRegistrarOptions } from "./session-pane.ts";
 import { registerRexCommand } from "./setup.ts";
 import { createPaletteCollector, paletteRegistryPath } from "./palette.ts";
 import { paneStackingCommand } from "./pane-stacking.ts";
@@ -72,6 +77,23 @@ function createdFloats(tool: string, request: unknown, result: unknown): Floated
 	);
 }
 
+/** The operator knows a session by its name, or else by its working directory. */
+function askerName(pi: Pick<ExtensionAPI, "getSessionName">, ctx: Pick<ExtensionContext, "cwd">): string {
+	return pi.getSessionName()?.trim() || basename(ctx.cwd);
+}
+
+/** A message from the operator ends a waiting question: Rex closes it in every app, and the message follows. */
+function superseded(result: RexResult): RexResult {
+	const data = result.data !== null && typeof result.data === "object" ? (result.data as Record<string, unknown>) : {};
+	return {
+		...result,
+		ok: false,
+		outcome: "superseded",
+		data: { question: data.question, meaning: askMeaning("superseded") },
+		error: askTrouble("superseded"),
+	};
+}
+
 export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {}): void {
 	const agentDir = getAgentDir();
 	const stopPublisher = publishSettings(pi.events, { agentDir });
@@ -94,6 +116,8 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 	const serialise = serialiseOwners();
 	const active = new Set<RexExecutor>();
 	const invocations = liveCalls();
+	// Questions that wait for the operator; a message from the operator ends them.
+	const questions = new Set<AbortController>();
 	let lifetime = new AbortController();
 	const stopCalls = async () => {
 		lifetime.abort();
@@ -159,7 +183,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 			}
 		}
 	};
-	/** A validated call within one budget. */
+	/** A validated call within one budget. A question also ends when the operator sends a message. */
 	const run = async (
 		name: RexToolName,
 		request: RexRequest | StatusRequest,
@@ -167,18 +191,35 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 		signal: AbortSignal | undefined,
 		ctx: ExtensionToolContext,
 	): Promise<RexResult> => {
-		const budget = createRexBudget(
-			request.timeoutMs,
-			settings.maxWaitMs,
-			AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]),
-		);
+		const question = name === "rex_ask" ? new AbortController() : undefined;
+		const pane = question ? launchPane(process.env) : undefined;
+		const stops = [lifetime.signal, question?.signal, signal].filter((stop): stop is AbortSignal => stop !== undefined);
+		const budget = toolBudget(name, request.timeoutMs, settings.maxWaitMs, AbortSignal.any(stops));
+		if (question) questions.add(question);
 		try {
 			const result = await withCore(callId, ctx, budget, (core, ownerId) =>
-				perform(name, request, core, { ownerId, callId, cwd: ctx.cwd, signal: budget.signal, budget }, ctx),
+				perform(
+					name,
+					request,
+					core,
+					{
+						ownerId,
+						callId,
+						cwd: ctx.cwd,
+						signal: budget.signal,
+						budget,
+						...(question ? { asker: askerName(pi, ctx) } : {}),
+						...(pane ? { askPane: pane } : {}),
+					},
+					ctx,
+				),
 			);
 			keeper.floated(createdFloats(name, request, result));
-			return deadlineResult(result, budget, request.op);
+			const settled = deadlineResult(result, budget, request.op);
+			// An answer that arrived first stands; the operator's message then follows it.
+			return question?.signal.aborted && settled.outcome !== "answered" ? superseded(settled) : settled;
 		} finally {
+			if (question) questions.delete(question);
 			budget.dispose();
 		}
 	};
@@ -191,7 +232,8 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 			parameters: spec.parameters,
 			outputSchema: ResultSchema,
 			promptSnippet: spec.description,
-			promptGuidelines: spec.name === "rex_environment" ? [REX_GUIDANCE] : undefined,
+			promptGuidelines:
+				spec.name === "rex_environment" ? [REX_GUIDANCE] : spec.name === "rex_ask" ? ASK_GUIDANCE : undefined,
 			prepareArguments: (args) => prepareRequest(spec.name, args) as Static<typeof spec.parameters>,
 			execute: async (callId, args: Static<typeof spec.parameters>, signal, _onUpdate, ctx) => {
 				const validated = validateRequest(spec.name, args);
@@ -229,6 +271,8 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 		tabLabels.refresh(ctx);
 	});
 	pi.on("input", (event, ctx) => {
+		// The operator's own message answers a waiting question better than the question does.
+		if (event.source !== "extension") for (const question of questions) question.abort();
 		if (event.source === "interactive") tabLabels.input(ctx);
 	});
 	pi.on("session_shutdown", async () => {

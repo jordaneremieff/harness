@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { JsonValue } from "@earendil-works/chord/json";
-import type { RexBudget } from "./deadline.ts";
+import { askBudget } from "./ask.ts";
+import { createRexBudget, type RexBudget } from "./deadline.ts";
 import type { RexCoreOptions, RexResult } from "./core.ts";
 import { validateStatusBinding, type RexExecutor, type StatusStore } from "./status.ts";
 import {
@@ -23,6 +24,16 @@ export function resultChannels(result: RexResult): {
 		isError: !result.ok && result.outcome !== "not_observed",
 		details: { outcome: result.outcome, effects: result.effects.state },
 	};
+}
+
+/** A question waits for a person on its own allowance; every other call stays within the configured cap. */
+export function toolBudget(
+	tool: string,
+	timeoutMs: number | undefined,
+	maxWaitMs: number,
+	signal: AbortSignal,
+): RexBudget {
+	return tool === "rex_ask" ? askBudget(timeoutMs, signal) : createRexBudget(timeoutMs, maxWaitMs, signal);
 }
 
 export interface RexAdapterOptions {

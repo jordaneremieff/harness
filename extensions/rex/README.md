@@ -5,7 +5,8 @@ Rex CLI. Ordinary Pi and native Durable expose the same tools and domain results
 Rex owns terminals and their programs. This extension owns exact target resolution,
 bounded observations, caller-specific ownership claims and uncertain-effect records.
 It does not replace Bash, Jobs, Agent, Policy or Rex's skill, and it changes the Rex
-configuration only through [`/rex setup`](#set-up-palette-commands-in-rex).
+configuration only through [`/rex setup`](#set-up-palette-commands-in-rex). Agents ask the
+operator to confirm an act through [`rex_ask`](#ask-the-operator).
 
 ## Tools
 
@@ -17,8 +18,10 @@ configuration only through [`/rex setup`](#set-up-palette-commands-in-rex).
 | `rex_native` | `native` | Retrieve the installed method catalogue or one method's schema; call an API, execute Lua or invoke an existing action. |
 | `rex_owned` | `owned`, `observe`, `reconcile`, `cleanup` | Read stored claims or current child evidence and output for selected claims; reconcile uncertainty, close only recorded owned blocks that are still present, or forget finished records. |
 | `rex_status` | `snapshot`, `bind`, `unbind` | Inspect cooperating programs' reports beside actual current host activity. Optionally retain one verified inspection target per caller. |
+| `rex_ask` | none | Ask the operator to confirm one act with a menu of two to four choices and an optional note, and wait for the answer. See [Ask the operator](#ask-the-operator). |
 
-Each request includes a visible `op`. Native execution also exposes `kind`,
+Each request of the other tools includes a visible `op`; `rex_ask` has one operation and
+takes none. Native execution also exposes `kind`,
 `method`, `args`, `code` and `action` in the tool arguments. These are the real
 ordinary and native policy boundaries. No arbitrary API or Lua operation receives
 a read-only annotation. Policy remains the decision owner; terminal content and
@@ -345,7 +348,8 @@ Rex lets only an action that the server configuration defines show a question; a
 [palette commands](#palette-commands), which asks with `rex.ui`, therefore lives in a block of
 the Rex configuration that `/rex setup` writes.
 
-- `/rex setup` shows the block and asks for confirmation. It then adds the block, between two
+- `/rex setup` shows the block and asks for confirmation. The block holds the runtime of palette
+  commands and the `pi_ask` action of [agent questions](#ask-the-operator). Setup then adds the block, between two
   marker lines, at the end of the configuration file that `rex config check` names (`REX_CONFIG`,
   or `rex/init.lua` in the configuration directory). Every other byte stays as it was, except
   that a last line without a line break gets one. When that path links to a file elsewhere, such
@@ -369,14 +373,91 @@ the Rex configuration that `/rex setup` writes.
   when Rex can run Pi's commands: Rex's picker lists them, and the one you choose runs and opens
   its pane beside Pi. Pi does not wait for the choice. Otherwise status reports one notice that
   names the first problem and the step that fixes it: no reachable server, a server too old for
-  Pi's commands, no or an earlier Pi block, Pi's commands not loaded, no connected Rex app, or no
-  recorded command. A command that the palette does not list yet also gets a notice. Non-TUI
+  Pi's commands, no or an earlier Pi block, Pi's commands not loaded, the current `pi_ask` action
+  not loaded, no connected Rex app, or no recorded command. A command that the palette does not list yet also gets a notice. Non-TUI
   hosts report the commands in the notice instead of the picker. Setup ends with one notice.
 - `/rex remove` deletes the block the same way, with confirmation.
 
-Palette commands need API revision 17 or later on the server (Rex
+Palette commands and agent questions need API revision 17 or later on the server (Rex
 0.1.0-preview.21 has revision 18) and Rex apps as new as the server; an older app reports
 `unsupported`. After a Rex update, the server runs the new version only once it restarts.
+
+The block also holds `pi_ask`, the action that shows the questions of
+[`rex_ask`](#ask-the-operator). `/rex status` and setup treat a server that lists no `pi_ask`, or
+a `pi_ask` with another description, as one that has not loaded the current block, and name
+`/rex setup` as the step that loads it.
+
+## Ask the operator
+
+`rex_ask` asks the operator to confirm one act, or to make a decision that only the operator can
+make and that holds up the agent's work. Rex shows a short menu in the command palette of every
+connected Rex app, on the Mac and on other devices. The operator picks one choice, then a second
+prompt titled **Add a note** asks for an optional one-line note (placeholder `Optional`, confirm
+row `Send`). The first answer in any app ends the question everywhere, and the call returns the
+choice and the note in the same run. An empty note means none.
+
+The tool's guidance limits it to acts that need confirmation and decisions that hold up the work,
+never optional or follow-on work. The agent finishes its other work first, puts the complete act
+in `about`, puts the choice that changes nothing first and marks its recommendation. After an
+answer it carries out the chosen act and follows the note in the same run. A worker that another
+agent briefed asks that agent instead.
+
+| Field | Meaning |
+|---|---|
+| `about` | The complete act: what the agent prepared, what each choice changes, and its recommendation. Required, at most 1,200 characters. The asking session's tool card shows it in full; Rex does not. |
+| `question` | The decision as one line. Required, at most 45 characters. Rex shows it as the menu's title. |
+| `choices` | Two to four choices, each with a unique `id` (at most 64 characters), a `title` (at most 40) and a `subtitle` (at most 48) that says what the choice does, and optional `recommended`. At most one choice is recommended; Rex shows `recommended` at the far end of its row. |
+| `timeoutMs` | How long to wait for the answer, from 10 seconds to one hour. One hour by default. |
+
+The palette shows the title and each subtitle on one line of about 50 characters and cuts off
+the rest without a mark, so each field has a limit that fits its line; a longer field fails
+validation. The title starts with the question, and the asker's name follows it after ` · ` only
+when the whole title fits in 50 characters. In ordinary Pi the asker is the label of the
+session's Rex tab; if the label is missing, unavailable or Rex's default, it is the Pi session
+name, then the last part of the working directory. A native conversation uses the last part of
+its working directory.
+
+An answer returns `outcome: "answered"` and `ok: true` with `data.answer`: `{ "choice", "note" }`.
+`data.meaning` tells the agent that the answer approves only the act that the question asked
+about, and to carry out the chosen act and follow the note in this run. Every other outcome
+returns `ok: false` and approves nothing. Its `data.meaning` tells the agent not to act on what it
+asked, to put the question in its final report, and to ask nothing more through `rex_ask` in this
+run:
+
+| Outcome | Meaning |
+|---|---|
+| `declined` | The operator closed the menu or the note prompt. A choice picked before the note was closed approves nothing. |
+| `timeout` | Nobody answered within the wait, or other questions kept every app busy for all of it. |
+| `no_client` | No Rex app is connected to the server. |
+| `unsupported` | No connected app can show questions, or the server's API revision is below 17. |
+| `not_configured` | The server has not loaded the current `pi_ask` action; `error` names `/rex setup`. |
+| `unavailable` | Rex could not be reached before the question was asked: no server, or the CLI failed. |
+| `superseded` | In ordinary Pi, the operator sent a message to the session while the question waited. The result tells the agent to read that message, which follows the result, before it acts. |
+| `cancelled` | The call was stopped, for example by Escape in Pi. |
+| `failed` | Rex reported another failure; `error` carries its text. |
+
+The call runs `rex do pi_ask` on the selected server (`REX_SERVER`, or Rex's home server) and
+keeps that process for the whole question. The action shows the menu with `rex.ui.pick`, then
+the note prompt with `rex.ui.input`, and gives the note prompt the time left of the same wait.
+When every app already shows another prompt, Rex answers `busy`: the extension asks again every
+two seconds for the rest of the wait, so questions from several agents queue, and the action
+waits the same way before its note prompt. When the call ends without an answer, for any reason,
+the extension stops the `rex do` process, and Rex closes the question in every app. An answer that
+Rex had already returned when the call was stopped still counts.
+
+A question's allowance is its own wait plus 30 seconds for the calls around it, not
+`rex.maxWaitMs`, because a person answers it. It creates no Rex resource and keeps no ownership
+record. Rex records no approval of its own: for an act that a policy rule holds for approval, the
+agent passes the answer to the policy extension's approval step as the operator's decision. Rex
+asks every app connected to the server, so anyone with access to the server can answer.
+
+In ordinary Pi, a message that the operator types or sends to the session while a question waits
+ends the question as `superseded`; a message from an extension does not. Escape stops the agent's
+run and the question with it (`cancelled`). Without Rex, agents ask in chat.
+
+The card shows the question, the complete `about` at every width and expansion, each choice with
+its subtitle and recommendation, and a waiting line while the call runs. After the call it shows
+the chosen title and the note, or the reason for no answer and `Nothing is approved.`
 
 ## Palette commands
 
@@ -1023,7 +1104,7 @@ fresh configuration snapshots, not proof of runtime application.
 |---|---|---|---|---|---|---|
 | executable | `PI_REX_EXECUTABLE` | string | "rex" | reload | minLength 1; maxLength 4096 | Installed Rex executable name or path. The extension uses the supported CLI without a shell. |
 | maxOutputBytes | `PI_REX_MAX_OUTPUT_BYTES` | integer | 65536 | reload | min 4096; max 1048576 | Maximum combined stdout/stderr bytes retained from one Rex CLI process. Core results have a separate aggregate bound. Capture is not a complete transcript. |
-| maxWaitMs | `PI_REX_MAX_WAIT_MS` | integer | 120000 | reload | min 1000; max 300000 | Deadline cap for a complete Rex tool operation, including nested calls and cleanup. Background label CLI calls also use this cap. A larger request uses the cap and reports it. Deadline cancellation does not stop persistent terminal work. |
+| maxWaitMs | `PI_REX_MAX_WAIT_MS` | integer | 120000 | reload | min 1000; max 300000 | Deadline cap for a complete Rex tool operation other than rex_ask, including nested calls and cleanup. Background label CLI calls also use this cap. A larger request uses the cap and reports it. Deadline cancellation does not stop persistent terminal work. |
 | maxRecords | `PI_REX_MAX_RECORDS` | integer | 128 | reload | min 2; max 256 | Maximum retained ownership and operation records per caller. |
 <!-- harness:settings:end -->
 

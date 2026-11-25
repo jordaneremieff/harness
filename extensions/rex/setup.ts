@@ -3,12 +3,13 @@ import { readFileSync, realpathSync, renameSync } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { ASK_ACTION, ASK_ACTION_DESCRIPTION } from "./ask.ts";
 import { noticeText } from "./command-report.ts";
 import { configBlock, findConfigBlock, withConfigBlock, withoutConfigBlock } from "./config-block.ts";
 import { readPaletteRegistry } from "./palette.ts";
 import { CliTransport, type RexTransport } from "./transport.ts";
 
-/** The first control API revision whose apps receive prompts, which the steps of palette commands use. */
+/** The first control API revision whose apps receive prompts, which agent questions and palette commands use. */
 const PROMPT_API_REVISION = 17;
 
 export interface SetupDeps {
@@ -130,13 +131,17 @@ function commandActions(deps: SetupDeps): Array<{ action: string; title: string 
 }
 
 /**
- * Actions of the block that the server has not loaded: `pi_command` and each recorded command. `pi_command` names the
- * registry that its block reads, so a loaded block of another agent directory counts as not loaded.
+ * Actions of the block that the server has not loaded: the question action, `pi_command` and each recorded command.
+ * `pi_command` names the registry that its block reads, so a loaded block of another agent directory counts as not
+ * loaded; a question action with another description belongs to an earlier block.
  */
 function missingActions(deps: SetupDeps, actions: Map<string, string>): string[] {
 	const stale = !actions.get("pi_command")?.endsWith(`Pi records its commands in ${deps.registryPath}.`);
-	return ["pi_command", ...commandActions(deps).map((command) => command.action)].filter(
-		(action) => !actions.has(action) || (action === "pi_command" && stale),
+	return [ASK_ACTION, "pi_command", ...commandActions(deps).map((command) => command.action)].filter(
+		(action) =>
+			!actions.has(action) ||
+			(action === "pi_command" && stale) ||
+			(action === ASK_ACTION && actions.get(action) !== ASK_ACTION_DESCRIPTION),
 	);
 }
 
@@ -148,6 +153,7 @@ function missingNames(deps: SetupDeps, missing: string[]): string {
 	const titles = commandActions(deps)
 		.filter((command) => missing.includes(command.action))
 		.map((command) => `"${command.title}"`);
+	if (missing.includes(ASK_ACTION)) titles.unshift("agent questions");
 	return titles.length > 1 ? `${titles.slice(0, -1).join(", ")} and ${titles.at(-1)}` : (titles[0] ?? "");
 }
 
@@ -161,11 +167,14 @@ function blocker(deps: SetupDeps, facts: ServerFacts | undefined, block: Block):
 	if (facts.revision < PROMPT_API_REVISION)
 		return `Rex${facts.version ? ` ${facts.version}` : ""} is too old for Pi's commands. Update Rex, then restart it.`;
 	if (block === "none") return "Rex has no Pi commands yet. Run /rex setup to add them.";
-	if (block === "earlier") return "Rex runs an earlier version of Pi's commands. Run /rex setup to update them.";
+	if (block === "earlier")
+		return "Rex runs an earlier version of Pi's actions, without the current agent questions. Run /rex setup to update them.";
 	if (!facts.actions) return "Rex did not list its loaded actions, so Pi cannot tell whether its commands work.";
 	const missing = missingActions(deps, facts.actions);
 	if (missing.includes("pi_command"))
 		return "Rex has not loaded Pi's commands. Run /rex setup to reload the Rex configuration.";
+	if (missing.includes(ASK_ACTION))
+		return "Rex has not loaded the current agent questions, so agents cannot ask you through Rex. Run /rex setup to reload the Rex configuration.";
 	if (!facts.apps?.length) return "No Rex app is connected. Open Rex to use Pi's commands.";
 	return undefined;
 }
@@ -279,7 +288,7 @@ export async function rexCommand(args: string, deps: SetupDeps): Promise<void> {
 	if (verb === "status") return status(deps, current);
 	if ((await change(verb, deps, path, current)) && verb === "setup") {
 		const state = commandsState(deps, await serverFacts(deps), "current");
-		deps.report(...(state.notice ?? (["Pi's commands are ready in the Rex palette.", "info"] as Notice)));
+		deps.report(...(state.notice ?? (["Pi's commands and agent questions are ready in Rex.", "info"] as Notice)));
 	}
 }
 
@@ -296,14 +305,14 @@ const CHANGES = {
 	setup: {
 		title: "Add Pi's actions to Rex?",
 		message: (path: string, registryPath: string) =>
-			`The Rex command palette then offers the commands of your Pi extensions under "Pi:". Pi writes this block to ${path}, keeps the previous file beside it, and reloads the Rex configuration:\n\n${configBlock(registryPath)}`,
+			`The Rex command palette then offers the commands of your Pi extensions under "Pi:", and agents can ask you there to confirm an act. Pi writes this block to ${path}, keeps the previous file beside it, and reloads the Rex configuration:\n\n${configBlock(registryPath)}`,
 		done: undefined,
 		unchanged: undefined,
 	},
 	remove: {
 		title: "Remove Pi's actions from Rex?",
 		message: (path: string) =>
-			`Pi removes its block from ${path}, keeps the previous file beside it, and reloads the Rex configuration. The palette then no longer offers Pi commands.`,
+			`Pi removes its block from ${path}, keeps the previous file beside it, and reloads the Rex configuration. The palette then no longer offers Pi commands, and agents ask in their own sessions.`,
 		done: (_path: string) => "Pi removed its commands from Rex.",
 		unchanged: (_path: string) => "The Rex palette has no Pi commands to remove.",
 	},
@@ -393,7 +402,7 @@ export function registerRexCommand(
 	options: { executable: string; registryPath: string; transport?: RexTransport },
 ): void {
 	pi.registerCommand("rex", {
-		description: "Set up, check or remove Pi's commands in Rex: /rex setup | status | remove",
+		description: "Set up, check or remove Pi's commands and agent questions in Rex: /rex setup | status | remove",
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			const transport = options.transport ?? new CliTransport(options.executable, process.env);
 			const lines: Array<{ text: string; level: "info" | "warning" | "error" }> = [];

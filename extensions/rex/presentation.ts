@@ -33,6 +33,7 @@ export function publishRexToolDisplay(events: ExtensionAPI["events"], tools: rea
 }
 
 export function createRexToolDisplay(name: string) {
+	if (name === "rex_ask") return askDisplay();
 	return {
 		renderShell: "default" as const,
 		renderCall(args, theme, context) {
@@ -73,6 +74,69 @@ export function createRexToolDisplay(name: string) {
 			});
 		},
 	} satisfies Pick<ToolDefinition, "renderCall" | "renderResult" | "renderShell">;
+}
+
+/**
+ * A question's card shows the complete act at every width and expansion, because the operator reads it here before
+ * answering in Rex, then the choices as Rex shows them, and after the call the choice and the note.
+ */
+function askDisplay() {
+	return {
+		renderShell: "default" as const,
+		renderCall(args, theme, context) {
+			const request = object(args);
+			return atWidth((width) => {
+				const rows = askCallRows(request, theme, width);
+				if (context.executionStarted && !context.state.rexResult)
+					rows.push(clip(theme.fg("muted", "Waiting for the operator's answer in Rex."), width));
+				return rows;
+			});
+		},
+		renderResult(result, options, theme, context) {
+			context.state.rexResult = true;
+			const text = result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+			const receipt = canonicalResult(result.details, text);
+			const rows = options.isPartial
+				? [row("Waiting for the operator's answer in Rex.")]
+				: askResultRows(object(context.args), receipt, text);
+			return atWidth((width) => ["", ...rows.flatMap(({ text, colour }) => wrapped(text, width, theme, colour))]);
+		},
+	} satisfies Pick<ToolDefinition, "renderCall" | "renderResult" | "renderShell">;
+}
+
+function askCallRows(request: Fields, theme: Theme, width: number): string[] {
+	const question = field(request, "question");
+	const title = theme.fg("toolTitle", theme.bold("rex_ask"));
+	const rows = [clip(question ? `${title} ${theme.fg("accent", question)}` : title, width)];
+	const about = typeof request.about === "string" ? safe(request.about).trim() : "";
+	if (about) rows.push(...wrapped(about, width, theme, "toolOutput"));
+	for (const choice of values(request.choices).map(object)) {
+		const name = field(choice, "title") || field(choice, "id");
+		if (!name) continue;
+		const subtitle = field(choice, "subtitle");
+		const mark = choice.recommended === true ? " (recommended)" : "";
+		rows.push(...wrapped(`- ${name}${mark}${subtitle ? `: ${subtitle}` : ""}`, width, theme, "muted"));
+	}
+	return rows;
+}
+
+function askResultRows(request: Fields, receipt: Fields | undefined, text: string): Row[] {
+	if (!receipt) return [row(one(text) || "Rex did not return a displayable result.", "error")];
+	const data = object(receipt.data);
+	const answer = object(data.answer);
+	if (receipt.outcome === "answered" && typeof answer.choice === "string") {
+		const chosen = values(request.choices)
+			.map(object)
+			.find((choice) => choice.id === answer.choice);
+		const note = typeof answer.note === "string" ? one(answer.note) : "";
+		return [
+			row(`Answered: ${field(chosen ?? {}, "title") || answer.choice}`, "success"),
+			note ? row(`Note: ${note}`, "toolOutput") : row("No note."),
+		];
+	}
+	const outcome = field(receipt, "outcome");
+	const error = field(receipt, "error") || sentence(words(outcome));
+	return [row(error, outcome === "cancelled" ? "muted" : "warning"), row("Nothing is approved.")];
 }
 
 function callRows(call: Call, name: string, head: string, width: number, theme: Theme, expanded: boolean) {
