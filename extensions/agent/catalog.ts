@@ -177,26 +177,22 @@ function comparePriority(left: PriorityKey, right: PriorityKey): number {
 function checkPriorityLimit(limit: number): void {
 	if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Invalid roster output limit");
 }
-/** Where an enumeration continues, and how many records its earlier pages returned. */
-interface PriorityCursor {
-	readonly after: PriorityKey;
-	readonly returned: number;
-}
-
-function priorityCursor(cursor: string | undefined, binding: string): PriorityCursor | undefined {
+/**
+ * The storage IDs that the earlier pages of one enumeration returned. A page returns the first records, in the
+ * current order, that no earlier page returned. A position in the order cannot continue an enumeration: a record
+ * that is created, or published again, between two pages sorts before every position.
+ */
+function priorityCursor(cursor: string | undefined, binding: string): Set<string> | undefined {
 	if (!cursor) return;
 	try {
 		const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
 		if (
 			value.binding !== binding ||
-			typeof value.after?.priority !== "boolean" ||
-			!Number.isFinite(value.after.modifiedAt) ||
-			!UUID.test(value.after.storageId) ||
-			!Number.isSafeInteger(value.returned) ||
-			value.returned < 0
+			!Array.isArray(value.returned) ||
+			!value.returned.every((id: unknown) => typeof id === "string")
 		)
 			throw new Error();
-		return { after: value.after, returned: value.returned };
+		return new Set(value.returned);
 	} catch {
 		throw new Error("Invalid roster cursor or caller changed; restart the roster");
 	}
@@ -336,9 +332,7 @@ export function projectCatalogPriority(
 	const ownerIds = options.ownerIds ?? [];
 	const activeStorageIds = options.activeStorageIds ?? [];
 	const binding = JSON.stringify([[...ownerIds].sort(), [...activeStorageIds].sort()]);
-	const position = priorityCursor(options.cursor, binding);
-	const after = position?.after;
-	let passed = 0;
+	const returned = priorityCursor(options.cursor, binding);
 	const coverage: CatalogPriorityCoverage = {
 		candidates: inventory.facts.size,
 		inspected: inventory.facts.size,
@@ -366,40 +360,31 @@ export function projectCatalogPriority(
 			ownerIds.includes(record.ownerId ?? "") ||
 			activeStorageIds.includes(record.storageId) ||
 			options.hasCurrentPublication?.(fact) === true;
-		if (after && comparePriority({ priority, modifiedAt, storageId: record.storageId }, after) <= 0) {
-			passed++;
-			continue;
-		}
+		if (returned?.has(record.storageId)) continue;
 		items.push({ record, modifiedAt, priority, claim, observedAt: fact.observedAt });
 	}
-	// A record that was created or published again since the earlier pages can sort before the cursor. No later
-	// page returns it, so it stays in the remaining counts and the enumeration does not end complete.
-	const moved = position === undefined ? 0 : Math.max(0, passed - position.returned);
 	items.sort((left, right) =>
 		comparePriority({ ...left, storageId: left.record.storageId }, { ...right, storageId: right.record.storageId }),
 	);
 	const selected = items.slice(0, options.limit);
 	coverage.returned = selected.length;
-	coverage.remaining = items.length - selected.length + moved;
+	coverage.remaining = items.length - selected.length;
 	const remaining = items.slice(selected.length);
 	coverage.priorityRemaining = remaining.filter((item) => item.priority).length;
 	const rowCount = (item: CatalogPriorityRecord) =>
 		!item.record.view || item.record.view.unavailable ? 1 : item.record.view.rows.length;
-	coverage.remainingRows = remaining.reduce((total, item) => total + rowCount(item), moved);
+	coverage.remainingRows = remaining.reduce((total, item) => total + rowCount(item), 0);
 	coverage.priorityRemainingRows = remaining
 		.filter((item) => item.priority)
 		.reduce((total, item) => total + rowCount(item), 0);
-	const last = selected.at(-1);
-	const nextCursor =
-		remaining.length && last
-			? Buffer.from(
-					JSON.stringify({
-						binding,
-						after: { priority: last.priority, modifiedAt: last.modifiedAt, storageId: last.record.storageId },
-						returned: (position?.returned ?? 0) + selected.length,
-					}),
-				).toString("base64url")
-			: null;
+	const nextCursor = remaining.length
+		? Buffer.from(
+				JSON.stringify({
+					binding,
+					returned: [...(returned ?? []), ...selected.map((item) => item.record.storageId)],
+				}),
+			).toString("base64url")
+		: null;
 	return { items: selected, coverage, nextCursor, observedAt: inventory.observedAt };
 }
 

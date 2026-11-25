@@ -71,7 +71,7 @@ it("finds the ordinary session at the top of a chain of creating owners", (t) =>
 	assert.throws(() => catalog.ordinaryOwner("not an identity"), /Invalid Durable agent identity/u);
 });
 
-it("counts a record that moved ahead of the cursor between two pages as remaining", async (t) => {
+it("a later page returns every record that no earlier page returned, whatever changed between the pages", async (t) => {
 	const { catalog, input } = fixture(t);
 	const records = Array.from({ length: 6 }, () => catalog.create(input));
 	// The newest record sorts first: records[5] leads and records[0] is last.
@@ -90,15 +90,31 @@ it("counts a record that moved ahead of the cursor between two pages as remainin
 	assert.deepEqual(ids(steady), [records[1].storageId, records[0].storageId]);
 	assert.deepEqual([steady.coverage.remaining, steady.nextCursor], [0, null]);
 
-	// One record is published again and one is created: both now sort before the cursor.
+	// One record is published again and one is created: both now sort before every record of the first page.
 	utimesSync(catalog.path(records[0].storageId), 200, 200);
-	utimesSync(catalog.path(catalog.create(input).storageId), 201, 201);
+	const created = catalog.create(input).storageId;
+	utimesSync(catalog.path(created), 201, 201);
 	observation.invalidate();
 	const moved = projectCatalogPriority(await observation.read(), { cursor, limit: 4 });
-	assert.deepEqual(ids(moved), [records[1].storageId]);
-	assert.equal(moved.nextCursor, null, "no later page returns a record before the cursor");
-	assert.equal(moved.coverage.remaining, 2, "the two records that no page returned stay in the remaining count");
-	assert.equal(moved.coverage.remainingRows, 2);
+	assert.deepEqual(ids(moved), [created, records[0].storageId, records[1].storageId]);
+	assert.deepEqual([moved.coverage.remaining, moved.nextCursor], [0, null]);
+
+	// A record of the first page is removed as well. A count of the records before a position then matches the
+	// count of returned records, although one of them was never returned.
+	rmSync(catalog.path(records[5].storageId), { force: true });
+	observation.invalidate();
+	const removed = projectCatalogPriority(await observation.read(), { cursor, limit: 2 });
+	assert.deepEqual(ids(removed), [created, records[0].storageId]);
+	assert.equal(removed.coverage.remaining, 1);
+	assert.ok(removed.nextCursor, "the enumeration continues while a record is not returned");
+	const last = projectCatalogPriority(await observation.read(), { cursor: removed.nextCursor, limit: 2 });
+	assert.deepEqual(ids(last), [records[1].storageId]);
+	assert.deepEqual([last.coverage.remaining, last.nextCursor], [0, null]);
+	assert.equal(
+		new Set([first, removed, last].flatMap(ids)).size,
+		ids(first).length + ids(removed).length + ids(last).length,
+		"no page returns a record again",
+	);
 });
 
 it("shares raw record and claim reads while preserving caller-specific priorities and cursors", async (t) => {

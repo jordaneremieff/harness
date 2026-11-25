@@ -1630,7 +1630,11 @@ Coverage carries `complete`, `storagesVisited`, `skipped`, `omitted`, and
 the cursor continues, and a short note while related work is still read.
 Storage counts such as unreadable or omitted records stay in Details and the
 plain-text summary; they are not selected-agent warnings. Unreadable or missing
-views remain unknown, not absent. Load more agents continues the cursor.
+views remain unknown, not absent. Load more agents continues the cursor. The
+cursor names the records that the earlier pages returned, and each page returns
+the first records, in the current order, that no earlier page returned. A record
+that is created or published again between two pages is in the next page, and
+the list ends only when every readable record was returned.
 Every action that the footer does not show is in `x more`, with its key, and
 `ctrl+n` opens the same menu while a text field has focus. Rows carry
 no creating-session tag. A
