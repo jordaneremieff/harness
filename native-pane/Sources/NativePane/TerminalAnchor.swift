@@ -19,9 +19,9 @@ import OSLog
 /// required; a process that a trusted application starts usually inherits that application's
 /// access.
 ///
-/// Every accessibility and window-server request runs on one background queue, one step at a
-/// time, so an application that answers slowly never stalls the reader's own window. The main
-/// actor only receives the results, converts coordinates and publishes the status.
+/// One background queue reads the accessibility tree. A separate queue checks the last known
+/// window if a read stalls. The main actor receives the results, converts coordinates and
+/// publishes the status.
 @MainActor
 public final class TerminalAnchor {
     public struct Placement: Equatable, Sendable {
@@ -70,7 +70,11 @@ public final class TerminalAnchor {
     public var onChange: ((Status) -> Void)?
     public var onMarker: (() -> Void)?
 
-    private let worker: AnchorWorker
+    /// One step of the worker and the accessibility requests that it made.
+    private let read: @Sendable (String) -> (result: AnchorWorker.Result, calls: Int)
+    /// The window server's record of one window.
+    private let windowInfo: @Sendable (CGWindowID) -> [String: Any]?
+    private let idleInterval: TimeInterval?
     private let feed: StackingFeed?
     private let queue = DispatchQueue(label: "local.harness.markdown-reader.terminal-anchor", qos: .userInitiated)
     private let backingQueue = DispatchQueue(label: "local.harness.native-pane.backing-window", qos: .userInitiated)
@@ -79,6 +83,11 @@ public final class TerminalAnchor {
     private var stepRunning = false
     private var stepGeneration = 0
     private var backingCheckRunning = false
+    /// The step during which a window-server check hid the panel.
+    private var concealedDuring: Int?
+    /// Time after the start of a step after which it counts as stalled and the backing window
+    /// is checked, independent of the poll interval.
+    private static let stallTime: TimeInterval = 0.1
     private let perf: Logger?
     private let eventDriven: Bool
     private var subscription: AnchorWorker.Subscription?
@@ -90,10 +99,33 @@ public final class TerminalAnchor {
         self.perf = perf
         self.eventDriven = eventDriven
         feed = StackingFeed.start()
-        worker = AnchorWorker(feed: feed, tracksWindowContent: tracksWindowContent, eventDriven: eventDriven)
+        let worker = AnchorWorker(feed: feed, tracksWindowContent: tracksWindowContent, eventDriven: eventDriven)
+        read = { marker in
+            let before = worker.axCalls
+            let result = worker.step(marker: marker)
+            return (result, worker.axCalls - before)
+        }
+        windowInfo = Self.windowServerInfo
+        idleInterval = nil
         feed?.onReport = { [weak self] in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.wake() } }
         }
+    }
+
+    /// Follows the results of `read` instead of the accessibility tree, at `idleInterval` while
+    /// nothing changes.
+    init(read: @escaping @Sendable (String) -> AnchorWorker.Result,
+         windowInfo: @escaping @Sendable (CGWindowID) -> [String: Any]?, idleInterval: TimeInterval) {
+        perf = nil
+        eventDriven = false
+        feed = nil
+        self.read = { (read($0), 0) }
+        self.windowInfo = windowInfo
+        self.idleInterval = idleInterval
+    }
+
+    private nonisolated static func windowServerInfo(_ number: CGWindowID) -> [String: Any]? {
+        (CGWindowListCopyWindowInfo(.optionIncludingWindow, number) as? [[String: Any]])?.first
     }
 
     static func newMarker() -> String {
@@ -155,7 +187,8 @@ public final class TerminalAnchor {
     }
 
     /// Runs one step on the background queue. A step that is still running, for example
-    /// because an application answers slowly, is never queued twice.
+    /// because an application answers slowly, is never queued twice. A step that runs longer
+    /// than `stallTime` checks the host window, whatever the poll interval.
     private func step() {
         guard timer != nil else { return }
         if stepRunning {
@@ -164,16 +197,25 @@ public final class TerminalAnchor {
         }
         stepRunning = true
         stepGeneration &+= 1
-        let worker = worker
+        // Faster poll ticks already check an in-flight step.
+        if interval > Self.stallTime, case .placed(let shown) = status, shown.window != nil {
+            let generation = stepGeneration
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.stallTime) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.timer != nil, self.stepRunning, self.stepGeneration == generation else { return }
+                    self.checkBackingWindow()
+                }
+            }
+        }
+        let read = read
         let marker = marker
         let period = interval
         let perf = perf
         queue.async { [weak self] in
             let start = DispatchTime.now().uptimeNanoseconds
-            let before = worker.axCalls
-            let result = worker.step(marker: marker)
+            let (result, calls) = read(marker)
             let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
-            perf?.debug("anchor.step ms=\(elapsed) calls=\(worker.axCalls - before) poll_ms=\(period * 1000)")
+            perf?.debug("anchor.step ms=\(elapsed) calls=\(calls) poll_ms=\(period * 1000)")
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.finish(result) }
             }
@@ -182,20 +224,22 @@ public final class TerminalAnchor {
 
     /// The host can stop answering AX requests throughout its minimise animation, while
     /// its window shrinks out from under the panel. Check the last verified window without
-    /// waiting for the AX queue. Only a fresh placement can show the panel again.
+    /// waiting for the AX queue. Only a placement from a step that starts after the check can
+    /// show the panel again.
     private func checkBackingWindow() {
         guard !backingCheckRunning, case .placed(let shown) = status, let number = shown.window else { return }
         backingCheckRunning = true
         let generation = stepGeneration
         let pane = Self.appKitRect(shown.frame, primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
+        let windowInfo = windowInfo
         backingQueue.async { [weak self] in
-            let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, number) as? [[String: Any]])?.first
-            let backed = Self.backsPane(info, host: shown.host, pane: pane)
+            let backed = Self.backsPane(windowInfo(number), host: shown.host, pane: pane)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.backingCheckRunning = false
                 guard !backed, self.timer != nil, self.stepRunning, self.stepGeneration == generation,
                       self.status == .placed(shown) else { return }
+                self.concealedDuring = generation
                 self.status = .concealed(shown)
                 self.onChange?(self.status)
             }
@@ -204,6 +248,8 @@ public final class TerminalAnchor {
 
     private func finish(_ result: AnchorWorker.Result) {
         stepRunning = false
+        let concealedNow = concealedDuring == stepGeneration
+        concealedDuring = nil
         guard timer != nil else { return }
         install(result.subscription)
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
@@ -211,6 +257,10 @@ public final class TerminalAnchor {
         switch result.state {
         case .untrusted: next = .untrusted
         case .searching: next = .searching
+        case .placed where concealedNow:
+            // This step may have read its place before the check; read it again.
+            next = status
+            wakePending = true
         case .placed(let raw): next = .placed(raw.placement(primaryHeight: primaryHeight))
         case .concealed(let raw): next = .concealed(raw.placement(primaryHeight: primaryHeight))
         case .unchanged: next = status
@@ -236,7 +286,7 @@ public final class TerminalAnchor {
             status = next
             onChange?(next)
         }
-        let idle = eventDriven && subscription?.paneGeometry == true ? 0.5 : 0.1
+        let idle = idleInterval ?? (eventDriven && subscription?.paneGeometry == true ? 0.5 : 0.1)
         schedule(interval: result.slow ? 1 : Date() < fastUntil ? (eventDriven ? 1.0 / 30 : 1.0 / 60) : idle)
         if wakePending { wakePending = false; step() }
     }
