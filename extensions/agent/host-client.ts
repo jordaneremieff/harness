@@ -774,10 +774,10 @@ async function acquireLink(
 		return await attachLink(metadata, deadline, options.signal);
 	} catch (error) {
 		if (error instanceof HostLeaseBusyError) return attachBusyLink(metadata, deadline, options.signal);
-		// A host that ended while this call waited leaves the storage to a fresh host, with a full launch budget.
-		if (error instanceof HostRetiringError && error.ended)
-			return launchRunner(metadata, options, launchDeadline(metadata, options));
-		if (error instanceof HostError || isChordError(error) || error instanceof PluginError) throw error;
+		// A host that ended while this call waited leaves the storage to a fresh host, with a full launch budget,
+		// through the same launch-or-attach path as any other launch.
+		if (error instanceof HostRetiringError && error.ended) deadline = launchDeadline(metadata, options);
+		else if (error instanceof HostError || isChordError(error) || error instanceof PluginError) throw error;
 	}
 	options.signal?.throwIfAborted();
 	try {

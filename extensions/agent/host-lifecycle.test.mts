@@ -188,6 +188,71 @@ process.exit(0);`;
 	assert.equal(new Set(outcomes.map((outcome) => outcome.pid)).size, 1, "one host serves the storage");
 });
 
+it("attaches every caller that met a retiring host to the one host that replaces it", { timeout: 60000 }, async (t) => {
+	const fixture = runtimeFixture(t);
+	let finishClose: () => void = () => {};
+	const closeStep = new Promise<void>((resolve) => {
+		finishClose = resolve;
+	});
+	const retiring = await runHost(() => ({ request: async () => ({}), close: () => closeStep, isIdle: () => true }), {
+		metadata: fixture.metadata,
+		idleMs: 0,
+		announceReady: () => {},
+	});
+	t.after(() => {
+		finishClose();
+		return retiring.close().catch(() => {});
+	});
+	const hostClient = new URL("./host-client.ts", import.meta.url).href;
+	const script = `const { acquireHost } = await import(${JSON.stringify(hostClient)});
+process.send?.("ready");
+await new Promise((resolve) => process.once("message", resolve));
+try {
+	const connection = await acquireHost(JSON.parse(process.env.LAUNCH_METADATA), { retryAttempts: 0 });
+	console.log(JSON.stringify({ pid: connection.pid }));
+	await connection.close();
+} catch (error) {
+	console.log(JSON.stringify({ error: String(error) }));
+}
+process.exit(0);`;
+	const callers = Array.from({ length: 3 }, () =>
+		spawn(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], {
+			cwd: fixture.cwd,
+			env: {
+				...process.env,
+				...fixture.env("answer"),
+				PI_AGENT_SESSIONS_DIR: fixture.root,
+				LAUNCH_METADATA: JSON.stringify(fixture.metadata),
+			},
+			stdio: ["ignore", "pipe", "pipe", "ipc"],
+		}),
+	);
+	const outputs = callers.map((child) => {
+		let output = "";
+		child.stdout?.on("data", (chunk: Buffer) => {
+			output += chunk.toString();
+		});
+		return async () => {
+			await once(child, "exit");
+			return JSON.parse(output.trim().split("\n").at(-1) ?? "{}") as { pid?: number; error?: string };
+		};
+	});
+	await Promise.all(callers.map((child) => once(child, "message")));
+	const closed = retiring.close();
+	for (const child of callers) child.send("go");
+	// The callers reach the retiring host within this window; its close step then ends.
+	setTimeout(finishClose, 1000);
+	await closed;
+	const outcomes = await Promise.all(outputs.map((outcome) => outcome()));
+	assert.deepEqual(
+		outcomes.filter((outcome) => outcome.error !== undefined),
+		[],
+		"no caller fails while the replacement host starts",
+	);
+	assert.equal(new Set(outcomes.map((outcome) => outcome.pid)).size, 1, "one host replaces the retiring host");
+	assert.notEqual(outcomes[0].pid, process.pid);
+});
+
 it("reports a bootstrap that ends without readiness and exits with failure", { timeout: 30000 }, async (t) => {
 	const fixture = runtimeFixture(t);
 	const unsettled = join(fixture.root, "unsettled-extension.ts");
