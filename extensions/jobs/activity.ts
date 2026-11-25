@@ -108,8 +108,9 @@ export function settledMessage(job: CompletionJob, delivery?: Delivery): string 
 	return parts.join(" · ");
 }
 
-export function footerText(running: number): string | undefined {
-	return running > 0 ? `jobs: ${running} running` : undefined;
+/** The footer entry while jobs run: a filled dot, because each completion starts the next turn, then the count. */
+export function footerText(running: number, dot = "●"): string | undefined {
+	return running > 0 ? `${dot} jobs: ${running}` : undefined;
 }
 
 export interface ActivityOutput {
@@ -142,7 +143,10 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 		ctx.mode === "tui" && output.isTTY() && output.env().PI_PROGRAM_STATUS !== "0";
 	const write = (record: StatusRecord) => output.write(formatStatusRecord(record));
 	const showFooter = () => {
-		if (footer?.hasUI) footer.ui.setStatus(FOOTER_STATUS_KEY, footerText(running.size));
+		if (!footer?.hasUI) return;
+		// Only the interactive terminal draws colour; other hosts receive the plain dot.
+		const dot = footer.mode === "tui" ? footer.ui.theme.fg("accent", "●") : "●";
+		footer.ui.setStatus(FOOTER_STATUS_KEY, footerText(running.size, dot));
 	};
 
 	return {

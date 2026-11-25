@@ -106,8 +106,11 @@ one run and resets at `agent_settled` and `session_start`.
 
 ### Footer status and terminal records
 
-While at least one job of the session runs, the footer shows `jobs: N running`
-through `ctx.ui.setStatus("jobs", ...)`; the status clears when none runs.
+While at least one job of the session runs, the footer shows `● jobs: N`
+through `ctx.ui.setStatus("jobs", ...)`; the status clears when none runs. The
+filled dot follows the [footer status convention](../../docs/conventions/status-keys.md):
+each job's completion starts the session's next turn, so the dot marks work
+that is still out. The interactive terminal draws it in the accent colour.
 Sessions without a UI show no status.
 
 In the interactive TUI, each job also becomes a child record in the terminal's

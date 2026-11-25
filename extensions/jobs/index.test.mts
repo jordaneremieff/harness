@@ -157,6 +157,7 @@ function setup(
 		ui: {
 			setStatus: (key: string, text: string | undefined) => terminal?.statuses.push([key, text]),
 			notify: (text: string) => terminal?.notices?.push(text),
+			theme: { fg: (color: string, text: string) => `<${color}>${text}` },
 		},
 		model: { provider: "fixture", id: "deterministic" },
 		thinkingLevel: "low",
@@ -408,7 +409,7 @@ describe("Command Jobs adapter", () => {
 			const failed = jobOf(await call("bash", { command: "printf hidden; exit 3", background: true }));
 			const id = recordId(failed.id);
 			assert.ok(id);
-			assert.deepEqual(terminal.statuses[0], ["jobs", "jobs: 1 running"]);
+			assert.deepEqual(terminal.statuses[0], ["jobs", "<accent>● jobs: 1"]);
 			await completion(pi, failed.id);
 			await delay(0);
 			assert.equal(

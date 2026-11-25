@@ -33,7 +33,10 @@ function fixture(
 	const ctx = {
 		mode: (options.mode ?? "tui") as "tui",
 		hasUI: options.hasUI ?? true,
-		ui: { setStatus: (key: string, text: string | undefined) => statuses.push([key, text]) },
+		ui: {
+			setStatus: (key: string, text: string | undefined) => statuses.push([key, text]),
+			theme: { fg: (color: string, text: string) => `<${color}>${text}` },
+		},
 	} as unknown as Parameters<ReturnType<typeof createJobActivity>["start"]>[1];
 	return { activity: createJobActivity(output), writes, statuses, ctx };
 }
@@ -137,8 +140,8 @@ describe("job activity presenter", () => {
 		activity.start(job(), ctx);
 		activity.start(job({ id: "2b4e28ba-2fa1-11d2-883f-0016d3cca427" }), ctx);
 		assert.deepEqual(statuses, [
-			["jobs", "jobs: 1 running"],
-			["jobs", "jobs: 2 running"],
+			["jobs", "<accent>● jobs: 1"],
+			["jobs", "<accent>● jobs: 2"],
 		]);
 		assert.equal(
 			writes[0],
@@ -160,7 +163,7 @@ describe("job activity presenter", () => {
 		);
 		assert.match(writes[3], /^\x1b\]7501;state=error:id=jobs\/2b4e28ba/u);
 		assert.deepEqual(statuses.slice(2), [
-			["jobs", "jobs: 1 running"],
+			["jobs", "<accent>● jobs: 1"],
 			["jobs", undefined],
 		]);
 		activity.settle(job({ status: "succeeded", endedAt: 1 }), "added");
@@ -270,7 +273,7 @@ describe("job activity presenter", () => {
 		assert.deepEqual(statuses, []);
 		const rpc = fixture({ mode: "rpc", hasUI: true });
 		rpc.activity.start(job(), rpc.ctx);
-		assert.deepEqual(rpc.statuses, [["jobs", "jobs: 1 running"]]);
+		assert.deepEqual(rpc.statuses, [["jobs", "● jobs: 1"]], "a host without the terminal gets the plain dot");
 	});
 });
 
