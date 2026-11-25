@@ -194,6 +194,15 @@ export const LEASE_CHECK_MS = 300_000;
 export const BOOTSTRAP_DEADLINE_MS = 90_000;
 export const TRUST_BOOTSTRAP_DEADLINE_MS = 420_000;
 
+/** Report on stderr; a closed or broken pipe never stops the exit or the step that follows the report. */
+function diagnostic(text: string): void {
+	try {
+		writeSync(2, text);
+	} catch {
+		/* The process outlives its launcher's pipes. */
+	}
+}
+
 function wallClockDeadline(expire: () => void, delayMs: number): () => void {
 	const timer = setTimeout(expire, delayMs);
 	return () => clearTimeout(timer);
@@ -815,8 +824,7 @@ class HostProcessServer implements HostProcess {
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
 		this.observationPump.dispose();
-		writeSync(
-			2,
+		diagnostic(
 			"Durable host: its writer lease file was removed, replaced or changed; the process stops without further writes.\n",
 		);
 		try {
@@ -856,8 +864,7 @@ class HostProcessServer implements HostProcess {
 		const exit = this.exit;
 		if (!exit || this.cancelShutdownDeadline) return;
 		this.cancelShutdownDeadline = this.scheduleShutdownDeadline(() => {
-			writeSync(
-				2,
+			diagnostic(
 				`Durable host: shutdown did not finish within ${SHUTDOWN_GRACE_MS / 1000} s; the process exits and releases its writer lease.\n`,
 			);
 			exit(1);
@@ -1023,8 +1030,7 @@ function bootstrapDeadline(
 		cancelTimer = undefined;
 		if (ended || !exit) return;
 		cancelTimer = schedule(() => {
-			writeSync(
-				2,
+			diagnostic(
 				`Durable host: bootstrap did not announce readiness within ${delayMs / 1000} s; the process exits and releases its writer lease. A configured extension that never finishes loading can cause this.\n`,
 			);
 			exit(1);

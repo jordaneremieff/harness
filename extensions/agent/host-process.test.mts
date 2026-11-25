@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { fork, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -1016,6 +1016,38 @@ it("stops a host without idle retirement once a lease file is removed", async (t
 	await new Promise<void>(setImmediate);
 	assert.deepEqual(exits, [1]);
 	await assert.rejects(host.done, /lost its writer lease/u);
+});
+
+it("exits after a lost lease even when its stderr pipe is closed", { timeout: 20000 }, async (t) => {
+	const config = metadata(fixtureRoot(t));
+	const hostProcess = new URL("./host-process.ts", import.meta.url).href;
+	const script = `const { runHost } = await import(${JSON.stringify(hostProcess)});
+await runHost(() => ({ request: async () => ({}), close: async () => {}, isIdle: () => true }), {
+	metadata: JSON.parse(process.env.HOST_METADATA),
+	idleMs: 0,
+	exit: (status) => process.exit(status),
+	announceReady: () => process.send?.("ready"),
+});`;
+	const child = fork("--input-type=module", ["-e", script], {
+		execArgv: ["--experimental-strip-types"],
+		env: { ...process.env, HOST_METADATA: JSON.stringify(config) },
+		stdio: ["ignore", "ignore", "pipe", "ipc"],
+	});
+	t.after(() => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+	});
+	const exited = once(child, "exit");
+	await once(child, "message");
+	child.stderr?.destroy();
+	rmSync(writerLeasePaths(config)[1]);
+	const client = await connectClient(config);
+	await assert.rejects(call(client, config, "timer-list"));
+	await client.dispose().catch(noop);
+	const [code] = await Promise.race([
+		exited,
+		new Promise<[string]>((resolve) => setTimeout(() => resolve(["still running"]), 10000)),
+	]);
+	assert.equal(code, 1, "the host exits and releases its lease although its diagnostic cannot be written");
 });
 
 it("a close after the lease file is removed writes nothing and names the lost lease", async (t) => {
