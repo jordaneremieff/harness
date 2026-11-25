@@ -465,3 +465,22 @@ it("preset errors always list the file, all names, and the current digest", (t) 
 	for (const preferences of [{ defaultPreset: "INVALID" }, { enforceRoster: "true" }, { defaultPreset: 1 }])
 		assert.equal(validPreferences(preferences), false);
 });
+
+it("reports a preset model that is not an exact identity instead of failing the read", (t) => {
+	const root = fixture(t);
+	writeFileSync(
+		join(root, "harness.json"),
+		JSON.stringify(
+			machineConfig({
+				presets: { standard: { model: "acme/model-x\u001b[2J" }, economy: { model: "acme/model-x" } },
+				preferences: { excludedModels: ["acme/model-x"] },
+			}),
+		),
+	);
+	const snapshot = readAgentPreferences(root, catalog);
+	assert.equal(snapshot.source.status, "loaded");
+	const facts = snapshot.diagnostics.map((fact) => fact.field);
+	assert.ok(facts.includes("presets.standard.model"), JSON.stringify(facts));
+	assert.ok(facts.includes("presets.economy"), "the other preset keeps its exclusion fact");
+	assert.doesNotMatch(renderAgentPreferences(snapshot), /\u001b/u);
+});

@@ -167,17 +167,33 @@ function catalogDiagnostics(
 	return facts;
 }
 
+/** One preset's fact against the machine document: an identity that does not parse, or a matching exclusion. */
+function presetDiagnostic(
+	key: string,
+	model: string,
+	preferences: AgentPreferences["preferences"],
+): PreferenceDiagnostic | undefined {
+	let providerId: string;
+	try {
+		providerId = configurationModel(model).provider;
+	} catch (error) {
+		return { field: `presets.${key}.model`, message: error instanceof Error ? error.message : String(error) };
+	}
+	if (!preferences?.excludedModels?.includes(model) && !preferences?.excludedProviders?.includes(providerId))
+		return undefined;
+	return {
+		field: `presets.${key}`,
+		message: `Preset model matches an operator exclusion preference: ${model}; ${preferences?.enforceRoster ? "creation enforcement rejects it" : "this is advisory, not an admission gate"}.`,
+	};
+}
+
 /** Checks of the machine document against itself; they change only when the document changes. */
 function documentDiagnostics(document: AgentPreferences): PreferenceDiagnostic[] {
 	const facts: PreferenceDiagnostic[] = [];
 	const preferences = document.preferences;
 	for (const [key, preset] of Object.entries(document.presets)) {
-		const providerId = configurationModel(preset.model).provider;
-		if (preferences?.excludedModels?.includes(preset.model) || preferences?.excludedProviders?.includes(providerId))
-			facts.push({
-				field: `presets.${key}`,
-				message: `Preset model matches an operator exclusion preference: ${preset.model}; ${preferences?.enforceRoster ? "creation enforcement rejects it" : "this is advisory, not an admission gate"}.`,
-			});
+		const fact = presetDiagnostic(key, preset.model, preferences);
+		if (fact !== undefined) facts.push(fact);
 	}
 	for (const key of preferences?.quotaSubstitutionOrder ?? [])
 		if (!Object.hasOwn(document.presets, key))
