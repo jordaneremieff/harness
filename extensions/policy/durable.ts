@@ -52,7 +52,7 @@ import {
 	sameActionInput,
 } from "./action-approval.ts";
 import type { Context } from "@earendil-works/chord/context";
-import type { JsonValue } from "@earendil-works/chord/json";
+import { copyJson, type JsonValue } from "@earendil-works/chord/json";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Message, ToolCall } from "@earendil-works/pi-ai";
@@ -140,6 +140,7 @@ import {
 	type RuleMatchContext,
 } from "./rule.ts";
 import { SHELL_CARD_BYTES, shellContractCard } from "./shell-card.ts";
+import { writeContents } from "./state-delta.ts";
 import { ObservationState, type StatePin, type StateView } from "./state.ts";
 import { createObservationClock } from "./observation-clock.ts";
 import { PolicyWriter, TelemetryNotices } from "./store.ts";
@@ -689,19 +690,31 @@ function normalizePolicyState(raw: Readonly<PolicyStateValue> | undefined): Poli
 	};
 }
 
+/** Keep the selected ordered subsequence of existing draft entries. */
+function retainArrayEntries(target: JsonValue[], kept: readonly JsonValue[]): void {
+	if (target.length === kept.length) return;
+	let next = kept.length - 1;
+	for (let index = target.length - 1; index >= 0; index--) {
+		if (next >= 0 && target[index] === kept[next]) next--;
+		else target.splice(index, 1);
+	}
+}
+
 /** Repair one state draft in place so one corrupt field cannot poison an update. */
 function repairState(state: PolicyStateValue): PolicyStateValue {
-	const normalized = normalizePolicyState(state);
-	state.identity = normalized.identity;
-	state.generation = normalized.generation;
-	state.turn = normalized.turn;
-	state.observation = normalized.observation;
-	state.retainedGuidance = normalized.retainedGuidance;
-	state.completedCalls = normalized.completedCalls;
-	state.incomplete = normalized.incomplete;
-	state.stale = normalized.stale;
-	state.shellCard = normalized.shellCard;
+	const { observation, retainedGuidance, completedCalls, ...scalars } = normalizePolicyState(state);
+	Object.assign(state, scalars);
+	if (state.observation !== observation) state.observation = observation;
+	if (Array.isArray(state.retainedGuidance)) retainArrayEntries(state.retainedGuidance, retainedGuidance);
+	else state.retainedGuidance = retainedGuidance;
+	if (Array.isArray(state.completedCalls)) retainArrayEntries(state.completedCalls, completedCalls);
+	else state.completedCalls = completedCalls;
 	return state;
+}
+
+function writeObservation(state: PolicyStateValue, observation: ObservationState): void {
+	const next = observation.toJSON();
+	if (!writeContents(state.observation, next)) state.observation = next;
 }
 
 const GUIDANCE_STATUSES: readonly GuidanceStatus[] = ["capacity", "anchor-mismatch", "persistence-failed"];
@@ -1510,16 +1523,23 @@ class DurablePolicyRuntime {
 	): void {
 		for (const evaluation of evaluations) {
 			const pin = observation.pin(evaluation.id);
-			if (pin && evaluation.truth === true && observation.eligible(evaluation.id, now, turn))
-				state.retainedGuidance = [
-					...this.retainedGuidanceOf(state).filter((entry) => entry.id !== evaluation.id),
-					{
-						id: evaluation.id,
-						revision: pin.revision,
-						generation: pin.generation,
-						evaluation: evaluation as unknown as JsonValue,
-					},
-				];
+			if (pin && evaluation.truth === true && observation.eligible(evaluation.id, now, turn)) {
+				const entries = this.retainedGuidanceOf(state);
+				const last = entries.at(-1);
+				const existing = last?.id === evaluation.id ? last : undefined;
+				retainArrayEntries(
+					state.retainedGuidance,
+					entries.filter((entry) => entry.id !== evaluation.id || entry === existing),
+				);
+				const next: StoredRetainedGuidance = {
+					id: evaluation.id,
+					revision: pin.revision,
+					generation: pin.generation,
+					evaluation: copyJson(evaluation),
+				};
+				if (existing) writeContents(existing, next);
+				else state.retainedGuidance.push(next);
+			}
 		}
 	}
 
@@ -1569,16 +1589,14 @@ class DurablePolicyRuntime {
 				now,
 				truncated,
 			);
-			state.completedCalls = [
-				...this.completedCallsOf(state).filter((entry) => entry.task !== task),
-				{
-					task,
-					callId: call.callId,
-					...(effects.guidance ? { guidance: effects.guidance } : {}),
-					...(effects.correction ? { correction: true } : {}),
-				},
-			].slice(-COMPLETED_CALLS);
-			state.observation = observation.toJSON() as unknown as JsonValue;
+			if (state.completedCalls.length === COMPLETED_CALLS) state.completedCalls.splice(0, 1);
+			state.completedCalls.push({
+				task,
+				callId: call.callId,
+				...(effects.guidance ? { guidance: effects.guidance } : {}),
+				...(effects.correction ? { correction: true } : {}),
+			});
+			writeObservation(state, observation);
 			return { guidance: effects.guidance, correction: effects.correction, record };
 		});
 	}
@@ -1953,7 +1971,7 @@ class DurablePolicyRuntime {
 		observation.sync(input.rules, input.now);
 		state.turn = Math.max(state.turn, input.turn);
 		const projected = this.projectRequest(state, guidance, observation, input);
-		state.observation = observation.toJSON() as unknown as JsonValue;
+		writeObservation(state, observation);
 		return projected;
 	}
 
@@ -1965,7 +1983,7 @@ class DurablePolicyRuntime {
 	): PreparedGuidanceSelection | undefined {
 		const { snapshot, agent, scope, rules, installed, mode, turn, now } = input;
 		const retained = this.validRetained(state, observation, rules);
-		state.retainedGuidance = retained;
+		retainArrayEntries(state.retainedGuidance, retained);
 		const policy = preparedPolicyFor(snapshot);
 		const contextPrograms = evaluatePrograms(rules, "context", {
 			tool: "",
@@ -2005,7 +2023,10 @@ class DurablePolicyRuntime {
 		if (plan.addition) {
 			for (const id of plan.addition.prepared.ids)
 				if (observation.project(id, now, turn))
-					state.retainedGuidance = this.retainedGuidanceOf(state).filter((entry) => entry.id !== id);
+					retainArrayEntries(
+						state.retainedGuidance,
+						this.retainedGuidanceOf(state).filter((entry) => entry.id !== id),
+					);
 			({ history, messages: projected } = plan.addition);
 		}
 		guidance.epoch = epoch;
@@ -2310,7 +2331,7 @@ class DurablePolicyRuntime {
 				await this.withState(surface, context, (state) => {
 					const observation = this.observationOf(state);
 					observation.sync(rules, now);
-					state.observation = observation.toJSON() as unknown as JsonValue;
+					writeObservation(state, observation);
 				});
 				return { op: "reset-revision", revision: await this.resetRevision(request.id, surface, context) };
 			}
@@ -2424,13 +2445,16 @@ class DurablePolicyRuntime {
 				throw new Error("Observation period revision changed; inspect the current reset target");
 			if (id === "--all") {
 				state.generation += 1;
-				state.retainedGuidance = [];
+				state.retainedGuidance.splice(0);
 				observation.reset(reason, now);
 			} else {
 				observation.reset(reason, now, id);
-				state.retainedGuidance = this.retainedGuidanceOf(state).filter((entry) => entry.id !== id);
+				retainArrayEntries(
+					state.retainedGuidance,
+					this.retainedGuidanceOf(state).filter((entry) => entry.id !== id),
+				);
 			}
-			state.observation = observation.toJSON() as unknown as JsonValue;
+			writeObservation(state, observation);
 		});
 	}
 

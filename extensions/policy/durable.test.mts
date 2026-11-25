@@ -12,15 +12,18 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord/context";
+import type { Op } from "@earendil-works/chord/delta";
 import type { ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as DurableModule from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 
 import {
@@ -215,7 +218,7 @@ function blockOnce(extension: DurableModule.Extension, name: string, started: ()
 	};
 }
 
-function probeExtension(counter: { executed: number }): DurableModule.Extension {
+function probeExtension(counter: { executed: number; tasks?: DurableModule.TaskId[] }): DurableModule.Extension {
 	return DurableModule.defineExtension({
 		name: "policy-test-probe",
 		tools: [
@@ -223,8 +226,9 @@ function probeExtension(counter: { executed: number }): DurableModule.Extension 
 				name: "probe",
 				description: "A probe tool for durable policy tests",
 				parameters: obj({}, { open: true }),
-				execute: async () => {
+				execute: async (_args, api) => {
 					counter.executed += 1;
+					counter.tasks?.push(api.taskId);
 					return { output: [{ type: "text", text: "probe ran" }] };
 				},
 			}),
@@ -1649,6 +1653,142 @@ test("annotate mode appends guide text and records the observation period", asyn
 		const stateText = textOf(stateResults.at(-1));
 		assert.match(stateText, /durable-observe-probe/);
 		assert.match(stateText, /"count": 1/);
+	} finally {
+		await fixture.close();
+	}
+});
+
+test("native policy stores small completion deltas after both windows fill", { timeout: 120_000 }, async (t) => {
+	const start = 1_700_000_000_000;
+	let elapsed = 0;
+	t.mock.method(Date, "now", () => start + elapsed);
+	t.mock.method(performance, "now", () => elapsed);
+	const directory = await mkdtemp(join(tmpdir(), "policy-durable-deltas-"));
+	const databasePath = join(directory, "durable.sqlite");
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const storage = await openNodeSqliteStorage(databasePath);
+	const counter = { executed: 0, tasks: [] as DurableModule.TaskId[] };
+	const fixture = await openFixture({ storage, extension: probeExtension(counter), append: async () => {} });
+	const id = "durable-delta-probe";
+	const limit = 512;
+	const calls = limit + 18;
+	const spec = {
+		observe: { op: "eq", path: ["outcome", "kind"], value: "success" },
+		window: { maxEvents: limit, maxAgeMs: 86_400_000 },
+	} as const satisfies NonNullable<FactsProgram["state"]>;
+	try {
+		const audit = makeRuleAudit(
+			{ sessionManager: { getSessionId: () => "durable-delta-test" }, model: null },
+			"command",
+		);
+		for (const ruleId of (await fixture.policy.snapshot()).records.keys()) {
+			await fixture.policy.disable(ruleId, "Isolate the test observation rule.", audit);
+		}
+		await addRule(fixture.policy, id, {
+			phase: "completion",
+			selector: { tools: ["probe"] },
+			when: spec.observe,
+			action: { kind: "observe", label: "calls" },
+			state: spec,
+			onUnavailable: "skip",
+		});
+		const rule = (await fixture.policy.snapshot()).records.get(id);
+		assert.ok(rule);
+		for (let index = 0; index < calls; index++) {
+			elapsed = index;
+			await submit(
+				fixture,
+				[
+					fauxAssistantMessage(fauxToolCall("probe", {}, { id: `probe-${index}` }), { stopReason: "toolUse" }),
+					fauxAssistantMessage("done"),
+				],
+				"run the probe",
+			);
+		}
+		assert.equal(counter.executed, calls);
+		const record = await storage.findDocument(
+			{ kind: "policy.state", scope: { kind: "conversation", conversationId: fixture.root.id } },
+			"current",
+			context,
+		);
+		assert.ok(record);
+		const document = await storage.document(record.id, "current", context);
+		assert.ok(document);
+		assert.match(String(document.value.identity), /^[0-9a-f-]{36}$/);
+		const turns = counter.tasks.map((_, index) => ({ turn: index * 2 + 1, count: 1, total: 0 }));
+		const window = turns.map(({ turn }, index) => ({ at: start + index, turn, total: 0 })).slice(-limit);
+		assert.deepEqual(document.value, {
+			identity: document.value.identity,
+			generation: 0,
+			turn: calls * 2,
+			observation: {
+				nextGeneration: 1,
+				periods: [
+					{
+						id,
+						revision: compileRule(rule).revision,
+						generation: 1,
+						spec,
+						startedAt: start,
+						resetReason: "activation",
+						count: calls,
+						total: 0,
+						turns,
+						currentTurn: turns.at(-1),
+						turnsUnavailable: false,
+						window,
+						projected: 0,
+						projectedTurns: [],
+						saturated: false,
+					},
+				],
+			},
+			retainedGuidance: [],
+			completedCalls: counter.tasks.map((task, index) => ({ task, callId: `probe-${index}` })).slice(-limit),
+			incomplete: 0,
+			stale: 0,
+			shellCard: "",
+		});
+
+		using database = new DatabaseSync(databasePath, { readOnly: true });
+		const revisions = database
+			.prepare("SELECT kind, content FROM document_revisions WHERE document_id = ? ORDER BY seq")
+			.all(record.id) as { kind: string; content: string }[];
+		const deltas = revisions
+			.filter(({ kind }) => kind === "delta")
+			.map(({ content }) => ({ bytes: Buffer.byteLength(content), ops: JSON.parse(content) as Op[] }));
+		const completionTasks: DurableModule.TaskId[] = [];
+		const completions = deltas.filter(({ ops }) => {
+			const newest = ops
+				.flatMap((op) => {
+					if ((op[0] !== "s" && op[0] !== "p") || op[1].length !== 1 || op[1][0] !== "completedCalls") return [];
+					const items = op[0] === "s" ? op[2] : op[4];
+					return Array.isArray(items) ? items.slice(-1) : [];
+				})
+				.at(-1) as { task: DurableModule.TaskId } | undefined;
+			if (!newest || newest.task === completionTasks.at(-1)) return false;
+			completionTasks.push(newest.task);
+			return true;
+		});
+		const peak = Math.max(...deltas.map(({ bytes }) => bytes));
+		const average = Math.round(completions.reduce((sum, { bytes }) => sum + bytes, 0) / completions.length);
+		const final = completions.at(-1)?.bytes;
+		t.diagnostic(
+			`policy.state JSON: ${deltas.length} deltas, peak ${peak} bytes, mean completion ${average} bytes, last ${final} bytes`,
+		);
+		assert.equal(revisions.length - deltas.length, 1, "only the initial revision stores a base");
+		assert.ok(
+			!deltas.some(({ ops }) =>
+				ops.some(
+					([op, path]) =>
+						op === "r" ||
+						(op === "s" && path.length === 1 && (path[0] === "observation" || path[0] === "completedCalls")),
+				),
+			),
+			"no delta sets the whole observation or completed-call window",
+		);
+		assert.deepEqual(completionTasks, counter.tasks);
+		assert.ok(peak < 650, `largest policy.state delta: ${peak} bytes`);
 	} finally {
 		await fixture.close();
 	}

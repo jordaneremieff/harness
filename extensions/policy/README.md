@@ -256,10 +256,12 @@ that has no task-keyed entry is evaluated again on replay. Pending evidence
 for one call is stored with `api.memo()`. Hook writes go through the host's
 Harness by call or task identity, and the resolved agent comes from the host's
 conversation handle. Every state update recomputes and commits inside one
-in-process tail. The document explicitly disables automatic checkpoints: ordinary
-updates remain deltas rather than new complete bases. The document uses latest
-history and forks from the current state. The `policy.guidance` document has
-the same semantics (conversation scope, latest history, current fork, no
+in-process tail. Observation updates write changed fields and array segments.
+The completed-call window appends new entries and removes the oldest entry in
+place when full. The document disables automatic checkpoints, so updates remain
+deltas rather than new complete bases. It uses latest history and forks from the
+current state. The `policy.guidance` document has the same semantics
+(conversation scope, latest history, current fork, no
 automatic checkpoints) and is read and written in the same serialized
 transaction as `policy.state`.
 

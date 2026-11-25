@@ -1,4 +1,5 @@
 /** Bounded observation periods. The runtime owns terminal-call deduplication. */
+import type { JsonRepresentation } from "@earendil-works/chord/json";
 import { cloneJson, readPath, UNKNOWN } from "./data.ts";
 import { evaluateCondition, PROGRAM_LIMITS, type ProgramRule, type StateSpec } from "./program.ts";
 import type { ObservationClock } from "./observation-clock.ts";
@@ -14,7 +15,7 @@ export type StoredObservationPeriod = {
 	id: string;
 	revision: string;
 	generation: number;
-	spec?: unknown;
+	spec?: JsonRepresentation<StateSpec>;
 	startedAt: number;
 	resetReason: string;
 	count: number;
