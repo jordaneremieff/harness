@@ -3569,3 +3569,102 @@ it("refuses native sends, steers and reports addressed to the calling conversati
 	}
 	assert.deepEqual(await userTexts(harness, root.id), ["SELF"], "no input reaches the calling conversation");
 });
+
+it("keeps the request identity of a blank-prompt spawn over the arguments as given", { timeout: 20000 }, async (t) => {
+	const { createHash } = await import("node:crypto");
+	const seen: Array<{ method: string; params: Readonly<Record<string, unknown>> }> = [];
+	const extension = createAgentContribution({
+		configureSettings: () => {},
+		source: "/abs/extensions/agent/index.ts",
+		dispatch: async (method, params) => {
+			seen.push({ method, params });
+			return { sessionId: "foreign-storage" };
+		},
+	}).create({
+		onClose() {},
+		durable: Durable,
+		storageId,
+		cwd: testCwd,
+		agentDir: testAgentDir,
+		services: testServices,
+	});
+	// A receipt document holds the digest of the spawn arguments that the call received, and its retained outcome.
+	const Receipt = Durable.defineDocFamily<{ digest?: string; outcome?: string }, null>({
+		kind: "agent.foreign-spawn-receipt",
+		family: true,
+		version: 1,
+		scope: "conversation",
+		history: "latest",
+		fork: "initial",
+		checkpointWhen: () => false,
+		initial: () => ({}),
+	});
+	const registry = Durable.createRegistry();
+	registry.install({
+		...extension,
+		tools: extension.tools?.map((tool) =>
+			tool.name !== "agent_spawn"
+				? tool
+				: {
+						...tool,
+						execute: async (args, api, ctx) => {
+							const given = args as Record<string, unknown>;
+							if (given.name === "retained") {
+								const digest = createHash("sha256")
+									.update(
+										JSON.stringify([
+											storageId,
+											given.handle,
+											given.cwd,
+											given.name,
+											given.role,
+											given.prompt,
+											given.preset,
+											given.model,
+											given.thinkingLevel,
+											given.checkInMinutes,
+										]),
+									)
+									.digest("hex");
+								const child = { name: "retained", foreignSessionId: "retained-storage", createdBy: api.taskId };
+								await api.commit(async (tx) => {
+									const receipt = await tx.doc(Receipt, api.conversationId, String(api.taskId), null);
+									receipt.digest = digest;
+									receipt.outcome = JSON.stringify({
+										outcome: { kind: "foreign", child, sessionId: "retained-storage", deduped: false },
+										cwd: given.cwd,
+									});
+								}, ctx);
+							}
+							return tool.execute(args, api, ctx);
+						},
+					},
+		),
+	});
+	const route = createRoute();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push(
+		{ tool: "agent_spawn", args: { cwd: testAgentDir, name: "retained", prompt: "" } },
+		{ tool: "agent_spawn", args: { cwd: testAgentDir, name: "fresh", prompt: "  " } },
+		{ tool: "agent_spawn", args: { handle: "blank-handle", prompt: "" } },
+		{ tool: "agent_place", args: { area: testAgentDir, prompt: "  " } },
+	);
+	for (let index = 0; index < 4; index++) await say(root, "Spawn with a blank prompt");
+	const place = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_place");
+	assert.equal(place?.isError, false, place?.text);
+	const spawns = (await toolOutcomes(harness, root.id)).filter((outcome) => outcome.name === "agent_spawn").reverse();
+	assert.equal(spawns.length, 3);
+	for (const outcome of spawns) assert.equal(outcome.isError, false, outcome.text);
+	assert.match(spawns[0].text, /retained-storage/u, "the retained outcome answers the replay");
+	assert.doesNotMatch(spawns[1].text, /prompt was admitted/u);
+	assert.deepEqual(
+		seen.map((entry) => [entry.method, entry.params.prompt]),
+		[
+			["spawn", "  "],
+			["resolve-agent", ""],
+			["place", "  "],
+		],
+		"the host receives the prompt as given; its creation key covers the same input as before",
+	);
+});

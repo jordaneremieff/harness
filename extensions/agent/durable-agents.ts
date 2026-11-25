@@ -106,7 +106,7 @@ import {
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { CollaborationParams } from "./collaboration-contract.ts";
 import { controlText, readableControlText, projectReportReceipt, unconfirmedStopText } from "./control-result.ts";
-import { blankPrompt } from "./creation-prompt.ts";
+import { blankPrompt, startsWork, withoutBlankPrompt } from "./creation-prompt.ts";
 import { projectSelectedStatus, projectStorageStatus, validateStatusDetail } from "./status-overview.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { AgentCatalog } from "./catalog.ts";
@@ -993,7 +993,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const isInputDispatch = (method: AgentControlMethod, params: Readonly<Record<string, unknown>>) =>
 		method === "submit" ||
 		method === "task-submit" ||
-		((method === "resolve-agent" || method === "place") && params.prompt !== undefined);
+		((method === "resolve-agent" || method === "place") && startsWork(params.prompt));
 	const retainedPlace = async (capture: DispatchCapture, params: Readonly<Record<string, unknown>>) => {
 		const state = await capture.api.snapshot(
 			RunControl,
@@ -1590,10 +1590,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const retainForeignCreation = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		context: Context,
-		args: SpawnInput,
+		given: SpawnInput,
 		cwd: string,
 		result: unknown,
 	): Promise<ForeignCreationOutcome> => {
+		const args = withoutBlankPrompt(given);
 		const sessionId = sessionIdOf(result);
 		if (sessionId === undefined) return { kind: "error", message: "Host spawn returned no sessionId." };
 		const thinking = (result as { thinking?: { requested: string; effective: string } }).thinking;
@@ -1611,7 +1612,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			return { kind: "error", message: String(error) };
 		}
 		if (args.prompt !== undefined) await retainDispatch(api, context, reference ?? null);
-		const digest = foreignSpawnDigest(api, args);
+		const digest = foreignSpawnDigest(api, given);
 		const describeCreation = () => {
 			const selection = (result as { selection?: ExecutionSelection }).selection;
 			const child: AgentChild = {
@@ -1653,9 +1654,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const spawnForeign = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		context: Context,
-		args: SpawnInput,
+		given: SpawnInput,
 		cwd: string,
 	): Promise<ForeignCreationOutcome> => {
+		const args = withoutBlankPrompt(given);
 		const known = (await api.snapshot(Children, api.conversationId, context))?.children.find(
 			(child) => child.createdBy === api.taskId,
 		);
@@ -1665,8 +1667,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		let result: unknown;
 		try {
 			if (args.prompt !== undefined) await retainDispatch(api, context);
+			// The host's creation key covers the prompt as given; the host creates an idle agent for a blank one.
 			result = await dispatch("spawn", {
-				...args,
+				...given,
 				preferenceSnapshot: await preferenceSnapshot(api, context),
 				cwd,
 				origin: "model",
@@ -1679,7 +1682,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				message: `Spawn in ${cwd} failed: ${error instanceof Error ? error.message : String(error)}`,
 			};
 		}
-		return retainForeignCreation(api, context, args, cwd, result);
+		return retainForeignCreation(api, context, given, cwd, result);
 	};
 
 	const foreignSpawnResult = (
@@ -1819,14 +1822,13 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				"Create an agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts an agent in a new storage. Answers report back to you. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. Names may repeat.",
 			parameters: presetParams(SpawnParams),
 			replay: "safe",
-			execute: async (args: SpawnInput, api, context) => {
-				if (blankPrompt(args.prompt)) {
-					const { prompt: _prompt, ...idle } = args;
-					args = idle;
-				}
+			execute: async (given: SpawnInput, api, context) => {
+				// Receipts and host creation keys cover the arguments as given, as earlier hosts stored them; a blank
+				// prompt only changes the work, which starts none.
+				const args = withoutBlankPrompt(given);
 				const receipt = await api.snapshot(ForeignSpawnReceipt, api.conversationId, String(api.taskId), context);
 				if (receipt?.outcome !== undefined) {
-					if (receipt.digest !== foreignSpawnDigest(api, args))
+					if (receipt.digest !== foreignSpawnDigest(api, given))
 						return errorResult("Spawn request ID belongs to different inputs");
 					const retained = JSON.parse(receipt.outcome) as { outcome: ForeignCreationOutcome; cwd: string };
 					return foreignSpawnResult(retained.outcome, args, retained.cwd);
@@ -1836,7 +1838,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					return dispatchControl(
 						"resolve-agent",
 						{
-							...args,
+							...given,
 							preferenceSnapshot: await preferenceSnapshot(api, context),
 							origin: "model",
 							senderIdentity: identity(api.conversationId),
@@ -1848,7 +1850,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				const hostCwd = resolve(host.cwd);
 				const requestedCwd = args.cwd === undefined ? undefined : resolve(host.cwd, args.cwd);
 				return requestedCwd !== undefined && !sharesSpawnDirectory(requestedCwd, hostCwd)
-					? foreignSpawnResult(await spawnForeign(api, context, args, requestedCwd), args, requestedCwd)
+					? foreignSpawnResult(await spawnForeign(api, context, given, requestedCwd), args, requestedCwd)
 					: localSpawnResult(api, context, args, requestedCwd);
 			},
 		}),
@@ -2852,7 +2854,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					...defined(args, ["model", "thinkingLevel", "preset"]),
 					preferenceSnapshot: await preferenceSnapshot(api, context),
 					...(args.topic === undefined ? {} : { topic: args.topic }),
-					...(args.prompt === undefined || blankPrompt(args.prompt) ? {} : defined(args, ["prompt", "checkInMinutes"])),
+					// The host's creation key covers the prompt as given, without an empty one; it starts no work for a blank one.
+					...(args.prompt === undefined || args.prompt === "" ? {} : defined(args, ["prompt", "checkInMinutes"])),
 					origin: "model",
 					senderIdentity: identity(api.conversationId),
 					requestId: `place:${host.storageId}:${api.taskId}`,
