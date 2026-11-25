@@ -441,6 +441,37 @@ it("sends a control once more through a fresh host after a retiring host refused
 	assert.equal(acquisitions, 2);
 });
 
+it("sends only the refused step of an attach again after a retiring host refused it", async (t) => {
+	const root = fixtureRoot(t);
+	const seen: string[] = [];
+	let acquisitions = 0;
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: async (metadata) => {
+				const generation = ++acquisitions;
+				const connection: FakeConnection = fakeConnection(metadata, async (method) => {
+					seen.push(`${generation}:${method}`);
+					if (method === "status" && generation === 1) {
+						setImmediate(() => void connection.close());
+						throw new HostRetiringError("The durable host process is shutting down");
+					}
+					return method === "configure" ? { outcome: "applied" } : { state: "idle" };
+				});
+				return connection;
+			},
+		}),
+	);
+	t.after(() => manager.close());
+	const target = createRecord(manager, root, "owner").storageId;
+	const attached = (await manager.control(
+		"attach",
+		{ sessionId: target, model: { provider: "acme", modelId: "model-x" } },
+		{ id: "terminal", cwd: root },
+	)) as { sessionId: string };
+	assert.equal(attached.sessionId, target);
+	assert.deepEqual(seen, ["1:configure", "1:status", "2:status"], "the applied configuration is not sent again");
+});
+
 it("refuses a cold stop whose working directory was removed with the directory, not the executable", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root));

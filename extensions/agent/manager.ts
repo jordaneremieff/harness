@@ -1270,6 +1270,7 @@ export class AgentManager {
 		}
 		if (method === "abort" || method === "release")
 			return this.abortControl(record, params, caller, signal, launch, method);
+		if (method === "attach") return this.attachControl(record, params, signal, launch);
 		try {
 			return await this.afterRetirement(record, launch, signal, (client) =>
 				this.controlClient(client, method, params, caller, signal),
@@ -1404,7 +1405,6 @@ export class AgentManager {
 		const requested = this.requestedOperation(method, params);
 		const versionError = hostRequestVersionError(requested, client.runtimeContract);
 		if (versionError) throw versionError;
-		if (method === "attach") return this.attachClient(client, sessionId, params.model);
 		if (method === "report") {
 			const receipt = await client.request("submit", {
 				sessionId,
@@ -1434,14 +1434,30 @@ export class AgentManager {
 			: outcome;
 	}
 
-	private async attachClient(client: HostConnection, sessionId: string, model: unknown): Promise<unknown> {
-		if (model !== undefined) {
-			const outcome = await client.request("configure", { sessionId, model });
+	/**
+	 * Attach configures a selected model, then reads status. Each request crosses a retiring host on its own, so a
+	 * configuration that a host applied is never sent again because the status read after it met a retiring host.
+	 */
+	private async attachControl(
+		record: CatalogRecord,
+		params: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+		launch: boolean,
+	): Promise<unknown> {
+		const sessionId = String(params.sessionId);
+		const send = (operation: "configure" | "status", body: Record<string, unknown>) =>
+			this.afterRetirement(record, launch, signal, (client) => {
+				const versionError = hostRequestVersionError(operation, client.runtimeContract);
+				if (versionError) throw versionError;
+				return client.request(operation, body);
+			});
+		if (params.model !== undefined) {
+			const outcome = await send("configure", { sessionId, model: params.model });
 			if ((outcome as { outcome?: string })?.outcome === "failed") return outcome;
 		}
 		return {
 			sessionId,
-			status: compactStatus(await client.request("status", { sessionId })),
+			status: compactStatus(await send("status", { sessionId })),
 			recovery: "retained work resumes; no new input was submitted",
 		};
 	}
