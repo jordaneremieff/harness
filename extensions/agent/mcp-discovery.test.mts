@@ -13,7 +13,7 @@ import {
 	toolResultText,
 } from "./durable-execution-fixture.mts";
 import { eventLog } from "./host-fixture.mts";
-import { MCP_DISCOVERY_CONCURRENCY, McpDiscoveryPool, scriptDiscoveryServers } from "./mcp-discovery.ts";
+import { McpDiscoveryPool, scriptDiscoveryServers } from "./mcp-discovery.ts";
 
 it("narrows only complete literal MCP requests", () => {
 	const servers = ["one", "one_more", "dev-docs", "other", "1numbered"];
@@ -38,34 +38,40 @@ it("narrows only complete literal MCP requests", () => {
 	assert.equal(scriptDiscoveryServers('return describeTool("mcp__one__other__x");', overlapping, String), overlapping);
 });
 
-it("withdraws cancelled discovery before it occupies a permit", { timeout: 5000 }, async (t) => {
+it("starts no discovery after its caller or the host stopped it, and runs the others at once", async (t) => {
 	const pool = new McpDiscoveryPool();
 	t.after(() => pool.close());
-	const started = eventLog<number>();
 	let finish = () => {};
 	const hold = new Promise<void>((resolve) => {
 		finish = resolve;
 	});
 	t.after(finish);
-	const occupied = Array.from({ length: MCP_DISCOVERY_CONCURRENCY }, (_, index) =>
+	const started = eventLog<number>();
+	const running = Array.from({ length: 12 }, (_, index) =>
 		pool.run(async () => {
 			started.push(index);
 			await hold;
 		}),
 	);
-	await started.waitForCount(MCP_DISCOVERY_CONCURRENCY);
+	await started.waitForCount(12);
 	const abort = new AbortController();
-	let cancelledStarted = false;
-	const cancelled = pool.run(async () => {
-		cancelledStarted = true;
-	}, abort.signal);
-	const rejected = assert.rejects(cancelled, /model stopped/u);
-	const next = pool.run(async () => "next permit");
 	abort.abort(new Error("model stopped"));
-	await rejected;
+	let cancelledStarted = false;
+	await assert.rejects(
+		pool.run(async () => {
+			cancelledStarted = true;
+		}, abort.signal),
+		/model stopped/u,
+	);
 	finish();
-	assert.equal(await next, "next permit");
-	await Promise.all(occupied);
+	await Promise.all(running);
+	pool.close();
+	await assert.rejects(
+		pool.run(async () => {
+			cancelledStarted = true;
+		}),
+		/shut down/u,
+	);
 	assert.equal(cancelledStarted, false);
 });
 
@@ -156,9 +162,11 @@ it("reports incomplete global discovery rather than returning only the available
 	assert.equal(processes.started.length, 2);
 });
 
-it("bounds global discovery and returns every advertised namespace", { timeout: 30000 }, async (t) => {
+it("starts every server of a global discovery at once and returns every advertised namespace", {
+	timeout: 30000,
+}, async (t) => {
 	const processes = await processEvents(t);
-	const names = Array.from({ length: MCP_DISCOVERY_CONCURRENCY * 3 }, (_, index) => `docs_${index}`);
+	const names = Array.from({ length: 12 }, (_, index) => `docs_${index}`);
 	const fixture = await executionFixture(t, {
 		code: "const all = ALL_TOOLS; return all;",
 		mcpServers: Object.fromEntries(names.map((name) => [name, stdio(processes.port)])),
@@ -167,8 +175,7 @@ it("bounds global discovery and returns every advertised namespace", { timeout: 
 	const output = toolResultText(result.toolResults.at(-1));
 	for (const name of names) assert.match(output, new RegExp(`mcp__${name}__list_topics\\b`, "u"));
 	await processes.started.waitForCount(names.length);
-	assert.ok(processes.peak <= MCP_DISCOVERY_CONCURRENCY, `peak: ${processes.peak}`);
-	assert.ok(processes.exited.length >= names.length - MCP_DISCOVERY_CONCURRENCY, "capacity reclaims idle processes");
+	assert.equal(processes.peak, names.length, "no server waits for another server's discovery");
 });
 
 it("reclaims discovery-only stdio, preserves used state and refuses stale calls without replay", {

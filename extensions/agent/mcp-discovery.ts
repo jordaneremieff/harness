@@ -1,7 +1,6 @@
 import { toCodemodeIdentifier } from "@earendil-works/pi-codemode";
 import { mcpNamespace } from "@earendil-works/pi-mcp";
 
-export const MCP_DISCOVERY_CONCURRENCY = 4;
 export const MCP_DISCOVERY_IDLE_MS = 10_000;
 
 interface IdleConnection {
@@ -9,53 +8,18 @@ interface IdleConnection {
 	readonly disconnect: () => Promise<void>;
 }
 
-/** Per-host permits for discovery and an ordered cache of idle discovery-only stdio transports. */
+/**
+ * Per-host discovery: every discovery starts at once, so a global read waits for its slowest server, not for a
+ * queue. Idle discovery-only stdio transports wait here and close after the idle interval.
+ */
 export class McpDiscoveryPool {
 	private readonly stopping = new AbortController();
-	private readonly waiting = new Set<() => void>();
 	private readonly idle = new Map<object, IdleConnection>();
-	private readonly disconnecting = new Set<Promise<void>>();
-	private active = 0;
 
 	async run<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-		const owner = this.stopping.signal;
-		const effective = signal === undefined ? owner : AbortSignal.any([owner, signal]);
-		await this.acquire(effective);
-		try {
-			while (this.active + this.idle.size > MCP_DISCOVERY_CONCURRENCY) {
-				const oldest = this.idle.keys().next().value;
-				if (oldest === undefined) break;
-				this.disconnect(oldest);
-			}
-			await Promise.all(this.disconnecting);
-			effective.throwIfAborted();
-			return await work();
-		} finally {
-			this.active--;
-			this.waiting.values().next().value?.();
-		}
-	}
-
-	private acquire(signal: AbortSignal): Promise<void> {
-		signal.throwIfAborted();
-		if (this.active < MCP_DISCOVERY_CONCURRENCY && this.waiting.size === 0) {
-			this.active++;
-			return Promise.resolve();
-		}
-		return new Promise((resolve, reject) => {
-			const give = () => {
-				this.waiting.delete(give);
-				signal.removeEventListener("abort", cancel);
-				this.active++;
-				resolve();
-			};
-			const cancel = () => {
-				this.waiting.delete(give);
-				reject(signal.reason);
-			};
-			this.waiting.add(give);
-			signal.addEventListener("abort", cancel, { once: true });
-		});
+		this.stopping.signal.throwIfAborted();
+		signal?.throwIfAborted();
+		return work();
 	}
 
 	park(owner: object, disconnect: () => Promise<void>): void {
@@ -76,9 +40,7 @@ export class McpDiscoveryPool {
 		const entry = this.idle.get(owner);
 		if (entry === undefined) return;
 		this.unpark(owner);
-		const completion = entry.disconnect().catch(() => undefined);
-		this.disconnecting.add(completion);
-		void completion.then(() => this.disconnecting.delete(completion));
+		void entry.disconnect().catch(() => undefined);
 	}
 
 	close(): void {

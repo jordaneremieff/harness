@@ -3781,16 +3781,16 @@ creation or recovery. A complete literal call such as
 The adapter also narrows an unambiguous literal `describeTool` or MCP tool call.
 Dynamic scripts, global discovery and `tool_search` consult all relevant servers.
 A resource request with an exact server name consults only that server. Discovery
-uses a per-host pool of four concurrent operations. It reports which servers
-failed rather than treating an incomplete tool catalogue as complete.
+consults all its servers at once, so a global read waits for its slowest server
+and not for a queue. It reports which servers failed rather than treating an
+incomplete tool catalogue as complete.
 
 Discovery alone does not change model declarations. `tool_search` explicitly
 loads its selected tools. Resource tool declarations do not depend on connection
 progress. Choose exposure in `mcp.json`; any direct tool override keeps that
 server's startup eager. Ordinary primaries retain Pi's own MCP lifecycle.
 
-An idle discovery-only stdio connection closes after ten seconds or sooner when
-another discovery needs capacity. The host retains its descriptors. Before a
+An idle discovery-only stdio connection closes after ten seconds. The host retains its descriptors. Before a
 call on a reopened transport, it checks the current descriptor and refuses stale
 arguments if the descriptor changed. The host does not automatically repeat an
 uncertain call. The discovery pool does not evict HTTP connections, direct
