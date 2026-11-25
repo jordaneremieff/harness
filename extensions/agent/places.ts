@@ -176,6 +176,8 @@ type PlaceLockAttempt =
 			readonly detail?: string;
 			/** The holder released between two opens; a new attempt follows at once. */
 			readonly retry?: boolean;
+			/** Waiting cannot help: refuse at once, as for a live exclusive-create holder. */
+			readonly final?: boolean;
 	  };
 
 /**
@@ -432,6 +434,7 @@ export class PlaceBook {
 						kind: "busy",
 						claim: existing,
 						detail: "held under the exclusive-create protocol, which takes no kernel lock",
+						final: true,
 					};
 				}
 				ftruncateSync(descriptor, 0);
@@ -472,7 +475,7 @@ export class PlaceBook {
 			const attempt = this.tryLock();
 			if (attempt.kind === "held") return attempt.release;
 			const remaining = deadline - Date.now();
-			if (remaining <= 0 && attempt.retry !== true)
+			if (attempt.final === true || (remaining <= 0 && attempt.retry !== true))
 				throw new PlaceLockedError(`${this.file}.lock`, attempt.claim, attempt.detail);
 			await lockChange(dirname(this.file), Math.max(1, Math.min(remaining, LOCK_RECHECK_MS)));
 		}

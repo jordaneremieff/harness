@@ -174,6 +174,22 @@ describe("place bindings", () => {
 		}
 	});
 
+	it("refuses an exclusive-create claim at once instead of waiting for it", async () => {
+		const root = base();
+		try {
+			const book = new PlaceBook(root, { lockWaitMs: 5000 });
+			writeFileSync(`${book.file}.lock`, claim(root, process.pid, "live"));
+			const began = Date.now();
+			await assert.rejects(
+				book.withArea("/work/area", async () => "area"),
+				PlaceLockedError,
+			);
+			assert.ok(Date.now() - began < 1000, "a claim that waiting cannot clear refuses without the lock wait");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("holds the lock across an asynchronous place operation and releases it", async () => {
 		const root = base();
 		try {
