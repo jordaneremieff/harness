@@ -485,11 +485,12 @@ export class PlaceBook {
 
 	/** Take the mutation lock, waiting up to `waitMs` for a live holder to release it. */
 	private async lock(waitMs = this.lockWaitMs): Promise<() => void> {
-		const deadline = Date.now() + waitMs;
+		// Elapsed time comes from the monotonic clock, so a wall-clock step neither ends nor extends the wait.
+		const deadline = performance.now() + waitMs;
 		for (;;) {
 			const attempt = this.tryLock();
 			if (attempt.kind === "held") return attempt.release;
-			const remaining = deadline - Date.now();
+			const remaining = deadline - performance.now();
 			if (attempt.final === true || (remaining <= 0 && attempt.retry !== true))
 				throw new PlaceLockedError(`${this.file}.lock`, attempt.claim, attempt.detail);
 			await lockChange(dirname(this.file), Math.max(1, Math.min(remaining, LOCK_RECHECK_MS)));

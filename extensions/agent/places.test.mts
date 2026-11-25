@@ -470,6 +470,44 @@ describe("place book kernel lock", () => {
 		}
 	});
 
+	it("measures the wait for a live holder on a clock that wall-clock steps do not move", async (t) => {
+		const root = base();
+		try {
+			const holder = new PlaceBook(root);
+			let publish: () => void = () => {};
+			let entered: () => void = () => {};
+			const inside = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			let finish: () => void = () => {};
+			const done = new Promise<void>((resolve) => {
+				finish = resolve;
+			});
+			const held = holder.withArea("/work/first", async (_current, reserve) => {
+				publish = reserve("first");
+				entered();
+				await done;
+				return "first";
+			});
+			await inside;
+			// The wall clock steps an hour forward after the waiter's first reading.
+			const wall = Date.now;
+			let readings = 0;
+			t.mock.method(Date, "now", () => wall() + (++readings > 1 ? 3_600_000 : 0));
+			const waiting = new PlaceBook(root, { lockWaitMs: 10_000 }).withArea("/work/other", async (_current, reserve) => {
+				reserve("other")();
+				return "other";
+			});
+			// The first attempt runs in the call itself: the waiter found the lock busy and decided to wait or refuse.
+			publish();
+			assert.equal((await waiting).binding.sessionId, "other", "the waiter kept waiting and took the lock");
+			finish();
+			await held;
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("runs a reuse operation and the work after publication outside the lock", async () => {
 		const root = base();
 		try {
