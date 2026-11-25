@@ -59,6 +59,8 @@ import { UnplacedWatchTask } from "./unplaced-inputs.ts";
 import { AGENT_ENTRY_CHANNEL, type AgentEntryRequest } from "./entry-binding.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { createNativeAgentEntry } from "./native-entry.ts";
+import { readSettings } from "./settings.ts";
+import { limitExtensionToolTime } from "./tool-time-limit.ts";
 import {
 	readDisplayDescriptor,
 	readPanelDescriptor,
@@ -732,6 +734,7 @@ async function installContributions(
 	contributions: readonly DurableContribution[],
 	host: DurableContributionHost,
 	installed: Set<string>,
+	toolLimitMs: number,
 ): Promise<void> {
 	for (const contribution of contributions) {
 		let extension: Durable.Extension;
@@ -745,7 +748,7 @@ async function installContributions(
 		}
 		validateExtension(extension, installed, `durable contribution "${contribution.name}"`);
 		installed.add(extension.name);
-		registry.install(extension);
+		registry.install(limitExtensionToolTime(extension, toolLimitMs));
 	}
 }
 
@@ -754,11 +757,12 @@ function installBuiltins(
 	registry: Durable.Registry,
 	built: Durable.Extension | readonly Durable.Extension[],
 	installed: Set<string>,
+	toolLimitMs: number,
 ): void {
 	for (const extension of Array.isArray(built) ? built : [built]) {
 		validateExtension(extension, installed, "durable built-in");
 		installed.add(extension.name);
-		registry.install(extension);
+		registry.install(limitExtensionToolTime(extension, toolLimitMs));
 	}
 }
 
@@ -775,13 +779,14 @@ async function installBuiltinHook(
 	hook: NonNullable<CreateDurableServicesOptions["buildBuiltin"]>,
 	host: DurableContributionHost,
 	installed: Set<string>,
+	toolLimitMs: number,
 ): Promise<void> {
 	const built = await hook(host);
 	if (!isBuiltinExecution(built)) {
-		installBuiltins(registry, built, installed);
+		installBuiltins(registry, built, installed, toolLimitMs);
 		return;
 	}
-	installBuiltins(registry, built.extensions, installed);
+	installBuiltins(registry, built.extensions, installed, toolLimitMs);
 	if (built.close !== undefined) host.onClose(built.close.bind(built));
 	await built.ready;
 }
@@ -1276,8 +1281,9 @@ export async function createDurableServices(options: CreateDurableServicesOption
 		const inventory = buildInventory(matched, loadedPaths, loaded.errors);
 		const commands = buildCommands(matched);
 		const builtin = buildBuiltin(pi, services, inventory, packageSources, controller.signal);
+		const toolLimitMs = readSettings({ agentDir }).values.toolCallMaxMinutes * 60_000;
 		const registry = Durable.createRegistry();
-		registry.install(builtin);
+		registry.install(limitExtensionToolTime(builtin, toolLimitMs));
 		const host: DurableContributionHost = {
 			durable: Durable,
 			services,
@@ -1308,8 +1314,8 @@ export async function createDurableServices(options: CreateDurableServicesOption
 			try {
 				const installedNames = new Set([builtin.name]);
 				if (options.buildBuiltin !== undefined)
-					await installBuiltinHook(registry, options.buildBuiltin, host, installedNames);
-				await installContributions(registry, matched, host, installedNames);
+					await installBuiltinHook(registry, options.buildBuiltin, host, installedNames, toolLimitMs);
+				await installContributions(registry, matched, host, installedNames, toolLimitMs);
 			} catch (error) {
 				try {
 					await closeNow();

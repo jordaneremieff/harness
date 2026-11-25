@@ -4022,7 +4022,15 @@ ends (clean retirement, release, a close request, or a start refused because
 another host holds the lease), the runner process ends as soon as nothing else
 runs and at the latest 5 s later, with a diagnostic on stderr; a timer, socket
 or child transport that an extension leaves open cannot keep a retired runner
-alive. The runner does not install
+alive.
+
+Each native tool call in a Durable host runs at most `agent.toolCallMaxMinutes`
+(default 120; zero removes the limit). `tool-time-limit.ts` wraps every tool
+that an installed Durable extension provides or wraps: at the limit it cancels
+the call's context, so a tool that honours cancellation stops its work, and
+the call ends with an error result that names the limit and the setting. A
+park ends an execution, so the wait of a parked call does not count; a
+codemode script also keeps its own budget. The runner does not install
 Pi's own HTTP dispatcher, which Pi's public exports do not offer, so Pi's
 `httpIdleTimeoutMs` and `httpProxy` settings do not configure a host's HTTP
 clients; `fetch` keeps Node's default 300-second header and body timeouts.
@@ -5368,8 +5376,8 @@ on `agent_profile` and the native `agent.profile` document.
 ### Machine document schema
 
 The file is strict JSON with a `version: 1` envelope and an optional `agent`
-section. Its fields are `idleMinutes`, `providerProgressIdleMs`, `checkInMinutes`, `presets`, and
-`preferences`. All fields are optional. Each field selects a present environment
+section. Its fields are `idleMinutes`, `providerProgressIdleMs`, `toolCallMaxMinutes`,
+`checkInMinutes`, `presets`, and `preferences`. All fields are optional. Each field selects a present environment
 value, then its document value, then its safe default. Structured environment
 values use JSON. An invalid selected field uses its default, not a lower-priority
 file value; other fields remain usable. Diagnostics identify rejected
@@ -5571,6 +5579,7 @@ facts. No new command is required.
 |---|---|---|---|---|---|---|
 | idleMinutes | `PI_AGENT_IDLE_MINUTES` | number | 5 | reload | min 0; max 35791 | Idle host retirement interval in minutes; zero disables. |
 | providerProgressIdleMs | `PI_AGENT_PROVIDER_PROGRESS_IDLE_MS` | number | 0 | reload | min 0; max 2147483647 | Maximum silence between provider events in milliseconds; zero disables. |
+| toolCallMaxMinutes | `PI_AGENT_TOOL_CALL_MAX_MINUTES` | number | 120 | reload | min 0; max 35791 | Longest time one native tool call may run in a Durable host, in minutes; zero disables the limit. |
 | checkInMinutes | `PI_AGENT_CHECK_IN_MINUTES` | number | 0 | next use | min 0; max 35791 | Automatic owner check-in interval for model tasks in minutes; zero, the default, arms none. |
 | presets | `PI_AGENT_PRESETS` | json | {} | next use | declared schema | Named execution presets with exact model identities and optional creation fields. |
 | preferences | `PI_AGENT_PREFERENCES` | json | {} | next use | declared schema | Delegation preferences, default preset, exclusions, planning budgets, and reporting guidance. |

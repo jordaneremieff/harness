@@ -31,6 +31,15 @@ export const settings = {
 			min: 0,
 			max: 2147483647,
 		},
+		toolCallMaxMinutes: {
+			apply: "reload",
+			type: "number",
+			env: "PI_AGENT_TOOL_CALL_MAX_MINUTES",
+			description: "Longest time one native tool call may run in a Durable host, in minutes; zero disables the limit.",
+			default: 120,
+			min: 0,
+			max: 35791,
+		},
 		checkInMinutes: {
 			apply: "use",
 			type: "number",
@@ -95,6 +104,7 @@ export type SettingsPublication = {
 type SettingsValues = {
 	idleMinutes: number;
 	providerProgressIdleMs: number;
+	toolCallMaxMinutes: number;
 	checkInMinutes: number;
 	presets: ExecutionPresets;
 	preferences: DelegationPreferences;
