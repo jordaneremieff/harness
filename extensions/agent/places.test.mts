@@ -10,6 +10,7 @@ import {
 	readFileSync,
 	rmSync,
 	symlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -185,6 +186,50 @@ describe("place bindings", () => {
 				PlaceLockedError,
 			);
 			assert.ok(Date.now() - began < 1000, "a claim that waiting cannot clear refuses without the lock wait");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("does not take a young empty lock file, which an exclusive-create creator has not written yet", async () => {
+		const root = base();
+		try {
+			const book = new PlaceBook(root, { lockWaitMs: 200 });
+			const lock = `${book.file}.lock`;
+			writeFileSync(lock, "");
+			await assert.rejects(
+				book.withArea("/work/area", async (_current, reserve) => {
+					reserve("area")();
+					return "area";
+				}),
+				PlaceLockedError,
+			);
+			assert.equal(readFileSync(lock, "utf8"), "", "the creator's file stays untouched");
+			const old = new Date(Date.now() - 10_000);
+			utimesSync(lock, old, old);
+			assert.equal(
+				(
+					await book.withArea("/work/area", async (_current, reserve) => {
+						reserve("area")();
+						return "area";
+					})
+				).value,
+				"area",
+				"an old empty file is abandoned",
+			);
+			writeFileSync(lock, "");
+			const future = new Date(Date.now() + 60_000);
+			utimesSync(lock, future, future);
+			assert.equal(
+				(
+					await book.withArea("/work/other", async (_current, reserve) => {
+						reserve("other")();
+						return "other";
+					})
+				).value,
+				"other",
+				"a modification time in the future counts as old",
+			);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -371,8 +416,10 @@ describe("place book kernel lock", () => {
 			assert.equal(book.exact("/work/area")?.sessionId, "session");
 			assert.equal(existsSync(`${book.file}.lock`), false, "the release removes the lock file");
 			writeFileSync(`${book.file}.lock`, "", { mode: 0o600 });
+			const old = new Date(Date.now() - 10_000);
+			utimesSync(`${book.file}.lock`, old, old);
 			book.bind("/work/second", "second");
-			assert.equal(book.exact("/work/second")?.sessionId, "second", "an empty file without a holder is free");
+			assert.equal(book.exact("/work/second")?.sessionId, "second", "an old empty file without a holder is free");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

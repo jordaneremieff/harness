@@ -115,6 +115,12 @@ const DARWIN_O_EXLOCK = 0x20;
 export const PLACE_LOCK_WAIT_MS = 15_000;
 const LOCK_RECHECK_MS = 100;
 const LOCK_CLAIM_BYTES = 4096;
+/**
+ * An unheld empty lock file younger than this can be an exclusive-create holder between its create and its claim
+ * write, so it is not taken. A modification time further in the future than this, after a clock step backwards,
+ * counts as old; a nearer one is clock and timestamp granularity, so an orphan clears within twice this bound.
+ */
+const EMPTY_LOCK_GRACE_MS = 2_000;
 
 interface PlaceFile {
 	places: PlaceBinding[];
@@ -426,7 +432,7 @@ export class PlaceBook {
 			}
 			if (!created) {
 				const existing = this.readLockClaim(descriptor);
-				// Unheld, a marked claim belongs to an exited holder and an empty file to a creator that never wrote.
+				// Unheld, a marked claim belongs to an exited holder and an old empty file to a creator that never wrote.
 				// Any other content comes from the exclusive-create protocol, which takes no kernel lock.
 				if (existing?.kernel !== true && stat.size > 0) {
 					closeSync(descriptor);
@@ -435,6 +441,15 @@ export class PlaceBook {
 						claim: existing,
 						detail: "held under the exclusive-create protocol, which takes no kernel lock",
 						final: true,
+					};
+				}
+				const age = Date.now() - stat.mtimeMs;
+				if (existing?.kernel !== true && Math.abs(age) < EMPTY_LOCK_GRACE_MS) {
+					closeSync(descriptor);
+					return {
+						kind: "busy",
+						claim: undefined,
+						detail: "being created under the exclusive-create protocol, which takes no kernel lock",
 					};
 				}
 				ftruncateSync(descriptor, 0);
