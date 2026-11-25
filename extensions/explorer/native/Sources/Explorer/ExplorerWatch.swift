@@ -23,11 +23,17 @@ final class ExplorerWatch: @unchecked Sendable {
             return canonical(path)
         }
         let roots = Array(Set(dirs))
-        changes = ExplorerChangeBatch(workspace: workspace, store: canonical(store.path) ?? store.standardizedFileURL.path,
-                                      gitRoots: roots)
-        var existingStore = store
-        while canonical(existingStore.path) == nil, existingStore.path != "/" { existingStore.deleteLastPathComponent() }
-        let sources = Array(Set([workspace.root.path, canonical(existingStore.path) ?? existingStore.path] + roots))
+        // The store can appear after the watch starts. Event paths are canonical, so the expected store path
+        // extends the canonical path of its nearest existing folder.
+        var existingStore = store.standardizedFileURL, missing: [String] = []
+        while canonical(existingStore.path) == nil, existingStore.path != "/" {
+            missing.insert(existingStore.lastPathComponent, at: 0)
+            existingStore.deleteLastPathComponent()
+        }
+        let watchedStore = canonical(existingStore.path) ?? existingStore.path
+        let storePath = missing.reduce(watchedStore) { $0 == "/" ? "/" + $1 : $0 + "/" + $1 }
+        changes = ExplorerChangeBatch(workspace: workspace, store: storePath, gitRoots: roots)
+        let sources = Array(Set([workspace.root.path, watchedStore] + roots))
         let observer = Observer()
         observer.owner = self
         var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(observer).toOpaque(), retain: { info in

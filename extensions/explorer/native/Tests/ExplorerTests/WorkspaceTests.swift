@@ -276,6 +276,25 @@ struct WorkspaceTests {
         }
     }
 
+    @Test func noteWritesReachAWatcherThatStartedBeforeTheStoreExisted() throws {
+        // The temporary folder sits behind a symbolic link, so this also covers a store path that is not canonical.
+        let scratch = try fixture()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let root = scratch.appendingPathComponent("folder"), store = scratch.appendingPathComponent("store")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        let workspace = try Workspace(root.path)
+        let changed = DispatchSemaphore(value: 0)
+        let watch = ExplorerWatch(workspace: workspace, store: store) { type, _ in
+            if type == "notes.changed" { changed.signal() }
+        }
+        try withExtendedLifetime(watch) {
+            let notes = store.appendingPathComponent("repos/key/notes")
+            try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+            try Data("{}".utf8).write(to: notes.appendingPathComponent("note.json"))
+            #expect(changed.wait(timeout: .now() + .seconds(4)) == .success)
+        }
+    }
+
     @Test func cardDraftsAreIndependentOfReadingPositionAndOtherRoots() throws {
         let scratch = try fixture()
         defer { try? FileManager.default.removeItem(at: scratch) }
