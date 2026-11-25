@@ -32,13 +32,18 @@ Its non-persistent data store retains no browsing session. Background drawing an
 back/forward gestures are disabled. The native paper colour appears behind the page.
 The page uses the [Catppuccin](https://github.com/catppuccin/catppuccin) palette, with colours
 assigned by its style guide: Latte in the light appearance and, in the dark appearance, the
-flavour chosen under Text and appearance: Frappé (the default), Macchiato or Mocha. The choice of
-appearance (System, Light or Dark) and of dark flavour are page settings saved per machine in
-`reading-state.json` (`appearance`, `darkTheme`). Text colours that fall below 4.5:1 on a page
-surface are darkened in Latte and lightened in the dark flavours; `web/styles/tokens.css` marks
-them. The saved appearance also sets the application's appearance, so the web view's colour
-scheme and the native paper behind the page agree with the page's choice; the paper takes the
-base colour of the flavour in force.
+flavour chosen under Text and appearance: Frappé (the default), Macchiato or Mocha. The palette
+comes from the harness's shared theme assets (`assets/themes/`): the build copies
+`catppuccin.css` into the page and `catppuccin.json` (the base colours) beside it, and
+`web/styles/tokens.css` maps the page's own tokens to the palette's roles, including the
+legibility-adjusted text colours. The choice of appearance (System, Light or Dark) and of dark
+flavour is the machine's shared pane appearance, one file, `<agentDir>/pane-appearance.json`, that
+[the pane appearance convention](../../../docs/conventions/pane-appearance.md) defines. The install
+records its path as `paneAppearance` in `build.json`; the app watches the file, so a choice made in
+another reader window or another app that follows the convention reaches every open page within
+about a second. Check modes keep the choice in memory. The appearance in force also sets the
+application's appearance, so the web view's colour scheme and the native paper behind the page
+agree with the page's choice; the paper takes the base colour of the flavour in force.
 The chrome shares one scale in `tokens.css`: control heights (`--ctl`, `--ctl-s`), spacing
 (`--sp-*`), nested radii (`--r-s`, `--r`, `--r-l`, `--r-xl`) and one icon line weight
 (`--icon-stroke`, drawn at the same width at every icon size).

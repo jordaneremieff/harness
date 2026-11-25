@@ -46,6 +46,14 @@ export function createBridge(
 		tab: "files",
 		zoom: 1,
 	};
+	const appearance = { appearance: "system", darkTheme: "frappe" };
+	const saveAppearance = (patch: Record<string, unknown>) => {
+		if (["system", "light", "dark"].includes(String(patch.appearance)))
+			appearance.appearance = String(patch.appearance);
+		if (["frappe", "macchiato", "mocha"].includes(String(patch.darkTheme)))
+			appearance.darkTheme = String(patch.darkTheme);
+		return { ...appearance };
+	};
 	let clipboard = "";
 	const prompts = new Set();
 	const assetUrls = new Map<string, string>();
@@ -504,7 +512,11 @@ export function createBridge(
 						settings,
 						live,
 						build: { version: "dev", commit: null },
+						appearance,
 					};
+					break;
+				case "appearance.save":
+					result = saveAppearance(message);
 					break;
 				case "files.list":
 					result = pathIndex();

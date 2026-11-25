@@ -11,20 +11,23 @@ enum ExplorerCheck {
         override var occlusionState: NSWindow.OcclusionState { isVisible ? [.visible] : super.occlusionState }
     }
     static func export(_ argv: [String], resources: URL) throws {
-        let raw = try options(argv, allowed: ["out", "width", "height", "appearance", "root", "path", "line", "script", "ignored", "zoom", "store"])
+        let raw = try options(argv, allowed: ["out", "width", "height", "appearance", "dark-theme", "root", "path", "line", "script", "ignored", "zoom", "store"])
         let zoom = raw["zoom"].map { Int($0).map { Double($0) / 100 } ?? 0 }
         guard let out = raw["out"], let width = raw["width"].flatMap(Int.init), let height = raw["height"].flatMap(Int.init),
               (320...4096).contains(width), (240...4096).contains(height), (raw["appearance"].map { ["dark", "light"].contains($0) } ?? true),
+              raw["dark-theme"].map(ExplorerAppearance.darkThemes.contains) ?? true,
               zoom.map(ExplorerZoom.range.contains) ?? true, raw["store"].map({ $0.hasPrefix("/") }) ?? true else {
-            throw ExplorerError("arguments", "Use --export-image --out <png> --width <n> --height <n> --root <dir> [--appearance dark|light] [--path <path>] [--line <n>] [--script <file>] [--ignored show|hide] [--zoom <percent>] [--store <dir>].")
+            throw ExplorerError("arguments", "Use --export-image --out <png> --width <n> --height <n> --root <dir> [--appearance dark|light] [--dark-theme frappe|macchiato|mocha] [--path <path>] [--line <n>] [--script <file>] [--ignored show|hide] [--zoom <percent>] [--store <dir>].")
         }
         let target = try Launch(arguments: ["root", "path", "line"].flatMap { key in raw[key].map { ["--\(key)", $0] } ?? [] })
         let scratch = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
         // A named store shows its notes; the snapshot can write page state into it.
         let store = raw["store"].map { URL(fileURLWithPath: $0) } ?? scratch
+        // The export keeps its appearance in memory and never reads or writes the machine's shared choice.
+        let theme = ExplorerAppearance(file: nil, appearance: raw["appearance"], darkTheme: raw["dark-theme"])
         try execute(target: target, resources: resources, store: store, width: width, height: height, appearance: raw["appearance"], zoom: zoom,
-                    showIgnored: try ignoredOption(raw["ignored"])) { host, _ in
+                    showIgnored: try ignoredOption(raw["ignored"]), theme: theme) { host, _ in
             if let file = raw["script"] {
                 let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: file))
                 let data = try handle.read(upToCount: mib + 1) ?? Data()
@@ -73,6 +76,11 @@ enum ExplorerCheck {
         defer { fake.stop() }
         let config = LiveConfiguration(version: 1, endpoint: URL(string: "http://127.0.0.1:\(fake.port)")!, token: FakeLive.token)
         let target = try Launch(target: ["root": root.path, "path": "example.ts"])
+        let themeFile = scratch.appendingPathComponent("pane-appearance.json")
+        try execute(target: target, resources: resources, store: scratch.appendingPathComponent("appearance-store"), width: 898, height: 800, appearance: "dark",
+                    theme: ExplorerAppearance(file: themeFile)) { host, _ in
+            try await verifyAppearance(host, file: themeFile)
+        }
         try execute(target: target, resources: resources, store: scratch.appendingPathComponent("store"), width: 898, height: 800, appearance: "dark", live: config) { host, _ in
             let result = try await host.page.view.callAsyncJavaScript("""
             const bridge = globalThis.webkit.messageHandlers.explorer;
@@ -245,7 +253,55 @@ enum ExplorerCheck {
             try await verifyTextMenu(host.page.view)
             try await verifyZoom(host)
         }
-        print("Explorer verified: real page, nested roots, folder listings and file events, Markdown preview, Git review, search, note marks, card drafts, live prompt and answer, file create, save, edit drafts, conflict, text field menus, and zoom.")
+        print("Explorer verified: real page, nested roots, folder listings and file events, Markdown preview, Git review, search, note marks, card drafts, live prompt and answer, file create, save, edit drafts, conflict, text field menus, zoom, and the shared appearance.")
+    }
+
+    /// The shared pane appearance in a scratch file: another writer's change reaches the open page and
+    /// the native paper within a second, and the page's own choice replaces the file.
+    private static func verifyAppearance(_ host: ExplorerHost, file: URL) async throws {
+        var last = ""
+        func shown(_ theme: String, _ dark: String, _ paper: String) async throws -> Bool {
+            let result = try await host.page.view.callAsyncJavaScript("""
+            const root = document.documentElement, probe = document.createElement('div');
+            probe.style.background = 'var(--paper)';
+            document.body.append(probe);
+            const matches = () => root.dataset.theme === theme && root.dataset.dark === dark && getComputedStyle(probe).backgroundColor === paper;
+            for (let i = 0; i < 90 && !matches(); i++) await new Promise(requestAnimationFrame);
+            const result = [root.dataset.theme, root.dataset.dark, getComputedStyle(probe).backgroundColor].join(' ');
+            probe.remove();
+            return result;
+            """, arguments: ["theme": theme, "dark": dark, "paper": paper], in: nil, contentWorld: .page) as? String
+            last = result ?? ""
+            return last == "\(theme) \(dark) \(paper)"
+        }
+        guard try await shown("system", "frappe", "rgb(48, 52, 70)") else { throw ExplorerError("verify", "The page did not start with the default appearance: \(last).") }
+        let temporary = file.deletingLastPathComponent().appendingPathComponent(".pane-appearance-writer")
+        try Data(#"{"version":1,"appearance":"dark","darkTheme":"mocha"}"#.utf8).write(to: temporary)
+        guard rename(temporary.path, file.path) == 0 else { throw ExplorerError("verify", "The scratch appearance file was not replaced.") }
+        let started = Date()
+        guard try await shown("dark", "mocha", "rgb(30, 30, 46)"), Date().timeIntervalSince(started) < 1.5 else {
+            throw ExplorerError("verify", "Another writer's appearance did not reach the page within a second: \(last).")
+        }
+        var native = ""
+        NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
+            if let colour = host.appearance.paper.usingColorSpace(.sRGB) {
+                native = [colour.redComponent, colour.greenComponent, colour.blueComponent].map { String(Int(($0 * 255).rounded())) }.joined(separator: ",")
+            }
+        }
+        guard native == "30,30,46" else { throw ExplorerError("verify", "The native paper showed \(native), not Mocha.") }
+        let chosen = try await host.page.view.callAsyncJavaScript("""
+        document.querySelector('#appearance-panel .swatch[data-flavour="macchiato"]').click();
+        [...document.querySelectorAll('#appearance-panel .seg-b')].find(node => node.textContent === 'Light').click();
+        return document.documentElement.dataset.theme + ' ' + document.documentElement.dataset.dark;
+        """, arguments: [:], in: nil, contentWorld: .page) as? String
+        guard chosen == "light macchiato" else { throw ExplorerError("verify", "The appearance panel showed \(chosen ?? "nothing").") }
+        var written = ExplorerAppearance.read(file)
+        for _ in 0..<50 where written != ("light", "macchiato") {
+            try await Task.sleep(for: .milliseconds(20))
+            written = ExplorerAppearance.read(file)
+        }
+        guard written == ("light", "macchiato") else { throw ExplorerError("verify", "The page's choice was not written: \(written).") }
+        guard try await shown("light", "macchiato", "rgb(239, 241, 245)") else { throw ExplorerError("verify", "The page did not keep its own choice: \(last).") }
     }
 
     private static func verifyTextMenu(_ view: WKWebView) async throws {
@@ -403,7 +459,7 @@ enum ExplorerCheck {
     }
 
     private static func execute(target: Launch, resources: URL, store: URL, width: Int, height: Int, appearance: String?, zoom: Double? = nil,
-                                live: LiveConfiguration? = nil, showIgnored: Bool = true,
+                                live: LiveConfiguration? = nil, showIgnored: Bool = true, theme: ExplorerAppearance? = nil,
                                 body: @escaping (ExplorerHost, NSWindow) async throws -> Void) throws {
         let workspace = try prepareWorkspace(target)
         let app = NSApplication.shared
@@ -417,15 +473,12 @@ enum ExplorerCheck {
         window.ignoresMouseEvents = true
         window.isExcludedFromWindowsMenu = true
         if let appearance { window.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
-        let host = ExplorerHost(target, workspace: workspace, store: store, resources: resources, showIgnored: showIgnored)
+        let host = ExplorerHost(target, workspace: workspace, store: store, resources: resources, showIgnored: showIgnored, appearance: theme)
         if let zoom { host.setZoom(zoom) }
         window.contentView = host.page.view
         host.page.view.frame = CGRect(x: 0, y: 0, width: width, height: height)
         host.page.view.autoresizingMask = [.width, .height]
         if appearance != nil { host.page.view.appearance = window.appearance }
-        if let appearance {
-            host.page.view.configuration.userContentController.addUserScript(WKUserScript(source: "document.documentElement.dataset.theme = '\(appearance)';", injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        }
         defer { host.page.close(); window.orderOut(nil) }
         var result: Result<Void, Error>?
         func finish(_ outcome: Result<Void, Error>) {

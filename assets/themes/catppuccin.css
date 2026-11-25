@@ -1,0 +1,161 @@
+/* Catppuccin (https://github.com/catppuccin/palette, MIT licence), as custom properties of the
+   root element. Latte is the light flavour; the dark flavour is Frappé unless data-dark on the root
+   names "macchiato" or "mocha". An element with data-ctp-dark="<flavour>" carries that flavour's
+   dark set for its own subtree, for example a swatch that previews a flavour.
+
+   --ctp-latte-<role>  Latte.
+   --ctp-dark-<role>   the dark flavour in force.
+   --ctp-<role>        light-dark() of the two, for pages whose color-scheme picks the side.
+
+   Roles are the palette's colour names, then adjusted colours that read at 4.5:1 or better on every
+   surface of a page: darker than the palette value in Latte and lighter in the dark flavours, as the
+   style guide puts legibility first. The code-* roles hold syntax colours for code surfaces. */
+:root {
+  /* Latte */
+  --ctp-latte-rosewater: #dc8a78; --ctp-latte-flamingo: #dd7878; --ctp-latte-pink: #ea76cb;
+  --ctp-latte-mauve: #8839ef; --ctp-latte-red: #d20f39; --ctp-latte-maroon: #e64553;
+  --ctp-latte-peach: #fe640b; --ctp-latte-yellow: #df8e1d; --ctp-latte-green: #40a02b;
+  --ctp-latte-teal: #179299; --ctp-latte-sky: #04a5e5; --ctp-latte-sapphire: #209fb5;
+  --ctp-latte-blue: #1e66f5; --ctp-latte-lavender: #7287fd; --ctp-latte-text: #4c4f69;
+  --ctp-latte-subtext1: #5c5f77; --ctp-latte-subtext0: #6c6f85; --ctp-latte-overlay2: #7c7f93;
+  --ctp-latte-overlay1: #8c8fa1; --ctp-latte-overlay0: #9ca0b0; --ctp-latte-surface2: #acb0be;
+  --ctp-latte-surface1: #bcc0cc; --ctp-latte-surface0: #ccd0da; --ctp-latte-base: #eff1f5;
+  --ctp-latte-mantle: #e6e9ef; --ctp-latte-crust: #dce0e8;
+  /* Latte, adjusted */
+  --ctp-latte-ink: #4c4f69; --ctp-latte-heading: #4c4f69; --ctp-latte-ink-2: #545770;
+  --ctp-latte-pressed: #ccd0da; --ctp-latte-chip: #e6e9ef; --ctp-latte-code-ink: #2b711c;
+  --ctp-latte-link: #2c5fcb; --ctp-latte-link-hover: #2f719b; --ctp-latte-mauve-text: #823be2;
+  --ctp-latte-teal-text: #127c82; --ctp-latte-red-text: #c5153e; --ctp-latte-green-text: #2b711c;
+  --ctp-latte-peach-text: #ae4715; --ctp-latte-mark: #b9d9de; --ctp-latte-comment-mark: #f0ddab;
+  --ctp-latte-selection: rgb(124 127 147 / 0.28); --ctp-latte-code-comment: #62677f;
+  --ctp-latte-code-punct: #646980; --ctp-latte-code-type: #895712; --ctp-latte-code-param: #a32a42;
+  --ctp-latte-code-escape: #8d3b83; --ctp-latte-code-operator: #15647d;
+  --ctp-latte-code-member: #505bb1; --ctp-latte-code-variant: #1d6d65;
+  --ctp-latte-code-macro: #9c403b; --ctp-latte-code-meta: #15647d; --ctp-latte-diff-add: #dcebe2;
+  --ctp-latte-diff-del: #f1dfe4;
+}
+:root,
+[data-ctp-dark="frappe"] {
+  /* Frappé */
+  --ctp-dark-rosewater: #f2d5cf; --ctp-dark-flamingo: #eebebe; --ctp-dark-pink: #f4b8e4;
+  --ctp-dark-mauve: #ca9ee6; --ctp-dark-red: #e78284; --ctp-dark-maroon: #ea999c;
+  --ctp-dark-peach: #ef9f76; --ctp-dark-yellow: #e5c890; --ctp-dark-green: #a6d189;
+  --ctp-dark-teal: #81c8be; --ctp-dark-sky: #99d1db; --ctp-dark-sapphire: #85c1dc;
+  --ctp-dark-blue: #8caaee; --ctp-dark-lavender: #babbf1; --ctp-dark-text: #c6d0f5;
+  --ctp-dark-subtext1: #b5bfe2; --ctp-dark-subtext0: #a5adce; --ctp-dark-overlay2: #949cbb;
+  --ctp-dark-overlay1: #838ba7; --ctp-dark-overlay0: #737994; --ctp-dark-surface2: #626880;
+  --ctp-dark-surface1: #51576d; --ctp-dark-surface0: #414559; --ctp-dark-base: #303446;
+  --ctp-dark-mantle: #292c3c; --ctp-dark-crust: #232634;
+  /* adjusted */
+  --ctp-dark-ink: #dae0f8; --ctp-dark-heading: #e2e7fa; --ctp-dark-pressed: #474c61;
+  --ctp-dark-chip: #393d51; --ctp-dark-code-ink: #bde6aa; --ctp-dark-link: #95b3f5;
+  --ctp-dark-mark: #486069; --ctp-dark-comment-mark: #665537;
+  --ctp-dark-selection: rgb(148 156 187 / 0.28); --ctp-dark-code-comment: #a6acc6;
+  --ctp-dark-diff-add: #344746; --ctp-dark-diff-del: #493c4c;
+}
+:root[data-dark="macchiato"],
+[data-ctp-dark="macchiato"] {
+  /* Macchiato */
+  --ctp-dark-rosewater: #f4dbd6; --ctp-dark-flamingo: #f0c6c6; --ctp-dark-pink: #f5bde6;
+  --ctp-dark-mauve: #c6a0f6; --ctp-dark-red: #ed8796; --ctp-dark-maroon: #ee99a0;
+  --ctp-dark-peach: #f5a97f; --ctp-dark-yellow: #eed49f; --ctp-dark-green: #a6da95;
+  --ctp-dark-teal: #8bd5ca; --ctp-dark-sky: #91d7e3; --ctp-dark-sapphire: #7dc4e4;
+  --ctp-dark-blue: #8aadf4; --ctp-dark-lavender: #b7bdf8; --ctp-dark-text: #cad3f5;
+  --ctp-dark-subtext1: #b8c0e0; --ctp-dark-subtext0: #a5adcb; --ctp-dark-overlay2: #939ab7;
+  --ctp-dark-overlay1: #8087a2; --ctp-dark-overlay0: #6e738d; --ctp-dark-surface2: #5b6078;
+  --ctp-dark-surface1: #494d64; --ctp-dark-surface0: #363a4f; --ctp-dark-base: #24273a;
+  --ctp-dark-mantle: #1e2030; --ctp-dark-crust: #181926;
+  /* adjusted */
+  --ctp-dark-ink: #dce2f8; --ctp-dark-heading: #e4e8fa; --ctp-dark-pressed: #3e4259;
+  --ctp-dark-chip: #2f3247; --ctp-dark-code-ink: #c0e9b2; --ctp-dark-link: #97b8f6;
+  --ctp-dark-mark: #3d5763; --ctp-dark-comment-mark: #5f5136;
+  --ctp-dark-selection: rgb(147 154 183 / 0.28); --ctp-dark-code-comment: #a5aac2;
+  --ctp-dark-diff-add: #27393a; --ctp-dark-diff-del: #3c2f40;
+}
+:root[data-dark="mocha"],
+[data-ctp-dark="mocha"] {
+  /* Mocha */
+  --ctp-dark-rosewater: #f5e0dc; --ctp-dark-flamingo: #f2cdcd; --ctp-dark-pink: #f5c2e7;
+  --ctp-dark-mauve: #cba6f7; --ctp-dark-red: #f38ba8; --ctp-dark-maroon: #eba0ac;
+  --ctp-dark-peach: #fab387; --ctp-dark-yellow: #f9e2af; --ctp-dark-green: #a6e3a1;
+  --ctp-dark-teal: #94e2d5; --ctp-dark-sky: #89dceb; --ctp-dark-sapphire: #74c7ec;
+  --ctp-dark-blue: #89b4fa; --ctp-dark-lavender: #b4befe; --ctp-dark-text: #cdd6f4;
+  --ctp-dark-subtext1: #bac2de; --ctp-dark-subtext0: #a6adc8; --ctp-dark-overlay2: #9399b2;
+  --ctp-dark-overlay1: #7f849c; --ctp-dark-overlay0: #6c7086; --ctp-dark-surface2: #585b70;
+  --ctp-dark-surface1: #45475a; --ctp-dark-surface0: #313244; --ctp-dark-base: #1e1e2e;
+  --ctp-dark-mantle: #181825; --ctp-dark-crust: #11111b;
+  /* adjusted */
+  --ctp-dark-ink: #dee4f8; --ctp-dark-heading: #e6eafa; --ctp-dark-pressed: #3a3b4f;
+  --ctp-dark-chip: #2a2b3c; --ctp-dark-code-ink: #c2eebd; --ctp-dark-link: #97bdfa;
+  --ctp-dark-mark: #375560; --ctp-dark-comment-mark: #5c4f37;
+  --ctp-dark-selection: rgb(147 153 178 / 0.28); --ctp-dark-code-comment: #a5a9bd;
+  --ctp-dark-diff-add: #22302e; --ctp-dark-diff-del: #352534;
+}
+:root,
+[data-ctp-dark] {
+  /* Adjusted colours that take a palette colour, or another role, in every dark flavour */
+  --ctp-dark-ink-2: var(--ctp-dark-text); --ctp-dark-link-hover: var(--ctp-dark-sky);
+  --ctp-dark-mauve-text: var(--ctp-dark-mauve); --ctp-dark-teal-text: var(--ctp-dark-teal);
+  --ctp-dark-red-text: var(--ctp-dark-red); --ctp-dark-green-text: var(--ctp-dark-green);
+  --ctp-dark-peach-text: var(--ctp-dark-peach); --ctp-dark-code-punct: var(--ctp-dark-code-comment);
+  --ctp-dark-code-type: var(--ctp-dark-yellow); --ctp-dark-code-param: var(--ctp-dark-maroon);
+  --ctp-dark-code-escape: var(--ctp-dark-pink); --ctp-dark-code-operator: var(--ctp-dark-sky);
+  --ctp-dark-code-member: var(--ctp-dark-lavender); --ctp-dark-code-variant: var(--ctp-dark-teal);
+  --ctp-dark-code-macro: var(--ctp-dark-rosewater); --ctp-dark-code-meta: var(--ctp-dark-sapphire);
+}
+:root {
+  --ctp-rosewater: light-dark(var(--ctp-latte-rosewater), var(--ctp-dark-rosewater));
+  --ctp-flamingo: light-dark(var(--ctp-latte-flamingo), var(--ctp-dark-flamingo));
+  --ctp-pink: light-dark(var(--ctp-latte-pink), var(--ctp-dark-pink));
+  --ctp-mauve: light-dark(var(--ctp-latte-mauve), var(--ctp-dark-mauve));
+  --ctp-red: light-dark(var(--ctp-latte-red), var(--ctp-dark-red));
+  --ctp-maroon: light-dark(var(--ctp-latte-maroon), var(--ctp-dark-maroon));
+  --ctp-peach: light-dark(var(--ctp-latte-peach), var(--ctp-dark-peach));
+  --ctp-yellow: light-dark(var(--ctp-latte-yellow), var(--ctp-dark-yellow));
+  --ctp-green: light-dark(var(--ctp-latte-green), var(--ctp-dark-green));
+  --ctp-teal: light-dark(var(--ctp-latte-teal), var(--ctp-dark-teal));
+  --ctp-sky: light-dark(var(--ctp-latte-sky), var(--ctp-dark-sky));
+  --ctp-sapphire: light-dark(var(--ctp-latte-sapphire), var(--ctp-dark-sapphire));
+  --ctp-blue: light-dark(var(--ctp-latte-blue), var(--ctp-dark-blue));
+  --ctp-lavender: light-dark(var(--ctp-latte-lavender), var(--ctp-dark-lavender));
+  --ctp-text: light-dark(var(--ctp-latte-text), var(--ctp-dark-text));
+  --ctp-subtext1: light-dark(var(--ctp-latte-subtext1), var(--ctp-dark-subtext1));
+  --ctp-subtext0: light-dark(var(--ctp-latte-subtext0), var(--ctp-dark-subtext0));
+  --ctp-overlay2: light-dark(var(--ctp-latte-overlay2), var(--ctp-dark-overlay2));
+  --ctp-overlay1: light-dark(var(--ctp-latte-overlay1), var(--ctp-dark-overlay1));
+  --ctp-overlay0: light-dark(var(--ctp-latte-overlay0), var(--ctp-dark-overlay0));
+  --ctp-surface2: light-dark(var(--ctp-latte-surface2), var(--ctp-dark-surface2));
+  --ctp-surface1: light-dark(var(--ctp-latte-surface1), var(--ctp-dark-surface1));
+  --ctp-surface0: light-dark(var(--ctp-latte-surface0), var(--ctp-dark-surface0));
+  --ctp-base: light-dark(var(--ctp-latte-base), var(--ctp-dark-base));
+  --ctp-mantle: light-dark(var(--ctp-latte-mantle), var(--ctp-dark-mantle));
+  --ctp-crust: light-dark(var(--ctp-latte-crust), var(--ctp-dark-crust));
+  --ctp-ink: light-dark(var(--ctp-latte-ink), var(--ctp-dark-ink));
+  --ctp-heading: light-dark(var(--ctp-latte-heading), var(--ctp-dark-heading));
+  --ctp-ink-2: light-dark(var(--ctp-latte-ink-2), var(--ctp-dark-ink-2));
+  --ctp-pressed: light-dark(var(--ctp-latte-pressed), var(--ctp-dark-pressed));
+  --ctp-chip: light-dark(var(--ctp-latte-chip), var(--ctp-dark-chip));
+  --ctp-code-ink: light-dark(var(--ctp-latte-code-ink), var(--ctp-dark-code-ink));
+  --ctp-link: light-dark(var(--ctp-latte-link), var(--ctp-dark-link));
+  --ctp-link-hover: light-dark(var(--ctp-latte-link-hover), var(--ctp-dark-link-hover));
+  --ctp-mauve-text: light-dark(var(--ctp-latte-mauve-text), var(--ctp-dark-mauve-text));
+  --ctp-teal-text: light-dark(var(--ctp-latte-teal-text), var(--ctp-dark-teal-text));
+  --ctp-red-text: light-dark(var(--ctp-latte-red-text), var(--ctp-dark-red-text));
+  --ctp-green-text: light-dark(var(--ctp-latte-green-text), var(--ctp-dark-green-text));
+  --ctp-peach-text: light-dark(var(--ctp-latte-peach-text), var(--ctp-dark-peach-text));
+  --ctp-mark: light-dark(var(--ctp-latte-mark), var(--ctp-dark-mark));
+  --ctp-comment-mark: light-dark(var(--ctp-latte-comment-mark), var(--ctp-dark-comment-mark));
+  --ctp-selection: light-dark(var(--ctp-latte-selection), var(--ctp-dark-selection));
+  --ctp-code-comment: light-dark(var(--ctp-latte-code-comment), var(--ctp-dark-code-comment));
+  --ctp-code-punct: light-dark(var(--ctp-latte-code-punct), var(--ctp-dark-code-punct));
+  --ctp-code-type: light-dark(var(--ctp-latte-code-type), var(--ctp-dark-code-type));
+  --ctp-code-param: light-dark(var(--ctp-latte-code-param), var(--ctp-dark-code-param));
+  --ctp-code-escape: light-dark(var(--ctp-latte-code-escape), var(--ctp-dark-code-escape));
+  --ctp-code-operator: light-dark(var(--ctp-latte-code-operator), var(--ctp-dark-code-operator));
+  --ctp-code-member: light-dark(var(--ctp-latte-code-member), var(--ctp-dark-code-member));
+  --ctp-code-variant: light-dark(var(--ctp-latte-code-variant), var(--ctp-dark-code-variant));
+  --ctp-code-macro: light-dark(var(--ctp-latte-code-macro), var(--ctp-dark-code-macro));
+  --ctp-code-meta: light-dark(var(--ctp-latte-code-meta), var(--ctp-dark-code-meta));
+  --ctp-diff-add: light-dark(var(--ctp-latte-diff-add), var(--ctp-dark-diff-add));
+  --ctp-diff-del: light-dark(var(--ctp-latte-diff-del), var(--ctp-dark-diff-del));
+}

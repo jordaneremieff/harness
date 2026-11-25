@@ -175,7 +175,7 @@ private final class ExplorerScheme: NSObject, WKURLSchemeHandler {
             return (data, headers)
         }
         guard url.scheme == "explorer-app", url.host == "app", validPath(path),
-              path == "index.html" || path.hasPrefix("app/") || path.hasPrefix("styles/"),
+              path == "index.html" || path.hasPrefix("app/") || path.hasPrefix("styles/") || path.hasPrefix("themes/"),
               let mime = ["html": "text/html; charset=utf-8", "js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8",
                           "svg": "image/svg+xml", "png": "image/png", "woff2": "font/woff2", "json": "application/json"][url.pathExtension],
               let (fd, _) = try openContained(web, path) else { throw ExplorerError("scheme", "Explorer resource not found.") }

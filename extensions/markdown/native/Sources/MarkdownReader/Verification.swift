@@ -31,7 +31,7 @@ struct Verification {
         "code-copy-exact", "code-syntax-and-rendered-markdown", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
         "position-survives-refresh", "position-survives-reopen", "launch-origin-per-open", "webcontent-recovery",
-        "selected-revision-exports",
+        "selected-revision-exports", "shared-appearance-follows-file",
     ]
 
     func run(output: String?) async -> Int32 {
@@ -108,6 +108,7 @@ struct Verification {
                 await run("launch-origin-per-open") { await context.launchOrigins(keep: &keep) }
                 await run("webcontent-recovery") { await context.recovery(keep: &keep) }
                 await run("selected-revision-exports") { await context.revisionExports(keep: &keep) }
+                await run("shared-appearance-follows-file") { await context.sharedAppearance(keep: &keep) }
             } else {
                 checks += Self.pageCheckNames.map {
                     Check(name: $0, pass: false, detail: "Skipped: the bundled reader page did not load. \(loaded.detail)", skipped: true)
@@ -429,6 +430,34 @@ struct Context {
             let ran = await js(model, "return document.documentElement.dataset.ran || ''") as? String ?? "unavailable"
             return .init(name: name, pass: sourceInert && exercised && ran.isEmpty,
                          detail: "renderer neutralised raw script: \(sourceInert); malicious HTML reached the bridge sink: \(exercised); script/onerror/javascript marker: '\(ran)'")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    /// The shared pane appearance in a scratch file: another writer's change reaches the open page,
+    /// and the page's own choice replaces the file.
+    func sharedAppearance(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "shared-appearance-follows-file"
+        do {
+            let file = workspace.appendingPathComponent("pane-appearance.json")
+            let state = ReadingStateStore(directory: nil, theme: PaneAppearance(file: file))
+            let url = workspace.appendingPathComponent("appearance.md")
+            try Data("# Appearance\n\nShared theme.\n".utf8).write(to: url)
+            let model = await open(.file(path: FileAccess.canonicalPath(url.path)), revision: nil, state: state, keep: &keep)
+            try CheckRunner.requireReady(model)
+            func shown() async -> String {
+                await js(model, "return [document.documentElement.dataset.theme, document.documentElement.dataset.dark].join(' ')") as? String ?? ""
+            }
+            let initial = await shown()
+            let temporary = workspace.appendingPathComponent(".pane-appearance-check")
+            try Data(#"{"version":1,"appearance":"light","darkTheme":"mocha"}"#.utf8).write(to: temporary)
+            guard rename(temporary.path, file.path) == 0 else { throw CheckRunner.CheckError.unavailable("The scratch appearance file was not replaced.") }
+            let started = Date()
+            let followed = await wait(seconds: 2) { await shown() == "light mocha" }
+            let elapsed = Date().timeIntervalSince(started)
+            _ = await js(model, "document.querySelector('#viewpanel .swatch[data-flavour=\"macchiato\"]')?.click(); return true;")
+            let written = await wait(seconds: 2) { PaneAppearance.read(file) == ("light", "macchiato") }
+            return .init(name: name, pass: initial == "system frappe" && followed && elapsed < 1.5 && written,
+                         detail: "initial '\(initial)'; external change shown: \(followed) after \(String(format: "%.2f", elapsed)) s; page choice written: \(written)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 

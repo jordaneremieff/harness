@@ -63,8 +63,6 @@ struct ReadingStateFile: Codable, Sendable {
     var selectedStoreRoot: String?
     var settings = PageSettings()
     var locks: [String: ReaderBridgeLock]?
-    var appearance: String?
-    var darkTheme: String?
     var outlineWidth: Double?
     var outlineOpen: Bool?
 }
@@ -226,16 +224,21 @@ public final class ReadingStateStore {
         }
     }
 
-    public var appearance: String { state.appearance ?? "system" }
+    /// The machine's shared pane appearance, kept apart from reading state.
+    public let theme: PaneAppearance
+    public var appearance: String { theme.appearance }
     /// The Catppuccin flavour of the dark appearance; the light appearance is always Latte.
-    public var darkTheme: String { state.darkTheme ?? "frappe" }
-    nonisolated public static let darkThemes = ["frappe", "macchiato", "mocha"]
+    public var darkTheme: String { theme.darkTheme }
+    nonisolated public static let darkThemes = PaneAppearance.darkThemes
     public var outlineWidth: Double { state.outlineWidth ?? 240 }
     public var outlineOpen: Bool { state.outlineOpen ?? true }
 
     public func setPresentation(appearance: String? = nil, darkTheme: String? = nil, outlineWidth: Double? = nil, outlineOpen: Bool? = nil) {
-        if let appearance, ["system", "light", "dark"].contains(appearance) { state.appearance = appearance }
-        if let darkTheme, Self.darkThemes.contains(darkTheme) { state.darkTheme = darkTheme }
+        if appearance != nil || darkTheme != nil {
+            do { try theme.set(appearance: appearance, darkTheme: darkTheme) }
+            catch { FileHandle.standardError.write(Data("Markdown Reader: the pane appearance was not saved: \(error)\n".utf8)) }
+        }
+        guard outlineWidth != nil || outlineOpen != nil else { return }
         if let outlineWidth, outlineWidth.isFinite { state.outlineWidth = min(640, max(120, outlineWidth)) }
         if let outlineOpen { state.outlineOpen = outlineOpen }
         mark(.settings)
@@ -244,14 +247,16 @@ public final class ReadingStateStore {
 
     /// With a nil directory the state stays in memory. An unreadable state starts empty in memory;
     /// saves preserve unsupported files and read failures, and keep corrupt files before recovery.
-    public convenience init(directory: URL?) {
-        self.init(directory: directory, beforeWrite: {})
+    /// The shared pane appearance is separate from reading state; without one it stays in memory.
+    public convenience init(directory: URL?, theme: PaneAppearance? = nil) {
+        self.init(directory: directory, theme: theme, beforeWrite: {})
     }
 
     /// Hooks run on the writer queue under the file lock, at the named save phases.
-    init(directory: URL?, beforeWrite: @escaping @Sendable () throws -> Void,
+    init(directory: URL?, theme: PaneAppearance? = nil, beforeWrite: @escaping @Sendable () throws -> Void,
          writing: @escaping @Sendable () throws -> Void = {}, afterPublish: @escaping @Sendable () -> Void = {}) {
         file = directory?.appendingPathComponent("reading-state.json")
+        self.theme = theme ?? PaneAppearance(file: nil)
         self.beforeWrite = beforeWrite
         self.writing = writing
         self.afterPublish = afterPublish
@@ -311,8 +316,6 @@ public final class ReadingStateStore {
         result.knownRoots = added + theirs.knownRoots.filter { !added.contains($0) }
         if changes.settings {
             result.settings = ours.settings
-            result.appearance = ours.appearance
-            result.darkTheme = ours.darkTheme
             result.outlineWidth = ours.outlineWidth
             result.outlineOpen = ours.outlineOpen
         }
@@ -354,8 +357,6 @@ public final class ReadingStateStore {
 
         var kept = ReadingStateFile()
         kept.settings = state.settings
-        kept.appearance = state.appearance
-        kept.darkTheme = state.darkTheme
         kept.outlineWidth = state.outlineWidth
         kept.outlineOpen = state.outlineOpen
         kept.selectedStoreRoot = state.selectedStoreRoot

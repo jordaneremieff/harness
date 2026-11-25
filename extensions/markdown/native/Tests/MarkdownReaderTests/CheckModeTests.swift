@@ -56,10 +56,23 @@ import ReaderFeature
     }
 
     @Test func nativePaperTakesTheBaseOfTheThemeInForce() {
-        #expect(ReaderTheme.base(light: true, darkTheme: "mocha") == (239, 241, 245))
-        #expect(ReaderTheme.base(light: false, darkTheme: "frappe") == (48, 52, 70))
-        #expect(ReaderTheme.base(light: false, darkTheme: "macchiato") == (36, 39, 58))
-        #expect(ReaderTheme.base(light: false, darkTheme: "mocha") == (30, 30, 46))
+        // The shared palette that the build copies into the bundle, read from the checkout.
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<6 { root.deleteLastPathComponent() }
+        let themes = root.appendingPathComponent("assets/themes")
+        let bases = (try? Data(contentsOf: themes.appendingPathComponent("catppuccin.json"))).map(ReaderTheme.bases) ?? [:]
+        func base(_ light: Bool, _ theme: String) -> [Int]? {
+            ReaderTheme.base(light: light, darkTheme: theme, from: bases).map { [$0.red, $0.green, $0.blue] }
+        }
+        #expect(base(true, "mocha") == [239, 241, 245])
+        #expect(base(false, "frappe") == [48, 52, 70])
+        #expect(base(false, "macchiato") == [36, 39, 58])
+        #expect(base(false, "mocha") == [30, 30, 46])
+        #expect(base(false, "latte-dark") == [48, 52, 70])
+        // The page's stylesheet carries the same base colours.
+        let css = (try? String(contentsOf: themes.appendingPathComponent("catppuccin.css"), encoding: .utf8)) ?? ""
+        #expect(css.contains("--ctp-latte-base: #eff1f5;"))
+        for hex in ["#303446", "#24273a", "#1e1e2e"] { #expect(css.contains("--ctp-dark-base: \(hex);")) }
         #expect(ReaderTheme.appearance(for: "dark")?.name == .darkAqua)
         #expect(ReaderTheme.appearance(for: "light")?.name == .aqua)
         #expect(ReaderTheme.appearance(for: "system") == nil)

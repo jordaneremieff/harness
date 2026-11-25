@@ -9,8 +9,10 @@
 // <agent dir>/markdown-reader/Markdown Reader.app. The agent directory is PI_CODING_AGENT_DIR or
 // ~/.pi/agent. The bundle carries build.json, which openers read to tell a
 // missing or incompatible build from a usable one. build.json also records the `markdown.dir`
-// setting as `store`, the store folder that the app's library shows by default, and the Git
-// commit of the source checkout, which tells an older build from a newer one.
+// setting as `store`, the store folder that the app's library shows by default,
+// `<agent dir>/pane-appearance.json` as `paneAppearance`, the machine's shared pane appearance
+// (docs/conventions/pane-appearance.md), and the Git commit of the source checkout, which tells an
+// older build from a newer one.
 //
 // An install holds `install.lock` beside the app, so two installs never interleave; a second
 // install exits with status 75 and leaves the app unchanged. Swift build output goes to
@@ -34,7 +36,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { createRequire, stripTypeScriptTypes } from "node:module";
-import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EDITOR_OPEN, PANE_MODE, PANE_OPEN, PANE_REVISION } from "../pane-command.ts";
 import { readSettings } from "../settings.ts";
@@ -51,13 +53,17 @@ const sharedPane = "../../../native-pane";
 
 /**
  * The slice's settings: `app` is the install path (PI_MARKDOWN_APP, harness.json, default) and
- * `dir` the store folder (PI_MARKDOWN_DIR, harness.json, default).
+ * `dir` the store folder (PI_MARKDOWN_DIR, harness.json, default). `paneAppearance` is the
+ * machine's shared pane appearance file in the agent directory (docs/conventions/pane-appearance.md).
  */
-function settingValues(env: NodeJS.ProcessEnv = process.env): { app: string; dir: string } {
+function settingValues(env: NodeJS.ProcessEnv = process.env): { app: string; dir: string; paneAppearance: string } {
 	const configured = env.PI_CODING_AGENT_DIR?.trim();
 	const agentDir = configured ? resolve(configured.replace(/^~(?=$|\/)/, homedir())) : join(homedir(), ".pi", "agent");
-	return readSettings({ agentDir, env }).values;
+	return { ...readSettings({ agentDir, env }).values, paneAppearance: join(agentDir, "pane-appearance.json") };
 }
+
+/** The shared theme assets that the page and the native paper use (assets/README.md). */
+const THEME_FILES = ["../../../assets/themes/catppuccin.css", "../../../assets/themes/catppuccin.json"];
 
 /** The SwiftPM scratch directory of an install, beside the app. */
 export function buildCache(destination: string): string {
@@ -95,6 +101,7 @@ export function sourceDigest(root: string = packageDir): string {
 		"../pane-command.ts",
 		"../../../package-lock.json",
 		`${sharedPane}/Package.swift`,
+		...THEME_FILES,
 	];
 	const walk = (dir: string): void => {
 		for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
@@ -147,6 +154,7 @@ export function sourceRecord(root: string = packageDir, git: GitRunner = runGit)
 		"../../rex/terminal-origin.ts",
 		`${sharedPane}/Package.swift`,
 		`${sharedPane}/Sources`,
+		...THEME_FILES,
 		...EDITOR_WRITER_SOURCES.map((name) => `../${name}`),
 	];
 	const status = git(root, ["status", "--porcelain", "--untracked-files=all", "--", ...inputs]);
@@ -344,6 +352,21 @@ function assertWebSource(webSourceDir: string, entry = "index.html"): void {
 export function stageWeb(resources: string, webSourceDir: string = join(packageDir, "web")): void {
 	assertWebSource(webSourceDir);
 	copyWebDirectory(webSourceDir, join(resources, "web"), webSourceDir);
+	stageThemes(resources);
+}
+
+/**
+ * Copies the shared palette: its stylesheet into the page as web/themes/catppuccin.css and its base
+ * colours, which the native paper reads, as themes/catppuccin.json.
+ */
+function stageThemes(resources: string): void {
+	for (const path of THEME_FILES) {
+		const source = join(packageDir, path);
+		if (!lstatSync(source).isFile()) throw new Error(`The shared theme asset is not a regular file: ${source}.`);
+		const folder = path.endsWith(".css") ? join(resources, "web", "themes") : join(resources, "themes");
+		mkdirSync(folder, { recursive: true });
+		cpSync(source, join(folder, basename(path)));
+	}
 }
 function copyWebEntry(from: string, to: string, name: string, root: string): void {
 	const source = join(from, name);
@@ -601,7 +624,7 @@ function main(): void {
 		console.error("usage: node build.mts [test]");
 		process.exit(2);
 	}
-	const { app: destination, dir: store } = settingValues();
+	const { app: destination, dir: store, paneAppearance } = settingValues();
 	const webSourceDir = join(packageDir, "web");
 	assertWebSource(webSourceDir);
 	const parent = dirname(destination);
@@ -617,13 +640,13 @@ function main(): void {
 	try {
 		for (const name of removeAbandoned(parent, destination))
 			console.log(`Removed ${name}, left by an interrupted install.`);
-		install(destination, store, webSourceDir);
+		install(destination, store, paneAppearance, webSourceDir);
 	} finally {
 		release();
 	}
 }
 
-function install(destination: string, store: string, webSourceDir: string): void {
+function install(destination: string, store: string, paneAppearance: string, webSourceDir: string): void {
 	const digest = sourceDigest();
 	const source = sourceRecord();
 	const swiftVersion =
@@ -674,6 +697,7 @@ function install(destination: string, store: string, webSourceDir: string): void
 			builtAt: new Date().toISOString(),
 			swift: swiftVersion,
 			store,
+			paneAppearance,
 			editorWriter,
 			...(terminalOrigin ? { terminalOrigin } : {}),
 		};

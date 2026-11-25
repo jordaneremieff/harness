@@ -93,10 +93,10 @@
   color: var(--ink);
 }
 .code-cell.is-add {
-  background: light-dark(#dcebe2, #344746);
+  background: var(--ctp-diff-add);
 }
 .code-cell.is-del {
-  background: light-dark(#f1dfe4, #493c4c);
+  background: var(--ctp-diff-del);
 }
 .split .code-cell:not([data-line]) {
   background: var(--panel);
@@ -210,40 +210,40 @@
   color: var(--syn-num);
 }
 .syn-com {
-  color: light-dark(#62677f, #a6acc6);
+  color: var(--ctp-code-comment);
 }
 .syn-type {
-  color: light-dark(#895712, #e5c890);
+  color: var(--ctp-code-type);
 }
 .syn-fn {
   color: var(--accent-text);
 }
 .syn-param {
-  color: light-dark(#a32a42, #ea999c);
+  color: var(--ctp-code-param);
 }
 .syn-builtin {
   color: var(--err);
 }
 .syn-escape {
-  color: light-dark(#8d3b83, #f4b8e4);
+  color: var(--ctp-code-escape);
 }
 .syn-op {
-  color: light-dark(#15647d, #99d1db);
+  color: var(--ctp-code-operator);
 }
 .syn-punct {
-  color: light-dark(#646980, #a6acc6);
+  color: var(--ctp-code-punct);
 }
 .syn-member {
-  color: light-dark(#505bb1, #babbf1);
+  color: var(--ctp-code-member);
 }
 .syn-variant {
-  color: light-dark(#1d6d65, #81c8be);
+  color: var(--ctp-code-variant);
 }
 .syn-macro {
-  color: light-dark(#9c403b, #f2d5cf);
+  color: var(--ctp-code-macro);
 }
 .syn-meta {
-  color: light-dark(#15647d, #85c1dc);
+  color: var(--ctp-code-meta);
 }
 .empty-view {
   max-width: 65ch;

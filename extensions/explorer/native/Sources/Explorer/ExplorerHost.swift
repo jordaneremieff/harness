@@ -25,9 +25,16 @@ final class ExplorerHost {
     private let state: ExplorerState
     private let showIgnored: Bool
     private(set) var zoom = 1.0
+    let appearance: ExplorerAppearance
+    private let setsAppearance: Bool
 
-    init(_ launch: Launch, workspace: Workspace, store: URL, resources: URL, terminal: PaneTerminal? = nil, showIgnored: Bool = true) {
+    /// `setsAppearance` lets the shared appearance choice set the application's appearance; checks
+    /// keep the appearance that their options chose.
+    init(_ launch: Launch, workspace: Workspace, store: URL, resources: URL, terminal: PaneTerminal? = nil, showIgnored: Bool = true,
+         appearance: ExplorerAppearance? = nil, setsAppearance: Bool = false) {
         self.showIgnored = showIgnored
+        self.appearance = appearance ?? ExplorerAppearance(file: nil)
+        self.setsAppearance = setsAppearance
         self.launch = launch; self.workspace = workspace; self.store = store; self.resources = resources; self.terminal = terminal
         baseRoot = workspace.root
         shownPath = launch.path
@@ -35,12 +42,9 @@ final class ExplorerHost {
         let source = manifest["source"] as? [String: Any]
         version = ["version": "1.0", "commit": source?["commit"] ?? jsonNull]
         page = ExplorerPage(resources: resources, workspace: workspace)
+        let paper = self.appearance.paper
         overlay = terminal.map { _ in
-            PaneOverlay(background: { NSColor(name: nil) { appearance in
-                appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                    ? NSColor(srgbRed: 48 / 255, green: 52 / 255, blue: 70 / 255, alpha: 1)
-                    : NSColor(srgbRed: 239 / 255, green: 241 / 255, blue: 245 / 255, alpha: 1)
-            } }, logger: Logger(subsystem: "local.harness.explorer", category: "pane"), tracksWindowContent: true, eventDriven: true)
+            PaneOverlay(background: { paper }, logger: Logger(subsystem: "local.harness.explorer", category: "pane"), tracksWindowContent: true, eventDriven: true)
         }
         state = ExplorerState(store: store)
         zoom = state.zoom
@@ -57,6 +61,17 @@ final class ExplorerHost {
             self.focusIfReady()
         }
         page.onFailure = { [weak self] error in self?.status = error.localizedDescription; self?.draw() }
+        self.appearance.onChange = { [weak self] in self?.appearanceChanged() }
+        if setsAppearance { NSApp.appearance = self.appearance.applicationAppearance }
+    }
+
+    /// Applies the shared appearance choice to the application, the native paper and the page.
+    private func appearanceChanged() {
+        if setsAppearance, NSApp.appearance?.name != appearance.applicationAppearance?.name { NSApp.appearance = appearance.applicationAppearance }
+        overlay?.content.needsDisplay = true
+        guard page.ready else { return }
+        let fields = appearance.fields
+        Task { _ = await page.send("appearance", fields) }
     }
 
     func start(live configuration: LiveConfiguration? = nil) {
@@ -216,7 +231,10 @@ final class ExplorerHost {
             let launch = self.launch, base = baseInfo, version = version, live = live?.info ?? ["connected": false, "reason": "No live Pi conversation is attached."]
             let info = await Task.detached(priority: .userInitiated) { workspace.info() }.value
             return ["root": info, "base": base, "launch": state.restore(root: workspace.root, launch: launch.fields), "settings": state.settings,
-                    "live": live, "build": version]
+                    "live": live, "build": version, "appearance": appearance.fields]
+        case "appearance.save":
+            try appearance.set(fields)
+            return appearance.fields
         case "root.open":
             guard page.ready else { throw ExplorerError("busy", "The page is not ready.") }
             let target = try Launch(target: ["root": fields["path"] ?? jsonNull])

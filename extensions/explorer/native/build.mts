@@ -63,7 +63,27 @@ function stripped(source: string): string {
 	return stripTypeScriptTypes(readFileSync(source, "utf8"), { mode: "strip" });
 }
 
+/** The shared theme assets that the page and the native paper use (assets/README.md). */
+const THEME_FILES = ["../../../assets/themes/catppuccin.css", "../../../assets/themes/catppuccin.json"];
+
+/**
+ * Copies the shared palette: its stylesheet into the page as web/themes/catppuccin.css and its base
+ * colours, which the native paper reads, as themes/catppuccin.json.
+ */
+function stageThemes(resources: string): void {
+	for (const path of THEME_FILES) {
+		const source = join(packageDir, path);
+		assertRegularFile(source);
+		const target = path.endsWith(".css")
+			? join(resources, "web", "themes", basename(path))
+			: join(resources, "themes", basename(path));
+		mkdirSync(dirname(target), { recursive: true });
+		copyFileSync(source, target);
+	}
+}
+
 export function stageWeb(resources: string, root = join(packageDir, "web")): void {
+	stageThemes(resources);
 	const targets = new Set<string>();
 	for (const source of webFiles(root)) {
 		const path = relative(root, source);
@@ -140,6 +160,7 @@ export function sourceRecord(): { commit: string | null; dirty: boolean; digest:
 		"../settings.ts",
 		"../helper-sources.ts",
 		"../../../package-lock.json",
+		...THEME_FILES,
 		...NOTES_HELPER_SOURCES.map((name) => `../${name}`),
 	];
 	const licenses = regularFiles(join(packageDir, "Licenses"), (name) => name.startsWith("."));
@@ -172,12 +193,16 @@ function stableNode(): string {
 	return running;
 }
 
-function destination(): string {
+/**
+ * The install path from the `explorer.app` setting, and the machine's shared pane appearance file in
+ * the agent directory (docs/conventions/pane-appearance.md), which build.json records as `paneAppearance`.
+ */
+function destination(): { app: string; paneAppearance: string } {
 	const configured = process.env.PI_CODING_AGENT_DIR?.trim();
 	const agentDir = configured ? resolve(configured.replace(/^~(?=$|\/)/u, homedir())) : join(homedir(), ".pi", "agent");
 	const app = readSettings({ agentDir }).values.app;
 	if (!basename(app).endsWith(".app")) throw new Error("explorer.app must name an .app bundle.");
-	return app;
+	return { app, paneAppearance: join(agentDir, "pane-appearance.json") };
 }
 
 async function run(command: string, args: string[], capture = false): Promise<string> {
@@ -289,7 +314,7 @@ export async function installRunning(app: string): Promise<boolean> {
 	return lockfile.check(parent, { lockfilePath: installLock(parent), stale: 120_000 }).catch(() => false);
 }
 
-async function install(app: string): Promise<number> {
+async function install({ app, paneAppearance }: { app: string; paneAppearance: string }): Promise<number> {
 	const parent = dirname(app);
 	mkdirSync(parent, { recursive: true, mode: 0o700 });
 	let release: () => Promise<void>;
@@ -347,6 +372,7 @@ async function install(app: string): Promise<number> {
 				live: 1,
 				notes: 1,
 				node: stableNode(),
+				paneAppearance,
 				source,
 				builtAt: new Date().toISOString(),
 			};

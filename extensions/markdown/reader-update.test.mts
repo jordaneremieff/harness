@@ -332,6 +332,10 @@ function checkoutFixture(t: TestContext) {
 	mkdirSync(join(pane, "Sources"), { recursive: true });
 	writeFileSync(join(pane, "Package.swift"), "// pane package");
 	writeFileSync(join(pane, "Sources", "Pane.swift"), "// pane source");
+	const themes = join(root, "assets", "themes");
+	mkdirSync(themes, { recursive: true });
+	writeFileSync(join(themes, "catppuccin.css"), ":root {}");
+	writeFileSync(join(themes, "catppuccin.json"), "{}");
 	for (const dir of ["Sources", "Licenses", "web"]) mkdirSync(join(native, dir), { recursive: true });
 	for (const [path, content] of [
 		["Package.swift", "// package"],

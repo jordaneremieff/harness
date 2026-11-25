@@ -7,6 +7,7 @@
 		"open",
 		"promptState",
 		"zoom",
+		"appearance",
 		"index.changed",
 	]);
 	async function request<K extends keyof ExplorerRequests>(

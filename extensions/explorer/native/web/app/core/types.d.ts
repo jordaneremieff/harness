@@ -150,6 +150,7 @@ type ExplorerEvent = { v: 1 } & (
 	| { type: "notes.changed" }
 	| { type: "index.changed" }
 	| { type: "zoom"; zoom: number }
+	| ({ type: "appearance" } & ExplorerAppearance)
 	| ({ type: "live" } & ExplorerLive)
 	| ({ type: "open" } & ({ root: ExplorerRoot; base: ExplorerBase } | { root?: never; base?: never }) & ExplorerLaunch)
 	| ExplorerPromptState
@@ -175,8 +176,10 @@ type ExplorerRequests = {
 			settings: ExplorerSettings;
 			live: ExplorerLive;
 			build: { version: string; commit: string | null };
+			appearance: ExplorerAppearance;
 		},
 	];
+	"appearance.save": [Partial<ExplorerAppearance>, ExplorerAppearance];
 	"files.list": [
 		undefined,
 		{
@@ -391,6 +394,15 @@ interface ExplorerApp {
 }
 interface Window {
 	explorer: ExplorerApp;
+}
+
+/** The machine's shared pane appearance (docs/conventions/pane-appearance.md). */
+type ExplorerAppearance = { appearance: "system" | "light" | "dark"; darkTheme: "frappe" | "macchiato" | "mocha" };
+type ExplorerAppearanceView = {
+	apply(value: ExplorerAppearance): void;
+};
+interface ExplorerApp {
+	appearance(save: (patch: Partial<ExplorerAppearance>) => void): ExplorerAppearanceView;
 }
 
 type ExplorerReviewContext = {

@@ -28,6 +28,10 @@
 		binary: "M5 2h7l4 4v12H5zM12 2v5h4M8 10h.1m4 0h.1m-4 4h.1m4 0h.1",
 		error: "M10 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16zm0 4v5m0 3h.1",
 		palette: "M3 4h14v12H3zM6 8l2 2-2 2m4 0h4",
+		appearance: "M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm0 0v14M10 6.5h4.6M10 10h6M10 13.5h4.6",
+		system: "M3 4h14v10H3zM7 17h6M10 14v3",
+		sun: "M10 13.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4zM10 2.5V4M10 16v1.5M4.7 4.7l1.1 1.1M14.2 14.2l1.1 1.1M2.5 10H4M16 10h1.5M4.7 15.3l1.1-1.1M14.2 5.8l1.1-1.1",
+		moon: "M16.5 12.2A6.7 6.7 0 0 1 7.8 3.5a6.7 6.7 0 1 0 8.7 8.7z",
 	};
 	function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
 		const node = document.createElement(tag);

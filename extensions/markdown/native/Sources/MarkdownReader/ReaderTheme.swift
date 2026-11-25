@@ -11,14 +11,27 @@ import ReaderFeature
 enum ReaderTheme {
     static let changed = Notification.Name("MarkdownReaderThemeChanged")
 
-    /// Catppuccin base colours, as 8-bit sRGB components.
-    static func base(light: Bool, darkTheme: String) -> (red: Int, green: Int, blue: Int) {
-        if light { return (239, 241, 245) }
-        switch darkTheme {
-        case "macchiato": return (36, 39, 58)
-        case "mocha": return (30, 30, 46)
-        default: return (48, 52, 70)
+    typealias Components = (red: Int, green: Int, blue: Int)
+
+    /// The base colour of each Catppuccin flavour from the shared palette that the build copies to
+    /// themes/catppuccin.json in the bundle's resources.
+    nonisolated static let bundledBases: [String: Components] = Bundle.main.resourceURL
+        .flatMap { try? Data(contentsOf: $0.appendingPathComponent("themes/catppuccin.json")) }
+        .map(bases) ?? [:]
+
+    /// The `base` map of the palette's JSON: flavour names to `#rrggbb` colours.
+    nonisolated static func bases(_ data: Data) -> [String: Components] {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let base = object["base"] as? [String: String] else { return [:] }
+        return base.compactMapValues { text in
+            guard text.count == 7, text.hasPrefix("#"), let value = Int(text.dropFirst(), radix: 16) else { return nil }
+            return (value >> 16 & 0xff, value >> 8 & 0xff, value & 0xff)
         }
+    }
+
+    /// The base colour as 8-bit sRGB components: Latte in light, the chosen flavour in dark.
+    nonisolated static func base(light: Bool, darkTheme: String, from bases: [String: Components] = bundledBases) -> Components? {
+        bases[light ? "latte" : darkTheme] ?? (light ? nil : bases["frappe"])
     }
 
     nonisolated(unsafe) private static var darkTheme = "frappe"
@@ -26,7 +39,7 @@ enum ReaderTheme {
     static var paper: NSColor {
         NSColor(name: nil) { appearance in
             let light = appearance.bestMatch(from: [.aqua, .darkAqua]) != .darkAqua
-            let base = ReaderTheme.base(light: light, darkTheme: ReaderTheme.darkTheme)
+            guard let base = ReaderTheme.base(light: light, darkTheme: ReaderTheme.darkTheme) else { return .windowBackgroundColor }
             return NSColor(srgbRed: CGFloat(base.red) / 255, green: CGFloat(base.green) / 255, blue: CGFloat(base.blue) / 255, alpha: 1)
         }
     }

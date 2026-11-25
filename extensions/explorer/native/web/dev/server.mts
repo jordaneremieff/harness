@@ -37,6 +37,9 @@ function build() {
 	visit("styles", (path) => {
 		if (path.endsWith(".css")) add(path, "text/css; charset=utf-8", readFileSync(join(web, path)));
 	});
+	// The shared palette, which the install copies into the page.
+	const palette = new URL("../../../../../assets/themes/catppuccin.css", import.meta.url);
+	add("themes/catppuccin.css", "text/css; charset=utf-8", readFileSync(fileURLToPath(palette)));
 	const source = readFileSync(join(web, "index.html"), "utf8");
 	const policy = /<meta\b[^>]*http-equiv="Content-Security-Policy"[^>]*>/i;
 	if (!policy.test(source)) throw new Error("Explorer index is missing its CSP meta tag.");

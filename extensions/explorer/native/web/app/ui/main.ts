@@ -101,6 +101,10 @@
 	const report = (p: Promise<unknown>) => {
 		void p.catch((error) => notice(errorText(error)));
 	};
+	// The host keeps the shared pane appearance and announces each change, from this page or elsewhere.
+	const appearance = app.appearance((patch) =>
+		report(request("appearance.save", patch).then((value) => appearance.apply(value))),
+	);
 	const sameScope = (a?: ExplorerScope, b?: ExplorerScope) => JSON.stringify(a) === JSON.stringify(b);
 	const inReview = () => view === "changes" && root.kind === "git";
 	const showsNote = (note: ExplorerNote) => showOtherNotes || note.author === "operator";
@@ -2933,6 +2937,9 @@
 			case "zoom":
 				zoomChanged(event.zoom);
 				break;
+			case "appearance":
+				appearance.apply(event);
+				break;
 			case "index.changed":
 				if (booted) indexChanged();
 				break;
@@ -2968,6 +2975,7 @@
 			rootTrail();
 			settings = result.settings;
 			live = result.live;
+			appearance.apply(result.appearance);
 			settings.textSize = Number.isFinite(settings.textSize) ? Math.max(10, Math.min(32, settings.textSize)) : 16;
 			settings.sidebar.width = Math.max(215, Math.min(430, settings.sidebar.width));
 			settings.zoom = Number.isFinite(settings.zoom) ? settings.zoom : 1;

@@ -652,7 +652,7 @@
 				]) {
 					const b = el(
 						"button",
-						{ type: "button", class: "swatch", role: "radio", "data-flavour": flavour },
+						{ type: "button", class: "swatch", role: "radio", "data-flavour": flavour, "data-ctp-dark": flavour },
 						el(
 							"span",
 							{ class: "sw-preview", "aria-hidden": "true" },

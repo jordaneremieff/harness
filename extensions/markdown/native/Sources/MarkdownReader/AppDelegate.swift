@@ -43,8 +43,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         return [FileAccess.canonicalPath(store)]
     }
 
+    /// The machine's shared pane appearance file that the install recorded in build.json
+    /// (docs/conventions/pane-appearance.md). A bundle without it keeps the choice in memory.
+    static func paneAppearanceFile(_ bundle: Bundle = .main) -> URL? {
+        guard let resources = bundle.resourceURL,
+              let data = try? FileAccess.readRegularFile(resources.appendingPathComponent("build.json"), limit: Limits.recordBytes, missing: .notFound("build.json")),
+              let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let path = manifest["paneAppearance"] as? String, path.hasPrefix("/"), !path.utf8.contains(0)
+        else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
     func applicationWillFinishLaunching(_ notification: Notification) {
-        let state = ReadingStateStore(directory: mode.isCheck ? nil : Self.stateDirectory())
+        let theme = mode.isCheck ? nil : PaneAppearance(file: Self.paneAppearanceFile())
+        let state = ReadingStateStore(directory: mode.isCheck ? nil : Self.stateDirectory(), theme: theme)
         var platform = mode.isCheck ? CheckRunner.platform() : MacPlatform.operations()
         if !mode.isCheck {
             platform.exportRevision = { try await ExportPanel.revision($0, form: $1) }

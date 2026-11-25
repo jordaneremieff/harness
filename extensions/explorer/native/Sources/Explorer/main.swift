@@ -36,7 +36,9 @@ import Foundation
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
     app.mainMenu = ExplorerMenu.make()
-    let host = ExplorerHost(target, workspace: workspace, store: URL(fileURLWithPath: store), resources: resources, terminal: terminal, showIgnored: showIgnored)
+    let appearance = ExplorerAppearance(file: ExplorerAppearance.file(resources: resources))
+    let host = ExplorerHost(target, workspace: workspace, store: URL(fileURLWithPath: store), resources: resources, terminal: terminal, showIgnored: showIgnored,
+                            appearance: appearance, setsAppearance: true)
     withExtendedLifetime(host) {
         host.start(live: live)
         app.run()

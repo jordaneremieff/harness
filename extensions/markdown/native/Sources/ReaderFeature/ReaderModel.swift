@@ -188,6 +188,21 @@ public final class ReaderModel {
         page.contentProcessTerminated = { [weak self] in
             Task { await self?.recoverContentProcess() }
         }
+        followTheme()
+    }
+
+    /// The shared pane appearance can change in another window or in another app; each change
+    /// reaches this window's page.
+    private func followTheme() {
+        _ = withObservationTracking { (state.appearance, state.darkTheme) } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.followTheme()
+                // A page that is not ready yet takes the theme from its document payload.
+                guard self.page.isReady else { return }
+                await self.sendCommand("applySettings", args: ["appearance": self.state.appearance, "darkTheme": self.state.darkTheme])
+            }
+        }
     }
 
 

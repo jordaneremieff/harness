@@ -206,9 +206,8 @@
     .sw-name { font: 500 12px/1.2 var(--font); color: var(--ink-2); }
     &[aria-checked="true"] .sw-preview { box-shadow: 0 0 0 2px var(--raised), 0 0 0 4px var(--accent); }
     &[aria-checked="true"] .sw-name { color: var(--heading); font-weight: 600; }
-    &[data-flavour="frappe"] { --sw-base: #303446; --sw-text: #c6d0f5; --sw-blue: #8caaee; --sw-green: #a6d189; --sw-mauve: #ca9ee6; }
-    &[data-flavour="macchiato"] { --sw-base: #24273a; --sw-text: #cad3f5; --sw-blue: #8aadf4; --sw-green: #a6da95; --sw-mauve: #c6a0f6; }
-    &[data-flavour="mocha"] { --sw-base: #1e1e2e; --sw-text: #cdd6f4; --sw-blue: #89b4fa; --sw-green: #a6e3a1; --sw-mauve: #cba6f7; }
+    /* data-ctp-dark gives each swatch its own flavour's dark colours from the shared palette. */
+    --sw-base: var(--ctp-dark-base); --sw-text: var(--ctp-dark-text); --sw-blue: var(--ctp-dark-blue); --sw-green: var(--ctp-dark-green); --sw-mauve: var(--ctp-dark-mauve);
   }
   /* The controls of a fenced code block, in one bar over its caption row: the syntax button where
      the label sits, then the Markdown view and copy at the end of the row. */

@@ -272,6 +272,10 @@ function digestFixture(t: TestContext) {
 	mkdirSync(join(pane, "Sources"), { recursive: true });
 	writeFileSync(join(pane, "Package.swift"), "// pane package");
 	writeFileSync(join(pane, "Sources", "Pane.swift"), "// pane source");
+	const themes = join(root, "assets", "themes");
+	mkdirSync(themes, { recursive: true });
+	writeFileSync(join(themes, "catppuccin.css"), ":root {}");
+	writeFileSync(join(themes, "catppuccin.json"), "{}");
 	mkdirSync(join(native, "Sources"), { recursive: true });
 	mkdirSync(join(native, "Licenses"));
 	mkdirSync(join(native, "web"));
@@ -304,6 +308,9 @@ test("writer sources and build.mts are part of the build identity", (t) => {
 	const beforePane = sourceDigest(f.native);
 	writeFileSync(join(f.native, "../../../native-pane/Sources/Pane.swift"), "// new pane source");
 	assert.notEqual(sourceDigest(f.native), beforePane, "a shared pane source changes the build identity");
+	const beforeThemes = sourceDigest(f.native);
+	writeFileSync(join(f.root, "assets", "themes", "catppuccin.css"), ":root { --ctp-latte-base: #eff1f5; }");
+	assert.notEqual(sourceDigest(f.native), beforeThemes, "the shared palette changes the build identity");
 });
 
 test("staging copies the real writer sources of this checkout", (t) => {
@@ -354,6 +361,14 @@ test("staging ships the web page with stripped scripts and without test inputs",
 	assert.equal(readFileSync(join(f.web, "index.html"), "utf8"), "<!doctype html><title>Reader</title>");
 	assert.equal(readFileSync(join(f.web, "styles", "site.css"), "utf8"), "body { color: black; }");
 	assert.equal(readFileSync(join(f.web, "assets", "logo.svg"), "utf8"), "<svg></svg>");
+	assert.ok(
+		readFileSync(join(f.web, "themes", "catppuccin.css"), "utf8").includes("--ctp-dark-base"),
+		"the shared palette joins the page",
+	);
+	assert.ok(
+		readFileSync(join(f.resources, "themes", "catppuccin.json"), "utf8").includes('"base"'),
+		"the base colours sit beside the page",
+	);
 	const script = readFileSync(join(f.web, "scripts", "app.js"), "utf8");
 	assert.ok(script.includes("const message"), "the script is stripped and shipped as .js");
 	assert.ok(!script.includes(": string"), "the script keeps no type annotation");
