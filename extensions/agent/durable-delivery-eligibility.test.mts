@@ -94,11 +94,10 @@ function receipt(ownerId: string, origin: DeliveryReceipt["origin"] = "model"): 
 
 const cases = [
 	{
-		name: "absent primary with incomplete fallback discovery",
+		name: "absent primary",
 		owner: () => randomUUID(),
 		state: "parked",
-		reason: /primary endpoint is absent/u,
-		incomplete: true,
+		reason: /has no live endpoint; .*reaches no other session/u,
 	},
 	{
 		name: "target not retained with no primary registered",
@@ -175,9 +174,6 @@ for (const example of cases)
 			signal: new AbortController().signal,
 			onIdle: () => idle.push(undefined),
 			onError: (error) => errors.push(error),
-			...("incomplete" in example
-				? { listPrimaryChannels: async () => ({ ids: [], complete: false, visited: 256 }) }
-				: {}),
 			...("missingTarget" in example
 				? {
 						readTarget: () => {

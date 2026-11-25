@@ -18,7 +18,7 @@ import {
 	type EntryRecord,
 } from "@earendil-works/pi-durable";
 import { placementMode, type DeliveryOrigin, type DeliveryMessage } from "./durable-controls.ts";
-import { checkInFallback, currentCheckInReport, retainedReport, storeDeliveryRow } from "./delivery-store.ts";
+import { currentCheckInReport, retainedReport, storeDeliveryRow } from "./delivery-store.ts";
 import { producerRetryFact, retryFactLines } from "./await-facts.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
 import { openWorkCheckInLines, requestHasOpenWork } from "./open-work.ts";
@@ -174,7 +174,6 @@ export const CheckInDeadlineTask = defineTask<CheckInInput & { next: number }, C
 				const k = Math.max(task.state.checkpoint.next, Math.floor((now - input.admittedAt) / input.intervalMs));
 				const sourceId = `check-in:${id}:${input.requestId}:${k}`;
 				if (!(await retainedReport(tx, input.ownerId, sourceId))) {
-					const fallbackBroadcast = await checkInFallback(tx, input.ownerId, input.conversationId, input.requestId);
 					const previous = await currentCheckInReport(tx, input.ownerId, input.conversationId, input.requestId);
 					if (previous && !previous.acknowledged)
 						await storeDeliveryRow(tx, "report", { ...previous, acknowledged: true });
@@ -197,7 +196,6 @@ export const CheckInDeadlineTask = defineTask<CheckInInput & { next: number }, C
 								cost: snapshot.cost,
 								conversationId: input.conversationId,
 								requestId: input.requestId,
-								...fallbackMarker(fallbackBroadcast),
 							},
 						},
 						true,
@@ -312,11 +310,6 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 	abort: (_task, runtime, context) =>
 		runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
-
-/** Omit a fallback marker until a quiet broadcast was accepted. */
-function fallbackMarker(accepted: boolean): { fallbackBroadcast?: boolean } {
-	return accepted ? { fallbackBroadcast: true } : {};
-}
 
 /** Resolve the owner against the producer's storage, including alternate root spellings. */
 function ownerIsProducer(input: Omit<CheckInInput, "intervalMs">): boolean {

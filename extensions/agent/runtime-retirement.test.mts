@@ -1205,11 +1205,11 @@ it("keeps cached dead-owner delivery cold after clean retirement and wakes at ex
 	});
 	t.after(() => manager.close());
 	const other = randomUUID();
-	const fallback = eventLog<string>();
+	const unrelated = eventLog<string>();
 	await manager.registerPrimary(other, {
 		cwd: f.cwd,
 		signal: new AbortController().signal,
-		send: (text) => fallback.push(text),
+		send: (text) => unrelated.push(text),
 	});
 	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: other, cwd: f.cwd });
 	await f.runtime.request(
@@ -1222,7 +1222,7 @@ it("keeps cached dead-owner delivery cold after clean retirement and wakes at ex
 		},
 		"report",
 	);
-	await fallback.waitForCount(1);
+	await deliverySettled(f.runtime);
 	const idle = deferred();
 	assert.ok(f.runtime.onActivity);
 	const checkIdle = () => {
@@ -1255,7 +1255,7 @@ it("keeps cached dead-owner delivery cold after clean retirement and wakes at ex
 	});
 	await delivered.waitForCount(1);
 	assert.equal(acquisitions, 2, "exact owner registration reopens only its retained row");
-	assert.equal(fallback.length, 1);
+	assert.equal(unrelated.length, 0, "the parked row reaches no other registered primary");
 	assert.ok(reopenedRuntime);
 	await deliverySettled(reopenedRuntime);
 	await reopened?.close();

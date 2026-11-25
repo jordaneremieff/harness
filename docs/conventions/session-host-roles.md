@@ -57,20 +57,17 @@ Owner-directed reports and results retain their source IDs in native documents.
 The source storage's durable-delivery watcher owns retained-output delivery. After
 native commits it settles intents and routes unacknowledged receipts and reports.
 A catalog owner receives native input in its own host; an ordinary primary
-receives it through its registered primary channel. The watcher acknowledges
-only accepted normal-owner routes, independently of other routes. Admission is
-not model consumption or task acceptance.
+receives only its own rows through its registered primary channel. The watcher
+acknowledges only accepted owner routes, independently of other routes.
+Admission is not model consumption or task acceptance.
 
-Only an absent or proven-dead ordinary-owner endpoint permits informational
-fallback copies to other registered primaries. The watcher uses bounded
-discovery, excludes the normal owners, and labels copies
-`no live owning session` while retaining the original owner identity. It records
-each accepted copy recipient, but copies never acknowledge the original owner's
-row. Incomplete discovery still attempts discovered recipients and reports that limit. Copy failures
-also leave owner delivery pending. Direct thread notifications stay pending
-without broadcast when their recipient has no live endpoint. Live, unknown, and
-incompatible endpoints do not justify fallback; transport failure is not proof
-of death.
+A row for an ordinary primary waits at its source when the owner's endpoint is
+absent, dead, unverified, or incompatible, or when its published session file
+does not yet exist. No other session receives the row. The receiver refuses
+misaddressed rows and copies before they affect the session. It also refuses a
+fresh delivery without a valid saved transcript. A stable recipient refusal
+parks the row until the owner's facts change. A transient transport failure
+retries; it is not proof of death.
 
 Pending delivery and active delivery differ. Parked and terminal rows remain
 durable without a delivery retry timer. Those rows neither retain the recovery
@@ -83,9 +80,9 @@ release and restore normal idle retirement without closing observations.
 Delivery scans, read-only requests and generation-only races leave the release
 pending for the next activity or quiescent event.
 The source writer publishes a bounded parked-recipient sidecar before clearing
-its recovery marker. An exact primary registration or newly available named
-recipient wakes the matching source through existing bounded catalogue scans.
-Unrelated registration does not relaunch parked-only hosts. Sidecars stay
+its recovery marker. An exact primary registration, its first saved transcript,
+or a newly available named recipient wakes the matching source through bounded
+catalogue scans. Unrelated registration does not relaunch parked-only hosts. Sidecars stay
 outside the catalogue directory; only their source writer changes them.
 
 Delivery is at-least-once. The cross-host boundary has no shared transaction or

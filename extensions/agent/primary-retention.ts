@@ -1,5 +1,7 @@
 import { closeSync, constants, fstatSync, openSync, readSync, type Stats } from "node:fs";
+import type { PluginError } from "@earendil-works/chord";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { primaryRefusal } from "./primary-channel.ts";
 
 const READ_BYTES = 1024 * 1024;
 type FilePin = { path: string; dev: number; ino: number; size: number; mtimeMs: number };
@@ -19,8 +21,40 @@ function parse(bytes: Buffer): unknown {
 	return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
+/**
+ * Why one source-ledger delivery does not belong to `recipient`, or undefined when it does. The source names its
+ * exact recipient as both `deliveryRecipient` and `originalOwnerId`. An informational copy for another owner
+ * carries the copy flag or label, or a copy source identity; it is refused even when it names this session.
+ */
+export function retainedDeliveryRefusal(
+	details: unknown,
+	sourceId: string,
+	recipient: string,
+): PluginError | undefined {
+	if (!object(details))
+		return primaryRefusal("misaddressed", "Primary delivery names no recipient; this session takes no part of it");
+	if (details.fallback === true || details.fallbackLabel !== undefined || sourceId.includes(":informational:"))
+		return primaryRefusal(
+			"copy",
+			`Primary session ${recipient} takes no informational copy of another owner's delivery; the source keeps it for its owner`,
+		);
+	if (details.deliveryRecipient !== recipient || details.originalOwnerId !== recipient)
+		return primaryRefusal(
+			"misaddressed",
+			`Primary delivery for ${String(details.originalOwnerId)} reached session ${recipient}; it takes no delivery for another recipient`,
+		);
+	return undefined;
+}
+
+/** A session file that this user owns; Pi creates it without a symbolic link. */
+function ownFile(stat: Stats): boolean {
+	return (
+		stat.isFile() && Number.isSafeInteger(stat.size) && (process.getuid === undefined || stat.uid === process.getuid())
+	);
+}
+
 function checkFile(scan: Scan, path: string, stat: Stats): void {
-	if (!stat.isFile() || !Number.isSafeInteger(stat.size)) throw new Error("Primary delivery session file is invalid");
+	if (!ownFile(stat)) throw new Error("Primary delivery session file is invalid");
 	const prior = scan.file;
 	if (!prior) return;
 	if (prior.path !== path || prior.dev !== stat.dev || prior.ino !== stat.ino || stat.size < prior.size)
@@ -116,9 +150,46 @@ export class PrimaryRetention {
 				),
 		);
 	}
-	private scan(scan: Scan, ids: Map<string, string>): Observation {
+	private unsaved(): PluginError {
+		return primaryRefusal(
+			"unsaved",
+			`Primary session ${this.session.getSessionId()} has no saved transcript yet; the delivery waits at its source until the session saves its first message`,
+		);
+	}
+	private sessionPath(): string {
 		const path = this.session.getSessionFile();
-		if (path === undefined) throw new Error("Primary delivery requires a persisted session path");
+		if (path === undefined)
+			throw primaryRefusal(
+				"no-transcript",
+				`Primary session ${this.session.getSessionId()} keeps no transcript; the delivery stays at its source and reaches no other session`,
+			);
+		return path;
+	}
+
+	/**
+	 * Refuse before any receiver state changes unless the session file exists as this user's regular file with this
+	 * session's header. A file name or Pi's memory view does not establish that the session retains messages.
+	 */
+	assertRetainable(): void {
+		const path = this.sessionPath();
+		let fd: number;
+		try {
+			fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") throw this.unsaved();
+			throw error;
+		}
+		try {
+			const stat = fstatSync(fd);
+			if (!ownFile(stat)) throw new Error("Primary delivery session file is invalid");
+			headerEnd(fd, stat, this.session.getSessionId());
+		} finally {
+			closeSync(fd);
+		}
+	}
+
+	private scan(scan: Scan, ids: Map<string, string>): Observation {
+		const path = this.sessionPath();
 		let fd: number;
 		try {
 			fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -170,9 +241,14 @@ export class PrimaryRetention {
 		}
 		// A bounded unfinished read is not evidence that a notice is absent.
 		if (!observed.complete) throw new Error("Primary delivery awaits retained-entry verification");
-		const retryable = ids.size === 0 || observed.exists;
-		if (this.idle() && retryable) attempt.queued = false;
-		if (!attempt.queued && retryable) {
+		// Pi keeps a message of a session without a file in memory only; it would reach the transcript, and start a
+		// run, in a session that has not begun.
+		if (!observed.exists) {
+			this.attempts.delete(sourceId);
+			throw this.unsaved();
+		}
+		if (this.idle()) attempt.queued = false;
+		if (!attempt.queued) {
 			this.transmit(attempt, sourceId, text, details);
 			if (this.scan(attempt.scan, this.entries(sourceId)).found) {
 				this.attempts.delete(sourceId);

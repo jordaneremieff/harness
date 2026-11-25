@@ -647,6 +647,8 @@ it("delivers a question, its reply as an event, and one notice when the recipien
 			senderIdentity: asker,
 			message: "Which region?",
 			wake: true,
+			originalOwnerId: bId,
+			deliveryRecipient: bId,
 		},
 	};
 	const channel = await connectPrimaryChannel({ id: bId, sessionsRoot });

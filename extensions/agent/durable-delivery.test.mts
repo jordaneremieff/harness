@@ -45,7 +45,6 @@ import {
 	undeliveredReports,
 } from "./durable-controls.ts";
 import {
-	directReportWaitText,
 	observeDeliveryEligibility,
 	receiptStateLine,
 	readReceiptStates,
@@ -337,19 +336,15 @@ function writeIncompatibleEndpoint(sessionsRoot: string, id: string, pid = proce
 	);
 }
 
-function informationalSource(sourceId: string, recipient: string): string {
-	return `${sourceId}:informational:${createHash("sha256").update(recipient).digest("hex")}`;
+function absentPrimaryReason(owner: string): string {
+	return `primary session ${owner} has no live endpoint; the row waits at its source for that session and reaches no other session`;
 }
-async function receiptSourceId(
-	host: DurableHost,
-	submissionId: SubmissionId,
-	informationalRecipient?: string,
-): Promise<string> {
+
+async function receiptSourceId(host: DurableHost, submissionId: SubmissionId): Promise<string> {
 	await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
 	const receipt = (await deliveryState(host))?.receipts[String(submissionId)];
 	assert.ok(receipt);
-	const sourceId = receiptSourceIdentity(host.storageId, receipt);
-	return informationalRecipient === undefined ? sourceId : informationalSource(sourceId, informationalRecipient);
+	return receiptSourceIdentity(host.storageId, receipt);
 }
 
 /** Recheck delivery state only after native commit publications. */
@@ -399,7 +394,7 @@ async function addReceipt(source: DurableHost, ownerId: string, requestId = "sou
 	return admitted.submissionId;
 }
 
-it("uses the retained native target reader and connection before ordinary fallback, then closes their owner", {
+it("uses the retained reader and connection for a native target, then closes their owner", {
 	timeout: 10000,
 }, async (t) => {
 	const root = fixtureRoot(t),
@@ -522,7 +517,7 @@ function expectedRecipientGroup(recipients: string, original: number, steer: num
 			}
 		: { ids: [original], requests: ["original"], operations: ["first-operation"], origins: ["operator"] };
 }
-for (const recipients of ["same", "overlap", "distinct"])
+for (const recipients of ["same", "absent", "distinct"])
 	it(`groups a live steer with its answer for ${recipients} recipients`, { timeout: 30000 }, async (t) => {
 		const root = fixtureRoot(t);
 		const sessionsRoot = join(root, "sessions");
@@ -541,7 +536,6 @@ for (const recipients of ["same", "overlap", "distinct"])
 			releaseTool();
 			releaseDelivery();
 		});
-		// With an absent steering owner, fallback and direct delivery overlap at this recipient.
 		const channel = await createPrimaryChannel({
 			id: owner,
 			cwd: root,
@@ -688,19 +682,14 @@ for (const recipients of ["same", "overlap", "distinct"])
 		assert.match(received[0]?.text ?? "", /^Agent “11111111-1111-4111-8111-111111111111” completed native input\./u);
 		assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
 		releaseDelivery();
-		if (recipients === "overlap") await received.waitForCount(2);
 		await waitForDelivery(source, async () =>
 			ids.every(
 				(id) =>
 					revisions.at(-1)?.receipts[String(id)]?.acknowledged ===
-					(recipients !== "overlap" || id === original.submissionId),
+					(recipients !== "absent" || id === original.submissionId),
 			),
 		);
-		assert.equal(
-			received.length,
-			recipients === "same" ? 1 : 2,
-			"each recipient has an independent normal source; an informational source does not consume it",
-		);
+		assert.equal(received.length, recipients === "distinct" ? 2 : 1, "only live owners receive their own result");
 		for (const delivery of received) {
 			const messageDetails = delivery.details as {
 				deliveryRecipient: string;
@@ -732,26 +721,30 @@ for (const recipients of ["same", "overlap", "distinct"])
 		);
 		assert.equal(
 			received.length,
-			recipients === "same" ? 2 : 3,
+			recipients === "distinct" ? 3 : 2,
 			"equal text from a distinct answer entry remains a separate notice",
 		);
 		assert.notEqual(received[0]?.sourceId, received.at(-1)?.sourceId);
-		if (recipients !== "overlap") assert.deepEqual(errors, []);
+		if (recipients === "absent") {
+			const current = await deliveryState(source);
+			const parked = current?.receipts[String(steer.submissionId)];
+			assert.equal(parked?.acknowledged, false);
+			assert.equal(parked?.delivery?.state, "parked");
+		} else assert.deepEqual(errors, []);
 	});
 
-for (const route of ["operator", "model", "fallback"] as const)
+for (const route of ["operator", "model"] as const)
 	it(`delivers a ${route} check-in through the report primary route`, { timeout: 30000 }, async (t) => {
 		const root = fixtureRoot(t);
 		const sessionsRoot = join(root, "sessions");
-		const primary = randomUUID();
-		const owner = route === "fallback" ? randomUUID() : primary;
+		const owner = randomUUID();
 		const received = eventLog<PrimaryDelivery>();
 		let release!: () => void;
 		const gate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
 		const channel = await createPrimaryChannel({
-			id: primary,
+			id: owner,
 			cwd: root,
 			sessionsRoot,
 			deliver: async (message) => {
@@ -767,7 +760,7 @@ for (const route of ["operator", "model", "fallback"] as const)
 		const checkIn = {
 			conversationId: 1,
 			requestId: "task",
-			origin: route === "operator" ? ("operator" as const) : ("model" as const),
+			origin: route,
 			elapsedMs: 11_100_000,
 			cost: 0.125,
 		};
@@ -803,33 +796,17 @@ for (const route of ["operator", "model", "fallback"] as const)
 		t.after(() => release());
 		await received.waitForCount(1);
 		assert.equal((await deliveryState(source))?.reports[0]?.acknowledged, false, "admission precedes acknowledgement");
-		assert.equal(
-			(await deliveryState(source))?.reports[0]?.checkIn?.fallbackBroadcast,
-			undefined,
-			"an unaccepted broadcast records no flag",
-		);
 		release();
-		await waitForDelivery(source, async () =>
-			route === "fallback"
-				? (await deliveryState(source))?.reports[0]?.checkIn?.fallbackBroadcast === true
-				: (await deliveryState(source))?.reports[0]?.acknowledged === true,
-		);
+		await waitForDelivery(source, async () => (await deliveryState(source))?.reports[0]?.acknowledged === true);
 		const message = received[0];
-		assert.equal(
-			message.sourceId,
-			route === "fallback"
-				? informationalSource("11111111-1111-4111-8111-111111111111:checkin:task:1", primary)
-				: "11111111-1111-4111-8111-111111111111:checkin:task:1",
-		);
+		assert.equal(message.sourceId, "11111111-1111-4111-8111-111111111111:checkin:task:1");
 		const details = message.details as Record<string, unknown>;
 		assert.equal(details.kind, "report");
 		assert.equal(details.reportSourceId, "checkin:task:1");
 		assert.equal(details.wake, route === "model");
 		assert.deepEqual(details.checkIn, checkIn);
 		assert.equal(details.originalOwnerId, owner);
-		assert.equal(details.fallback, route === "fallback" ? true : undefined);
-		const retained = (await deliveryState(source))?.reports[0];
-		assert.equal(retained?.checkIn?.fallbackBroadcast, route === "fallback" ? true : undefined);
+		assert.equal(details.deliveryRecipient, owner);
 		assert.match(message.text, /still working.*not finished/u);
 		assert.match(message.text, /3h05m.*\$0\.125 conversation total/u);
 		assert.match(message.text, /\(check-in from 11111111-1111-4111-8111-111111111111; source checkin:task:1\)/u);
@@ -839,159 +816,7 @@ for (const route of ["operator", "model", "fallback"] as const)
 		assert.doesNotMatch(message.text, /sent a report| finished\./u);
 	});
 
-it("retains one accepted check-in fallback broadcast per watched task and owner", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const sessionsRoot = join(root, "sessions");
-	const primary = randomUUID();
-	const owner = randomUUID();
-	const received = eventLog<PrimaryDelivery>();
-	let releaseFirst!: () => void;
-	const firstGate = new Promise<void>((resolve) => {
-		releaseFirst = resolve;
-	});
-	const channel = await createPrimaryChannel({
-		id: primary,
-		cwd: root,
-		sessionsRoot,
-		deliver: async (message) => {
-			received.push(message);
-			if (received.length === 1) await firstGate;
-		},
-		promptTrust: async () => undefined,
-	});
-	t.after(async () => {
-		releaseFirst();
-		await channel.close();
-	});
-	const sourcePath = join(root, "source.sqlite");
-	let source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
-	let watcher: ReturnType<typeof startDurableDelivery> | undefined;
-	t.after(async () => {
-		await watcher?.close();
-		await source.close();
-	});
-	const add = async (sourceId: string, requestId = "task", conversationId = 1, ownerId = owner): Promise<void> => {
-		await source.harness.commit(
-			async (tx) =>
-				editDeliveryFixture(tx, async (deliveryFixtureState) => {
-					const state = deliveryFixtureState;
-					const fallbackBroadcast = state.reports.some(
-						(report) =>
-							report.ownerId === ownerId &&
-							report.checkIn?.conversationId === conversationId &&
-							report.checkIn.requestId === requestId &&
-							report.checkIn.fallbackBroadcast === true,
-					);
-					const checkIn = {
-						...(fallbackBroadcast ? { fallbackBroadcast: true } : {}),
-						conversationId,
-						requestId,
-						origin: "model" as const,
-						elapsedMs: 1_800_000,
-						cost: null,
-					};
-					state.reports.push({
-						sourceId,
-						requestId: sourceId,
-						ownerId,
-						senderIdentity: source.storageId,
-						message: "Task is active.",
-						replyTo: null,
-						acknowledged: false,
-						createdAt: 1,
-						checkIn,
-					});
-				}),
-			BACKGROUND_CONTEXT,
-		);
-	};
-	const start = () =>
-		startDurableDelivery({
-			host: source,
-			metadata: sourceMetadata(root, source.storageId, sourcePath),
-			catalog: new AgentCatalog(root),
-			sessionsRoot,
-			signal: new AbortController().signal,
-		});
-	await add("checkin:task:1");
-	watcher = start();
-	await received.waitForCount(1);
-	await source.harness.commit(
-		async (tx) =>
-			editDeliveryFixture(tx, async (deliveryFixtureState) => {
-				const state = deliveryFixtureState;
-				state.reports.splice(0, 1);
-			}),
-		BACKGROUND_CONTEXT,
-	);
-	await add("checkin:task:coalesced");
-	releaseFirst();
-	await waitForDelivery(
-		source,
-		async () =>
-			(await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:coalesced")?.checkIn
-				?.fallbackBroadcast === true,
-	);
-	const accepted = (await deliveryState(source))?.reports.find(
-		(report) => report.sourceId === "checkin:task:coalesced",
-	);
-	assert.equal(accepted?.acknowledged, false);
-	assert.equal(accepted?.checkIn?.fallbackBroadcast, true, "accepted delivery survives replacement of its pending row");
-	assert.equal(received.length, 1, "the coalesced row uses the accepted broadcast instead of another notice");
-	await watcher.close();
-	await source.close();
-	source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
-	await add("checkin:task:2");
-	watcher = start();
-	await waitForDelivery(
-		source,
-		async () =>
-			(await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:2")?.checkIn
-				?.fallbackBroadcast === true,
-	);
-	assert.equal(received.length, 1, "a retained broadcast suppresses the next fallback after reopen");
-	for (const [sourceId, requestId, conversationId, ownerId] of [
-		["checkin:other-task:1", "other-task", 1, owner],
-		["checkin:other-conversation:1", "task", 2, owner],
-		["checkin:other-owner:1", "task", 1, randomUUID()],
-	] as const) {
-		await add(sourceId, requestId, conversationId, ownerId);
-		await waitForDelivery(
-			source,
-			async () =>
-				(await deliveryState(source))?.reports.find((report) => report.sourceId === sourceId)?.checkIn
-					?.fallbackBroadcast === true,
-		);
-	}
-	assert.equal(received.length, 4, "different watched tasks, conversations and owners each retain their own fallback");
-	const direct = eventLog<PrimaryDelivery>();
-	const ownerChannel = await createPrimaryChannel({
-		id: owner,
-		cwd: root,
-		sessionsRoot,
-		deliver: (message) => {
-			direct.push(message);
-		},
-		promptTrust: async () => undefined,
-	});
-	t.after(() => ownerChannel.close());
-	await add("checkin:task:3");
-	await direct.waitForCount(1);
-	await waitForDelivery(
-		source,
-		async () =>
-			(await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:3")?.acknowledged ===
-			true,
-	);
-	assert.equal(
-		(direct[0].details as { wake?: boolean }).wake,
-		true,
-		"the restored owning primary still receives live check-ins",
-	);
-	assert.equal(received.length, 4, "the restored owner does not use fallback");
-});
-
-for (const route of ["catalog", "primary", "fallback"] as const)
+for (const route of ["catalog", "primary"] as const)
 	it(`drops a check-in that settles during ${route} route preparation`, { timeout: 30000 }, async (t) => {
 		const root = fixtureRoot(t);
 		const sessionsRoot = join(root, "sessions");
@@ -1005,7 +830,7 @@ for (const route of ["catalog", "primary", "fallback"] as const)
 			ownerId: "owner",
 		});
 		const primary = randomUUID();
-		const owner = route === "catalog" ? `${record.storageId}:1` : route === "fallback" ? randomUUID() : primary;
+		const owner = route === "catalog" ? `${record.storageId}:1` : primary;
 		const received = eventLog<PrimaryDelivery>();
 		const channel = await createPrimaryChannel({
 			id: primary,
@@ -1104,11 +929,6 @@ for (const route of ["catalog", "primary", "fallback"] as const)
 				await routeGate;
 				return fakeTarget(target, calls);
 			},
-			listPrimaryChannels: async () => {
-				preparing.push(undefined);
-				await routeGate;
-				return { ids: [primary], complete: true, visited: 1 };
-			},
 		});
 		t.after(async () => {
 			releaseRoute();
@@ -1133,11 +953,6 @@ for (const route of ["catalog", "primary", "fallback"] as const)
 			(report) => report.sourceId === "checkin:watched-task:1",
 		);
 		assert.equal(retired?.acknowledged, true, "suppression retains its dedupe outcome without pending delivery");
-		assert.equal(
-			retired?.checkIn?.fallbackBroadcast,
-			undefined,
-			"suppression never records accepted fallback evidence",
-		);
 		await watcher.close();
 	});
 
@@ -1786,9 +1601,6 @@ for (const route of ["catalog", "same-storage"] as const)
 			catalog,
 			signal: new AbortController().signal,
 			acquire: async () => fakeTarget(target, calls, gate),
-			listPrimaryChannels: async () => {
-				assert.fail("a report owner in a storage never uses fallback");
-			},
 		});
 		t.after(() => watcher.close());
 		t.after(() => release());
@@ -2083,9 +1895,6 @@ it("identifies an absent peer report without blocking a catalog owner's result",
 			acquired += 1;
 			assert.equal(metadata.storageId, record.storageId);
 			return fakeTarget(target, calls);
-		},
-		listPrimaryChannels: async () => {
-			assert.fail("an absent native peer must not broadcast to primary sessions");
 		},
 		onError: (error) => errors.push(error),
 	});
@@ -3077,7 +2886,7 @@ for (const origin of [undefined, "invalid"] as const)
 		}
 	});
 
-it("reports a same-storage owner inside its storage instead of falling back", { timeout: 30000 }, async (t) => {
+it("reports a same-storage owner inside its storage", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sessionsRoot = join(root, "sessions");
 	const primary = randomUUID();
@@ -3381,107 +3190,7 @@ it("holds a quiet notice for an older owner, then delivers after that owner rest
 	assert.equal(cleared.deliveryError, undefined, "a successful pass clears the reported delivery error");
 });
 
-it("holds a fallback when a registered primary runs an older endpoint", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const sessionsRoot = join(root, "sessions");
-	const absentOwner = randomUUID();
-	const older = randomUUID();
-	const compatible = randomUUID();
-	const received = eventLog<PrimaryDelivery>();
-	const channel = await createPrimaryChannel({
-		id: compatible,
-		cwd: root,
-		sessionsRoot,
-		deliver: (message) => {
-			received.push(message);
-		},
-		promptTrust: async () => undefined,
-	});
-	t.after(async () => {
-		await channel.close().catch(() => undefined);
-	});
-	writeIncompatibleEndpoint(sessionsRoot, older);
-	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
-	t.after(async () => {
-		await source.close().catch(() => undefined);
-	});
-	const submissionId = await addReceipt(source, absentOwner, "older-candidate");
-	const errors = eventLog<Error>();
-	const watcher = startDurableDelivery({
-		host: source,
-		metadata: sourceMetadata(root, source.storageId, sourcePath),
-		catalog: new AgentCatalog(root),
-		sessionsRoot,
-		signal: new AbortController().signal,
-		onError: (error) => errors.push(error),
-	});
-	t.after(() => watcher.close());
-	await errors.waitForCount(1);
-	assert.ok(errors[0]?.message.includes("primary-delivery/9.0.0"));
-	assert.match(errors[0]?.message ?? "", /stays unacknowledged/u);
-	assert.equal(received.length, 0, "no registered primary receives while an older primary is registered");
-	const state = await deliveryState(source);
-	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, false, "the fallback row stays pending");
-});
-
-it("falls back to one registered live primary when the owning endpoint is absent", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const sessionsRoot = join(root, "sessions");
-	const absentOwner = randomUUID();
-	const fallbackOwner = randomUUID();
-	const received = eventLog<PrimaryDelivery>();
-	const channel = await createPrimaryChannel({
-		id: fallbackOwner,
-		cwd: root,
-		sessionsRoot,
-		deliver: (message) => {
-			received.push(message);
-		},
-		promptTrust: async () => undefined,
-	});
-	t.after(async () => {
-		await channel.close().catch(() => undefined);
-	});
-	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
-	t.after(async () => {
-		await source.close().catch(() => undefined);
-	});
-	const submissionId = await addReceipt(source, absentOwner);
-	const errors = eventLog<Error>();
-	const watcher = startDurableDelivery({
-		host: source,
-		metadata: sourceMetadata(root, source.storageId, sourcePath),
-		catalog: new AgentCatalog(root),
-		sessionsRoot,
-		signal: new AbortController().signal,
-		onError: (error) => errors.push(error),
-	});
-	await received.waitForCount(1);
-	await waitForDelivery(
-		source,
-		async () => (await deliveryState(source))?.receipts[String(submissionId)]?.fallbackRecipients?.length === 1,
-	);
-	const message = received[0];
-	const details = message.details as Record<string, unknown>;
-	assert.equal(details.fallback, true);
-	assert.equal(details.fallbackLabel, "no live owning session");
-	assert.equal(details.label, "11111111-1111-4111-8111-111111111111");
-	assert.equal(details.wake, false, "a fallback broadcast never wakes a primary model");
-	assert.equal(details.originalOwnerId, absentOwner);
-	assert.equal(details.liveOwner, false);
-	assert.equal(details.deliveryRecipient, fallbackOwner);
-	assert.equal(details.identity, "11111111-1111-4111-8111-111111111111");
-	assert.match(message.text, /no live owning session/u);
-	assert.ok(message.text.includes(absentOwner));
-	const state = await deliveryState(source);
-	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, false);
-	assert.deepEqual(errors, []);
-	await watcher.close();
-});
-
-it("refuses fallback when the live owning endpoint is unreachable", { timeout: 30000 }, async (t) => {
+it("keeps a live owner's row pending when its endpoint is unreachable", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sessionsRoot = join(root, "sessions");
 	const owner = randomUUID();
@@ -3529,7 +3238,7 @@ it("refuses fallback when the live owning endpoint is unreachable", { timeout: 3
 	});
 	await errors.waitForCount(1);
 	assert.equal(ownerDeliveries.length, 0);
-	assert.equal(otherDeliveries.length, 0, "a live but unreachable owner refuses fallback");
+	assert.equal(otherDeliveries.length, 0, "an unreachable owner does not send the row to another primary");
 	const state = await deliveryState(source);
 	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, false);
 	await watcher.close();
@@ -3891,7 +3600,7 @@ for (const completed of ["routing", "automatic"] as const)
 						delivery:
 							completed === "routing"
 								? { state: "terminal", reason: "corrupt admission origin" }
-								: { state: "parked", reason: "primary endpoint is absent" },
+								: { state: "parked", reason: absentPrimaryReason(owner) },
 						...(completed === "routing"
 							? {
 									checkIn: {
@@ -3968,6 +3677,7 @@ for (const phase of ["before", "during"] as const)
 	}, async (t) => {
 		const root = fixtureRoot(t),
 			path = join(root, "source.sqlite");
+		const owner = randomUUID();
 		const source = await openHost(path, "11111111-1111-4111-8111-111111111111", root);
 		t.after(() => source.close());
 		// Existing settlement metadata makes the observed traversal genuinely no-write.
@@ -3980,14 +3690,14 @@ for (const phase of ["before", "during"] as const)
 					{
 						sourceId: `check-in:1:offset-${index}:1`,
 						requestId: `check-in:1:offset-${index}:1`,
-						ownerId: "22222222-2222-4222-8222-222222222222",
+						ownerId: owner,
 						senderIdentity: source.storageId,
 						message: "current",
 						replyTo: null,
 						acknowledged: false,
 						createdAt: index,
 						direct: true,
-						delivery: { state: "parked", reason: "primary endpoint is absent" },
+						delivery: { state: "parked", reason: absentPrimaryReason(owner) },
 						checkIn: {
 							conversationId: 1,
 							requestId: `unresolved-${index}`,
@@ -4034,6 +3744,7 @@ for (const phase of ["before", "during"] as const)
 it("retries an early-page route failure after a final already-parked page", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t),
 		catalog = new AgentCatalog(root);
+	const absent = randomUUID();
 	const recipient = catalog.create({
 		cwd: root,
 		agentDir: join(root, "agent"),
@@ -4052,14 +3763,14 @@ it("retries an early-page route failure after a final already-parked page", { ti
 				{
 					sourceId: `report:page-${index}`,
 					requestId: `page-${index}`,
-					ownerId: index === 0 ? recipient.storageId : "22222222-2222-4222-8222-222222222222",
+					ownerId: index === 0 ? recipient.storageId : absent,
 					senderIdentity: source.storageId,
 					message: "retained",
 					replyTo: null,
 					acknowledged: false,
 					createdAt: index,
 					direct: true,
-					...(index === 0 ? {} : { delivery: { state: "parked" as const, reason: "primary endpoint is absent" } }),
+					...(index === 0 ? {} : { delivery: { state: "parked" as const, reason: absentPrimaryReason(absent) } }),
 				},
 				true,
 			);
@@ -4289,15 +4000,25 @@ it("preserves the live owner's wake when an absent owner shares its answer", { t
 	t.after(() => watcher.close());
 	await received.waitForCount(1);
 	await idle.waitForCount(1);
-	const normal = received.find((message) => (message.details as { liveOwner: boolean }).liveOwner);
-	assert.ok(normal, "a fallback never substitutes for the live owner's delivery");
-	assert.equal((normal.details as { wake: boolean }).wake, true);
+	assert.equal(received.length, 1);
+	const details = received[0].details as {
+		originalOwnerId: string;
+		deliveryRecipient: string;
+		liveOwner: boolean;
+		wake: boolean;
+	};
+	assert.equal(details.originalOwnerId, live);
+	assert.equal(details.deliveryRecipient, live);
+	assert.equal(details.liveOwner, true);
+	assert.equal(details.wake, true);
 	assert.equal((await deliveryState(source))?.receipts[String(submissionId)]?.acknowledged, false);
 	assert.equal((await deliveryState(source))?.receipts["999"]?.acknowledged, true);
 });
 
 for (const kind of ["receipt", "report"] as const)
-	it(`keeps a dead owner's ${kind} pending across fallback and source reopen`, { timeout: 30000 }, async (t) => {
+	it(`keeps a dead owner's ${kind} parked until that owner registers, even across source reopen`, {
+		timeout: 30000,
+	}, async (t) => {
 		const root = fixtureRoot(t);
 		const sessionsRoot = join(root, "sessions");
 		const owner = randomUUID();
@@ -4306,13 +4027,13 @@ for (const kind of ["receipt", "report"] as const)
 		await waitForProcessExit(dead, 5000);
 		assert.ok(dead.pid);
 		writeIncompatibleEndpoint(sessionsRoot, owner, dead.pid);
-		const fallback = eventLog<PrimaryDelivery>();
+		const unrelated: PrimaryDelivery[] = [];
 		let channel = await createPrimaryChannel({
 			id: other,
 			cwd: root,
 			sessionsRoot,
 			deliver: (message) => {
-				fallback.push(message);
+				unrelated.push(message);
 			},
 			promptTrust: async () => undefined,
 		});
@@ -4331,6 +4052,16 @@ for (const kind of ["receipt", "report"] as const)
 				{ ownerId: owner, senderIdentity: source.storageId, message: "result", requestId: "offline-report" },
 				BACKGROUND_CONTEXT,
 			);
+		await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+		await source.harness.commit(async (tx) => {
+			await editDeliveryFixture(tx, async (state) => {
+				const evidence = { fallbackRecipients: [other], fallbackBroadcast: true as const };
+				if (kind === "receipt") {
+					const key = String(submissionId);
+					state.receipts[key] = { ...state.receipts[key], ...evidence };
+				} else state.reports[0] = { ...state.reports[0], ...evidence };
+			});
+		}, BACKGROUND_CONTEXT);
 		const row = async () => {
 			const state = await deliveryState(source);
 			return kind === "receipt" ? state?.receipts[String(submissionId)] : state?.reports[0];
@@ -4345,13 +4076,16 @@ for (const kind of ["receipt", "report"] as const)
 				signal: new AbortController().signal,
 				onIdle: () => idle.push(undefined),
 			});
+		const assertParked = async () => {
+			const pending = await row();
+			assert.equal(pending?.acknowledged, false);
+			assert.equal(pending?.delivery?.state, "parked");
+			assert.match(pending.delivery.reason, /has an endpoint whose process ended; .*reaches no other session/u);
+			assert.equal(unrelated.length, 0);
+		};
 		watcher = start();
-		await fallback.waitForCount(1);
 		await idle.waitForCount(1);
-		assert.equal((await row())?.acknowledged, false, "fallback is informational, not owner acceptance");
-		assert.deepEqual(((await row()) as { fallbackRecipients?: string[] })?.fallbackRecipients, [other]);
-		assert.equal((fallback[0].details as { wake: boolean }).wake, false);
-		assert.match(fallback[0].text, /no live owning session/u);
+		await assertParked();
 		await watcher.close();
 		await source.close();
 		await channel.close();
@@ -4360,7 +4094,7 @@ for (const kind of ["receipt", "report"] as const)
 			cwd: root,
 			sessionsRoot,
 			deliver: (message) => {
-				fallback.push(message);
+				unrelated.push(message);
 			},
 			promptTrust: async () => undefined,
 		});
@@ -4368,7 +4102,7 @@ for (const kind of ["receipt", "report"] as const)
 		const passes = idle.length;
 		watcher = start();
 		await idle.waitForCount(passes + 1);
-		assert.equal(fallback.length, 1, "retained recipient state survives both source and receiver reopen");
+		await assertParked();
 		const direct = eventLog<PrimaryDelivery>();
 		const ownerChannel = await createPrimaryChannel({
 			id: owner,
@@ -4380,311 +4114,23 @@ for (const kind of ["receipt", "report"] as const)
 			promptTrust: async () => undefined,
 		});
 		t.after(() => ownerChannel.close());
-		await watcher.close();
-		watcher = start();
+		watcher.refresh();
 		await direct.waitForCount(1);
 		await waitForDelivery(source, async () => (await row())?.acknowledged === true);
 		await watcher.close();
 		watcher = start();
 		await idle.waitForCount(idle.length + 1);
 		assert.equal(direct.length, 1, "one normal owner delivery per registration");
-		assert.equal(fallback.length, 1);
+		const details = direct[0].details as { originalOwnerId: string; deliveryRecipient: string };
+		assert.equal(details.originalOwnerId, owner);
+		assert.equal(details.deliveryRecipient, owner);
+		const sourceId =
+			submissionId === undefined
+				? `${source.storageId}:report:offline-report`
+				: await receiptSourceId(source, submissionId);
+		assert.equal(direct[0].sourceId, sourceId);
+		assert.equal(unrelated.length, 0);
 	});
-
-it("broadcasts a fallback to every registered live primary exactly once", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const sessionsRoot = join(root, "sessions");
-	const absentOwner = randomUUID();
-	const first = randomUUID();
-	const second = randomUUID();
-	const firstReceived = eventLog<PrimaryDelivery>();
-	const secondReceived = eventLog<PrimaryDelivery>();
-	const firstChannel = await createPrimaryChannel({
-		id: first,
-		cwd: root,
-		sessionsRoot,
-		deliver: (message) => {
-			firstReceived.push(message);
-		},
-		promptTrust: async () => undefined,
-	});
-	const secondChannel = await createPrimaryChannel({
-		id: second,
-		cwd: root,
-		sessionsRoot,
-		deliver: (message) => {
-			secondReceived.push(message);
-		},
-		promptTrust: async () => undefined,
-	});
-	t.after(async () => {
-		await firstChannel.close().catch(() => undefined);
-		await secondChannel.close().catch(() => undefined);
-	});
-	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
-	t.after(async () => {
-		await source.close().catch(() => undefined);
-	});
-	const submissionId = await addReceipt(source, absentOwner);
-	const errors = eventLog<Error>();
-	const idle = eventLog<void>();
-	const watcher = startDurableDelivery({
-		host: source,
-		metadata: sourceMetadata(root, source.storageId, sourcePath),
-		catalog: new AgentCatalog(root),
-		sessionsRoot,
-		signal: new AbortController().signal,
-		onError: (error) => errors.push(error),
-		onIdle: () => idle.push(undefined),
-	});
-	try {
-		await Promise.all([firstReceived.waitForCount(1), secondReceived.waitForCount(1)]);
-		await waitForDelivery(
-			source,
-			async () => (await deliveryState(source))?.receipts[String(submissionId)]?.fallbackRecipients?.length === 2,
-		);
-		await idle.waitFor((passes) => passes.length > 0 && !watcher.busy);
-		assert.equal(firstReceived.length, 1, "the first registered primary receives exactly one");
-		assert.equal(secondReceived.length, 1, "the second registered primary receives exactly one");
-		for (const [id, received] of [
-			[first, firstReceived],
-			[second, secondReceived],
-		] as const) {
-			const details = received[0]?.details as Record<string, unknown>;
-			assert.equal(received[0]?.sourceId, await receiptSourceId(source, submissionId, id));
-			assert.equal(details.fallback, true);
-			assert.equal(details.fallbackLabel, "no live owning session");
-			assert.equal(details.wake, false, "a fallback broadcast never wakes a primary model");
-			assert.equal(details.originalOwnerId, absentOwner);
-			assert.equal(details.deliveryRecipient, id);
-		}
-		const state = await deliveryState(source);
-		assert.equal(
-			state?.receipts[String(submissionId)]?.acknowledged,
-			false,
-			"the row waits for its owner after every fallback recipient accepts",
-		);
-	} finally {
-		await watcher.close();
-	}
-	assert.ok(errors.length > 0, "the absent owner remains parked after informational fallback");
-	for (const error of errors) {
-		assert.equal(
-			error.message,
-			`Delivery receipt:${submissionId} to ${absentOwner}: parked: primary endpoint is absent`,
-		);
-	}
-});
-
-it("retries a failed broadcast without duplicating a successful receiver", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const sessionsRoot = join(root, "sessions");
-	const absentOwner = randomUUID();
-	const stable = randomUUID();
-	const failing = randomUUID();
-	const stableKeys: string[] = [];
-	const failingKeys: string[] = [];
-	let failingAttempts = 0;
-	const stableChannel = await createPrimaryChannel({
-		id: stable,
-		cwd: root,
-		sessionsRoot,
-		deliver: (message) => {
-			stableKeys.push(message.sourceId);
-		},
-		promptTrust: async () => undefined,
-	});
-	const failingChannel = await createPrimaryChannel({
-		id: failing,
-		cwd: root,
-		sessionsRoot,
-		deliver: (message) => {
-			failingAttempts += 1;
-			if (failingAttempts === 1) throw new Error("display unavailable");
-			failingKeys.push(message.sourceId);
-		},
-		promptTrust: async () => undefined,
-	});
-	t.after(async () => {
-		await stableChannel.close().catch(() => undefined);
-		await failingChannel.close().catch(() => undefined);
-	});
-	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
-	t.after(async () => {
-		await source.close().catch(() => undefined);
-	});
-	const submissionId = await addReceipt(source, absentOwner);
-	const errors = eventLog<Error>();
-	const watcher = startDurableDelivery({
-		host: source,
-		metadata: sourceMetadata(root, source.storageId, sourcePath),
-		catalog: new AgentCatalog(root),
-		sessionsRoot,
-		retryDelayMs: 5,
-		signal: new AbortController().signal,
-		onError: (error) => errors.push(error),
-	});
-	await waitForDelivery(
-		source,
-		async () => (await deliveryState(source))?.receipts[String(submissionId)]?.fallbackRecipients?.length === 2,
-		15000,
-	);
-	assert.ok(failingAttempts >= 2, `the failed candidate was retried, attempts ${failingAttempts}`);
-	const expected = await receiptSourceId(source, submissionId, stable);
-	const failingExpected = await receiptSourceId(source, submissionId, failing);
-	assert.equal(stableKeys.length, 1, "retained state suppresses retry copies to the stable receiver");
-	assert.equal(new Set(stableKeys).size, 1, "the retry preserves one source key for receiver dedup");
-	for (const key of stableKeys) assert.equal(key, expected);
-	assert.deepEqual(new Set(failingKeys), new Set([failingExpected]));
-	assert.ok(errors.length >= 1, "the failed candidate was reported");
-	await watcher.close();
-});
-
-it("refuses acknowledgement when candidate discovery is incomplete", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
-	t.after(async () => {
-		await source.close().catch(() => undefined);
-	});
-	const submissionId = await addReceipt(source, randomUUID());
-	const errors = eventLog<Error>();
-	const watcher = startDurableDelivery({
-		host: source,
-		metadata: sourceMetadata(root, source.storageId, sourcePath),
-		catalog: new AgentCatalog(root),
-		sessionsRoot: join(root, "sessions"),
-		retryDelayMs: 5,
-		signal: new AbortController().signal,
-		listPrimaryChannels: async () => ({ ids: [randomUUID()], complete: false, visited: 256 }),
-		onError: (error) => errors.push(error),
-	});
-	await errors.waitForCount(1);
-	assert.match(errors[0]?.message ?? "", /discovery is incomplete/u);
-	const state = await deliveryState(source);
-	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, false);
-	await watcher.close();
-});
-
-it("leaves a fallback row pending when no registered primary can receive it", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
-	t.after(async () => {
-		await source.close().catch(() => undefined);
-	});
-	const submissionId = await addReceipt(source, randomUUID());
-	const errors = eventLog<Error>();
-	const watcher = startDurableDelivery({
-		host: source,
-		metadata: sourceMetadata(root, source.storageId, sourcePath),
-		catalog: new AgentCatalog(root),
-		sessionsRoot: join(root, "sessions"),
-		retryDelayMs: 5,
-		signal: new AbortController().signal,
-		listPrimaryChannels: async () => ({ ids: [], complete: true, visited: 0 }),
-		onError: (error) => errors.push(error),
-	});
-	await errors.waitForCount(1);
-	assert.match(errors[0]?.message ?? "", /no live owning session/u);
-	const state = await deliveryState(source);
-	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, false);
-	await watcher.close();
-});
-
-it("leaves the broadcast pending when a registered live candidate is unreachable", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const sessionsRoot = join(root, "sessions");
-	const absentOwner = randomUUID();
-	const reachable = randomUUID();
-	const unreachable = randomUUID();
-	const received = eventLog<PrimaryDelivery>();
-	const reachableChannel = await createPrimaryChannel({
-		id: reachable,
-		cwd: root,
-		sessionsRoot,
-		deliver: (message) => {
-			received.push(message);
-		},
-		promptTrust: async () => undefined,
-	});
-	const unreachableChannel = await createPrimaryChannel({
-		id: unreachable,
-		cwd: root,
-		sessionsRoot,
-		deliver: () => undefined,
-		promptTrust: async () => undefined,
-	});
-	t.after(async () => {
-		await reachableChannel.close().catch(() => undefined);
-		await unreachableChannel.close().catch(() => undefined);
-	});
-	unlinkSync(unreachableChannel.socketPath);
-	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
-	t.after(async () => {
-		await source.close().catch(() => undefined);
-	});
-	const submissionId = await addReceipt(source, absentOwner);
-	const errors = eventLog<Error>();
-	const watcher = startDurableDelivery({
-		host: source,
-		metadata: sourceMetadata(root, source.storageId, sourcePath),
-		catalog: new AgentCatalog(root),
-		sessionsRoot,
-		retryDelayMs: 5,
-		signal: new AbortController().signal,
-		onError: (error) => errors.push(error),
-	});
-	await Promise.all([received.waitForCount(1, 15000), errors.waitForCount(1, 15000)]);
-	const expected = await receiptSourceId(source, submissionId, reachable);
-	assert.equal(received[0]?.sourceId, expected);
-	const details = received[0]?.details as Record<string, unknown>;
-	assert.equal(details.fallback, true);
-	assert.equal(details.deliveryRecipient, reachable);
-	assert.match(errors[0]?.message ?? "", new RegExp(unreachable, "u"), "the unavailable candidate is named");
-	await errors.waitForCount(2, 15000);
-	assert.equal(received.length, 1, "retained state suppresses duplicate fallback attempts");
-	assert.equal(
-		new Set(received.map((message) => message.sourceId)).size,
-		1,
-		"retries preserve the stable receiver key",
-	);
-	const state = await deliveryState(source);
-	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, false, "the row stays pending");
-	await watcher.close();
-});
-
-it("bounds the default primary discovery and refuses an incomplete scan", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const sessionsRoot = join(root, "sessions");
-	const directory = join(sessionsRoot, ".primaries");
-	mkdirSync(directory, { recursive: true });
-	for (let index = 0; index < 21; index += 1) writeFileSync(join(directory, `${randomUUID()}.json`), "{}");
-	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
-	t.after(async () => {
-		await source.close().catch(() => undefined);
-	});
-	const submissionId = await addReceipt(source, randomUUID());
-	const errors = eventLog<Error>();
-	const watcher = startDurableDelivery({
-		host: source,
-		metadata: sourceMetadata(root, source.storageId, sourcePath),
-		catalog: new AgentCatalog(root),
-		sessionsRoot,
-		retryDelayMs: 5,
-		signal: new AbortController().signal,
-		onError: (error) => errors.push(error),
-	});
-	await errors.waitForCount(1);
-	assert.match(errors[0]?.message ?? "", /discovery is incomplete/u);
-	const state = await deliveryState(source);
-	assert.equal(state?.receipts[String(submissionId)]?.acknowledged, false);
-	await watcher.close();
-});
 
 it("bounds long peer bodies without mutating the retained originals", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
@@ -4875,11 +4321,23 @@ for (const route of ["same-storage", "cross-storage"] as const) {
 	});
 }
 
-it("keeps a direct thread notice pending rather than broadcasting to another primary", {
+it("parks a direct thread notice for its absent owner without notifying another primary", {
 	timeout: 10000,
 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sourcePath = join(root, "thread-direct.sqlite");
+	const owner = randomUUID();
+	const received: PrimaryDelivery[] = [];
+	const other = await createPrimaryChannel({
+		id: randomUUID(),
+		cwd: root,
+		sessionsRoot: root,
+		deliver: (message) => {
+			received.push(message);
+		},
+		promptTrust: async () => undefined,
+	});
+	t.after(() => other.close());
 	const source = await openHost(sourcePath, randomUUID(), root);
 	t.after(() => source.close());
 	await source.harness.commit(
@@ -4889,7 +4347,8 @@ it("keeps a direct thread notice pending rather than broadcasting to another pri
 				state.reports.push({
 					sourceId: "report:direct",
 					requestId: "direct",
-					ownerId: randomUUID(),
+					ownerId: owner,
+					threadId: "private-thread",
 					senderIdentity: source.storageId,
 					message: "Private thread attention",
 					replyTo: null,
@@ -4900,25 +4359,21 @@ it("keeps a direct thread notice pending rather than broadcasting to another pri
 			}),
 		BACKGROUND_CONTEXT,
 	);
-	const errors = eventLog<Error>();
-	let discoveries = 0;
+	const idle = eventLog<void>();
 	const watcher = startDurableDelivery({
 		host: source,
 		metadata: sourceMetadata(root, source.storageId, sourcePath),
 		catalog: new AgentCatalog(root),
 		signal: new AbortController().signal,
 		sessionsRoot: root,
-		listPrimaryChannels: async () => {
-			discoveries++;
-			return { ids: [], visited: 0, complete: true };
-		},
-		onError: (error) => errors.push(error),
+		onIdle: () => idle.push(undefined),
 	});
 	t.after(() => watcher.close());
-	await errors.waitForCount(1);
-	assert.match(errors[0].message, /parked: primary endpoint is absent/u);
-	assert.equal(discoveries, 0);
-	assert.equal((await deliveryState(source))?.reports[0].acknowledged, false);
+	await idle.waitForCount(1);
+	const row = (await deliveryState(source))?.reports[0];
+	assert.equal(row?.acknowledged, false);
+	assert.deepEqual(row?.delivery, { state: "parked", reason: absentPrimaryReason(owner) });
+	assert.deepEqual(received, []);
 });
 
 it("bounds the native catalog follow-up body", { timeout: 30000 }, async (t) => {
@@ -5194,9 +4649,6 @@ for (const evidence of ["name", "purpose", "identity", "dead"] as const)
 			signal: new AbortController().signal,
 			acquire: async () => {
 				assert.fail("source metadata reads never acquire a host");
-			},
-			listPrimaryChannels: async () => {
-				assert.fail("a direct thread notice never discovers primary channels");
 			},
 			onError: (error) => errors.push(error),
 		});
@@ -5780,20 +5232,4 @@ it("tells the requester of a failed input that results its producer delegated re
 	const delegated = receiptStateLine({ receipt, delegated: 2 } as never);
 	assert.match(delegated, /still waits for 2 request\(s\) that it delegated/u);
 	assert.match(delegated, /Send it a follow-up to finish the work and report\./u);
-});
-
-it("names what waits for an ended primary: a thread notice, a question or a message", () => {
-	const owner = "01a20c9b-0000-75a2-9fc7-00000000000c";
-	assert.equal(
-		directReportWaitText({ requestId: "thread:t:1:x", threadId: "t" }, owner),
-		`Thread recipient ${owner} has no live endpoint; its notification stays pending without broadcast`,
-	);
-	assert.equal(
-		directReportWaitText({ requestId: "question:agent:7" }, owner),
-		`Question question:agent:7 waits for session ${owner}, which has no live endpoint. It reaches no other session: the asker's next question or context head closes it as unanswered while that session stays ended, and the session receives it if it resumes first.`,
-	);
-	assert.equal(
-		directReportWaitText({ requestId: "agent-deliver:s:4" }, owner),
-		`Message agent-deliver:s:4 waits for session ${owner}, which has no live endpoint. It reaches no other session: that session receives it if it resumes. Send it to a live session if it cannot wait.`,
-	);
 });

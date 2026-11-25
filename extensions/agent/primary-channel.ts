@@ -38,7 +38,7 @@ import { opendir } from "node:fs/promises";
 import { connect } from "node:net";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { invalid } from "@earendil-works/chord";
+import { PluginError, invalid } from "@earendil-works/chord";
 import type { JsonValue } from "@earendil-works/chord/json";
 import {
 	connectTransport,
@@ -193,6 +193,31 @@ export class PrimaryChannelUnavailableError extends Error {
 		super(message);
 		this.name = "PrimaryChannelUnavailableError";
 	}
+}
+
+/**
+ * Why a primary refuses one retained delivery. `misaddressed`: the message names another recipient or this
+ * registration no longer holds the session. `copy`: an informational copy for another owner. `unsaved`: the
+ * session has no saved transcript yet. `no-transcript`: the session keeps no transcript at all. A refusal never
+ * establishes acceptance; the source keeps the row.
+ */
+export type PrimaryRefusalKind = "misaddressed" | "copy" | "unsaved" | "no-transcript";
+
+/** Error code of a recipient refusal on the primary channel; the kind travels in its details. */
+export const PRIMARY_REFUSAL_CODE = "primary_refused";
+const PRIMARY_REFUSAL_KINDS: ReadonlySet<string> = new Set(["misaddressed", "copy", "unsaved", "no-transcript"]);
+
+export function primaryRefusal(kind: PrimaryRefusalKind, message: string): PluginError {
+	return new PluginError(PRIMARY_REFUSAL_CODE, message, { refusal: kind });
+}
+
+/** The refusal kind of a delivery failure, or undefined for any other failure. */
+export function primaryRefusalKind(error: unknown): PrimaryRefusalKind | undefined {
+	if (error === null || typeof error !== "object") return undefined;
+	const { code, details } = error as { code?: unknown; details?: unknown };
+	if (code !== PRIMARY_REFUSAL_CODE || details === null || typeof details !== "object") return undefined;
+	const kind = (details as { refusal?: unknown }).refusal;
+	return typeof kind === "string" && PRIMARY_REFUSAL_KINDS.has(kind) ? (kind as PrimaryRefusalKind) : undefined;
 }
 
 export class PrimaryChannelConflictError extends Error {
@@ -1159,6 +1184,44 @@ export function primaryEndpointStatus(sessionsRoot: string, id: string): Primary
 	}
 	if (record === undefined) return { state: "absent" };
 	return classifyEndpoint(record, id);
+}
+
+/** Whether the session file that a live primary publishes exists; the primary's own check decides retention. */
+export type PrimaryTranscript = "saved" | "unsaved" | "none";
+
+export interface PrimaryRecipientStatus extends PrimaryEndpointStatus {
+	/** Present for a live owner: `none` when the session keeps no transcript. */
+	readonly transcript?: PrimaryTranscript;
+	/** The announced server of a live owner; a new registration announces another. */
+	readonly serverId?: string;
+}
+
+/**
+ * Owner status for a delivery decision: `primaryEndpointStatus` plus, for a live owner, one `lstat` of its
+ * published session file. Pi writes that file only once the session holds a message, so a new session has a
+ * path and no file.
+ */
+export function primaryRecipientStatus(sessionsRoot: string, id: string): PrimaryRecipientStatus {
+	if (!UUID_ANY.test(id)) return { state: "unknown" };
+	let record: RecordedPrimaryEndpoint | undefined;
+	try {
+		record = readEndpoint(primaryEndpointPath(sessionsRoot, id));
+	} catch {
+		return { state: "unknown" };
+	}
+	if (record === undefined) return { state: "absent" };
+	const status = classifyEndpoint(record, id);
+	if (status.state !== "live") return status;
+	return { ...status, serverId: record.serverId, transcript: transcriptState(record.sessionFile) };
+}
+
+function transcriptState(path: string | undefined): PrimaryTranscript {
+	if (path === undefined) return "none";
+	try {
+		return lstatSync(path, { throwIfNoEntry: false })?.isFile() === true ? "saved" : "unsaved";
+	} catch {
+		return "unsaved";
+	}
 }
 
 function classifyEndpoint(record: RecordedPrimaryEndpoint, id: string): PrimaryEndpointStatus {

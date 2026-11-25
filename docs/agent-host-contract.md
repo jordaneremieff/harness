@@ -33,7 +33,7 @@ A `submit` request also accepts optional
 `dependencyMarks:[{sessionId,submissionId,requestId,state:"state-note"|"arrived"}]`,
 with at most 64 marks. The host validates them before admission and retains
 them for the target conversation only after a successful admission, including
-a deduplicated replay. Only `arrived` marks supply `deliveredResults` on a normal delivery. A state note, interim report or fallback copy closes no sent request. Result delivery sends a state-note mark for declared
+a deduplicated replay. Only `arrived` marks supply `deliveredResults` on a normal delivery. A state note or interim report closes no sent request. Result delivery sends a state-note mark for declared
 work and an arrived mark for an ordinary result; explicit final-report
 delivery sends an arrived mark. A result producer also sends `stateNotesOnly:true`
 when every delivered receipt is a successful answer to a request with declared
@@ -157,11 +157,11 @@ answerEntryId <- details.answerEntryId (positive safe integer -> canonical decim
 
 A null native `entryId` or `answerEntryId` means absent, never `"null"`, zero, or a fabricated entry. The shared `details.answerEntryId` belongs to every reference in this producer's answer group; no per-member answer ID is invented. `omittedReferences` equals the number of supplied members beyond the retained first 16. The supplied members belong to one recipient; later reference pages are outside this count. Do not deduplicate references, substitute `operationId` for `requestId`, infer an admission from `ownerId`, or treat a continuation as a result reference. `details.reason` is optional when non-null and a valid bounded string of at most 1,024 UTF-8 bytes. Invalid supplied reference fields produce `unavailable/invalid`; a missing required submissions/body/status value remains `unresolved`.
 
-A normal receipt also supplies `details.receiptAssociation`: `{sourceId,requestId,recipient,producerStorageId,answerEntryId?,results,complete,receiptContinuation?}`. `sourceId` binds the producer storage, the answer or unanswered input, and the recipient; `requestId` is the delivery request derived from it; `results` holds at most 16 `{sessionId,submissionId,requestId?}` references for that recipient, and `complete` states whether they are the whole group. An informational fallback copy omits the association and uses a separate source ID for each fallback recipient. When the group continues, the association and `details.receiptContinuation` carry the exact `agent_inspect` call described under Native result inspection. The call continues `receiptAssociation.results` in captured order, not the pending members in `details.submissions`. The notice text names the captured submission IDs if they differ from the request states it shows. In a closed communication value, `metadata.receiptContinuation` follows the displayed reference page; the association stays a raw producer detail. Do not append a captured continuation to a different page of references.
+A normal receipt also supplies `details.receiptAssociation`: `{sourceId,requestId,recipient,producerStorageId,answerEntryId?,results,complete,receiptContinuation?}`. `sourceId` binds the producer storage, the answer or unanswered input, and the recipient; `requestId` is the delivery request derived from it; `results` holds at most 16 `{sessionId,submissionId,requestId?}` references for that recipient, and `complete` states whether they are the whole group. When the group continues, the association and `details.receiptContinuation` carry the exact `agent_inspect` call described under Native result inspection. The call continues `receiptAssociation.results` in captured order, not the pending members in `details.submissions`. The notice text names the captured submission IDs if they differ from the request states it shows. In a closed communication value, `metadata.receiptContinuation` follows the displayed reference page; the association stays a raw producer detail. Do not append a captured continuation to a different page of references.
 
-A normal receipt also supplies `details.deliveredResults`: every `{sessionId,submissionId,requestId}` reference that the delivered group settles for its recipient, independent of the sixteen display references. An informational fallback copy omits it. The primary channel forwards `details` unchanged, so this field needs no new `primary-delivery` identity. The native `submit` request carries the same list; see Native communication provenance for its validation and effect.
+A normal receipt also supplies `details.deliveredResults`: every `{sessionId,submissionId,requestId}` reference that the delivered group settles for its recipient, independent of the sixteen display references. The primary channel forwards `details` unchanged, so this field needs no new `primary-delivery` identity. The native `submit` request carries the same list; see Native communication provenance for its validation and effect.
 
-The existing `continuation` is raw producer detail only. Ordinary entry IDs remain ordinary IDs; do not cast them into Durable integer IDs. Delivery recipient, original owner, source alias, wake/fallback flags, acknowledgement, provider metadata, and cost are not sender authority or extra fields in the closed communication value.
+The existing `continuation` is raw producer detail only. Ordinary entry IDs remain ordinary IDs; do not cast them into Durable integer IDs. Delivery recipient, original owner, source alias, wake flag, acknowledgement, provider metadata, and cost are not sender authority or extra fields in the closed communication value.
 
 ### Body coverage, redaction, and bounded presentation
 
@@ -429,21 +429,39 @@ Sources: `transport/{index,endpoint,unix-link}.ts`; Chord 1.5.2
 The manager's retained-object identity is `manager/9.0.0`; ordinary primary
 channels use `primary-delivery/4.0.0`. Native tool bindings use
 `native-controls/4.0.0;durable=<loaded Durable version>`.
-The typed `deliver` payload accepts optional
-`requireRetained:boolean`, defaulting to true. Source-ledger owner and fallback
-routes explicitly require retained acceptance: an exact `agent.peer` source
-identity and matching entry bytes in the primary's actual session JSONL file,
-not a queued call to Pi's void `sendMessage`. Direct ordinary-primary submit/report
-routes explicitly set false and accept queued admission without a retention
-promise; they have no source ledger to retry a pending refusal. Deduplication
-keeps those acceptance modes separate. The source ledger retains retry ownership
-while bounded file verification is incomplete. Unrelated transcript records are
-streamed past without a record-size limit or general transcript validation. A new custom-only session remains unconfirmed
-until Pi flushes its first conversation. Older endpoints refuse the new channel;
-restart the primary and source hosts at their agreed safe boundaries. Their Endpoint methods are `info`,
-`deliver`, and `trustPrompt`, with the existing single payload in `params`
-and no host operation contract. Host operation identities do not change merely because the wire changes. A version
-refusal contains an incompatible call; it is not a safe activation plan.
+The primary message payload accepts optional `requireRetained:boolean`,
+defaulting to true. Source-ledger rows use `deliver` with `requireRetained:true`
+and go only to the owner's registered channel. Their `details` name that owner
+as both `deliveryRecipient` and `originalOwnerId`, with `liveOwner:true`. The
+receiver checks both recipient fields before consulting its replay cache. The
+registration's context must still hold that session, including on replay. A
+copy flag (`fallback:true`), a copy label (`fallbackLabel`),
+or a copy source identity (`:informational:`) causes refusal even if both
+recipient fields match.
+
+Fresh delivery requires this user's regular session file, opened without
+following a symbolic link, with a header that names the registered session.
+A receiver that keeps no transcript (`--no-session`) refuses every source-ledger
+row. Typed refusals are Chord `PluginError`s with `code: "primary_refused"` and
+`details.refusal` set to `misaddressed`, `copy`, `unsaved`, or `no-transcript`.
+These refusals do not change provider-block state, request continuity, the
+inbox, the transcript, or the model. Acceptance requires an exact `agent.peer`
+source identity and matching entry bytes in the session JSONL file, not a
+queued call to Pi's void `sendMessage`. The source ledger retains retry ownership
+while bounded file verification is incomplete. The reader streams past unrelated
+records without a record-size limit or general transcript validation. If the
+session file does not exist yet, the row waits at the source. Pi saves the file
+with the first user or assistant message, and the extension's first observation
+of that file starts recovery for the exact registered recipient.
+
+Direct ordinary-primary submit and report use `admit` with
+`requireRetained:false`. They require a saved session file and accept a
+retained inbox row without requiring transcript placement. They have no
+source ledger to retry a refusal. Deduplication keeps the two acceptance modes
+separate. The Endpoint methods are `info`, `deliver`, `admit`, and `trustPrompt`,
+with a single payload in `params` for delivery or admission. This Endpoint has
+no host operation contract. An incompatible endpoint leaves the row pending for
+its owner and reports which process to restart.
 
 ## Negotiation and request envelope
 
@@ -674,7 +692,7 @@ claimed producer outcome. A result delivered elsewhere marks nothing here;
 older admissions carry no mark, and inspection creates none.
 A close names `status`, `message`, `at`, `reportRequestId`, `read` (the call that reads the complete final report
 in pages) and, when readable, final-report `delivery` (`active`,
-`parked`, `fallback`, `terminal`, `delivered`, `absent` or `retained`). A delivery state does
+`parked`, `terminal`, `delivered`, `absent` or `retained`). A delivery state does
 not change the declared-work state.
 
 A passive report or state note that reaches an idle mixed inbox stays queued until an independent boundary.
@@ -802,7 +820,7 @@ The existing namespace socket accepts newline-terminated JSON `{format:"pi.agent
 
 Every shared inventory read captures the current directory snapshot and checks each record with a symlink-refusing file stat. The stamp includes device, inode, size, modification time and change time. Changed or unreadable records receive bounded payload reads; unchanged records reuse their facts. The retained stamp comes from the opened file's `fstat`, so an atomic replacement between pathname validation and payload read cannot bind new bytes to an old stamp. This path observes final publication even before its asynchronous notice arrives.
 
-Publishers accumulate identities during an in-flight broadcast. Managers combine namespace changes and connected-host notices, whose connection supplies the storage identity. Known changes refresh affected claims; overflow invalidates claims across the namespace. On the next read after two seconds, the shared owner refreshes all claims to detect silent writer death, without reopening unchanged record payloads. Directory validation also detects missed publications, deletions and unreadable records. The dashboard's existing reconciliation demand drives this path without another timer or persistent mirror. Failed discovery leaves the inventory dirty for another read.
+Publishers accumulate identities while a namespace notice is in flight. Managers combine namespace changes and connected-host notices, whose connection supplies the storage identity. Known changes refresh affected claims; overflow invalidates claims across the namespace. On the next read after two seconds, the shared owner refreshes all claims to detect silent writer death, without reopening unchanged record payloads. Directory validation also detects missed publications, deletions and unreadable records. The dashboard's existing reconciliation demand drives this path without another timer or persistent mirror. Failed discovery leaves the inventory dirty for another read.
 
 Roster continuations bind the caller's ownership set and local active stores, and rank the current shared observation, so changed publication time or claims can move records across the cursor; refresh to rediscover them. `AgentCatalog.page()` retains bounded filename-based reads for fleet status and thread discovery. `agent_list` orders its two passes from the shared observation by storage identity and keeps its own cursor; `extensions/agent/README.md` owns that contract. Exact-target reads and controls remain independent of this observation. Recovery conservatively considers all source records within its existing bound, then checks recipient availability freshly: a notice for recipient B also reaches parked work in source A. Sources: `extensions/agent/catalog.ts`; `extensions/agent/catalog-events.ts`; `extensions/agent/manager.ts`; `extensions/agent/dashboard-types.ts`.
 

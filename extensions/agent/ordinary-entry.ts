@@ -1,6 +1,6 @@
 /** Agent controls for independent Pi Durable hosts and the ordinary primary UI. */
 import { createHash } from "node:crypto";
-import { mkdirSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
@@ -110,8 +110,8 @@ import {
 	questionInputRefusal,
 	SELF_MESSAGE_REFUSAL,
 } from "./peer-questions.ts";
-import { primaryEndpointOwnerState, verifyPrimaryOwners } from "./primary-channel.ts";
-import { PrimaryRetention } from "./primary-retention.ts";
+import { primaryEndpointOwnerState, primaryRefusal, verifyPrimaryOwners } from "./primary-channel.ts";
+import { PrimaryRetention, retainedDeliveryRefusal } from "./primary-retention.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { HandleSchema, ProfileOutputSchema, ProfileParams } from "./profile-schema.ts";
 import { createRestartCommand, type RestartHosts } from "./restart.ts";
@@ -475,6 +475,20 @@ function ordinaryThreadSources(ctx: ExtensionContext): ThreadNoticeSource<Contex
 	return sources;
 }
 
+function sessionFileSaved(ctx: ExtensionContext): boolean {
+	const path = ctx.sessionManager.getSessionFile();
+	return path !== undefined && lstatSync(path, { throwIfNoEntry: false })?.isFile() === true;
+}
+
+/** Refuse a delivery for a registration whose context now holds another session. */
+function assertCurrentSession(ctx: ExtensionContext, sessionId: string): void {
+	if (ctx.sessionManager.getSessionId() !== sessionId)
+		throw primaryRefusal(
+			"misaddressed",
+			`This Pi process no longer holds session ${sessionId}; the delivery stays at its source for that session`,
+		);
+}
+
 /** Whether an immediate delivery is a message from `sessionId` to itself. */
 function isSelfMessage(details: unknown, sessionId: string): boolean {
 	const sender = details as { senderKind?: unknown; senderIdentity?: unknown } | undefined;
@@ -660,6 +674,17 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		string,
 		{ retention: PrimaryRetention; inbox: PrimaryInbox; flush(wake?: boolean): void }
 	>();
+	/** Registered sessions whose file Pi has not written yet; deliveries for them wait at their sources. */
+	const unsavedSessions = new Set<string>();
+	/** Pi writes the file with the first message; from then on the session takes its waiting deliveries. */
+	const observeSaved = (ctx: ExtensionContext) => {
+		const id = ctx.sessionManager.getSessionId();
+		if (!unsavedSessions.has(id) || !sessionFileSaved(ctx)) return;
+		unsavedSessions.delete(id);
+		// A manager that a reload kept can predate this method; its own registration scan remains the path then.
+		const manager = eventManager();
+		if (typeof manager?.primaryRetains === "function") manager.primaryRetains(id);
+	};
 	let threadNoticeLifecycle = 0;
 	let threadNoticeSnapshots: ThreadRangeSnapshot[] = [];
 	const resetThreadNotices = () => {
@@ -1731,6 +1756,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		};
 		const deliverRetained = (text: string, details: unknown, sourceId: string) => {
 			if (inbox.hasPending(sourceId)) throw new Error("Primary delivery awaits its inbox notice");
+			retention.assertRetainable();
 			// Only a result that the session file retains settles the requests that its tuples name.
 			const results = deliveredResults(details);
 			providerBlocks.observe(details);
@@ -1751,6 +1777,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			);
 		continuity.start(sessionId, retained);
 		showAgentCell(ctx);
+		if (ctx.sessionManager.getSessionFile() !== undefined && !sessionFileSaved(ctx)) unsavedSessions.add(sessionId);
+		else unsavedSessions.delete(sessionId);
 		await getManager().registerPrimary(sessionId, {
 			sentWork: retainedSentWork(retained),
 			retainSentWork: (sessionId) => pi.appendEntry(SENT_WORK_ENTRY, { sessionId }),
@@ -1771,14 +1799,27 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			model: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
 			thinkingLevel: pi.getThinkingLevel(),
 			resumeInbox: flush,
+			// The manager can be older code that a reload kept, so this registration checks the recipient itself.
 			send: (text, details, sourceId, requireRetained) => {
 				// After this extension's shutdown, a manager that still calls the registration gets a refusal
 				// that its source retries, before anything reaches the inbox or the transcript.
 				if (primaryDeliveries.get(sessionId)?.inbox !== inbox) throw new Error(PRIMARY_RELOADING_REFUSAL);
-				if (requireRetained) deliverRetained(text, details, sourceId);
-				else admitImmediate(text, details, sourceId);
+				assertCurrentSession(ctx, sessionId);
+				if (!requireRetained) {
+					admitImmediate(text, details, sourceId);
+					return;
+				}
+				const refusal = retainedDeliveryRefusal(details, sourceId, sessionId);
+				if (refusal !== undefined) throw refusal;
+				deliverRetained(text, details, sourceId);
 			},
 			receiveRetainedReplay: (details) => {
+				if (primaryDeliveries.get(sessionId)?.inbox !== inbox) throw new Error(PRIMARY_RELOADING_REFUSAL);
+				assertCurrentSession(ctx, sessionId);
+				const source =
+					details !== null && typeof details === "object" ? (details as { sourceId?: unknown }).sourceId : undefined;
+				const refusal = retainedDeliveryRefusal(details, typeof source === "string" ? source : "", sessionId);
+				if (refusal !== undefined) throw refusal;
 				continuity.delivered(sessionId, deliveredResults(details));
 				showAgentCell(ctx);
 			},
@@ -1794,6 +1835,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		});
 		// A received question still open at start lost its run with the earlier process, so its notice is due.
 		if (!abort.signal.aborted) noticeUnanswered(ctx);
+		// A message can reach the file while the registration opens its channel.
+		if (!abort.signal.aborted) observeSaved(ctx);
 	});
 	pi.on("model_select", (event, ctx) => {
 		eventManager()?.updatePrimary(ctx.sessionManager.getSessionId(), {
@@ -1889,14 +1932,19 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		primaryDeliveries.get(ctx.sessionManager.getSessionId())?.inbox.runStarting(details?.sourceId);
 	});
 	pi.on("message_end", (event, ctx) => {
+		observeSaved(ctx);
 		const message = event.message as { role?: unknown; customType?: unknown; details?: unknown; content?: unknown };
 		if (message.role !== "custom" || message.customType !== "agent.peer") return;
 		placed(ctx, message.details, typeof message.content === "string" ? message.content : "");
 		showAgentCell(ctx);
 	});
 	// Questions and admissions change inside tool calls, and a placed reply closes a question.
-	pi.on("turn_end", (_event, ctx) => showAgentCell(ctx));
+	pi.on("turn_end", (_event, ctx) => {
+		observeSaved(ctx);
+		showAgentCell(ctx);
+	});
 	pi.on("agent_settled", (event, ctx) => {
+		observeSaved(ctx);
 		const delivery = primaryDeliveries.get(ctx.sessionManager.getSessionId());
 		delivery?.retention.settled();
 		delivery?.inbox.settled();
@@ -1915,6 +1963,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		primaryDeliveries.get(id)?.retention.clear();
 		primaryDeliveries.get(id)?.inbox.close();
 		primaryDeliveries.delete(id);
+		unsavedSessions.delete(id);
 		workReferences.delete(id);
 		firstRequestOpen.delete(id);
 		heldPlacements.delete(id);

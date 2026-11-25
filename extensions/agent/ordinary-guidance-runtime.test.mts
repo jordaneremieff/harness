@@ -42,7 +42,7 @@ import {
 import { obj } from "@earendil-works/pi-schema";
 import register from "./index.ts";
 import { AgentManager } from "./manager.ts";
-import { connectPrimaryChannel } from "./primary-channel.ts";
+import { connectPrimaryChannel, primaryRefusalKind } from "./primary-channel.ts";
 import { machineConfig } from "./settings-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
@@ -212,6 +212,12 @@ async function guidanceFixture(t: TestContext, holdStartup = false) {
 		entered: entered.promise,
 		release: gate.resolve,
 		toolCalls: () => toolCalls,
+		/** Save one earlier request, so the session has the file that a retained delivery requires. */
+		saveTranscript() {
+			sessionManager.appendMessage({ role: "user", content: "Earlier request", timestamp: Date.now() });
+			const path = sessionManager.getSessionFile();
+			assert.ok(path !== undefined && existsSync(path));
+		},
 		async restart(retainedPath?: string) {
 			const path = retainedPath ?? sessionManager.getSessionFile();
 			assert.ok(path);
@@ -258,7 +264,12 @@ async function guidanceFixture(t: TestContext, holdStartup = false) {
 		async deliver(sourceId: string, text: string, wake = true) {
 			const connection = await connectPrimaryChannel({ id: sessionManager.getSessionId(), sessionsRoot });
 			try {
-				await connection.deliver({ sourceId, text, details: { sourceId, wake } });
+				const owner = sessionManager.getSessionId();
+				await connection.deliver({
+					sourceId,
+					text,
+					details: { sourceId, wake, originalOwnerId: owner, deliveryRecipient: owner },
+				});
 				return true;
 			} catch (error) {
 				if (/Primary delivery awaits/u.test(String(error))) return false;
@@ -317,6 +328,7 @@ it("ordinary peer-result runs supply agent guidance on the first request and aft
 	timeout: 20000,
 }, async (t) => {
 	const fixture = await guidanceFixture(t);
+	fixture.saveTranscript();
 	await fixture.deliver("peer:result", "PEER_ASYNC_RESULT");
 	await fixture.session.waitForIdle();
 	assert.equal(fixture.starts.length, 1);
@@ -325,7 +337,13 @@ it("ordinary peer-result runs supply agent guidance on the first request and aft
 	if (start.messageType !== "custom") assert.fail("peer delivery must start a custom-message run");
 	assert.equal(start.message.customType, "agent.peer");
 	assert.equal(start.message.content, "PEER_ASYNC_RESULT");
-	assert.deepEqual(start.message.details, { sourceId: "peer:result", wake: true });
+	const owner = fixture.sessionManager.getSessionId();
+	assert.deepEqual(start.message.details, {
+		sourceId: "peer:result",
+		wake: true,
+		originalOwnerId: owner,
+		deliveryRecipient: owner,
+	});
 	assert.equal(fixture.toolCalls(), 1);
 	assertRunGuidance(fixture.requests);
 	assert.ok(
@@ -352,6 +370,7 @@ it("ordinary peer-result startup stays busy and honors abort before the first pr
 	timeout: 20000,
 }, async (t) => {
 	const fixture = await guidanceFixture(t, true);
+	fixture.saveTranscript();
 	await fixture.deliver("peer:first", "FIRST_PEER_RESULT");
 	await fixture.entered;
 	assert.equal(fixture.session.isStreaming, true, "before_agent_start is part of the active run");
@@ -417,7 +436,11 @@ it("refuses busy volatile delivery, retries once after same-ID reopen, and confi
 	const connection = await connectPrimaryChannel({ id: ready.ownerId, sessionsRoot: fixture.sessionsRoot });
 	try {
 		await assert.rejects(
-			connection.deliver({ sourceId: ready.sourceId, text: "VOLATILE_NOTICE", details: { wake: true } }),
+			connection.deliver({
+				sourceId: ready.sourceId,
+				text: "VOLATILE_NOTICE",
+				details: { wake: true, originalOwnerId: ready.ownerId, deliveryRecipient: ready.ownerId },
+			}),
 			/Primary delivery awaits/u,
 		);
 	} finally {
@@ -466,15 +489,16 @@ it("refuses busy volatile delivery, retries once after same-ID reopen, and confi
 	assert.equal(fixture.session.isIdle, true);
 });
 
-it("keeps custom-only passive delivery pending until Pi flushes its first conversation", {
+it("refuses a passive delivery without effect until Pi saves the session's first conversation", {
 	timeout: 20000,
 }, async (t) => {
 	const fixture = await guidanceFixture(t);
-	assert.equal(await fixture.deliver("peer:passive", "PASSIVE_NOTICE", false), false);
-	assert.equal(fixture.sessionManager.getEntries().filter((entry) => entry.type === "custom_message").length, 1);
+	const unsaved = (error: unknown) => primaryRefusalKind(error) === "unsaved";
+	await assert.rejects(fixture.deliver("peer:passive", "PASSIVE_NOTICE", false), unsaved);
+	assert.equal(fixture.sessionManager.getEntries().filter((entry) => entry.type === "custom_message").length, 0);
 	assert.equal(fixture.retained("peer:passive").length, 0);
-	assert.equal(await fixture.deliver("peer:passive", "PASSIVE_NOTICE", false), false);
-	assert.equal(fixture.sessionManager.getEntries().filter((entry) => entry.type === "custom_message").length, 1);
+	await assert.rejects(fixture.deliver("peer:passive", "PASSIVE_NOTICE", false), unsaved);
+	assert.equal(fixture.sessionManager.getEntries().filter((entry) => entry.type === "custom_message").length, 0);
 	await fixture.session.prompt("Flush the first conversation");
 	assert.equal(await fixture.deliver("peer:passive", "PASSIVE_NOTICE", false), true);
 	assert.equal(fixture.retained("peer:passive").length, 1);
@@ -484,6 +508,7 @@ it("keeps custom-only passive delivery pending until Pi flushes its first conver
 
 it("preserves one retained notice when startup aborts before provider work", { timeout: 20000 }, async (t) => {
 	const fixture = await guidanceFixture(t, true);
+	fixture.saveTranscript();
 	const work = fixture.session.prompt("Hold startup");
 	await fixture.entered;
 	assert.equal(await fixture.deliver("peer:aborted", "ABORTED_NOTICE"), false);

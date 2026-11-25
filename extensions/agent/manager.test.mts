@@ -62,7 +62,7 @@ import {
 	type PrimaryChannelOptions,
 	type PrimaryInfo,
 } from "./primary-channel.ts";
-import type { createPrimaryChannel } from "./primary-channel.ts";
+import { primaryRefusalKind, type createPrimaryChannel } from "./primary-channel.ts";
 
 const fixtureRoots = new Set<string>();
 after(() => {
@@ -250,6 +250,11 @@ function deferred() {
 		resolve = done;
 	});
 	return { promise, resolve };
+}
+
+/** A source-ledger delivery addressed to `owner`, as the delivery watcher sends it. */
+function addressedTo(owner: string, sourceId: string, text: string) {
+	return { sourceId, text, details: { sourceId, originalOwnerId: owner, deliveryRecipient: owner } };
 }
 
 const { "task-submit": _taskSubmit, ...baseOperations } = HOST_CONTRACT.operations;
@@ -1615,18 +1620,18 @@ it("dedups primary channel deliveries by source ID within the bounded memory", a
 		await manager.registerPrimary("owner-1", primary.client);
 		const channel = factory.channels[0];
 		assert.ok(channel, "registration creates one primary channel");
-		await channel.options.deliver({ sourceId: "s1", text: "one" });
-		await channel.options.deliver({ sourceId: "s1", text: "one again" });
+		await channel.options.deliver(addressedTo("owner-1", "s1", "one"));
+		await channel.options.deliver(addressedTo("owner-1", "s1", "one again"));
 		assert.deepEqual(
 			primary.sent.map((message) => message.text),
 			["one"],
 		);
-		await channel.options.deliver({ sourceId: "s2", text: "two" });
+		await channel.options.deliver(addressedTo("owner-1", "s2", "two"));
 		assert.deepEqual(
 			primary.sent.map((message) => message.text),
 			["one", "two"],
 		);
-		await channel.options.deliver({ sourceId: "s1", text: "one after eviction" });
+		await channel.options.deliver(addressedTo("owner-1", "s1", "one after eviction"));
 		assert.deepEqual(
 			primary.sent.map((message) => message.text),
 			["one", "two", "one after eviction"],
@@ -1637,43 +1642,62 @@ it("dedups primary channel deliveries by source ID within the bounded memory", a
 	}
 });
 
-it("dedups the same source ID once per recipient when every primary receives it", async (t) => {
+it("refuses another owner's delivery and an informational copy before the replay memory", async (t) => {
 	const root = fixtureRoot(t);
 	const factory = primaryFactory();
 	const manager = new AgentManager(managerOptions(root, { createPrimary: factory.factory }));
 	const first = fakePrimary(new AbortController().signal);
+	const replays: unknown[] = [];
 	const second = fakePrimary(new AbortController().signal);
 	try {
 		await manager.registerPrimary("owner-1", first.client);
-		await manager.registerPrimary("owner-2", second.client);
+		await manager.registerPrimary("owner-2", {
+			...second.client,
+			receiveRetainedReplay: (details: unknown) => {
+				replays.push(details);
+			},
+		});
 		const firstChannel = factory.channels.find((channel) => channel.options.id === "owner-1");
 		const secondChannel = factory.channels.find((channel) => channel.options.id === "owner-2");
 		assert.ok(firstChannel);
 		assert.ok(secondChannel);
-		const delivery = { sourceId: "report:shared", text: "broadcast" };
+		const delivery = addressedTo("owner-1", "report:owned", "owned report");
 		await firstChannel.options.deliver(delivery);
-		await secondChannel.options.deliver(delivery);
+		await firstChannel.options.deliver(delivery);
 		assert.deepEqual(
 			first.sent.map((message) => message.text),
-			["broadcast"],
-			"the first recipient receives the broadcast once",
+			["owned report"],
+			"the owner receives its delivery once",
 		);
+		const refusal = (kind: string) => (error: unknown) => primaryRefusalKind(error) === kind;
+		assert.throws(() => secondChannel.options.deliver(delivery), refusal("misaddressed"));
+		const copy = {
+			sourceId: "report:owned:informational:digest",
+			text: "copy",
+			details: { originalOwnerId: "owner-1", deliveryRecipient: "owner-2", fallback: true },
+		};
+		assert.throws(() => secondChannel.options.deliver(copy), refusal("copy"));
+		assert.throws(
+			() =>
+				secondChannel.options.deliver({
+					sourceId: "report:labelled",
+					text: "labelled copy",
+					details: {
+						originalOwnerId: "owner-2",
+						deliveryRecipient: "owner-2",
+						fallbackLabel: "no live owning session",
+					},
+				}),
+			refusal("copy"),
+		);
+		assert.throws(() => secondChannel.options.deliver({ sourceId: "bare", text: "bare" }), refusal("misaddressed"));
+		assert.equal(second.sent.length, 0, "no refused delivery reaches the session");
+		assert.equal(replays.length, 0, "no refused delivery reaches the replay path");
+		await secondChannel.options.deliver(addressedTo("owner-2", "report:owned", "same source for its own owner"));
 		assert.deepEqual(
 			second.sent.map((message) => message.text),
-			["broadcast"],
-			"the second recipient receives the same source ID once",
-		);
-		await firstChannel.options.deliver(delivery);
-		await secondChannel.options.deliver(delivery);
-		assert.deepEqual(
-			first.sent.map((message) => message.text),
-			["broadcast"],
-			"a repeated delivery dedups on the first recipient",
-		);
-		assert.deepEqual(
-			second.sent.map((message) => message.text),
-			["broadcast"],
-			"a repeated delivery dedups on the second recipient",
+			["same source for its own owner"],
+			"each recipient keeps its own replay memory",
 		);
 	} finally {
 		await manager.close();
@@ -1690,12 +1714,12 @@ it("clears the footer and closes the primary channel when the primary aborts", {
 		await manager.registerPrimary("owner-1", primary.client);
 		const channel = factory.channels[0];
 		assert.ok(channel);
-		await channel.options.deliver({ sourceId: "s1", text: "before" });
+		await channel.options.deliver(addressedTo("owner-1", "s1", "before"));
 		assert.equal(primary.sent.length, 1);
 		controller.abort();
 		await channel.closedEvent;
 		assert.equal(primary.statuses.at(-1), undefined, "abort clears the durable footer");
-		assert.throws(() => channel.options.deliver({ sourceId: "s2", text: "after" }), /closed/u);
+		assert.throws(() => channel.options.deliver(addressedTo("owner-1", "s2", "after")), /closed/u);
 		assert.deepEqual(
 			primary.sent.map((message) => message.text),
 			["before"],
@@ -1741,7 +1765,7 @@ it("awaits the previous channel close before re-registering the same primary", a
 		assert.equal(factory.invocations, 2, "the re-registration creates a channel after teardown");
 		const secondChannel = factory.channels[1];
 		assert.ok(secondChannel);
-		await secondChannel.options.deliver({ sourceId: "s1", text: "after re-register" });
+		await secondChannel.options.deliver(addressedTo("owner-1", "s1", "after re-register"));
 		assert.deepEqual(
 			second.sent.map((message) => message.text),
 			["after re-register"],
@@ -1765,7 +1789,7 @@ it("re-registers the same owner with the real primary channel after abort", { ti
 		await manager.registerPrimary(ownerId, second.client);
 		const connection = await connectPrimaryChannel({ id: ownerId, sessionsRoot: root });
 		try {
-			await connection.deliver({ sourceId: "s1", text: "real channel" });
+			await connection.deliver(addressedTo(ownerId, "s1", "real channel"));
 		} finally {
 			await connection.close();
 		}

@@ -470,13 +470,13 @@ it("retires parked delivery with a clear marker and wakes only for its returning
 			cwd: f.cwd,
 		}),
 	);
-	const fallback = eventLog<unknown>();
+	const unrelated = eventLog<unknown>();
 	const channel = await createPrimaryChannel({
 		id: other,
 		cwd: f.cwd,
 		sessionsRoot: f.root,
 		deliver: (message) => {
-			fallback.push(message);
+			unrelated.push(message);
 		},
 		promptTrust: async () => undefined,
 	});
@@ -490,7 +490,13 @@ it("retires parked delivery with a clear marker and wakes only for its returning
 		requestId: "offline-owner",
 	})) as SubmitResult;
 	await waitForReceipt(first, owner, submitted.submissionId);
-	await fallback.waitForCount(1);
+	for (let attempt = 0; ; attempt++) {
+		const state = (await first.request("recovery-state")) as { deliveriesActive?: boolean };
+		if (state.deliveriesActive === false) break;
+		assert.ok(attempt < 200, "the owner's row parks");
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	assert.equal(unrelated.length, 0, "a parked row reaches no other registered primary");
 	await first.close();
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 	const catalog = new AgentCatalog(f.root);
@@ -513,12 +519,12 @@ it("retires parked delivery with a clear marker and wakes only for its returning
 		cwd: f.cwd,
 		signal: new AbortController().signal,
 		send: (_text, details) => {
-			fallback.push(details);
+			unrelated.push(details);
 		},
 	});
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 	assert.equal(acquired.length, 0, "another primary does not reopen a parked-only storage");
-	assert.equal(fallback.length, 1, "the recorded fallback never repeats at receiver re-registration");
+	assert.equal(unrelated.length, 0, "another primary's registration receives no copy");
 	assert.equal(
 		catalog.read(f.metadata.storageId).recoveryDue,
 		false,

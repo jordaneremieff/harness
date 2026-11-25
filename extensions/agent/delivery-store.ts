@@ -579,14 +579,6 @@ export async function currentCheckInReport(
 	const row = await tx.doc(DeliveryRowDoc, pointer.key, "report");
 	return row.value === null ? undefined : copy(row.value as DeliveryReport);
 }
-export async function checkInFallback(
-	tx: Tx,
-	owner: string,
-	conversationId: number,
-	requestId: string,
-): Promise<boolean> {
-	return (await tx.doc(CheckInFallbackDoc, JSON.stringify([owner, conversationId, requestId]), null)).accepted;
-}
 async function receiptFromPointer(
 	harness: Harness,
 	key: string,

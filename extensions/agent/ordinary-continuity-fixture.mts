@@ -334,9 +334,14 @@ export async function ordinarySession(t: TestContext, options: OrdinarySessionOp
 		},
 		/** Deliver one result body to the session; false while its retained entry is not confirmed. */
 		async deliver(sourceId: string, text: string, details: Record<string, unknown> = {}): Promise<boolean> {
-			const connection = await connectPrimaryChannel({ id: sessionManager.getSessionId(), sessionsRoot });
+			const target = sessionManager.getSessionId();
+			const connection = await connectPrimaryChannel({ id: target, sessionsRoot });
 			try {
-				await connection.deliver({ sourceId, text, details: { sourceId, wake: true, ...details } });
+				await connection.deliver({
+					sourceId,
+					text,
+					details: { sourceId, wake: true, originalOwnerId: target, deliveryRecipient: target, ...details },
+				});
 				return true;
 			} catch (error) {
 				if (/Primary delivery awaits/u.test(String(error))) return false;

@@ -1306,7 +1306,7 @@ byte exclusions, or descriptions omitted for the byte limit make it false.
 attention rows, not just the sample. `coverage.reasons` states the count of
 intentionally summarised old terminal attention rows and the exact initial call,
 `agent_list({})`; follow its returned `coverage.next` to discover the identities.
-This informational reason alone does not make coverage incomplete.
+This reason describes the sample; it does not make coverage incomplete.
 `coverage.reasons` also names recovery paths and boundaries. The overview
 returns `coverage.nextCursor: null` because `agent_status` accepts no cursor;
 it never exposes the dashboard's catalog cursor. Call `agent_list` without a
@@ -2726,9 +2726,8 @@ delivery. The question writes no admission fact and no delegation edge. The ques
 request ID is the question ID; the primary treats it as a received question
 like any other. Every message from a Durable agent to an ordinary primary is a
 direct report: if that session ends before the delivery, the report waits for
-it and never reaches another session as an informational copy, and an ordinary
-session ignores the question, reply and notice fields of any informational copy
-it receives. A question whose text with its reply instructions passes the
+it at the source and reaches no other session. A question whose text with its
+reply instructions passes the
 16,000-character report body refuses, so the recipient always reads the
 question ID and how to answer.
 
@@ -2983,11 +2982,11 @@ Source: `thread-notice-request.ts` (`threadNoticeRequestHooks`),
 
 The event, mutation receipt, and notice intents commit together. Retries reuse
 caller-qualified mutation IDs and recipient-qualified native request IDs;
-changed content under the same mutation key refuses. Direct notices never
-broadcast to unrelated primaries. An unavailable recipient leaves a visible
-pending intent and delivery error. Active delivery prevents retirement; a notice
-for a proven-dead ordinary primary remains pending without broadcast and does
-not by itself require a live source host. Source-host retirement or process loss
+changed content under the same mutation key refuses. A direct notice goes only
+to its named recipient. An unavailable recipient leaves a visible pending
+intent and delivery error. Active delivery prevents retirement; a notice
+for a proven-dead ordinary primary remains parked and does not by itself
+require a live source host. Source-host retirement or process loss
 does not delete the thread;
 cold observation stays available and a later mutation or recovery opens its owner.
 This has the same process-crash, not power-loss, guarantee as other native
@@ -4197,9 +4196,8 @@ only after the creation. A result delivery carries each settled result
 reference; the receiving host checks the references before it admits the body
 and marks each matching request as delivered, also for a replayed body. A
 state-note receipt leaves its request listed until the final report arrives;
-an ordinary outcome closes only its own request. An informational fallback
-closes no request. A request whose answer routes to another identity never closes in the sender's
-record.
+an ordinary outcome closes only its own request. A request whose answer routes
+to another identity never closes in the sender's record.
 
 A scheduled input stays in the note until its result is delivered or its timer
 is cancelled before it fires. A cancellation closes the request only when the
@@ -4768,43 +4766,28 @@ operator and model admissions, including unanswered outcomes after abort or
 failure. The conversation already retains its outcome. Other owners still
 receive their own notice for that answer, with only their own submissions. Missing
 or malformed admission origins become terminal with a retained reason, even for a self owner.
-A noncatalog owner is an ordinary primary reached
-through its registered primary channel. Only an absent or proven-dead owner
-endpoint permits fallback: the watcher broadcasts to every live primary within
-one bounded discovery of registered endpoints, and each delivery is labeled
-`no live owning session` while the original owner identity stays in the message
-details. These copies are informational and never acknowledge the owner row.
-Each accepted fallback recipient is recorded in the retained row, so subsequent
-passes and host reopens do not repeat that copy. When every registered primary
-of one complete discovery has its copy, the row records the completed
-broadcast (`fallbackBroadcast`): a later pass does not look for recipients
-again, and a primary that registers later receives no copy of that row. A row
-that no primary accepted, or whose discovery was incomplete, records nothing
-and tries again on the next pass. A watcher that closes during a broadcast
-records nothing for it either: the copies that it gave stay recorded with their
-recipients, and the next watcher of the storage gives the rest. One pass reads the endpoint directory once
-for all its parked rows, and a candidate that refuses a connection is not
-tried again for the other rows of that pass. Limit: `fallbackBroadcast` is an
-optional field of the stored row, and a host of an earlier source release does
-not read it. Such a host runs when a Pi process of that release starts the
-storage. Its watcher then offers a parked row again to each registered primary
-that holds no copy, as every host did before the field existed, and it keeps
-the field on the row, so a current host skips the row again afterwards. This
-ends once every Pi process of the earlier release has restarted. No stored
-version marks the field: a version change would make each earlier host refuse
-the whole storage, which costs more than one more informational copy. Other owners of the same answer
-receive their normal delivery rather than a fallback substitute. A partial scan still attempts the discovered recipients and reports its incomplete coverage.
-Fallback discovery never makes an unavailable owner active.
+A row for an ordinary primary goes only to that owner's registered channel.
+The message names the owner in both `originalOwnerId` and `deliveryRecipient`,
+sets `liveOwner:true`, and carries no copy flag, label, or source identity.
+An unavailable owner's row waits at its source and reaches no other session.
+Other owners of the same answer receive only their own rows. The watcher ignores
+legacy `fallbackRecipients` and `fallbackBroadcast` fields in stored rows;
+neither field counts as acknowledgement from the owner.
 
 One classification controls delivery, status and retirement:
 
-- `active`: a live primary with a compatible contract, or a retained native target
-  whose host is available. Transient transport and unavailable-host failures
-  retry, including acquisition failures while a live writer starts or shuts down.
-- `parked`: an absent, dead, unknown or incompatible primary, an unretained native
-  target, or a native host with a persistent launch failure. The row stays retained without a
-  retry timer and does not block retirement. A fresh watcher or explicit refresh
-  permits another native acquisition attempt.
+- `active`: a live, compatible primary eligible for retained delivery, or a
+  retained native target whose host is available. Transient transport and
+  unavailable-host failures retry, including acquisition failures while a live
+  writer starts or shuts down.
+- `parked`: a primary with an absent, dead, unverified or incompatible endpoint,
+  a live primary whose published session file does not yet exist, or a primary
+  that refuses the row as `misaddressed`, `copy` or `no-transcript`. The refusal
+  holds while the owner's endpoint state, version, transcript availability and
+  registration server ID stay the same. An unretained native target or a native
+  host with a persistent launch failure also parks the row. The row stays
+  retained without a retry timer and does not block retirement. A fresh watcher
+  or explicit refresh permits another native acquisition attempt.
 - `terminal`: a malformed recipient, corrupt admission origin, or linked intent
   whose native submission is absent. The delivery document retains the reason
   beside the row. The watcher never retries a terminal row.
@@ -4818,9 +4801,10 @@ admission of that mode holds only at its original moment. A check-in task of
 such an intent ends without an admission.
 Elapsed time never changes eligibility. Status `deliveryError` names the state
 and reason without changing the response shape. Only active rows and pending
-intents keep delivery active. A live or unknown owner endpoint refuses fallback.
-Active failed passes wait
-for the configured retry delay, which doubles after each failure up to 30 seconds
+intents keep delivery active. An unreachable socket, a reload refusal, a queued
+notice not yet in the transcript, or an `unsaved` refusal when the file is
+present on recheck is transient. Active failed passes wait for the configured
+retry delay, which doubles after each failure up to 30 seconds
 and resets when no failed route remains. A native commit or explicit refresh
 starts a pass immediately, even during that wait. Commits during an active pass
 coalesce into one immediate follow-up pass. A pass that a commit starts does not
@@ -4837,8 +4821,8 @@ The timer alone is not an in-flight delivery effect; active rows still prevent
 host retirement and retain recovery state. Parked and terminal rows do not.
 An owner endpoint carries the primary channel contract version. A host
 that meets a live owner with another version holds that delivery pending and
-reports the endpoint version and the restart that clears it; it never treats the
-owner as dead and never falls back for it. Endpoint identity and local process
+reports the endpoint version and the restart that clears it; it does not treat
+the owner as dead. Endpoint identity and local process
 ownership are checked before delivery compatibility. An owner is proven dead
 when no process holds its PID, or by the reuse proof: its socket accepts no
 connection (refused, or the socket file is missing) and the process that now
@@ -4865,10 +4849,8 @@ process; a refusal alone never removes a file. A direct report that waits for an
 ended primary names its kind in the host's delivery error: a thread
 notification, a question, or a message, none of which reaches another session. Foreign or unverified ownership
 stays protected. Ownership metadata never authorizes a retired delivery payload.
-A fallback broadcast checks every registered primary before the first delivery,
-so one incompatible candidate
-holds the whole fallback. The host keeps the latest routing failure in its
-status as `deliveryError`, and the status card shows it. The error names the
+The host keeps the latest routing failure in its status as `deliveryError`, and
+the status card shows it. The error names the
 failed record and recipient; it does not imply that another result failed. A
 missing catalog record does not authorize a noncanonical primary route. The
 primary does not poll receipts. Delivery is at-least-once. A result's source ID
@@ -4876,9 +4858,8 @@ binds the producer storage, the answer (or the unanswered input) and the actual
 recipient; its request ID derives from that source ID. Inputs with the same
 recipient share one body. Different recipients have independent attempts and
 acknowledgements, and a routing pass acknowledges only the recipient rows that
-it visited. An informational fallback copy has a separate source ID for each
-fallback recipient and carries no receipt association. These stable IDs let each
-receiver deduplicate retries and host restarts. An accepted or queued delivery
+it visited. These stable IDs let each receiver deduplicate retries and host
+restarts. An accepted or queued delivery
 does not show that the recipient read it. A primary process loss after display but before acknowledgement
 can repeat a notice if its in-memory deduplication was lost. Transmitted peer bodies have a
 text bound and an explicit truncation marker; `agent_inspect` retains access to
@@ -4891,9 +4872,9 @@ intent requires that origin, so it survives a host crash and relaunch. An
 operator-only answer group displays and retains its notice with no primary turn
 and no steering. Wake follows the recipient's own admissions in the answer
 group: one recipient's model-origin submission never wakes another recipient
-whose submissions were operator-only. A fallback broadcast never wakes a
-recipient's model. A receipt whose stored origin is missing or malformed is
-reported and held pending; the watcher never defaults it to a model admission.
+whose submissions were operator-only. A receipt whose stored origin is missing
+or malformed is reported and held pending; the watcher never defaults it to a
+model admission.
 A notice names an agent by its display name or handle, with its full identity
 as the unnamed fallback. An ordinary session uses its session name, observed
 purpose excerpt, or full session ID. Identity text is not shortened to a fixed
@@ -4948,17 +4929,14 @@ missed intervals collapse into one current notice, then the original cadence
 continues. A newer notice replaces an older undelivered notice for that task
 and owner. The report stores its digest only in `message`. Settlement ends the
 deadline task promptly and removes all check-in rows for that request across
-all owners, including acknowledged rows and fallback markers. Reset also ends them when its native boundary settles the input
-unanswered; an idle background deadline never waits out its remaining interval.
+all owners, including acknowledged rows. Reset also ends them when its native
+boundary settles the input unanswered; an idle background deadline never waits
+out its remaining interval.
 
 Check-ins use the report owner route, version checks, deduplication, and
 acknowledgement. A model-origin check-in wakes its live primary owner; an
-explicit operator-origin interval stays quiet. An absent or dead owner gets at
-most one quiet fallback broadcast per watched task and owner. The accepted
-broadcast marker is independent of owner acknowledgment and survives notice
-replacement. Each accepted recipient is recorded before another receiver is
-tried. Repeated intervals never broadcast again after a complete broadcast for
-that owner. A failed or incomplete fallback stays pending.
+explicit operator-origin interval stays quiet. If the owner cannot take the
+check-in, its row parks at the source like any other delivery.
 
 The headline names the agent and says it is still working, not finished, with
 elapsed time and retained conversation-total cost. The bounded body covers only
@@ -5073,10 +5051,16 @@ the loaded Durable release. `primary-delivery/4.0.0` requires verified retained
 primary acceptance and carries retry notices, blocked causes, receipt
 associations and exact continuations. Delivered result references travel inside
 the unchanged notice details, so they do not change this identity.
-Older primary endpoints refuse delivery until their Pi process restarts. The
-retained manager contract also changes because its primary callback carries the
-transport source identity. Host operation identities are checked independently.
-The Endpoint identity remains separate from both retained interfaces.
+Endpoints with an incompatible identity refuse delivery until restarted with
+compatible code. Within `primary-delivery/4.0.0`, a current receiver refuses
+informational copies from an earlier sender. The sender records those refusals
+as failures, not acceptance, and still delivers the original row when its owner
+returns. An earlier sender retries a live current owner that lacks a saved file
+until that owner saves. A current sender sends no copies to earlier receivers
+and does not attempt delivery while a live owner's published session file is
+absent. A pair running earlier code has neither protection. Host operation identities are checked
+independently. The Endpoint identity remains separate from both retained
+interfaces.
 
 Restart Pi windows to load the changed manager and
 start fresh Durable hosts for changed runtime modules and native contributions.
@@ -5169,8 +5153,9 @@ unknown future upstream APIs. Wildcard dependency declarations remain unchanged.
 The retained manager, native control binding, and primary delivery channel have
 separate exact interface identities. The binding includes the loaded Durable
 release. An incompatible manager or binding refuses reload with restart
-instructions. An incompatible primary endpoint holds notices pending without
-broadcast. Unrelated additions to host methods change none of those interfaces.
+instructions. An incompatible primary endpoint leaves notices pending at the
+source for the named owner. Unrelated additions to host methods change none of
+those interfaces.
 
 No descriptor means refusal, not a version-zero fallback. No reader translates
 retired payloads or stored shapes. When an operation changes, update only its
@@ -5297,18 +5282,25 @@ transient recovery link closes when the internal `recovery-state` check reports
 no pending native work and no active delivery; host change notifications trigger
 that check, not polling. A row addressed only to a proven-dead ordinary primary
 waits in durable storage without a recovery link or a delivery retry timer. The
-host retires normally with `recoveryDue` false while that row remains parked,
-with or without a live fallback recipient. Source-ledger deliveries explicitly
-set `requireRetained:true` for both owning and fallback primary routes. The
-channel defaults to that strong acceptance mode: a live ordinary primary
-acknowledges only after its actual session JSONL file contains the matching
-`agent.peer` entry and transport source identity. Inbox admission never satisfies
-this check. Pi's in-memory queue and `sendMessage` return do not prove transcript
-retention. Pending confirmation refuses transiently, leaving
-the source ledger responsible for retry while other owners still receive their
-rows. In-memory attempt markers prevent repeated steering while a notice is
-queued; settled or failed attempts remain retryable. A new custom-only session
-waits for Pi's first conversation flush. Verification reads at most one MiB per
+host retires normally with `recoveryDue` false while that row remains parked.
+
+Source-ledger deliveries set `requireRetained:true`, the channel default. The
+receiver checks the exact recipient before consulting the replay cache. The
+registration's context must still hold that session, including on replay. A
+fresh delivery requires a regular session file owned by the current user,
+opened without following a symbolic link, with a header that names this
+session. The `primary_refused` errors for `misaddressed`, `copy`, `unsaved`, and
+`no-transcript` leave request continuity, provider-block state, the inbox, the
+transcript, and the model unchanged. Sessions started with `--no-session` keep
+no transcript and refuse every source-ledger row.
+
+The owner acknowledges a fresh delivery only after its session JSONL file
+contains the matching `agent.peer` entry and transport source identity. Inbox
+admission, Pi's in-memory queue, and a return from `sendMessage` do not prove
+transcript retention. Pending confirmation refuses transiently, leaving the
+source ledger responsible for retry while other owners still receive their rows.
+In-memory attempt markers prevent repeated steering while a notice is queued;
+settled or failed attempts remain retryable. Verification reads at most one MiB per
 scan with bounded continuation. It streams past unrelated records without
 buffering or parsing their bodies, so large image/tool records impose no new
 record-size limit. Only exact serialized candidate notice lines confirm
@@ -5341,20 +5333,22 @@ retains the corresponding `agent.peer` entries. It removes the snapshot when no
 rows remain. Direct retries use the transport source ID to avoid a second
 placement, including after reopen.
 
-Any primary registration runs the existing bounded scan of runnable recovery
-and wakes parked sources whose sidecar names that exact primary. Unrelated
-registration leaves those sources cold. Catalogue-change scans also
-wake a parked source when a named recipient has a native catalog record or a
-live compatible primary endpoint, and its current fingerprint differs from the
-source's recorded failure. This comparison survives manager restarts. A bounded
+Any primary registration runs the bounded recovery scan and wakes parked
+sources whose sidecar names that exact primary. Pi saves the session file with
+the first user or assistant message. When the extension observes the file's
+first appearance at message end, turn end, or settlement, the registration runs
+the same recovery scan for that session. Unrelated registration leaves those
+sources cold. Catalogue-change scans also wake a parked source when a named
+recipient has a native catalog record or a live compatible primary endpoint and
+its current fingerprint differs from the source's recorded failure. This comparison survives manager restarts. A bounded
 manager cache only coalesces attempts before the source records their outcome.
 Explicit acquisition also reopens retained rows. Recovery-state and final
 retirement checks validate the summary's bounded recipient facts against current
 native availability and primary endpoints. Changed facts schedule the existing
 driver and refuse retirement until it completes, even if the source has no new
 native commit. Unrelated status completions do not read delivery payloads or
-recipient facts. A recorded fallback copy never repeats. Active routes retry;
-incomplete or stale observations also block retirement. No row expiry or new catalog scan
+recipient facts. Active routes retry; incomplete or stale observations also
+block retirement. No row expiry or new catalog scan
 bound is introduced. A final marker check also runs during clean close. Clean retirement
 closes cached manager and peer delivery links without a recovery acquisition or
 crash-budget charge. Native shutdown stops native writes and unpublishes its

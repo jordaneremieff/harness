@@ -88,6 +88,7 @@ import {
 	type PrimaryIntentClaim,
 	type PrimaryWorkReference,
 } from "./primary-channel.ts";
+import { retainedDeliveryRefusal } from "./primary-retention.ts";
 import { readPrimaryObservation, type OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { readRelatedEfforts, type EffortPresencePage, type EffortReadResources } from "./effort-presence.ts";
 import { createPrimaryLocationResolver, type PrimaryLocationResolver } from "./effort-location.ts";
@@ -2392,7 +2393,8 @@ export class AgentManager {
 	/**
 	 * Delivery into one registration; a closed or reloading registration refuses, so the source retries. While
 	 * another registration replaces the session's channel, both channels refuse as reloading until the new one
-	 * is current, so no delivery reaches the registration that is leaving.
+	 * is current, so no delivery reaches the registration that is leaving. A source-ledger delivery for another
+	 * recipient refuses before the replay cache or the session sees it.
 	 */
 	private primaryDelivery(ownerId: string, primary: PrimaryClient): PrimaryChannelOptions["deliver"] {
 		const deliveryScope = Symbol();
@@ -2403,6 +2405,8 @@ export class AgentManager {
 				primary.send(message.text, message.details, message.sourceId, false);
 				return;
 			}
+			const misaddressed = retainedDeliveryRefusal(message.details, message.sourceId, ownerId);
+			if (misaddressed !== undefined) throw misaddressed;
 			const key = `${ownerId}:retained:${message.sourceId}`;
 			if (this.delivered.get(key) === deliveryScope) {
 				primary.receiveRetainedReplay?.(message.details);
@@ -2747,6 +2751,18 @@ export class AgentManager {
 		this.primaryChannels.get(ownerId)?.setObservedPurpose(this.observedPurpose(primary));
 		this.rosterChanged();
 		return true;
+	}
+
+	/**
+	 * The session saved its first transcript entry, so deliveries that its sources kept while it had no file can
+	 * now reach it. The registration's own recovery reads them; nothing else changes.
+	 */
+	primaryRetains(ownerId: string): void {
+		const primary = this.primaries.get(ownerId);
+		if (primary === undefined || this.stopping(primary)) return;
+		void this.scanRecovery(primary, ownerId).catch((error) => {
+			this.failures.set(`primary:${ownerId}`, errorText(error));
+		});
 	}
 
 	/** Event-driven activity is sampled, never refreshed by a heartbeat. */

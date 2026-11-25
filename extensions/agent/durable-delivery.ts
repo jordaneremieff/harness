@@ -10,11 +10,10 @@
  *
  * Routing: an owner with a discovery catalog record receives an untrusted
  * follow-up in its own Durable host. Without a catalog record, only a canonical
- * primary identity can use a registered primary channel. If
- * that primary endpoint is absent or its owner process is proven dead, every
- * registered live or unknown primary receives a labeled informational copy.
- * Accepted copies are retained per recipient and never acknowledge the owner.
- * Unavailable recipients wait in durable storage without a delivery retry timer.
+ * primary identity can use a registered primary channel, and only the exact
+ * owner's channel: no other session receives a row or a copy of it. An owner
+ * that is absent, has no saved transcript, keeps none, or refused the row parks
+ * it in durable storage without a retry timer until its own facts change.
  * Reachable recipients retry transient transport failures. Malformed identities
  * and corrupt origins retain terminal reasons and never retry.
  *
@@ -36,7 +35,6 @@ import type { InputProvenance } from "./awaited-results.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import type { ReceiptAssociation, ReceiptReferencePage, ResultReference } from "./result-schema.ts";
 import { modelFailureText, providerBlockText } from "./provider-block-facts.ts";
-import { opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { threadExcerpt, threadRecoveryText } from "./thread-notice-projection.ts";
@@ -58,7 +56,6 @@ import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from
 import { isThreadStorage, threadStorageUnanswered } from "./identity.ts";
 import { foldContinuity } from "./continuity-facts.ts";
 import { ContinuityDoc } from "./continuity-native.ts";
-import { validQuestionId } from "./peer-questions.ts";
 import {
 	acknowledgeReports,
 	type DeliveryOrigin,
@@ -78,8 +75,6 @@ import {
 	receiptReferenceSlice,
 	type ReceiptPageMember,
 	snapshotReceipt,
-	checkInFallback,
-	currentCheckInReport,
 	deliveryPendingCount,
 	deliveryState,
 	intentKey,
@@ -102,9 +97,11 @@ import {
 	connectPrimaryChannel,
 	primaryEndpointIncompatibleError,
 	primaryEndpointStatus,
+	primaryRecipientStatus,
+	primaryRefusalKind,
 	readPrimaryEndpointDescriptor,
 	verifyPrimaryOwners,
-	type PrimaryChannelConnection,
+	type PrimaryTranscript,
 	type PrimaryDelivery,
 } from "./primary-channel.ts";
 
@@ -113,11 +110,6 @@ const MAX_RETRY_DELAY_MS = 30_000;
 const REPORT_KEY_CHARS = 32;
 /** Registered primary ids are canonical lowercase UUIDs of any version. */
 const PRIMARY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-const PRIMARY_DIRECTORY_VISITS = 256;
-const PRIMARY_LIST_LIMIT = 20;
-const FALLBACK_LABEL = "no live owning session";
-/** Distinct fallback failures that the parked reason of one owner states. */
-const FALLBACK_FAILURE_TEXTS = 4;
 /** Bound for one peer body; the marker names the retained source for the full text. */
 /** UTF-16 units of a message body that a recipient reads; a longer body keeps its head. */
 export const PEER_TEXT_LIMIT = 16_000;
@@ -156,16 +148,6 @@ function boundedReportText(report: DeliveryReport, text = report.message): { tex
 	return { text: `${excerpt.text} [cut]${excerpt.text.includes(recovery) ? "" : `\n\n${recovery}`}`, truncated: true };
 }
 
-/** One bounded registered-primary discovery: everything found, and whether the bound was reached. */
-export interface PrimaryDiscovery {
-	/** Registered primary ids within the bound, in stable order. */
-	readonly ids: readonly string[];
-	/** True when every registered endpoint was observed; false when a traversal bound truncated the scan. */
-	readonly complete: boolean;
-	/** Directory entries visited in this scan. */
-	readonly visited: number;
-}
-
 export interface NativeTargetFailure {
 	readonly reason: string;
 	readonly availability: string;
@@ -193,8 +175,6 @@ export interface DurableDeliveryOptions {
 	readonly retryDelayMs?: number;
 	/** Root of the primary endpoint directory; defaults to `PI_AGENT_SESSIONS_DIR` or `<agentDir>/agent-sessions`. */
 	readonly sessionsRoot?: string;
-	/** Registered-primary discovery for the fallback; defaults to a bounded scan of endpoint records. */
-	readonly listPrimaryChannels?: (sessionsRoot: string) => Promise<PrimaryDiscovery>;
 	/** Failed native acquisitions stay parked until a new watcher or explicit refresh. */
 	readonly unavailableTargets?: Map<string, NativeTargetFailure>;
 	/**
@@ -373,44 +353,6 @@ function deliveryCommunicationParams(row: DeliveryRow, host: DurableHost): { com
 	return communication === undefined ? {} : { communication };
 }
 
-/** Informational copies already accepted for this answer group or report. */
-function fallbackRecipients(row: DeliveryRow): readonly string[] {
-	return row.kind === "receipt"
-		? row.receipts.flatMap((receipt) => receipt.fallbackRecipients ?? [])
-		: (row.report.fallbackRecipients ?? []);
-}
-
-/** A row whose informational copies reached every registered primary of one complete discovery. */
-function fallbackBroadcastRetained(row: DeliveryRow): boolean {
-	return row.kind === "receipt"
-		? row.receipts.every((receipt) => receipt.fallbackBroadcast === true)
-		: row.report.fallbackBroadcast === true;
-}
-
-/** The accepted broadcast of one check-in also covers the current check-in of the same watched task and owner. */
-async function retainCheckInBroadcast(tx: Tx, report: DeliveryReport, owner: string): Promise<void> {
-	const current = await retainedReport(tx, report.ownerId, report.sourceId);
-	if (current?.checkIn === undefined) return;
-	await storeDeliveryRow(tx, "report", { ...current, checkIn: { ...current.checkIn, fallbackBroadcast: true } });
-	const pending = await currentCheckInReport(tx, owner, current.checkIn.conversationId, current.checkIn.requestId);
-	if (pending?.checkIn !== undefined && pending.sourceId !== current.sourceId && !pending.checkIn.fallbackBroadcast)
-		await storeDeliveryRow(tx, "report", { ...pending, checkIn: { ...pending.checkIn, fallbackBroadcast: true } });
-}
-
-async function retainFallbackBroadcast(tx: Tx, row: DeliveryRow): Promise<void> {
-	if (row.kind === "report") {
-		const current = await retainedReport(tx, row.report.ownerId, row.report.sourceId);
-		if (current && !current.fallbackBroadcast)
-			await storeDeliveryRow(tx, "report", { ...current, fallbackBroadcast: true });
-		return;
-	}
-	for (const receipt of row.receipts) {
-		const current = await retainedReceipt(tx, receipt.submissionId);
-		if (current !== undefined && !current.fallbackBroadcast)
-			await storeDeliveryRow(tx, "receipt", { ...current, fallbackBroadcast: true });
-	}
-}
-
 /** Answer entries are storage-wide identities; unanswered inputs remain separate. */
 function receiptKey(receipt: DeliveryReceipt): string {
 	return receipt.answerEntryId === null ? `submission:${receipt.submissionId}` : `answer:${receipt.answerEntryId}`;
@@ -491,21 +433,6 @@ function receiptOrigin(receipt: DeliveryReceipt): DeliveryOrigin {
 	return origin;
 }
 
-/**
- * Why a direct report waits for its owner, a primary without a live endpoint, in the words that the sending
- * host's status shows: a thread notice, a question, or a message. None reaches another session.
- */
-export function directReportWaitText(report: Pick<DeliveryReport, "requestId" | "threadId">, owner: string): string {
-	if (report.threadId !== undefined)
-		return `Thread recipient ${owner} has no live endpoint; its notification stays pending without broadcast`;
-	if (validQuestionId(report.requestId))
-		return `Question ${report.requestId} waits for session ${owner}, which has no live endpoint. It reaches no other session: the asker's next question or context head closes it as unanswered while that session stays ended, and the session receives it if it resumes first.`;
-	return `Message ${report.requestId} waits for session ${owner}, which has no live endpoint. It reaches no other session: that session receives it if it resumes. Send it to a live session if it cannot wait.`;
-}
-
-function directReport(row: DeliveryRow): row is Extract<DeliveryRow, { kind: "report" }> {
-	return row.kind === "report" && row.report.direct === true;
-}
 function deliverySender(row: DeliveryRow, host: DurableHost): string {
 	return row.kind === "receipt" ? host.identity(row.receipt.conversationId) : row.report.senderIdentity;
 }
@@ -597,14 +524,10 @@ function reportRequestId(metadata: HostMetadata, report: DeliveryReport): string
 }
 
 /** Stable receiver dedup key for one routed row. */
-function rowSourceId(metadata: HostMetadata, row: DeliveryRow, informationalRecipient?: string): string {
-	const source =
-		row.kind === "receipt"
-			? receiptSourceIdentity(metadata.storageId, row.receipt)
-			: `${metadata.storageId}:${row.report.sourceId}`;
-	return informationalRecipient === undefined
-		? source
-		: `${source}:informational:${createHash("sha256").update(informationalRecipient).digest("hex")}`;
+function rowSourceId(metadata: HostMetadata, row: DeliveryRow): string {
+	return row.kind === "receipt"
+		? receiptSourceIdentity(metadata.storageId, row.receipt)
+		: `${metadata.storageId}:${row.report.sourceId}`;
 }
 function receiptGroupContinuation(row: ReceiptRow, storageId: string, next = row.receiptGroup?.next) {
 	return next == null
@@ -653,8 +576,8 @@ function receiptAssociation(metadata: HostMetadata, row: ReceiptRow): ReceiptAss
 function rowIsSaved(row: DeliveryRow): boolean {
 	return row.kind === "report" || row.receipt.entryId !== null || row.receipt.answerEntryId !== null;
 }
-function passiveThreadDetails(row: DeliveryRow, host: DurableHost, metadata: HostMetadata, fallback: boolean) {
-	if (fallback || row.kind !== "report" || row.report.passive !== true || row.report.threadId === undefined) return {};
+function passiveThreadDetails(row: DeliveryRow, host: DurableHost, metadata: HostMetadata) {
+	if (row.kind !== "report" || row.report.passive !== true || row.report.threadId === undefined) return {};
 	const value = deliveryCommunication(row, host);
 	if (value?.kind !== "notice") return {};
 	const communicationPassive = parseCommunicationPassive({
@@ -986,24 +909,16 @@ function reportFollowText(report: DeliveryReport, facts?: FinalReportDeliveryFac
 }
 
 /** Keep the headline separate: the primary card omits it, but must show each request's work state. */
-function channelText(
-	metadata: HostMetadata,
-	row: DeliveryRow,
-	label: string,
-	originalOwnerId: string,
-	fallback: boolean,
-	facts: NoticeFacts,
-): string {
-	const fallbackLabel = fallback ? ` ${FALLBACK_LABEL} for ${originalOwnerId}.` : "";
+function channelText(metadata: HostMetadata, row: DeliveryRow, label: string, facts: NoticeFacts): string {
 	if (row.kind === "receipt") {
 		const result =
 			row.receipt.status === "done"
 				? (inlineAnswer(row.receipt) ?? "No assistant text.")
 				: receiptFailureText(row.receipt, row.displayReason);
-		return `Agent “${label}” ${receiptOutcome(row.receipt)}.${fallbackLabel}\n\n${receiptStateText(facts.states)}\nResults do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, row, facts.states)}${receiptGroupContinuationText(row, metadata.storageId)}\n\nUse agent_inspect for retained source evidence.`;
+		return `Agent “${label}” ${receiptOutcome(row.receipt)}.\n\n${receiptStateText(facts.states)}\nResults do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, row, facts.states)}${receiptGroupContinuationText(row, metadata.storageId)}\n\nUse agent_inspect for retained source evidence.`;
 	}
 	if (row.report.checkIn !== undefined)
-		return `Agent “${label}” still working, not finished (check-in from ${row.report.senderIdentity}; source ${row.report.sourceId}). ${checkInSummary(row.report.checkIn)}.${fallbackLabel} ${CHECK_IN_GUIDANCE}\n\n${boundedPeerText(row.report.message).text}\n\nUse agent_inspect for retained source evidence.`;
+		return `Agent “${label}” still working, not finished (check-in from ${row.report.senderIdentity}; source ${row.report.sourceId}). ${checkInSummary(row.report.checkIn)}. ${CHECK_IN_GUIDANCE}\n\n${boundedPeerText(row.report.message).text}\n\nUse agent_inspect for retained source evidence.`;
 	const final = facts.finalReport;
 	const lead =
 		final !== undefined
@@ -1011,7 +926,7 @@ function channelText(
 			: row.report.threadId === undefined
 				? `Agent “${label}” sent a report.`
 				: `Thread notice from agent “${label}”.`;
-	return `${lead}${fallbackLabel} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${reportBody(row.report, final).text}${row.report.threadId === undefined ? "\n\nUse agent_inspect for retained source evidence." : ""}`;
+	return `${lead} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${reportBody(row.report, final).text}${row.report.threadId === undefined ? "\n\nUse agent_inspect for retained source evidence." : ""}`;
 }
 
 /** The notice, wake decision and arrival evidence describe the same retained work. */
@@ -1025,42 +940,9 @@ function asError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
 }
 
-/** Bounded directory scan for registered primary ids; live classification happens at use. */
-async function scanPrimaryChannels(sessionsRoot: string): Promise<PrimaryDiscovery> {
-	const directory = join(sessionsRoot, ".primaries");
-	const ids: string[] = [];
-	let visited = 0;
-	let truncated = false;
-	let handle: Awaited<ReturnType<typeof opendir>>;
-	try {
-		handle = await opendir(directory);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ids, complete: true, visited };
-		throw error;
-	}
-	for await (const entry of handle) {
-		visited += 1;
-		if (entry.isFile() && entry.name.endsWith(".json")) {
-			const id = entry.name.slice(0, -5);
-			if (PRIMARY_ID.test(id)) ids.push(id);
-		}
-		if (visited >= PRIMARY_DIRECTORY_VISITS) {
-			truncated = true;
-			break;
-		}
-		if (ids.length >= PRIMARY_LIST_LIMIT) {
-			truncated = true;
-			break;
-		}
-	}
-	ids.sort();
-	return { ids, complete: !truncated, visited };
-}
-
 export type DeliveryEligibility = {
 	readonly state: "active" | "parked" | "terminal";
 	readonly reason: string;
-	readonly fallback?: boolean;
 };
 
 export interface DeliveryFacts {
@@ -1073,7 +955,12 @@ export interface DeliveryFacts {
 	readonly nativeFailure?: string;
 	readonly primaryState: ReturnType<typeof primaryEndpointStatus>["state"];
 	readonly primaryVersion?: string;
-	readonly fallbackFailure?: string;
+	/** For a live primary: whether the session file it publishes exists. */
+	readonly primaryTranscript?: PrimaryTranscript;
+	/** The live primary's announced server; its next registration announces another. */
+	readonly primaryServer?: string;
+	/** A refusal of this primary, retained for the unchanged facts it refused under. */
+	readonly primaryRefusal?: string;
 	/** Set when the recipient is a thread storage: it holds threads and admits no agent input. */
 	readonly threadStorageOwner?: string;
 }
@@ -1097,18 +984,29 @@ export function classifyDelivery(facts: DeliveryFacts): DeliveryEligibility {
 	if (facts.nativeFailure !== undefined) return { state: "parked", reason: facts.nativeFailure };
 	if (facts.nativeRecord) return { state: "active", reason: "native recipient is available" };
 	if (!PRIMARY_ID.test(facts.ownerId)) return { state: "parked", reason: "native recipient has no catalog record" };
-	if (facts.primaryState === "live")
-		return { state: "active", reason: "primary recipient is live with a compatible delivery contract" };
+	return classifyPrimary(facts);
+}
+
+/** An ordinary owner takes the row only in its own saved session; no state selects another recipient. */
+function classifyPrimary(facts: DeliveryFacts): DeliveryEligibility {
+	const owner = facts.ownerId;
 	if (facts.primaryState === "incompatible")
 		return {
 			state: "parked",
-			reason: primaryEndpointIncompatibleError(facts.ownerId, facts.primaryVersion ?? "unadvertised").message,
+			reason: primaryEndpointIncompatibleError(owner, facts.primaryVersion ?? "unadvertised").message,
 		};
-	return {
-		state: "parked",
-		reason: `primary endpoint is ${facts.primaryState}${facts.fallbackFailure === undefined ? "" : `; ${facts.fallbackFailure}`}`,
-		fallback: facts.primaryState === "absent" || facts.primaryState === "dead",
-	};
+	if (facts.primaryState !== "live")
+		return {
+			state: "parked",
+			reason: `primary session ${owner} has ${facts.primaryState === "unknown" ? "an unverified endpoint" : facts.primaryState === "dead" ? "an endpoint whose process ended" : "no live endpoint"}; the row waits at its source for that session and reaches no other session`,
+		};
+	if (facts.primaryTranscript === "unsaved")
+		return {
+			state: "parked",
+			reason: `primary session ${owner} has no saved transcript yet; the row waits at its source until that session saves its first message`,
+		};
+	if (facts.primaryRefusal !== undefined) return { state: "parked", reason: facts.primaryRefusal };
+	return { state: "active", reason: "primary recipient is live with a compatible delivery contract" };
 }
 
 type EligibilityRow = {
@@ -1126,17 +1024,47 @@ interface EligibilityOptions {
 	readonly readTarget?: DurableDeliveryOptions["readTarget"];
 	readonly unavailableTargets?: ReadonlyMap<string, NativeTargetFailure>;
 	readonly packageDir?: string;
-	readonly fallbackFailures?: ReadonlyMap<string, string>;
+	/** Refusals of primary owners, each with the facts it was given under. */
+	readonly primaryRefusals?: ReadonlyMap<string, PrimaryRefusalRecord>;
 	readonly activeOnly?: boolean;
 	/** The owner of the observing storage when that storage is itself a thread storage. */
 	readonly threadStorageOwner?: string;
+}
+
+/** A primary owner's refusal; it holds while the owner's facts equal `facts`. */
+export interface PrimaryRefusalRecord {
+	readonly reason: string;
+	readonly facts: string;
+}
+
+type PrimaryFacts = Pick<DeliveryFacts, "primaryState" | "primaryVersion" | "primaryTranscript" | "primaryServer">;
+
+function primaryFacts(sessionsRoot: string, ownerId: string): PrimaryFacts {
+	if (!PRIMARY_ID.test(ownerId)) return { primaryState: "absent" };
+	const status = primaryRecipientStatus(sessionsRoot, ownerId);
+	return {
+		primaryState: status.state,
+		...(status.version === undefined ? {} : { primaryVersion: status.version }),
+		...(status.transcript === undefined ? {} : { primaryTranscript: status.transcript }),
+		...(status.serverId === undefined ? {} : { primaryServer: status.serverId }),
+	};
 }
 
 /** Namespace lookup failure is unavailability, not permission to assume a live route. */
 function recipientFacts(
 	ownerId: string,
 	options: EligibilityOptions,
-): Pick<DeliveryFacts, "nativeRecord" | "nativeFailure" | "primaryState" | "primaryVersion" | "threadStorageOwner"> {
+): Pick<
+	DeliveryFacts,
+	| "nativeRecord"
+	| "nativeFailure"
+	| "primaryState"
+	| "primaryVersion"
+	| "primaryTranscript"
+	| "primaryServer"
+	| "primaryRefusal"
+	| "threadStorageOwner"
+> {
 	if (options.storageId !== undefined && ownerStorageId(ownerId) === options.storageId)
 		return {
 			nativeRecord: true,
@@ -1150,9 +1078,8 @@ function recipientFacts(
 		if (options.readTarget !== undefined || (error as NodeJS.ErrnoException).code !== "ENOENT")
 			return { nativeRecord: false, primaryState: "unknown", nativeFailure: asError(error).message };
 	}
-	const primary = PRIMARY_ID.test(ownerId)
-		? primaryEndpointStatus(options.sessionsRoot, ownerId)
-		: { state: "absent" as const };
+	const primary = primaryFacts(options.sessionsRoot, ownerId);
+	const refusal = options.primaryRefusals?.get(ownerId);
 	const failed = options.unavailableTargets?.get(ownerStorageId(ownerId));
 	const nativeFailure =
 		record && failed?.availability === nativeRecipientAvailability(record, options.packageDir)
@@ -1160,8 +1087,8 @@ function recipientFacts(
 			: undefined;
 	return {
 		nativeRecord: record !== undefined,
-		primaryState: primary.state,
-		primaryVersion: primary.version,
+		...primary,
+		...(refusal !== undefined && refusal.facts === JSON.stringify(primary) ? { primaryRefusal: refusal.reason } : {}),
 		nativeFailure,
 		...(record !== undefined && isThreadStorage(record, options.catalog.root)
 			? { threadStorageOwner: record.ownerId }
@@ -1200,7 +1127,6 @@ export async function observeDeliveryEligibility(
 			ownerId: row.ownerId,
 			originValid,
 			terminalReason,
-			fallbackFailure: options.fallbackFailures?.get(row.ownerId),
 			...recipient,
 			...(intent === undefined
 				? {}
@@ -1298,7 +1224,6 @@ function transientTargetFailure(error: unknown): boolean {
 export function startDurableDelivery(options: DurableDeliveryOptions): DurableDelivery {
 	const { host, metadata, catalog, signal, onError } = options;
 	const acquire = options.acquire ?? acquireHost;
-	const listPrimaryChannels = options.listPrimaryChannels ?? scanPrimaryChannels;
 	const sessionsRoot = resolve(
 		options.sessionsRoot ?? process.env.PI_AGENT_SESSIONS_DIR ?? join(metadata.agentDir, "agent-sessions"),
 	);
@@ -1328,23 +1253,11 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let closePromise: Promise<void> | undefined;
 	let unsubscribe: (() => void) | undefined;
 	const unavailableTargets = options.unavailableTargets ?? new Map<string, NativeTargetFailure>();
-	const fallbackFailures = new Map<string, string>();
-	const fallbackFailureTexts = new Map<string, Set<string>>();
-	/** Fallback facts of the current pass: one discovery, the candidates that refused, and the rows it completed. */
-	let passDiscovery: Promise<PrimaryDiscovery> | undefined;
-	const unreachableCandidates = new Set<string>();
-	const broadcastRows = new WeakSet<DeliveryRow>();
 	/**
-	 * One owner often has several parked rows, and each row meets the same failure. The parked reason of every row
-	 * states each distinct failure once, so its length does not grow with the number of rows.
+	 * A primary owner that refused a row as not retainable, or as not its own, refuses every row until its facts
+	 * change: a saved file, a new registration or another state. Its rows park without a retry timer meanwhile.
 	 */
-	const noteFallbackFailure = (owner: string, message: string): void => {
-		const texts = fallbackFailureTexts.get(owner) ?? new Set<string>();
-		fallbackFailureTexts.set(owner, texts);
-		if (texts.has(message) || texts.size >= FALLBACK_FAILURE_TEXTS) return;
-		texts.add(message);
-		fallbackFailures.set(owner, [...texts].join("; "));
-	};
+	const primaryRefusals = new Map<string, PrimaryRefusalRecord>();
 	const eligibilityOptions = {
 		catalog,
 		sessionsRoot,
@@ -1352,7 +1265,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		packageDir: metadata.packageDir,
 		readTarget: options.readTarget,
 		unavailableTargets,
-		fallbackFailures,
+		primaryRefusals,
 		...(isThreadStorage(metadata, catalog.root) ? { threadStorageOwner: metadata.ownerId } : {}),
 	};
 	let eligibility = new Map<string, DeliveryEligibility>();
@@ -1651,20 +1564,17 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		return { fields, unknown: fields.provider === undefined || fields.modelId === undefined };
 	};
 
-	/** Fields shared by receipt and report delivery details. */
+	/** Fields shared by receipt and report delivery details; the owner is the only recipient. */
 	const sharedRowDetails = (
 		row: DeliveryRow,
 		identity: string,
-		originalOwnerId: string,
-		deliveryRecipient: string,
-		liveOwner: boolean,
-		fallback: boolean,
+		owner: string,
 		status: SourceStatus | undefined,
 		body: { text: string; truncated: boolean },
 		states: readonly ReceiptState[],
 	): Record<string, unknown> => {
 		const actual = actualMetadata(status);
-		const sourceId = rowSourceId(metadata, row, fallback ? deliveryRecipient : undefined);
+		const sourceId = rowSourceId(metadata, row);
 		const saved = rowIsSaved(row);
 		const senderKind = row.kind === "receipt" ? "agent" : status?.senderKind;
 		return {
@@ -1675,20 +1585,19 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			source: sourceId,
 			identity,
 			label: displayName(status, identity),
-			originalOwnerId,
-			deliveryRecipient,
-			liveOwner,
+			originalOwnerId: owner,
+			deliveryRecipient: owner,
+			liveOwner: true,
 			saved,
-			wake: fallback ? false : rowWakes(row, deliveryRecipient, states),
+			wake: rowWakes(row, owner, states),
 			...(body.truncated ? { textTruncated: true } : {}),
 			...actual.fields,
 			...(actual.unknown ? { metadataUnknown: true } : {}),
-			...(fallback ? { fallback: true, fallbackLabel: FALLBACK_LABEL } : {}),
 		};
 	};
 
 	/** Fields of the displayed receipt and the exact related submissions on this delivery. */
-	const receiptFields = (row: ReceiptRow, states: readonly ReceiptState[], fallback: boolean) => {
+	const receiptFields = (row: ReceiptRow, states: readonly ReceiptState[]) => {
 		const receipt = row.receipt;
 		const workBySubmission = new Map(states.map(({ receipt, work }) => [receipt.submissionId, work]));
 		const work = workBySubmission.get(receipt.submissionId);
@@ -1710,7 +1619,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			...(receipt.answerTruncated ? { textTruncated: true } : {}),
 			...receiptGroupContinuation(row, metadata.storageId),
 			...(work?.work === "closed" ? { readFinalReport: work.finalReport.read } : {}),
-			...(fallback ? {} : { receiptAssociation: receiptAssociation(metadata, row) }),
+			receiptAssociation: receiptAssociation(metadata, row),
 			reason: row.displayReason ?? receipt.reason,
 			...(receipt.providerBlock === undefined ? {} : { providerBlock: receipt.providerBlock }),
 			acknowledged: row.receipts.every((member) => member.acknowledged),
@@ -1721,28 +1630,14 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const rowDetails = (
 		row: DeliveryRow,
 		identity: string,
-		originalOwnerId: string,
-		deliveryRecipient: string,
-		liveOwner: boolean,
-		fallback: boolean,
+		owner: string,
 		status: SourceStatus | undefined,
 		{ states, marks, finalReport }: NoticeFacts,
 	): JsonValue => {
 		const body =
 			row.kind === "receipt" ? boundedPeerText(inlineAnswer(row.receipt) ?? "") : reportBody(row.report, finalReport);
-		const shared = sharedRowDetails(
-			row,
-			identity,
-			originalOwnerId,
-			deliveryRecipient,
-			liveOwner,
-			fallback,
-			status,
-			body,
-			states,
-		);
-		// Informational copies do not settle requests in the session that receives the copy.
-		const arrivals = fallback ? {} : arrivedReferences(marks);
+		const shared = sharedRowDetails(row, identity, owner, status, body, states);
+		const arrivals = arrivedReferences(marks);
 		if (row.kind === "receipt") {
 			const { receipt } = row;
 			const authored = receiptDisplayBody(row);
@@ -1750,7 +1645,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			return {
 				...shared,
 				...arrivals,
-				...receiptFields(row, states, fallback),
+				...receiptFields(row, states),
 				...receiptContinuationDetails(
 					metadata,
 					row,
@@ -1765,7 +1660,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const report = row.report;
 		return {
 			...shared,
-			...passiveThreadDetails(row, host, metadata, fallback),
+			...passiveThreadDetails(row, host, metadata),
 			...arrivals,
 			reportSourceId: report.sourceId,
 			requestId: report.requestId,
@@ -1779,229 +1674,38 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		} as unknown as JsonValue;
 	};
 
-	/** Deliver one row to the owner's registered primary channel. */
-	const deliverChannel = async (
-		connection: PrimaryChannelConnection,
-		row: DeliveryRow,
-		identity: string,
-		originalOwnerId: string,
-		deliveryRecipient: string,
-		liveOwner: boolean,
-		fallback: boolean,
-	): Promise<boolean> => {
+	/** Deliver one row to its owner's registered primary channel; the owner is the only recipient it names. */
+	const deliverLiveOwner = async (row: DeliveryRow, identity: string, owner: string): Promise<void> => {
 		const status = await readSourceStatus(identity);
 		const facts = await deliveryFacts(row);
 		const message: PrimaryDelivery = {
 			requireRetained: true,
-			sourceId: rowSourceId(metadata, row, fallback ? deliveryRecipient : undefined),
-			text: channelText(metadata, row, displayName(status, identity), originalOwnerId, fallback, facts),
-			details: rowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback, status, facts),
+			sourceId: rowSourceId(metadata, row),
+			text: channelText(metadata, row, displayName(status, identity), facts),
+			details: rowDetails(row, identity, owner, status, facts),
 		};
-		if (!(await reportCurrent(row))) return false;
-		await connection.deliver(message);
-		row.deliveredTo.add(`primary:${deliveryRecipient}`);
-		return true;
-	};
-
-	/** Direct delivery to the registered owner: the endpoint is live and the recipient is the owner. */
-	const deliverLiveOwner = async (row: DeliveryRow, identity: string, owner: string): Promise<void> => {
+		if (!(await reportCurrent(row))) return;
 		const connection = await connectPrimaryChannel({ id: owner, sessionsRoot });
 		try {
-			await deliverChannel(connection, row, identity, owner, owner, true, false);
+			await connection.deliver(message);
 		} finally {
 			await connection.close().catch(() => undefined);
 		}
+		row.deliveredTo.add(`primary:${owner}`);
 	};
 
-	/** One fallback candidate's outcome; an incompatible endpoint never receives a quiet notice. */
-	type CandidateOutcome =
-		| { readonly kind: "delivered" }
-		| { readonly kind: "skipped" }
-		| { readonly kind: "failed" }
-		| { readonly kind: "incompatible"; readonly version: string };
-
-	/** Deliver one fallback candidate; absent or proven dead endpoints are skipped, incompatible ones refuse. */
-	const deliverFallbackCandidate = async (
-		id: string,
-		row: DeliveryRow,
-		identity: string,
-		owner: string,
-	): Promise<CandidateOutcome> => {
-		const recipients = fallbackRecipients(row);
-		if (recipients.includes(id) || row.deliveredTo.has(`fallback:${id}`)) return { kind: "delivered" };
-		// One failed attempt stands for every later row of this pass; the next pass tries the candidate again.
-		if (unreachableCandidates.has(id)) return { kind: "failed" };
-		const status = primaryEndpointStatus(sessionsRoot, id);
-		if (status.state === "absent" || status.state === "dead") return { kind: "skipped" };
-		if (status.state === "incompatible") return { kind: "incompatible", version: status.version ?? "unadvertised" };
-		let connection: PrimaryChannelConnection;
-		try {
-			connection = await connectPrimaryChannel({ id, sessionsRoot });
-		} catch {
-			// A live or unknown candidate that cannot be reached is not proven absent.
-			unreachableCandidates.add(id);
-			return { kind: "failed" };
-		}
-		const outcome = await acceptFallbackCopy(connection, row, identity, owner, id);
-		if (outcome.kind === "failed") unreachableCandidates.add(id);
-		return outcome;
-	};
-
-	const acceptFallbackCopy = async (
-		connection: PrimaryChannelConnection,
-		row: DeliveryRow,
-		identity: string,
-		owner: string,
-		id: string,
-	): Promise<CandidateOutcome> => {
-		try {
-			if (!(await deliverChannel(connection, row, identity, owner, id, false, true))) return { kind: "skipped" };
-			await recordFallbackRecipient(row, id);
-			row.deliveredTo.add(`fallback:${id}`);
-			return { kind: "delivered" };
-		} catch {
-			return { kind: "failed" };
-		} finally {
-			await connection.close().catch(() => undefined);
-		}
-	};
-
-	/** Retain each accepted informational copy independently of owner acknowledgment. */
-	const recordFallbackRecipient = async (row: DeliveryRow, recipient: string): Promise<void> => {
-		await host.harness.commit(async (tx) => {
-			const add = (prior: readonly string[] = []) => [...new Set([...prior, recipient])];
-			if (row.kind === "report") {
-				const current = await retainedReport(tx, row.report.ownerId, row.report.sourceId);
-				if (current)
-					await storeDeliveryRow(tx, "report", { ...current, fallbackRecipients: add(current.fallbackRecipients) });
-				return;
-			}
-			for (const receipt of row.receipts) {
-				const current = await retainedReceipt(tx, receipt.submissionId);
-				if (current !== undefined)
-					await storeDeliveryRow(tx, "receipt", { ...current, fallbackRecipients: add(current.fallbackRecipients) });
-			}
-		}, BACKGROUND_CONTEXT);
-	};
-
-	/** Retain the completed broadcast with the row, so that later passes and later registrations add no copy. */
-	const recordAcceptedBroadcast = async (row: DeliveryRow, owner: string, complete: boolean): Promise<void> => {
-		if (complete) {
-			await host.harness.commit((tx) => retainFallbackBroadcast(tx, row), BACKGROUND_CONTEXT);
-			broadcastRows.add(row);
-		}
-		if (row.kind === "report" && row.report.checkIn !== undefined)
-			await host.harness.commit((tx) => retainCheckInBroadcast(tx, row.report, owner), BACKGROUND_CONTEXT);
-	};
-
-	/**
-	 * Registered candidates are best-effort copies, independent of owner eligibility. Every parked row of one pass
-	 * uses the same discovery, so the endpoint directory is read once for each pass and not once for each row.
-	 */
-	const fallbackCandidates = async (
-		owner: string,
-		row: DeliveryRow,
-	): Promise<{ candidates: readonly string[]; complete: boolean }> => {
-		passDiscovery ??= listPrimaryChannels(sessionsRoot);
-		const discovery = await passDiscovery;
-		if (!discovery.complete)
-			noteFallbackFailure(owner, `primary discovery is incomplete after ${discovery.visited} visits`);
-		const normalOwners = row.kind === "receipt" ? row.receipts.map((receipt) => receipt.ownerId) : [owner];
-		const candidates = discovery.ids.filter((id) => !normalOwners.includes(id));
-		if (candidates.length === 0)
-			throw new Error(`no live owning session for ${owner} and no registered primary accepted delivery`);
-		return { candidates, complete: discovery.complete };
-	};
-
-	/** Deliver one row to every candidate; an unavailable or incompatible candidate holds the row. */
-	const broadcastFallback = async (
-		candidates: readonly string[],
-		row: DeliveryRow,
-		identity: string,
-		owner: string,
-	): Promise<{
-		delivered: number;
-		unavailable: string | undefined;
-		incompatible: { id: string; version: string } | undefined;
-	}> => {
-		let delivered = 0;
-		let unavailable: string | undefined;
-		let incompatible: { id: string; version: string } | undefined;
-		for (const id of candidates) {
-			if (closed || signal.aborted) return { delivered, unavailable, incompatible };
-			const outcome = await deliverFallbackCandidate(id, row, identity, owner);
-			if (outcome.kind === "delivered") delivered += 1;
-			else if (outcome.kind === "failed") unavailable ??= id;
-			else if (outcome.kind === "incompatible") incompatible ??= { id, version: outcome.version };
-		}
-		return { delivered, unavailable, incompatible };
-	};
-
-	const incompatibleFallbackError = (id: string, version: string, owner: string): Error =>
-		new Error(
-			`${primaryEndpointIncompatibleError(id, version).message} The fallback for ${owner} stays unacknowledged.`,
-		);
-
-	/** Check every candidate before one delivery, so an older registered primary never sees a quiet notice. */
-	const preflightFallback = (candidates: readonly string[], owner: string): void => {
-		for (const id of candidates) {
-			if (closed || signal.aborted) return;
-			const status = primaryEndpointStatus(sessionsRoot, id);
-			if (status.state === "incompatible") throw incompatibleFallbackError(id, status.version ?? "unadvertised", owner);
-		}
-	};
-
-	/** A retained accepted broadcast suppresses later fallback independently of owner acknowledgment. */
-	const fallbackAlreadyAccepted = async (row: DeliveryRow, owner: string): Promise<boolean> => {
-		if (fallbackBroadcastRetained(row) || broadcastRows.has(row)) return true;
-		if (row.kind !== "report" || row.report.checkIn === undefined) return false;
-		const checkIn = row.report.checkIn;
-		return host.harness.commit(
-			(tx) => checkInFallback(tx, owner, checkIn.conversationId, checkIn.requestId),
-			BACKGROUND_CONTEXT,
-		);
-	};
-
-	/** Fallback copies never acknowledge the owner or activate a parked route. */
-	const deliverFallbackOwner = async (row: DeliveryRow, identity: string, owner: string): Promise<void> => {
-		if (await fallbackAlreadyAccepted(row, owner)) return;
-		const { candidates, complete } = await fallbackCandidates(owner, row);
-		preflightFallback(candidates, owner);
-		const { delivered, unavailable, incompatible } = await broadcastFallback(candidates, row, identity, owner);
-		// A watcher that closed during the broadcast did not reach every candidate. Each accepted copy is already
-		// recorded with its recipient; the broadcast itself stays open, and the next watcher finishes it.
-		if (closed || signal.aborted) return;
-		if (delivered === 0 && !(await reportCurrent(row))) return;
-		if (incompatible !== undefined) throw incompatibleFallbackError(incompatible.id, incompatible.version, owner);
-		if (unavailable !== undefined)
-			throw new Error(
-				`registered primary ${unavailable} is live or unknown but unreachable; the fallback for ${owner} stays unacknowledged`,
-			);
-		if (delivered === 0)
-			throw new Error(`no live owning session for ${owner} and no registered primary accepted delivery`);
-		await recordAcceptedBroadcast(row, owner, complete);
-	};
-
-	/** Only absent or proven-dead ordinary owners permit informational fallback. */
+	/** An ordinary owner receives its row in its own live session; every other state leaves the row parked. */
 	const deliverPrimary = async (row: DeliveryRow, owner: string): Promise<boolean> => {
 		if (row.deliveredTo.has(`primary:${owner}`)) return true;
 		if (!PRIMARY_ID.test(owner))
-			throw new Error(
-				`delivery owner ${owner} has no catalog record and is not a canonical primary id; refusing fallback`,
-			);
-		const identity = deliverySender(row, host);
+			throw new Error(`delivery owner ${owner} has no catalog record and is not a canonical primary id`);
 		await verifyPrimaryOwners(sessionsRoot, [owner]);
 		const status = primaryEndpointStatus(sessionsRoot, owner);
-		if (status.state === "live") await deliverLiveOwner(row, identity, owner);
-		else if (status.state === "incompatible")
+		if (status.state === "incompatible")
 			throw primaryEndpointIncompatibleError(owner, status.version ?? "unadvertised");
-		else if (status.state === "unknown")
-			throw new Error(`primary owner ${owner} has an unknown endpoint; refusing fallback`);
-		else if (directReport(row)) throw new Error(directReportWaitText(row.report, owner));
-		else {
-			await deliverFallbackOwner(row, identity, owner);
-			return false;
-		}
+		if (status.state !== "live")
+			throw new Error(`primary owner ${owner} is ${status.state}; the row waits for that session`);
+		await deliverLiveOwner(row, deliverySender(row, host), owner);
 		return true;
 	};
 
@@ -2082,8 +1786,23 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		return eligibility.get(key) ?? { state: "terminal", reason: "delivery row is absent" };
 	};
 
-	/** A failed native acquisition parks the route; a reachable transport retries. */
+	/**
+	 * A primary that refuses the row as another owner's, or keeps no transcript, parks its rows until its facts
+	 * change. A refusal for a file that the owner had not written yet parks only while the file is still absent:
+	 * a file written since is a reason to try again.
+	 */
+	const notePrimaryRefusal = (owner: string, error: unknown): void => {
+		const kind = primaryRefusalKind(error);
+		if (kind === undefined || kind === "unsaved" || ownerStorageId(owner) === metadata.storageId) return;
+		primaryRefusals.set(owner, {
+			reason: `primary session ${owner} refused the row (${kind}): ${asError(error).message}`,
+			facts: JSON.stringify(primaryFacts(sessionsRoot, owner)),
+		});
+	};
+
+	/** A failed native acquisition or a primary refusal parks the route; a reachable transport retries. */
 	const routeFailure = (row: DeliveryRow, owner: string, error: unknown): Error | undefined => {
+		notePrimaryRefusal(owner, error);
 		const current = classifyDelivery({
 			ownerId: owner,
 			originValid: true,
@@ -2095,15 +1814,6 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			`Delivery ${rowSourceId(metadata, row)} to ${owner}: active: transient transport failure: ${asError(error).message}`,
 			{ cause: error },
 		);
-	};
-
-	const tryParkedFallback = async (row: DeliveryRow, owner: string): Promise<void> => {
-		if (!ownerEligibility(row, owner).fallback || directReport(row)) return;
-		try {
-			await deliverFallbackOwner(row, deliverySender(row, host), owner);
-		} catch (error) {
-			noteFallbackFailure(owner, asError(error).message);
-		}
 	};
 
 	/** A commit of this storage can change what an owner inside it accepts, so such a route has no hold. */
@@ -2133,11 +1843,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 
 	const tryRouteOwner = async (row: DeliveryRow, owner: string): Promise<{ accepted: boolean; failure?: Error }> => {
 		const state = ownerEligibility(row, owner);
-		if (state.state === "terminal") return { accepted: false };
-		if (state.state === "parked") {
-			await tryParkedFallback(row, owner);
-			return { accepted: false };
-		}
+		if (state.state !== "active") return { accepted: false };
 		const key = holdKey(row, owner);
 		if (waitsForRetry(key)) return { accepted: false };
 		try {
@@ -2318,8 +2024,6 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			pendingCursor = undefined;
 			automaticCursor = undefined;
 			routingFailed = false;
-			fallbackFailures.clear();
-			fallbackFailureTexts.clear();
 			metHolds.clear();
 			attemptHeld = retryDue;
 			retryDue = false;
@@ -2331,8 +2035,6 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			active = false;
 			activeRecipients = new Set();
 		}
-		passDiscovery = undefined;
-		unreachableCandidates.clear();
 		automaticCursor = await settleDeliveries(host.harness, BACKGROUND_CONTEXT, automaticCursor);
 		const page =
 			pendingCursor === null

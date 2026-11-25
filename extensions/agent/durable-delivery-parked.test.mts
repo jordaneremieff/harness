@@ -1,7 +1,7 @@
-/** Results and reports that wait for an owner without a live session. */
+/** Results and reports that wait for an owner that cannot take them now. */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
 import { deliveryState } from "./delivery-store.ts";
-import { startDurableDelivery, type DurableDelivery, type PrimaryDiscovery } from "./durable-delivery.ts";
+import { startDurableDelivery, type DurableDelivery } from "./durable-delivery.ts";
 import { DurableHost } from "./durable-host.ts";
 import {
 	answerMessage,
@@ -20,7 +20,7 @@ import {
 	scriptedRuntime,
 } from "./durable-host-fixture.mts";
 import { parseHostMetadata } from "./host-protocol.ts";
-import { createPrimaryChannel, type PrimaryDelivery } from "./primary-channel.ts";
+import { createPrimaryChannel, primaryRefusal, type PrimaryDelivery } from "./primary-channel.ts";
 
 type TestContext = { after(fn: () => void | Promise<void>): void };
 
@@ -56,7 +56,7 @@ function watch(
 	t: TestContext,
 	host: DurableHost,
 	root: string,
-	options: { listPrimaryChannels?: (sessionsRoot: string) => Promise<PrimaryDiscovery>; onIdle?: () => void } = {},
+	options: { onIdle?: () => void } = {},
 ): { delivery: DurableDelivery; errors: string[] } {
 	const errors: string[] = [];
 	const delivery = startDurableDelivery({
@@ -80,20 +80,25 @@ function watch(
 	return { delivery, errors };
 }
 
-async function registerPrimary(t: TestContext, root: string, onDeliver?: () => void): Promise<PrimaryDelivery[]> {
+async function registerPrimary(
+	t: TestContext,
+	root: string,
+	options: { id?: string; sessionFile?: string; deliver?: (message: PrimaryDelivery) => void } = {},
+): Promise<{ received: PrimaryDelivery[]; close: () => Promise<void> }> {
 	const received: PrimaryDelivery[] = [];
 	const channel = await createPrimaryChannel({
-		id: randomUUID(),
+		id: options.id ?? randomUUID(),
 		cwd: root,
 		sessionsRoot: join(root, "sessions"),
+		...(options.sessionFile === undefined ? {} : { sessionFile: options.sessionFile }),
 		deliver: (message) => {
 			received.push(message);
-			onDeliver?.();
+			options.deliver?.(message);
 		},
 		promptTrust: async () => undefined,
 	});
 	t.after(() => channel.close());
-	return received;
+	return { received, close: () => channel.close() };
 }
 
 /** Counts completed passes, and resolves a waiter after the next pass that started on request. */
@@ -132,24 +137,32 @@ async function parkedReasons(host: DurableHost, ids: readonly SubmissionId[]): P
 	}
 }
 
-it("states one fallback failure once in the parked reason of every row of an ended owner", {
-	timeout: 30000,
-}, async (t) => {
+async function acknowledged(host: DurableHost, id: SubmissionId): Promise<boolean> {
+	return (await deliveryState(host.harness, BACKGROUND_CONTEXT, true))?.receipts[String(id)]?.acknowledged === true;
+}
+
+it("parks every row of an ended owner with one reason that names no other session", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const owner = randomUUID();
 	const count = 12;
 	const host = await openSource(t, root, count);
 	const ids: SubmissionId[] = [];
 	for (let index = 0; index < count; index++) ids.push(await settledResult(host, owner, `parked-${index}`));
-	const { errors } = watch(t, host, root);
+	const { delivery, errors } = watch(t, host, root);
 	const reasons = await parkedReasons(host, ids);
-	const failure = `no live owning session for ${owner} and no registered primary accepted delivery`;
-	for (const reason of reasons) assert.equal(reason.split(failure).length - 1, 1, reason);
 	assert.equal(new Set(reasons).size, 1, "every row of the owner states the same reason");
-	for (const error of errors) assert.ok(error.split(failure).length - 1 <= 1, error);
+	assert.match(
+		reasons[0],
+		new RegExp(`primary session ${owner} has no live endpoint; .*reaches no other session`, "u"),
+	);
+	for (const error of errors) assert.match(error, /parked: primary session .* reaches no other session$/u);
+	for (let attempt = 0; attempt < 200 && !delivery.summary().fresh; attempt++)
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.deepEqual(delivery.summary().parkedRecipients, [owner]);
+	assert.equal(delivery.summary().active, false, "parked rows keep no delivery active");
 });
 
-it("gives a parked result to the primaries of its first complete broadcast and not to one that registers later", {
+it("gives no copy of an ended owner's result to a registered primary, before or after registration", {
 	timeout: 30000,
 }, async (t) => {
 	const root = fixtureRoot(t);
@@ -161,8 +174,6 @@ it("gives a parked result to the primaries of its first complete broadcast and n
 	const { delivery } = watch(t, host, root, { onIdle: counter.onIdle });
 	await parkedReasons(host, [id]);
 	await counter.pass(delivery);
-	assert.equal(early.length, 1, "the registered primary received the informational copy");
-
 	const late = await registerPrimary(t, root);
 	await host.request(
 		"submit",
@@ -170,90 +181,58 @@ it("gives a parked result to the primaries of its first complete broadcast and n
 		BACKGROUND_CONTEXT,
 	);
 	await counter.pass(delivery);
-	await counter.pass(delivery);
-	assert.equal(late.length, 0, "a primary that registered after the broadcast received a copy of the old result");
-	assert.equal(early.length, 1, "the first primary received no second copy");
-	const state = await deliveryState(host.harness, BACKGROUND_CONTEXT, true);
-	assert.equal(state?.receipts[String(id)]?.fallbackBroadcast, true);
-	assert.equal(state?.receipts[String(id)]?.acknowledged, false, "a copy does not acknowledge the owner");
+	assert.deepEqual([early.received.length, late.received.length], [0, 0], "no other session received the row");
+	assert.equal(await acknowledged(host, id), false);
 });
 
-it("retries a parked result that no primary accepted when a primary registers", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const owner = randomUUID();
-	const host = await openSource(t, root, 1);
-	const id = await settledResult(host, owner, "nobody-listens");
-	const counter = passCounter();
-	const { delivery } = watch(t, host, root, { onIdle: counter.onIdle });
-	await parkedReasons(host, [id]);
-	const before = await deliveryState(host.harness, BACKGROUND_CONTEXT, true);
-	assert.equal(before?.receipts[String(id)]?.fallbackBroadcast, undefined, "no primary accepted a copy yet");
-	const late = await registerPrimary(t, root);
-	await counter.pass(delivery);
-	assert.equal(late.length, 1, "the first primary that registers receives the copy");
-});
-
-it("reads the primary endpoint directory once for each pass, not once for each parked row", {
-	timeout: 60000,
+it("parks a row for an owner without a saved transcript and delivers it once the file exists", {
+	timeout: 30000,
 }, async (t) => {
 	const root = fixtureRoot(t);
 	const owner = randomUUID();
-	const count = 24;
-	const host = await openSource(t, root, count);
-	const ids: SubmissionId[] = [];
-	for (let index = 0; index < count; index++) ids.push(await settledResult(host, owner, `parked-${index}`));
-	let scans = 0;
+	const sessionFile = join(root, "owner-session.jsonl");
+	const host = await openSource(t, root, 1);
+	const id = await settledResult(host, owner, "for-a-new-session");
+	const primary = await registerPrimary(t, root, { id: owner, sessionFile });
 	const counter = passCounter();
-	const { delivery } = watch(t, host, root, {
-		onIdle: counter.onIdle,
-		listPrimaryChannels: async () => {
-			scans += 1;
-			return { ids: [], complete: true, visited: 0 };
-		},
-	});
-	await parkedReasons(host, ids);
-	await counter.pass(delivery);
-	const scansBefore = scans;
-	const passesBefore = counter.passes();
-	for (let round = 0; round < 5; round++) await counter.pass(delivery);
-	const passes = counter.passes() - passesBefore;
-	assert.ok(passes >= 5);
-	assert.ok(
-		scans - scansBefore <= passes,
-		`${scans - scansBefore} directory reads in ${passes} passes with ${count} parked rows`,
-	);
+	const { delivery } = watch(t, host, root, { onIdle: counter.onIdle });
+	const [reason] = await parkedReasons(host, [id]);
+	assert.match(reason, /has no saved transcript yet/u);
+	for (let round = 0; round < 3; round++) await counter.pass(delivery);
+	assert.equal(primary.received.length, 0, "an unsaved owner receives no attempt");
+	assert.equal(delivery.summary().active, false, "the parked row arms no retry");
+
+	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", id: owner })}\n`);
+	delivery.summary(true);
+	for (let round = 0; round < 50 && !(await acknowledged(host, id)); round++) await counter.pass(delivery);
+	assert.equal(await acknowledged(host, id), true);
+	assert.equal(primary.received.length, 1);
+	const details = primary.received[0].details as Record<string, unknown>;
+	assert.deepEqual([details.originalOwnerId, details.deliveryRecipient, details.fallback], [owner, owner, undefined]);
 });
 
-it("does not record a broadcast that the close of its watcher cut short", { timeout: 30000 }, async (t) => {
+it("parks the rows of an owner that keeps no transcript after one refusal, until it registers again", {
+	timeout: 30000,
+}, async (t) => {
 	const root = fixtureRoot(t);
 	const owner = randomUUID();
 	const host = await openSource(t, root, 1);
-	const id = await settledResult(host, owner, "for-an-ended-owner");
-	// The watcher closes while it gives the copy to the first of two registered primaries.
-	let closing: Promise<void> | undefined;
-	let first: DurableDelivery | undefined;
-	const closeFirst = (): void => {
-		closing ??= first?.close();
+	const id = await settledResult(host, owner, "for-a-no-session-owner");
+	const refuse = () => {
+		throw primaryRefusal("no-transcript", "keeps no transcript");
 	};
-	const copies = [await registerPrimary(t, root, closeFirst), await registerPrimary(t, root, closeFirst)];
-	first = watch(t, host, root).delivery;
-	while (closing === undefined) await new Promise((resolve) => setTimeout(resolve, 5));
-	await closing;
-	assert.deepEqual(copies.map((received) => received.length).sort(), [0, 1], "the closed watcher reached one primary");
-
-	// A later watcher of the same storage finishes the broadcast.
+	const first = await registerPrimary(t, root, { id: owner, deliver: refuse });
 	const counter = passCounter();
-	const second = watch(t, host, root, { onIdle: counter.onIdle }).delivery;
-	await counter.pass(second);
-	await counter.pass(second);
-	assert.deepEqual(
-		copies.map((received) => received.length),
-		[1, 1],
-		"the primary that the closed watcher did not reach never received its copy",
-	);
-	assert.equal(
-		(await deliveryState(host.harness, BACKGROUND_CONTEXT, true))?.receipts[String(id)]?.fallbackBroadcast,
-		true,
-		"the finished broadcast is recorded",
-	);
+	const { delivery } = watch(t, host, root, { onIdle: counter.onIdle });
+	const [reason] = await parkedReasons(host, [id]);
+	assert.match(reason, /refused the row \(no-transcript\)/u);
+	for (let round = 0; round < 3; round++) await counter.pass(delivery);
+	assert.equal(first.received.length, 1, "one refusal parks the owner's rows");
+
+	await first.close();
+	const second = await registerPrimary(t, root, { id: owner });
+	delivery.summary(true);
+	for (let round = 0; round < 50 && !(await acknowledged(host, id)); round++) await counter.pass(delivery);
+	assert.equal(await acknowledged(host, id), true, "a new registration takes the row");
+	assert.equal(second.received.length, 1);
 });
