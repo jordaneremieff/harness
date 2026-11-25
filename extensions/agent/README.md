@@ -4337,7 +4337,9 @@ One case sends again: a host that has begun to end (idle retirement, release, a
 close request, a lost writer lease) refuses every new operation before admission
 and marks the refusal as retiring. An agent control or thread change that meets
 that refusal waits up to 25 s for that host's connection to close, then sends the
-same request once through a fresh host.
+same request once through a fresh host. A first connection that meets a retiring
+host waits the same way within its launch budget: an acquisition then starts a
+fresh host, and an attach-only connection reports that no endpoint is live.
 When a runner reports BUSY and no endpoint is verified, registration retains an
 unavailable note without adding a recovery fault or clearing a genuine earlier
 error. This proves neither a live owner nor that another startup will succeed.

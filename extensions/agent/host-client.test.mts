@@ -12,6 +12,7 @@ import {
 	acquireHost,
 	connectHost,
 	HostBusyEndpointUnavailableError,
+	HostEndpointUnavailableError,
 	HostReadinessUnavailableError,
 	hostRequestBudget,
 	observeOwnedHostExit,
@@ -358,6 +359,52 @@ it("names a removed Node executable and requires a Pi restart before host launch
 		process.execPath = executable;
 	}
 	assert.equal(existsSync(join(root, "state.json")), false, "no replacement runtime started");
+});
+
+it("a first connection that meets a retiring host waits for it and acquires a fresh host", {
+	timeout: 30000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	const metadata = fixtureMetadata(root);
+	let finishClose: () => void = () => {};
+	const closeStep = new Promise<void>((resolve) => {
+		finishClose = resolve;
+	});
+	const retiring = await runHost(() => ({ request: async () => ({}), close: () => closeStep, isIdle: () => true }), {
+		metadata,
+		idleMs: 0,
+		announceReady: () => {},
+	});
+	const closed = retiring.close();
+	const acquiring = acquireHost(metadata, launch());
+	setTimeout(finishClose, 300);
+	await closed;
+	const connection = await acquiring;
+	track(t, connection.pid);
+	t.after(() => connection.close());
+	assert.notEqual(connection.pid, process.pid, "a fresh runner serves the storage after the retiring host ended");
+	assert.deepEqual(await connection.request("timer-list", { probe: 1 }), { probe: 1 });
+});
+
+it("an attach-only connection to a host that ended while it waited reports no endpoint", {
+	timeout: 30000,
+}, async (t) => {
+	const root = fixtureRoot(t);
+	const metadata = fixtureMetadata(root);
+	let finishClose: () => void = () => {};
+	const closeStep = new Promise<void>((resolve) => {
+		finishClose = resolve;
+	});
+	const retiring = await runHost(() => ({ request: async () => ({}), close: () => closeStep, isIdle: () => true }), {
+		metadata,
+		idleMs: 0,
+		announceReady: () => {},
+	});
+	const closed = retiring.close();
+	const attaching = connectHost(metadata, launch());
+	setTimeout(finishClose, 300);
+	await closed;
+	await assert.rejects(attaching, HostEndpointUnavailableError);
 });
 
 it("refuses to connect when no host is live", { timeout: 30000 }, async (t) => {

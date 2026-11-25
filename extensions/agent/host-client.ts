@@ -382,9 +382,12 @@ export class HostBusyEndpointUnavailableError extends HostError {
 
 /** The host refused before admission because it is ending; a fresh host can take the same operation. */
 export class HostRetiringError extends HostError {
-	constructor(message: string) {
+	/** True when the retiring host's connection closed within the wait, so a fresh host can take the work. */
+	readonly ended: boolean;
+	constructor(message: string, ended = false) {
 		super(message, "unavailable");
 		this.name = "HostRetiringError";
+		this.ended = ended;
 	}
 }
 
@@ -416,6 +419,25 @@ export function connectionEnded(connection: HostConnection, waitMs: number, sign
 		signal?.addEventListener("abort", aborted, { once: true });
 		if (signal?.aborted) finish(false);
 		else if (connection.closed) closed();
+	});
+}
+
+/** Resolve true when the transport closes, false when the wait or the caller's signal ends first. */
+function transportClosed(client: TransportClient, waitMs: number, signal?: AbortSignal): Promise<boolean> {
+	if (!client.connected) return Promise.resolve(true);
+	if (waitMs <= 0 || signal?.aborted) return Promise.resolve(false);
+	return new Promise((resolve) => {
+		const finish = (closed: boolean) => {
+			clearTimeout(timer);
+			unsubscribe();
+			signal?.removeEventListener("abort", aborted);
+			resolve(closed);
+		};
+		let unsubscribe = () => {};
+		const aborted = () => finish(false);
+		const timer = setTimeout(() => finish(false), waitMs);
+		unsubscribe = client.onClose(() => finish(true));
+		signal?.addEventListener("abort", aborted, { once: true });
 	});
 }
 
@@ -617,6 +639,19 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions, 
 	}
 }
 
+/** The host refused before admission because it is ending; its transport closes once its lease is free. */
+async function retiringHostEnded(
+	client: TransportClient,
+	refusal: HostRetiringError,
+	deadline: number,
+	signal?: AbortSignal,
+): Promise<Error> {
+	const ended = await transportClosed(client, Math.min(RETIRING_HOST_WAIT_MS, deadline - performance.now()), signal);
+	await withinBudget(client.dispose(), performance.now() + CONNECT_WAIT_LIMIT_MS).catch(() => undefined);
+	if (signal?.aborted) return abortReason(signal);
+	return new HostRetiringError(refusal.message, ended);
+}
+
 /** Attachment verifies the endpoint and operation contract, never diagnostic PID presence. */
 async function attachLink(
 	metadata: HostMetadata,
@@ -646,15 +681,26 @@ async function attachLink(
 				: {}),
 		};
 	} catch (error) {
-		const answered = client.connected;
-		await withinBudget(client.dispose(), deadline).catch(() => undefined);
-		if (signal?.aborted) throw abortReason(signal);
-		if (answered)
-			throw new HostError(`Host runtime version unavailable: ${toError(error).message}`, "unavailable", {
-				cause: error,
-			});
-		throw error;
+		throw await attachFailure(client, error, deadline, signal);
 	}
+}
+
+/** Close a link whose hello failed and name the failure for the caller. */
+async function attachFailure(
+	client: TransportClient,
+	error: unknown,
+	deadline: number,
+	signal?: AbortSignal,
+): Promise<unknown> {
+	if (error instanceof HostRetiringError) return retiringHostEnded(client, error, deadline, signal);
+	const answered = client.connected;
+	await withinBudget(client.dispose(), deadline).catch(() => undefined);
+	if (signal?.aborted) return abortReason(signal);
+	if (answered)
+		return new HostError(`Host runtime version unavailable: ${toError(error).message}`, "unavailable", {
+			cause: error,
+		});
+	return error;
 }
 
 /** Read the current writer and operation contract without an older-handshake fallback. */
@@ -672,6 +718,7 @@ async function readHostHello(
 		);
 		return parseHostHello(value);
 	} catch (error) {
+		if (isRetiringRefusal(error)) throw new HostRetiringError(error.message);
 		if (!client.connected)
 			throw new Error("The host link closed during runtime contract negotiation", { cause: error });
 		throw new HostError(
@@ -727,6 +774,8 @@ async function acquireLink(
 		return await attachLink(metadata, deadline, options.signal);
 	} catch (error) {
 		if (error instanceof HostLeaseBusyError) return attachBusyLink(metadata, deadline, options.signal);
+		// A host that ended while this call waited leaves the storage to a fresh host.
+		if (error instanceof HostRetiringError && error.ended) return launchRunner(metadata, options, deadline);
 		if (error instanceof HostError || isChordError(error) || error instanceof PluginError) throw error;
 	}
 	options.signal?.throwIfAborted();
@@ -1489,6 +1538,8 @@ export async function connectHost(metadata: HostMetadata, options: HostLaunchOpt
 			"attach-only",
 		);
 	} catch (error) {
+		if (error instanceof HostRetiringError && error.ended)
+			throw new HostEndpointUnavailableError(parsed.storageId, error);
 		if (options.signal?.aborted || error instanceof HostError || isChordError(error) || error instanceof PluginError)
 			throw error;
 		throw new HostEndpointUnavailableError(parsed.storageId, error);
