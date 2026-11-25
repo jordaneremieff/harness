@@ -1366,10 +1366,9 @@ export class AgentManager {
 		return select();
 	}
 
-	private requestedOperation(method: string, params: Record<string, unknown>): string {
+	private requestedOperation(method: string): string {
 		if (method === "submit") return "task-submit";
 		if (method === "report") return "submit";
-		if (method === "attach") return params.model === undefined ? "status" : "configure";
 		return method;
 	}
 
@@ -1448,7 +1447,7 @@ export class AgentManager {
 		signal?: AbortSignal,
 	): Promise<unknown> {
 		const sessionId = String(params.sessionId);
-		const requested = this.requestedOperation(method, params);
+		const requested = this.requestedOperation(method);
 		const versionError = hostRequestVersionError(requested, client.runtimeContract);
 		if (versionError) throw versionError;
 		if (method === "report") {
