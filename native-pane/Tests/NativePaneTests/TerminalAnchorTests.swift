@@ -25,6 +25,21 @@ import Testing
         #expect(!TerminalAnchor.matches(info(width: 1500), host: 42, frame: frame))
     }
 
+    @Test func aShrinkingOrOffscreenHostDoesNotBackThePane() {
+        let pane = CGRect(x: 1323, y: 185, width: 469, height: 720)
+        func info(_ frame: CGRect, onScreen: Bool = true, pid: Int32 = 42) -> [String: Any] {
+            [kCGWindowOwnerPID as String: pid, kCGWindowLayer as String: 0, kCGWindowIsOnscreen as String: onScreen,
+             kCGWindowBounds as String: frame.dictionaryRepresentation]
+        }
+        let full = CGRect(x: 543, y: 103, width: 1257, height: 810)
+        let shrinking = CGRect(x: 654, y: 356, width: 1070, height: 755)
+        #expect(TerminalAnchor.backsPane(info(full), host: 42, pane: pane))
+        #expect(!TerminalAnchor.backsPane(info(shrinking), host: 42, pane: pane))
+        #expect(!TerminalAnchor.backsPane(info(full, onScreen: false), host: 42, pane: pane))
+        #expect(!TerminalAnchor.backsPane(info(full, pid: 43), host: 42, pane: pane))
+        #expect(!TerminalAnchor.backsPane(nil, host: 42, pane: pane))
+    }
+
     @Test func namesTheHostWindowOnlyWhenOneRecordFits() {
         let frame = CGRect(x: 0, y: 31, width: 1518, height: 522)
         func info(_ number: CGWindowID, title: String) -> [String: Any] {

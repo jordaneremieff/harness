@@ -73,9 +73,12 @@ public final class TerminalAnchor {
     private let worker: AnchorWorker
     private let feed: StackingFeed?
     private let queue = DispatchQueue(label: "local.harness.markdown-reader.terminal-anchor", qos: .userInitiated)
+    private let backingQueue = DispatchQueue(label: "local.harness.native-pane.backing-window", qos: .userInitiated)
     private var timer: Timer?
     private var interval: TimeInterval = 0
     private var stepRunning = false
+    private var stepGeneration = 0
+    private var backingCheckRunning = false
     private let perf: Logger?
     private let eventDriven: Bool
     private var subscription: AnchorWorker.Subscription?
@@ -154,8 +157,13 @@ public final class TerminalAnchor {
     /// Runs one step on the background queue. A step that is still running, for example
     /// because an application answers slowly, is never queued twice.
     private func step() {
-        guard timer != nil, !stepRunning else { return }
+        guard timer != nil else { return }
+        if stepRunning {
+            checkBackingWindow()
+            return
+        }
         stepRunning = true
+        stepGeneration &+= 1
         let worker = worker
         let marker = marker
         let period = interval
@@ -168,6 +176,28 @@ public final class TerminalAnchor {
             perf?.debug("anchor.step ms=\(elapsed) calls=\(worker.axCalls - before) poll_ms=\(period * 1000)")
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.finish(result) }
+            }
+        }
+    }
+
+    /// The host can stop answering AX requests throughout its minimise animation, while
+    /// its window shrinks out from under the panel. Check the last verified window without
+    /// waiting for the AX queue. Only a fresh placement can show the panel again.
+    private func checkBackingWindow() {
+        guard !backingCheckRunning, case .placed(let shown) = status, let number = shown.window else { return }
+        backingCheckRunning = true
+        let generation = stepGeneration
+        let pane = Self.appKitRect(shown.frame, primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
+        backingQueue.async { [weak self] in
+            let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, number) as? [[String: Any]])?.first
+            let backed = Self.backsPane(info, host: shown.host, pane: pane)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.backingCheckRunning = false
+                guard !backed, self.timer != nil, self.stepRunning, self.stepGeneration == generation,
+                      self.status == .placed(shown) else { return }
+                self.status = .concealed(shown)
+                self.onChange?(self.status)
             }
         }
     }
@@ -236,6 +266,16 @@ public final class TerminalAnchor {
         else { return false }
         return abs(rect.minX - frame.minX) < 2 && abs(rect.minY - frame.minY) < 2
             && abs(rect.width - frame.width) < 2 && abs(rect.height - frame.height) < 2
+    }
+
+    /// Whether the drawn host window still backs the pane, in accessibility coordinates.
+    nonisolated static func backsPane(_ info: [String: Any]?, host: pid_t, pane: CGRect) -> Bool {
+        guard let info, (info[kCGWindowIsOnscreen as String] as? Bool) == true,
+              (info[kCGWindowOwnerPID as String] as? pid_t) == host, (info[kCGWindowLayer as String] as? Int) == 0,
+              let bounds = info[kCGWindowBounds as String] as? [String: Any],
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary)
+        else { return false }
+        return rect.insetBy(dx: -2, dy: -2).contains(pane)
     }
 
     /// The one record that names the window, or nil when none or several do. Several windows of
