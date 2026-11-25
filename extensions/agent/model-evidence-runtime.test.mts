@@ -27,6 +27,7 @@ import {
 	toolCallMessage,
 } from "./durable-host-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
+import { trimEvidenceEntries, USAGE_ENTRY_LIMIT, type EvidenceEntries } from "./model-evidence.ts";
 import { AgentManager } from "./manager.ts";
 import { buildStatusOverview, type StatusOverview } from "./status-overview.ts";
 import { MODEL_SELECTION_GUIDANCE } from "./control-guidance.ts";
@@ -372,4 +373,68 @@ it("an exact inspection of an entry outside the conversation names the call that
 		sessionId: fork.identity,
 	})) as { entryId: number };
 	assert.equal(exact.entryId, branchEntry.id);
+});
+
+it("the evidence that a host keeps between projections covers no more entries than one collector visits", async (t) => {
+	const f = runtimeFixture(t);
+	const host = await DurableHost.open(
+		hostOptions(join(f.root, "retention.sqlite"), await fixtureRuntime("answer"), fixtureRegistry(), f.cwd),
+		context,
+	);
+	t.after(() => host.close());
+	const first = await host.submit({ message: "First request", requestId: "first" });
+	await host.wait(first.submissionId, context);
+	const assistant = (await host.root().entries({}, 20, undefined, context)).items.find(
+		(item) => item.kind === "pi.assistant",
+	);
+	assert.ok(assistant);
+	const fork = (await host.request("fork", { entryId: assistant.id })) as { conversationId: Durable.ConversationId };
+	const append = (conversationId: Durable.ConversationId, count: number) =>
+		host.harness.commit(async (tx) => {
+			for (let index = 0; index < count; index++)
+				await tx.appendEntry(Durable.AssistantEntry, conversationId, { model: [answerMessage()] });
+		}, context);
+	// Each conversation holds most of the entries that one collector visits; together they hold more.
+	const most = Math.floor(USAGE_ENTRY_LIMIT * 0.75);
+	await append(Durable.ROOT_CONVERSATION_ID, most);
+	await append(fork.conversationId, most);
+	const kept = (
+		host as unknown as { projectedConversations: Map<Durable.ConversationId, { evidence: EvidenceEntries }> }
+	).projectedConversations;
+	const keptAssistants = () => [...kept.values()].reduce((total, value) => total + value.evidence.assistants.length, 0);
+	const dated = (value: unknown, from: string, to: string): unknown =>
+		JSON.parse(JSON.stringify(value).replaceAll(from, to));
+
+	const complete = await host.catalogProjection();
+	assert.equal(complete.modelEvidence.sampling?.entriesVisited, USAGE_ENTRY_LIMIT);
+	assert.ok(
+		keptAssistants() <= USAGE_ENTRY_LIMIT,
+		`the host keeps ${keptAssistants()} assistant entries of ${2 * most} for a collector that visits ${USAGE_ENTRY_LIMIT} entries`,
+	);
+
+	// The root grows, so the collector takes fewer entries of the fork: the kept fork gives them up.
+	await append(Durable.ROOT_CONVERSATION_ID, 500);
+	const forkBefore = kept.get(fork.conversationId)?.evidence.covered ?? 0;
+	const grown = await host.catalogProjection(context, new Set([Durable.ROOT_CONVERSATION_ID]));
+	assert.equal(kept.get(fork.conversationId)?.evidence.covered, forkBefore - 500);
+	assert.ok(keptAssistants() <= USAGE_ENTRY_LIMIT);
+	const afterGrowth = await host.catalogProjection();
+	assert.deepEqual(grown.rows, afterGrowth.rows);
+	assert.deepEqual(grown.modelEvidence, dated(afterGrowth.modelEvidence, afterGrowth.updatedAt, grown.updatedAt));
+
+	// A kept conversation whose reduction covers fewer entries than the collector now takes is read again. The
+	// conversations before it can shrink, for example after a compaction.
+	const forkKept = kept.get(fork.conversationId);
+	assert.ok(forkKept);
+	kept.set(fork.conversationId, { ...forkKept, evidence: trimEvidenceEntries(forkKept.evidence, 10) });
+	const read: number[] = [];
+	const conversation = host.harness.conversation.bind(host.harness);
+	t.mock.method(host.harness, "conversation", (...args: Parameters<typeof conversation>) => {
+		read.push(args[0]);
+		return conversation(...args);
+	});
+	const reread = await host.catalogProjection(context, new Set([Durable.ROOT_CONVERSATION_ID]));
+	assert.deepEqual([...new Set(read)].sort(), [Durable.ROOT_CONVERSATION_ID, fork.conversationId].sort());
+	assert.deepEqual(reread.modelEvidence, dated(afterGrowth.modelEvidence, afterGrowth.updatedAt, reread.updatedAt));
+	assert.ok(keptAssistants() <= USAGE_ENTRY_LIMIT);
 });

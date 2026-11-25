@@ -19,7 +19,12 @@ import { AGENT_INPUT_KIND, isInputKind } from "./input-entry.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord/context";
 import type { Message, Models, Usage } from "@earendil-works/pi-ai";
-import { evidenceEntries, type EvidenceEntries, type ModelEvidenceCollector } from "./model-evidence.ts";
+import {
+	evidenceEntries,
+	trimEvidenceEntries,
+	type EvidenceEntries,
+	type ModelEvidenceCollector,
+} from "./model-evidence.ts";
 import {
 	createSession,
 	AssistantEntry,
@@ -1175,7 +1180,10 @@ export interface DurableDashboardOptions {
 	readonly reuse?: DashboardReuse;
 }
 
-/** What one projection keeps of a conversation for the next one. */
+/**
+ * What one projection keeps of a conversation for the next one. The evidence of all kept conversations of a storage
+ * covers no more entries than one collector visits.
+ */
 export interface ProjectedConversation {
 	readonly row: AgentConversationSummary;
 	readonly usage: UsageState | undefined;
@@ -1546,12 +1554,42 @@ async function dashboardSummary(
 		...backlog,
 		toolCalls: countToolCalls(entries),
 	};
-	if (options.modelEvidence || options.reuse) {
-		const evidence = evidenceEntries(record.id, entries);
-		options.modelEvidence?.observeRetained(row, usage, evidence);
-		options.reuse?.rows.set(record.id, { row, usage, evidence });
-	}
+	observeProjected(options, record.id, row, usage, entries);
 	return row;
+}
+
+/** Count one conversation that was read, and keep what the next projection reuses. */
+function observeProjected(
+	options: DurableDashboardOptions,
+	id: ConversationId,
+	row: AgentConversationSummary,
+	usage: UsageState | undefined,
+	entries: readonly EntryRecord[],
+): void {
+	if (!options.modelEvidence && !options.reuse) return;
+	// The reduction covers the entries that the collector takes from this conversation, and no more.
+	const evidence = evidenceEntries(id, entries, options.modelEvidence?.remainingEntries() ?? 0);
+	options.modelEvidence?.observeRetained(row, usage, evidence);
+	options.reuse?.rows.set(id, { row, usage, evidence });
+}
+
+/**
+ * The kept form of one conversation without a stored change, or undefined when the conversation is read again.
+ * The collector takes what its limit leaves after the conversations before this one.
+ * When they grew, the kept reduction gives up the entries that the collector no longer takes, so the reductions of
+ * one storage stay within the limit. When they shrank, the collector takes entries that the kept reduction lacks.
+ */
+function keptConversation(options: DurableDashboardOptions, id: ConversationId): ProjectedConversation | undefined {
+	const reuse = options.reuse;
+	if (reuse?.changed === undefined || reuse.changed.has(id)) return undefined;
+	const kept = reuse.rows.get(id);
+	const window = options.modelEvidence?.remainingEntries() ?? 0;
+	if (kept === undefined || kept.evidence.covered < Math.min(kept.evidence.length, window)) return undefined;
+	const evidence = trimEvidenceEntries(kept.evidence, window);
+	if (evidence === kept.evidence) return kept;
+	const trimmed = { ...kept, evidence };
+	reuse.rows.set(id, trimmed);
+	return trimmed;
 }
 
 /** Dashboard roster for this storage: the root, native forks, and child conversations. */
@@ -1579,22 +1617,18 @@ export async function readDashboard(
 	}
 	const page = await harness.commit((tx) => tx.scanConversations({}, 200, undefined), context);
 	if (options.modelEvidence) options.modelEvidence.value.coverage.conversationsComplete = page.next == null;
-	const reuse = options.reuse;
-	const retained = (record: ConversationRecord): ProjectedConversation | undefined =>
-		reuse?.changed === undefined || reuse.changed.has(record.id) ? undefined : reuse.rows.get(record.id);
 	const summaries: AgentConversationSummary[] = [];
-	const delivery = await forConversations(
-		page.items.filter((record) => retained(record) === undefined).map((record) => record.id),
-	);
 	for (const record of page.items) {
-		const kept = retained(record);
+		const kept = keptConversation(options, record.id);
 		if (kept === undefined) {
-			summaries.push(await dashboardSummary(harness, storageId, record, delivery, options, context));
+			const receipts = await forConversations([record.id]);
+			summaries.push(await dashboardSummary(harness, storageId, record, receipts, options, context));
 			continue;
 		}
 		summaries.push(kept.row);
 		options.modelEvidence?.observeRetained(kept.row, kept.usage, kept.evidence);
 	}
+	const reuse = options.reuse;
 	if (reuse) {
 		const listed = new Set(page.items.map((record) => record.id));
 		for (const id of reuse.rows.keys()) if (!listed.has(id)) reuse.rows.delete(id);

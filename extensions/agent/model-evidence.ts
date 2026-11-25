@@ -83,11 +83,17 @@ interface EvidenceMessage {
 
 /**
  * What evidence reads from the active entries of one conversation: their count, and the assistant entries among the
- * newest `USAGE_ENTRY_LIMIT` with their position. A publication keeps this for a conversation that did not change, so
+ * newest `covered` entries with their position. A publication keeps this for a conversation that did not change, so
  * the next publication counts the same evidence without another read of its entries.
+ *
+ * A collector visits `USAGE_ENTRY_LIMIT` entries of one storage, not of one conversation. The reduction of each
+ * conversation covers only the entries that the collector takes from it, so the reductions of one storage together
+ * cover no more than that limit.
  */
 export interface EvidenceEntries {
 	readonly length: number;
+	/** The count of newest entries that this reduction covers; an assistant entry before them is absent. */
+	readonly covered: number;
 	readonly assistants: readonly {
 		readonly index: number;
 		readonly id: number;
@@ -117,10 +123,15 @@ function evidenceMessage(message: ModelMessage): EvidenceMessage | undefined {
 	};
 }
 
-/** Reduce active entries to the fields that evidence reads. */
-export function evidenceEntries(conversationId: number, entries: readonly EntryRecord[]): EvidenceEntries {
+/** Reduce the newest `window` active entries to the fields that evidence reads. */
+export function evidenceEntries(
+	conversationId: number,
+	entries: readonly EntryRecord[],
+	window: number = USAGE_ENTRY_LIMIT,
+): EvidenceEntries {
+	const covered = Math.max(0, Math.min(entries.length, window, USAGE_ENTRY_LIMIT));
 	const assistants: EvidenceEntries["assistants"][number][] = [];
-	for (let index = Math.max(0, entries.length - USAGE_ENTRY_LIMIT); index < entries.length; index++) {
+	for (let index = entries.length - covered; index < entries.length; index++) {
 		const entry = entries[index];
 		if (entry.conversationId !== conversationId || entry.kind !== "pi.assistant") continue;
 		const messages = entry.model ?? [];
@@ -131,7 +142,15 @@ export function evidenceEntries(conversationId: number, entries: readonly EntryR
 			sampled: messages.slice(0, 64).map(evidenceMessage),
 		});
 	}
-	return { length: entries.length, assistants };
+	return { length: entries.length, covered, assistants };
+}
+
+/** The same reduction over no more than the newest `window` entries; an unchanged reduction is returned as is. */
+export function trimEvidenceEntries(entries: EvidenceEntries, window: number): EvidenceEntries {
+	const covered = Math.max(0, Math.min(entries.covered, window));
+	if (covered === entries.covered) return entries;
+	const first = entries.length - covered;
+	return { length: entries.length, covered, assistants: entries.assistants.filter((entry) => entry.index >= first) };
 }
 
 /** Collect from the documents and active entries already read for operational rows. */
@@ -173,10 +192,16 @@ export class ModelEvidenceCollector {
 		usage: UsageState | undefined,
 		entries: readonly EntryRecord[],
 	): void {
-		this.observeRetained(row, usage, evidenceEntries(conversationId, entries));
+		this.observeRetained(row, usage, evidenceEntries(conversationId, entries, this.remainingEntries()));
 	}
-	/** Count one conversation from the reduced form of its entries. */
+	/** The count of newest entries that this collector takes from the next conversation. */
+	remainingEntries(): number {
+		return USAGE_ENTRY_LIMIT - this.sampling.entriesVisited;
+	}
+	/** Count one conversation from the reduced form of its entries, which covers the entries this collector takes. */
 	observeRetained(row: CatalogViewRow, usage: UsageState | undefined, entries: EvidenceEntries): void {
+		if (entries.covered < Math.min(entries.length, this.remainingEntries()))
+			throw new Error("The retained evidence of a conversation covers fewer entries than the collector takes");
 		this.value.coverage.conversationsVisited++;
 		// Mounted active entries do not establish coverage of compacted or inactive history.
 		this.value.coverage.incompleteHistory++;
@@ -186,8 +211,7 @@ export class ModelEvidenceCollector {
 			for (const bucket of Object.values(usage.tools)) this.value.toolReportedCost += bucket.cost.total;
 		}
 		const sampling = this.sampling;
-		const remaining = USAGE_ENTRY_LIMIT - sampling.entriesVisited;
-		const start = Math.max(0, entries.length - remaining);
+		const start = Math.max(0, entries.length - this.remainingEntries());
 		sampling.entriesOmitted += start;
 		sampling.entriesVisited += entries.length - start;
 		for (let position = entries.assistants.length - 1; position >= 0; position--) {

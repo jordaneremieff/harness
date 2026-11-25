@@ -3258,7 +3258,12 @@ row carries the facts of its last read that no stored change names: its ages,
 dated by `ageObservedAt`, the running time of its turn, a retry delay and a task
 that the scheduler blocked. When the commits stop after a publication that kept
 rows, one more publication reads every conversation within five seconds of the
-last complete read, so the view of a storage at rest holds no kept row.
+last complete read, so the view of a storage at rest holds no kept row. The
+host also keeps the model evidence input of each kept conversation. One evidence
+sample visits a bounded count of entries for the whole storage, in conversation
+order, and the kept input covers the same entries and no more. When the
+conversations before a kept one grow, it gives up the entries that the sample
+no longer reaches; when they shrink, it is read again.
 Native diagnostic records never prove a live lease holder. A valid
 same-host clean-end marker or same-host ESRCH ends only the recorded generation;
 those efforts and their declarations no longer appear. So does an empty writer
