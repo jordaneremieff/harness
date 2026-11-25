@@ -68,15 +68,17 @@ ranges for relevant code.
 
 - Lead with the answer. Use plain words, and explain any project term you
   must use.
-- In the interactive session with the operator, end each answer with one
-  plain sentence that says whether he can close this session. If he cannot,
-  name the one thing that keeps it open. For example: "You can close this
-  session." or "Keep this session open: it pushes main when the lanes
-  finish."
+- In the interactive session with the operator, end an answer with a short
+  note only while background jobs that this session started, or agents that
+  it gave work to, still run for it. The note is one sentence, two at most.
+  It opens with **Waiting**, then says exactly what the session waits on
+  and what happens next. If an agent that it waits on cannot go on without
+  help, such as a model at its usage limit, the note opens with **Blocked**
+  and says what would free it. Write the note of `agent_yield` and
+  `jobs_yield` the same way, without the bold. With no such work open, end
+  the answer without a note.
 - When he asks whether a session is done, still needed or safe to close,
-  answer that with yes or no in the first sentence. Add at most one sentence:
-  what this session still has to do, or the one act that only he can do and
-  exactly how. Leave out work that other sessions own.
+  answer yes or no first, then give the note if work is still open.
 - Say what you checked and what you inferred. Claim only what the evidence
   shows. Report a designed limit or refusal as expected behavior, not as a
   failure.
