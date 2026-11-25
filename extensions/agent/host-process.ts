@@ -17,6 +17,7 @@ import { ChordError, PluginError, invalid, isChordError } from "@earendil-works/
 import { createTransportServer, type TransportServer, type TransportRequest } from "../../transport/index.ts";
 import { tryNativeWriterLeases, waitNativeWriterLease, type NativeWriterLease } from "./native-lease.ts";
 import { validNativeWriterId } from "./claims.ts";
+import { isPassiveHostOperation } from "./host-passive.ts";
 import {
 	formatHostReady,
 	HostError,
@@ -264,7 +265,9 @@ class HostProcessServer implements HostProcess {
 	private socketIdentity: { dev: number; ino: number } | undefined;
 	private cancelIdleCheck: (() => void) | undefined;
 	private readonly scheduleIdleCheck: NonNullable<RunHostOptions["scheduleIdleCheck"]>;
+	private pendingReplies = 0;
 	private activeRequests = 0;
+	private idleExpired = false;
 	private activityGeneration = 0;
 	private readonly attachments = new Map<string, AttachmentState>();
 	private retirementChecking = false;
@@ -365,12 +368,14 @@ class HostProcessServer implements HostProcess {
 			subscribe: async (kind, token, peer, publish) => {
 				const state = this.attachment(peer);
 				if (this.closing) throw retiringRefusal("The durable host process is shutting down");
-				if (kind === "changes") return this.subscribeChanges(publish, state);
-				this.beginActivity();
+				this.admitPassive();
+				this.pendingReplies++;
 				try {
-					return await this.subscribeObservation(token ?? "", publish, state);
+					return kind === "changes"
+						? this.subscribeChanges(publish, state)
+						: await this.subscribeObservation(token ?? "", publish, state);
 				} finally {
-					this.endActivity();
+					this.replyReady(true);
 				}
 			},
 			release: (peer) => this.releaseAttachment(peer),
@@ -392,9 +397,7 @@ class HostProcessServer implements HostProcess {
 		this.unsubscribeActivity = subscribeActivity?.call(this.runtime, () => {
 			if (!this.writerNamed()) return;
 			this.shutdownIfRequired();
-			this.activityGeneration++;
-			this.cancelIdleCheck?.();
-			this.cancelIdleCheck = undefined;
+			this.resetIdleWindow();
 			if (this.releasePending) this.scheduleRelease();
 			else this.scheduleRetirement();
 		});
@@ -458,12 +461,20 @@ class HostProcessServer implements HostProcess {
 
 	private async invoke(request: TransportRequest, state: AttachmentState): Promise<unknown> {
 		if (this.closing) throw retiringRefusal("The durable host process is shutting down");
-		const active = request.method !== HOST_CONTRACT_MEMBER && request.method !== "close";
-		if (active) this.beginActivity();
+		const { method, contract } = request;
+		if (method !== HOST_CONTRACT_MEMBER) this.validateOperation(method, contract);
+		if (method === HOST_CONTRACT_MEMBER || method === "close") return this.dispatch(request, state);
+		const passive = isPassiveHostOperation(method);
+		if (passive) this.admitPassive();
+		else {
+			this.activeRequests++;
+			this.resetIdleWindow();
+		}
+		this.pendingReplies++;
 		try {
 			return await this.dispatch(request, state);
 		} finally {
-			if (active) this.endActivity();
+			this.replyReady(passive);
 		}
 	}
 
@@ -542,7 +553,7 @@ class HostProcessServer implements HostProcess {
 	/** Release one runtime token; the runtime stops the watch when the last token closes. */
 	private closeObservationToken(token: string, state: AttachmentState): void {
 		if (!state.tokens.has(token) || state.closingTokens.has(token)) return;
-		this.beginActivity();
+		this.pendingReplies++;
 		const closing = this.runtime.request("observe-close", { token }, randomUUID());
 		state.closingTokens.set(token, closing);
 		void closing
@@ -550,14 +561,19 @@ class HostProcessServer implements HostProcess {
 			.finally(() => {
 				state.closingTokens.delete(token);
 				state.tokens.delete(token);
-				this.endActivity();
+				this.endReply(true);
 			});
 	}
 
 	/** Publish one state update per subscription whose frame revision advanced. */
 	private async pumpObservations(): Promise<void> {
-		if (this.closing) return;
-		await Promise.all([...this.observations].map((entry) => this.publishObservation(entry)));
+		if (this.closing || this.passiveAdmissionStopped()) return;
+		this.pendingReplies++;
+		try {
+			await Promise.all([...this.observations].map((entry) => this.publishObservation(entry)));
+		} finally {
+			this.replyReady(true);
+		}
 	}
 
 	/** Read one subscription's frame and publish it when its revision advanced. */
@@ -591,12 +607,11 @@ class HostProcessServer implements HostProcess {
 
 	/** Dispatch one negotiated operation; caller cancellation never reaches admitted Durable work. */
 	private async dispatch(request: TransportRequest, state: AttachmentState): Promise<unknown> {
-		const { method, params, contract: rawContract } = request;
+		const { method, params } = request;
 		const requestId = request.requestId ?? randomUUID();
 		// Negotiate before parsing or dispatching an operation payload.
 		if (method === HOST_CONTRACT_MEMBER)
 			return { format: "pi.agent.host-hello/1", writerId: this.writerId, contract: HOST_CONTRACT };
-		this.validateOperation(method, rawContract);
 		// Process shutdown owns the transport, runtime, writer claim, and done promise.
 		if (method === "close") {
 			// Chord.close joins method invocations. Release this invocation after writer
@@ -691,16 +706,31 @@ class HostProcessServer implements HostProcess {
 		});
 	}
 
-	private beginActivity(): void {
-		this.activeRequests++;
+	private resetIdleWindow(): void {
 		this.activityGeneration++;
+		this.idleExpired = false;
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
 	}
 
-	private endActivity(): void {
-		this.activeRequests--;
+	private passiveAdmissionStopped(): boolean {
+		return this.idleExpired || (this.releasePending && this.releaseGraceExpired);
+	}
+
+	private admitPassive(): void {
+		if (this.passiveAdmissionStopped()) throw retiringRefusal("The durable host is checking whether it can retire");
+	}
+
+	/** Chord queues the reply after the invocation returns; the Unix transport drains writes on close. */
+	private replyReady(passive: boolean): void {
+		setImmediate(() => this.endReply(passive));
+	}
+
+	private endReply(passive: boolean): void {
+		this.pendingReplies--;
+		if (!passive) this.activeRequests--;
 		if (this.releasePending) this.scheduleRelease();
+		else if (this.idleExpired) void this.onIdleCheck();
 		else this.scheduleRetirement();
 	}
 
@@ -735,7 +765,7 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private async releaseWhenQuiescent(): Promise<void> {
-		if (this.closing || !this.releasePending || this.releaseChecking || this.activeRequests > 0) return;
+		if (this.closing || !this.releasePending || this.releaseChecking || this.pendingReplies > 0) return;
 		this.releaseChecking = true;
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
@@ -750,22 +780,22 @@ class HostProcessServer implements HostProcess {
 		}
 	}
 
-	private closeReleaseObservations(): void {
+	private closeObservations(): void {
 		for (const state of this.attachments.values()) {
 			for (const entry of [...state.observations.values()]) entry.close();
 			for (const token of state.tokens) this.closeObservationToken(token, state);
 		}
 	}
 
-	private hasObservations(): boolean {
-		return [...this.attachments.values()].some((state) => state.tokens.size > 0);
-	}
-
 	private scheduleRetirement(): void {
-		if (this.closing || this.idleMs === 0 || this.activeRequests > 0 || this.hasObservations()) return;
-		this.cancelIdleCheck?.();
+		if (this.closing || this.idleMs === 0 || this.activeRequests > 0 || this.idleExpired || this.cancelIdleCheck)
+			return;
+		const generation = this.activityGeneration;
 		this.cancelIdleCheck = this.scheduleIdleCheck(
 			() => {
+				if (generation !== this.activityGeneration) return;
+				this.cancelIdleCheck = undefined;
+				this.idleExpired = true;
 				void this.onIdleCheck();
 			},
 			Math.max(1, this.idleMs),
@@ -785,42 +815,46 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private async onIdleCheck(releasing = false): Promise<void> {
-		this.cancelIdleCheck = undefined;
+		if (this.closing || this.retirementChecking || this.pendingReplies > 0 || (!releasing && !this.idleExpired)) return;
 		if (!this.writerNamed()) return;
-		if (this.closing || this.retirementChecking || this.activeRequests > 0 || (!releasing && this.hasObservations()))
-			return;
 		this.retirementChecking = true;
 		const generation = this.activityGeneration;
 		const seal = (): boolean => {
 			if (
 				this.closing ||
 				generation !== this.activityGeneration ||
-				this.activeRequests > 0 ||
-				(releasing ? !this.releasePending : this.hasObservations())
+				this.pendingReplies > 0 ||
+				(releasing ? !this.releasePending : !this.idleExpired)
 			)
 				return false;
 			this.closing = true;
 			// Admission is sealed now; the deadline covers the observation cleanup that precedes shutdown.
 			this.armShutdownDeadline();
-			if (releasing) this.closeReleaseObservations();
+			this.closeObservations();
 			return true;
 		};
 		try {
 			const retired = this.runtime.tryRetire ? await this.runtime.tryRetire(seal) : this.runtime.isIdle() && seal();
 			if (retired) {
-				if (releasing)
-					await Promise.allSettled(
-						[...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]),
-					);
+				await Promise.allSettled([...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]));
 				await this.shutdown();
 			}
 		} catch {
 			/* An unavailable check waits for the next activity or quiescent event. */
 		} finally {
 			this.retirementChecking = false;
-			if (!this.releasePending) this.scheduleRetirement();
-			else if (!releasing) this.scheduleRelease();
+			this.resumeRetirement(generation, releasing);
 		}
+	}
+
+	private resumeRetirement(generation: number, releasing: boolean): void {
+		if (this.releasePending) {
+			if (!releasing) this.scheduleRelease();
+			return;
+		}
+		if (generation === this.activityGeneration) this.idleExpired = false;
+		if (this.idleExpired) void this.onIdleCheck();
+		else this.scheduleRetirement();
 	}
 
 	/**

@@ -94,7 +94,7 @@ it("retires both hosts in a passive peer connection cycle", { timeout: 3000 }, a
 	assert.ok(toFirst.closed && toSecond.closed);
 });
 
-it("keeps an in-flight read across an idle check and starts a full interval after it", { timeout: 3000 }, async (t) => {
+it("finishes an in-flight read but refuses new reads after the idle deadline", { timeout: 3000 }, async (t) => {
 	const started = deferred();
 	const release = deferred();
 	t.after(release.resolve);
@@ -103,7 +103,7 @@ it("keeps an in-flight read across an idle check and starts a full interval afte
 		request: async () => {
 			started.resolve();
 			await release.promise;
-			return { read: true };
+			return { read: "x".repeat(512 * 1024) };
 		},
 		isIdle: () => true,
 		close: async () => {
@@ -116,13 +116,14 @@ it("keeps an in-flight read across an idle check and starts a full interval afte
 	await started.promise;
 	f.checks[f.checks.length - 1].fire();
 	assert.equal(closed, false);
+	await assert.rejects(client.request("status"), /checking whether it can retire/u);
 	release.resolve();
-	assert.deepEqual(await reading, { read: true });
-	f.checks[f.checks.length - 1].fire();
+	assert.deepEqual(await reading, { read: "x".repeat(512 * 1024) });
 	await f.host.done;
+	assert.equal(f.checks.length, 1, "the reply does not start another interval");
 });
 
-it("protects open observation tokens before subscription and releases them on explicit close or disconnect", {
+it("releases the last open observation token on retirement, even before subscription", {
 	timeout: 3000,
 }, async (t) => {
 	let counter = 0;
@@ -146,16 +147,12 @@ it("protects open observation tokens before subscription and releases them on ex
 	t.after(() => client.close());
 	const first = (await client.request("observe-open", { scope: "tasks" })) as { token: string };
 	await client.request("observe-open", { scope: "tasks" });
-	f.checks[f.checks.length - 1].fire();
-	assert.equal(existsSync(hostPaths(f.metadata).claim), true);
 	await client.request("observe-close", first);
-	f.checks[f.checks.length - 1].fire();
-	assert.equal(existsSync(hostPaths(f.metadata).claim), true, "one remaining token pins the host");
-	const scheduled = f.checks.length;
-	await client.close();
-	await f.checks.waitForCount(scheduled + 1);
-	f.checks[f.checks.length - 1].fire();
+	assert.equal(tokens.size, 1);
+	assert.equal(f.checks.length, 1, "observation setup and close do not reset the deadline");
+	f.checks[0].fire();
 	await f.host.done;
+	assert.equal(tokens.size, 0);
 });
 
 it("releases a token after observation subscription setup fails", { timeout: 3000 }, async (t) => {
@@ -180,35 +177,39 @@ it("releases a token after observation subscription setup fails", { timeout: 300
 	await f.host.done;
 });
 
-it("revalidates completed requests across an asynchronous idle check", { timeout: 3000 }, async (t) => {
-	const checking = deferred();
-	const release = deferred();
-	t.after(release.resolve);
-	let closed = false;
-	const f = await fixture(t, {
-		request: async () => ({}),
-		isIdle: () => true,
-		tryRetire: async (seal) => {
-			checking.resolve();
-			await release.promise;
-			return seal();
-		},
-		close: async () => {
-			closed = true;
-		},
+for (const [method, params] of [
+	["submit", { message: "new work" }],
+	["attach", { model: { provider: "fixture", modelId: "selected" } }],
+] as const)
+	it(`lets a concurrent ${method} invalidate an asynchronous retirement check`, { timeout: 3000 }, async (t) => {
+		const checking = deferred();
+		const release = deferred();
+		t.after(release.resolve);
+		let closed = false;
+		const f = await fixture(t, {
+			request: async () => ({}),
+			isIdle: () => true,
+			tryRetire: async (seal) => {
+				checking.resolve();
+				await release.promise;
+				return seal();
+			},
+			close: async () => {
+				closed = true;
+			},
+		});
+		const client = await connectHost(f.metadata, { retryAttempts: 0 });
+		t.after(() => client.close());
+		f.checks[f.checks.length - 1].fire();
+		await checking.promise;
+		const count = f.checks.length;
+		await client.request(method, params);
+		release.resolve();
+		await f.checks.waitForCount(count + 1);
+		assert.equal(closed, false, "an active request invalidates the old idle generation");
+		f.checks[f.checks.length - 1].fire();
+		await f.host.done;
 	});
-	const client = await connectHost(f.metadata, { retryAttempts: 0 });
-	t.after(() => client.close());
-	f.checks[f.checks.length - 1].fire();
-	await checking.promise;
-	await client.request("status");
-	const count = f.checks.length;
-	release.resolve();
-	await f.checks.waitForCount(count + 1);
-	assert.equal(closed, false, "a completed request still invalidates the old idle generation");
-	f.checks[f.checks.length - 1].fire();
-	await f.host.done;
-});
 
 it("cleans an observation opened after its attachment disconnects", { timeout: 3000 }, async (t) => {
 	const opening = deferred();
@@ -236,10 +237,8 @@ it("cleans an observation opened after its attachment disconnects", { timeout: 3
 	await opening.promise;
 	await client.close();
 	await failed;
-	const count = f.checks.length;
-	release.resolve();
-	await f.checks.waitForCount(count + 1);
 	f.checks[f.checks.length - 1].fire();
+	release.resolve();
 	await f.host.done;
 });
 
@@ -281,11 +280,9 @@ for (const boundary of ["observe-open", "observe-frame"] as const)
 		const controller = new AbortController();
 		const opening = client.observe({ scope: "tasks", sessionId: f.metadata.storageId }, { signal: controller.signal });
 		await entered.promise;
-		const count = f.checks.length;
 		controller.abort();
 		release.resolve();
 		await assert.rejects(opening, /abort/u);
-		await f.checks.waitForCount(count + 1);
 		f.checks[f.checks.length - 1].fire();
 		await f.host.done;
 	});

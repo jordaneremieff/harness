@@ -3956,21 +3956,17 @@ a token request after close.
   64 MiB queue limit, with caller-configurable `maxFrameBytes` and `maxQueueBytes`.
 - The primary registers one channel over the same public transport. That channel
   returns peer messages and answers the host's project-trust prompts.
-- Host retirement ignores passive clients and footer change subscriptions.
-  `PI_AGENT_IDLE_MINUTES` controls the idle interval; zero disables retirement.
-  Retirement requires no native live task or unsettled submission, no active
-  delivery or in-flight delivery effect, no active request or host-local control,
-  and no open conversation or task observation. Parked and terminal delivery
-  rows remain in storage without a recovery marker; those rows alone do not
-  require a live host or recovery link. Native check-in and timer tasks keep the host alive while
-  they wait. Actual storage changes and completed requests start a new idle
-  interval; passive connections and change subscriptions do not reset it.
-  Closing the last observation starts a new interval. The open-to-subscribe
-  gap counts as an observation, and close, abort, failed setup, and disconnect
-  release its token. Concurrent token operations share one ownership line;
-  failed initial frame construction rolls back only its new reference. A later
-  frame failure reports the observation unavailable and releases its token,
-  without closing the shared client.
+- `PI_AGENT_IDLE_MINUTES` controls host retirement; zero disables it. Native
+  live tasks, unsettled submissions, active delivery, and active controls keep
+  the host alive. Actual storage changes and active controls, including explicit
+  attachment, reset the interval. Parked and terminal delivery rows alone do
+  not keep a writer alive. Passive reads and feeds, including open conversation
+  and task views, do not reset the interval. At expiry the host refuses new
+  passive reads, lets existing replies finish, and checks that no active control
+  or native work raced retirement. The host releases its observation tokens
+  when it retires. The dashboard keeps the last view and reads stored history
+  without starting a replacement. An unexplained disconnect still reports loss.
+  A failed observation frame releases only that token.
 - A process `close` request differs from a client disconnect. Idle shutdown
   finishes runtime cleanup, unpublishes the owned endpoint, releases the writer
   claim, then closes transport. Retirement rechecks native work and delivery

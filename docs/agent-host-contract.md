@@ -511,7 +511,14 @@ request waits up to 10 seconds for a pass the driver has scheduled but not
 started; unfinished pages, in-flight effects and a failed observation refuse
 at once with the blocker named. Final retirement also checks native work,
 active requests, in-flight delivery and the unchanged admission generation
-before it seals admission.
+before it seals admission. An active control, including explicit attachment,
+starts a new idle interval. Passive operations and observation feeds leave the
+interval intact. At expiry, the process stops admitting passive reads and waits
+for admitted replies to reach the transport. A concurrent active control before
+the seal invalidates the retirement check. After the seal the process releases
+its observation tokens, ends the writer generation, and drains the transport.
+A client that verifies the exact clean writer end preserves the last frame as
+retired and does not recover or launch the host for that observation.
 
 Overrides and remaining members:
 

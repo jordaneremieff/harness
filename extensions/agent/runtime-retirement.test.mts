@@ -1421,7 +1421,7 @@ for (const fault of ["catalog", "marker"] as const)
 		assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, fault === "marker");
 	});
 
-it("keeps two native observation watches until close, selection change, and abort release them", {
+it("retires with conversation and task views open and status reads on the same deadline", {
 	timeout: 15000,
 }, async (t) => {
 	const f = await fixture(t);
@@ -1438,26 +1438,24 @@ it("keeps two native observation watches until close, selection change, and abor
 	t.after(() => host.close());
 	const client = await connectHost(f.metadata, { retryAttempts: 0 });
 	t.after(() => client.close());
-	const controller = new AbortController();
 	assert.ok(client.observe);
 	const conversation = await client.observe({ scope: "conversation", sessionId: f.metadata.storageId });
-	const tasks = await client.observe(
-		{ scope: "tasks", sessionId: f.metadata.storageId },
-		{ signal: controller.signal },
-	);
-	checks[checks.length - 1]();
-	assert.equal(writerAvailable(f.metadata), false);
-	await conversation.close();
-	const selected = await client.observe({ scope: "conversation", sessionId: f.metadata.storageId });
-	await selected.close();
-	checks[checks.length - 1]();
-	assert.equal(writerAvailable(f.metadata), false, "the task graph watch remains live");
-	const count = checks.length;
-	controller.abort();
-	await tasks.close();
-	await checks.waitForCount(count + 1);
-	checks[checks.length - 1]();
+	const tasks = await client.observe({ scope: "tasks", sessionId: f.metadata.storageId });
+	const closed = [conversation, tasks].map((view) => {
+		const retired = deferred();
+		view.onFrame((frame, fresh, state) => {
+			if (state !== "retired") return;
+			if (frame?.scope === view.scope.scope && !fresh) retired.resolve();
+		});
+		return retired.promise;
+	});
+	for (let index = 0; index < 5; index++) await client.request("status", { sessionId: f.metadata.storageId });
+	assert.equal(checks.length, 1, "passive view setup and reads keep the initial deadline");
+	checks[0]();
 	await host.done;
+	await Promise.all(closed);
+	assert.equal(client.closed, true);
+	assert.equal(writerAvailable(f.metadata), true);
 });
 
 for (const scope of ["conversation", "tasks"] as const)
@@ -1724,8 +1722,6 @@ it("releases only the logical observer whose established native frame fails", { 
 	assert.equal(client.closed, false);
 	assert.equal(healthyAvailable, true);
 	assert.equal(f.native.observationCount, 1, "only the healthy logical token remains");
-	checks[checks.length - 1]();
-	assert.equal(writerAvailable(f.metadata), false);
 	await healthy.close();
 	await failed.close();
 	await client.request("status");
