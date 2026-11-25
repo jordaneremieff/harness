@@ -163,7 +163,7 @@ it("ranks caller-owned history without PID-derived live priority across roster c
 	assert.equal(page.coverage.inventory?.inspected, records.length);
 	assert.equal(page.coverage.inventory?.remaining, 4);
 	assert.equal(page.coverage.inventory?.priorityRemaining, 0);
-	assert.equal(await manager.sessionFigures("owner-1"), "agents: 0/1+ active");
+	assert.equal(await manager.sessionFigures("owner-1"), "agents: 0/1+");
 	const overview = structuredObservation(
 		StatusToolOutputSchema,
 		await manager.status(undefined, undefined, { id: "owner-1", cwd: root }),

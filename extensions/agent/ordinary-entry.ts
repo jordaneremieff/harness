@@ -132,7 +132,7 @@ import {
 	type BriefPreview,
 } from "./brief.ts";
 import { MAX_CONTINUITY_SUMMARY, SELF_COMPACTION_NOTICE, SelfCompaction } from "./self-compaction.ts";
-import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
+import { retainedSentWork, SENT_WORK_ENTRY, sentWorkIdentity } from "./session-work.ts";
 import { publishSettings } from "./settings.ts";
 import {
 	createAgentToolCards,
@@ -702,7 +702,6 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		);
 	});
 	let agentFigures = "";
-	const showAgentCell = (ctx: ExtensionContext) => ctx.ui.setStatus("agent", agentFigures || undefined);
 	const initialPreferences = readPreferenceViews();
 	let registrationPreferences = initialPreferences.snapshot;
 	let currentPreferences = registrationPreferences;
@@ -720,6 +719,65 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			currentPreferences.document?.preferences?.contextBudgetTokens?.[`${provider}/${modelId}`],
 		diagnose: (sessionId, text) => eventManager()?.continuityNoteFailure(sessionId, text),
 	});
+	/** Whether work that this session sent with the agent tools will still come back and start a turn. */
+	const workOut = (sessionId: string): boolean =>
+		continuity.open(sessionId).length > 0 || (peerQuestions.get(sessionId)?.questions.open().asked.length ?? 0) > 0;
+	/**
+	 * The footer cell: a filled dot while work of this session is out, a hollow dot when none is, then the figures.
+	 * The cell stays while the session has agents or work out; only the interactive terminal draws colour.
+	 */
+	const showAgentCell = (ctx: ExtensionContext) => {
+		// Over a retained manager of another protocol, agent events change nothing, the footer included.
+		const retained = owners.managers.get(sessionsRoot());
+		if (retained !== undefined && retained.managerProtocol !== MANAGER_PROTOCOL) return;
+		const out = workOut(ctx.sessionManager.getSessionId());
+		if (!agentFigures && !out) {
+			ctx.ui.setStatus("agent", undefined);
+			return;
+		}
+		const glyph = out ? "●" : "○";
+		const mark = ctx.mode === "tui" ? ctx.ui.theme.fg(out ? "accent" : "muted", glyph) : glyph;
+		ctx.ui.setStatus("agent", `${mark} ${agentFigures || "agents"}`);
+	};
+	/** A scheduled send is open from its schedule until the result of its delivery, which carries the same request ID. */
+	const recordScheduledSend = (ctx: ExtensionContext, outcome: unknown, requestId: string): void => {
+		const { timerId, identity } = (outcome ?? {}) as { timerId?: unknown; identity?: unknown };
+		if (typeof identity !== "string" || typeof timerId !== "number" || !Number.isSafeInteger(timerId) || timerId < 1)
+			return;
+		const sessionId = ctx.sessionManager.getSessionId();
+		const target = sentWorkIdentity(identity) ?? identity;
+		try {
+			continuity.record(sessionId, { phase: "requested", sessionId: target, requestId, replyTo: sessionId, timerId });
+		} catch (error) {
+			eventManager()?.continuityFactFailure(sessionId, error);
+		}
+		showAgentCell(ctx);
+	};
+	/** A timer that a cancellation stopped delivers nothing, so the scheduled send that it carried closes here. */
+	const closeCancelledSend = (ctx: ExtensionContext, outcome: unknown): void => {
+		const { timerId, identity, status } = (outcome ?? {}) as {
+			timerId?: unknown;
+			identity?: unknown;
+			status?: unknown;
+		};
+		if (status === "fired" || typeof identity !== "string" || typeof timerId !== "number") return;
+		const sessionId = ctx.sessionManager.getSessionId();
+		const target = sentWorkIdentity(identity) ?? identity;
+		for (const fact of continuity.open(sessionId)) {
+			if (fact.timerId !== timerId || fact.sessionId !== target) continue;
+			try {
+				continuity.record(sessionId, {
+					phase: "refused",
+					sessionId: fact.sessionId,
+					requestId: fact.requestId,
+					replyTo: fact.replyTo,
+				});
+			} catch (error) {
+				eventManager()?.continuityFactFailure(sessionId, error);
+			}
+		}
+		showAgentCell(ctx);
+	};
 	const refreshRegistrations = new Map<string, (snapshot: PreferenceSnapshot) => void>();
 	const refreshPreferences = (ctx?: ExtensionContext): PreferenceSnapshot => {
 		const { snapshot, prompt } = readPreferenceViews(undefined, ctx ? caller(ctx, pi).preferenceCatalog : undefined);
@@ -1061,6 +1119,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			}
 			if (input.deliverAt === undefined) return sendImmediate(input, ctx, signal);
 			if (input.replyTo !== undefined) throw new Error("replyTo cannot be combined with deliverAt");
+			const requestId = `timer-delivery:send:${ctx.sessionManager.getSessionId()}:${callId}`;
 			return control(
 				"timer-schedule",
 				{
@@ -1071,11 +1130,14 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					checkInMinutes: checkInMinutes(input.checkInMinutes),
 					origin: "model",
 					scheduleId: `timer:send:${ctx.sessionManager.getSessionId()}:${callId}`,
-					requestId: `timer-delivery:send:${ctx.sessionManager.getSessionId()}:${callId}`,
+					requestId,
 				},
 				ctx,
 				signal,
-			);
+			).then((scheduled) => {
+				recordScheduledSend(ctx, scheduled, requestId);
+				return scheduled;
+			});
 		},
 	);
 	register(
@@ -1094,7 +1156,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		if (input.timerId !== undefined && input.release === true)
 			throw new Error("release cannot be combined with timerId");
 		if (input.timerId !== undefined)
-			return control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx, signal);
+			return control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx, signal).then(
+				(cancelled) => {
+					closeCancelledSend(ctx, cancelled);
+					return cancelled;
+				},
+			);
 		const { release, ...params } = input;
 		return control(release === true ? "release" : "abort", params, ctx, signal);
 	});
@@ -1655,6 +1722,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			providerBlocks.observe(details);
 			retention.deliver(sourceId, text, details);
 			continuity.delivered(sessionId, results);
+			showAgentCell(ctx);
 		};
 		heldPlacements.set(sessionId, []);
 		endQuestions(sessionId);
@@ -1668,10 +1736,14 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				{ triggerTurn: false },
 			);
 		continuity.start(sessionId, retained);
+		showAgentCell(ctx);
 		await getManager().registerPrimary(sessionId, {
 			sentWork: retainedSentWork(retained),
 			retainSentWork: (sessionId) => pi.appendEntry(SENT_WORK_ENTRY, { sessionId }),
-			retainContinuity: (fact) => continuity.record(sessionId, fact),
+			retainContinuity: (fact) => {
+				continuity.record(sessionId, fact);
+				showAgentCell(ctx);
+			},
 			signal: abort.signal,
 			cwd: ctx.cwd,
 			sessionFile: ctx.sessionManager.getSessionFile(),
@@ -1692,7 +1764,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				if (requireRetained) deliverRetained(text, details, sourceId);
 				else admitImmediate(text, details, sourceId);
 			},
-			receiveRetainedReplay: (details) => continuity.delivered(sessionId, deliveredResults(details)),
+			receiveRetainedReplay: (details) => {
+				continuity.delivered(sessionId, deliveredResults(details));
+				showAgentCell(ctx);
+			},
 			status: (text) => {
 				agentFigures = text ?? "";
 				showAgentCell(ctx);
@@ -1802,7 +1877,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const message = event.message as { role?: unknown; customType?: unknown; details?: unknown; content?: unknown };
 		if (message.role !== "custom" || message.customType !== "agent.peer") return;
 		placed(ctx, message.details, typeof message.content === "string" ? message.content : "");
+		showAgentCell(ctx);
 	});
+	// Questions and admissions change inside tool calls, and a placed reply closes a question.
+	pi.on("turn_end", (_event, ctx) => showAgentCell(ctx));
 	pi.on("agent_settled", (event, ctx) => {
 		const delivery = primaryDeliveries.get(ctx.sessionManager.getSessionId());
 		delivery?.retention.settled();
@@ -1812,6 +1890,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		delivery?.flush(!event.aborted);
 		placeHeld(ctx);
 		noticeUnanswered(ctx);
+		showAgentCell(ctx);
 	});
 	pi.on("session_shutdown", async (event, ctx) => {
 		resetThreadNotices();

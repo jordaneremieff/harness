@@ -1199,12 +1199,12 @@ it("Load more is selected before it reads, and loaded coverage survives reconcil
 		f.ui.handleInput("\r");
 		await turn();
 		assert.deepEqual(calls, [undefined, "more"]);
-		assert.match(visible(f.ui.render(100))[0] ?? "", /agents: 3\/3 active · ~\$1\.26/u);
+		assert.match(visible(f.ui.render(100))[0] ?? "", /agents: 3\/3 · ~\$1\.26/u);
 		rosterChange();
 		t.mock.timers.tick(250);
 		await turn();
 		assert.deepEqual(calls, [undefined, "more", undefined, "more"]);
-		assert.match(visible(f.ui.render(100))[0] ?? "", /agents: 3\/3 active · ~\$1\.26/u);
+		assert.match(visible(f.ui.render(100))[0] ?? "", /agents: 3\/3 · ~\$1\.26/u);
 		assert.doesNotMatch(shown(f), /unreadable/u, "storage coverage stays in Details, out of the list");
 	} finally {
 		f.ui.dispose();

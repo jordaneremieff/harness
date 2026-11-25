@@ -21,9 +21,9 @@ key, and a consumer must not parse a sibling's status text.
 
 | Key | Publisher and presentation contract | Meaning | Cleared by |
 |---|---|---|---|
-| `agent` | [Agent roster and coverage](../../extensions/agent/README.md#roster-and-coverage) | Working and total agents created by the current primary session, including agents they create, with observed native cost. Each primary receives its own figures. | No agents in that session scope, primary lifecycle cleanup, or manager close. Retained idle agents remain in scope. |
+| `agent` | [Agent roster and coverage](../../extensions/agent/README.md#roster-and-coverage) | A dot for work that this session sent with the agent tools, then working and total agents created by the current primary session, including agents they create, with observed native cost. Each primary receives its own figures. | No agents in that session scope and no such work out, primary lifecycle cleanup, or manager close. Retained idle agents remain in scope. |
 | `explorer` | [Explorer app update](../../extensions/explorer/README.md#open-explorer) | The Explorer native app update is active. | Update completion or session shutdown. |
-| `jobs` | [Background job status](../../extensions/jobs/README.md#footer-status-and-terminal-records) | Number of background commands that still run in this session. | The last job settles or is cancelled, or the session shuts down. |
+| `jobs` | [Background job status](../../extensions/jobs/README.md#footer-status-and-terminal-records) | A filled dot, then the number of background commands that still run in this session. | The last job settles or is cancelled, or the session shuts down. |
 | `stash` | [Background distillation](../../extensions/stash/README.md#background-distillation) | A `/stash new` request is starting. The status covers admission, not the work that follows. | The last pending admission returns or fails, or the session shuts down. |
 
 ## Rules
@@ -37,5 +37,11 @@ key, and a consumer must not parse a sibling's status text.
   reformat another extension's text (AGENTS.md: no sibling protocol).
 - Text stays short and bounded: the footer is width-constrained, and the
   statusline sanitizes display text.
+- A key that reports work which will come back and start the session's next
+  turn leads its text with a filled dot (`●`, theme colour `accent`) while
+  such work is out. A key whose text stays when no such work is out leads it
+  with a hollow dot (`○`, theme colour `muted`). Colour is drawn only in the
+  interactive terminal; other hosts receive the plain glyph. Each publisher
+  decides with its own code which of its work counts.
 - A new key is added to this registry by its publisher in the same change
   that introduces it.

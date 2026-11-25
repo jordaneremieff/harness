@@ -153,7 +153,7 @@ it("live usage sits under the target header and receipts stay on the message fie
 	observed.availability = () => ({ state: "live", at: frame.observedAt });
 	const f = fixture(160, 45, observed, {
 		modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }),
-		sessionFigures: async () => "agents: 1/1 active · ~$0.42",
+		sessionFigures: async () => "agents: 1/1 · ~$0.42",
 	});
 	try {
 		await turn();
@@ -163,7 +163,7 @@ it("live usage sits under the target header and receipts stay on the message fie
 		state.receipt = "Message admitted";
 		f.ui.handleInput("\r");
 		const lines = visible(f.ui.render(160));
-		assert.match(lines[0] ?? "", /agents: 1\/1 active · ~\$0\.42/, "session figures sit in the heading");
+		assert.match(lines[0] ?? "", /agents: 1\/1 · ~\$0\.42/, "session figures sit in the heading");
 		assert.doesNotMatch(lines[0] ?? "", /Close/u, "the heading holds no commands");
 		assert.match((lines.at(-1) ?? "").trimEnd(), /esc done$/u, "the way out is the last footer control");
 		const paneX = (lines[1]?.indexOf("│") ?? 0) + 1;
@@ -222,7 +222,7 @@ it("dashboard reconciliation and roster events reuse the scanned page for sessio
 	try {
 		await turn();
 		assert.equal(reads, 1);
-		assert.match(f.ui.render(100)[0], /agents: 1\/1 active · ~\$0.42/i);
+		assert.match(f.ui.render(100)[0], /agents: 1\/1 · ~\$0.42/i);
 		changed();
 		t.mock.timers.tick(250);
 		await turn();
@@ -239,7 +239,7 @@ it("a late session total read does not recreate the selection after close", asyn
 	const f = fixture(100, 30, source(), { sessionFigures: () => gate.promise });
 	await turn();
 	f.ui.dispose();
-	gate.resolve("agents: 1/1 active · ~$0.42");
+	gate.resolve("agents: 1/1 · ~$0.42");
 	await turn();
 	assert.equal(f.state.selected, undefined);
 	assert.equal(f.state.agents.size, 0);

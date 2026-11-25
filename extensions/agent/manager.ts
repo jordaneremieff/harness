@@ -1406,13 +1406,18 @@ export class AgentManager {
 						try {
 							primary.retainContinuity?.(fact);
 						} catch (error) {
-							this.failures.set(
-								`continuity:${ownerId}`,
-								`An admission fact was not saved; the continuity note after a compaction can omit or misstate this request. ${errorText(error)}`,
-							);
+							this.continuityFactFailure(ownerId, error);
 						}
 					};
 		return recordAdmission(record, { ownerId, sessionId, requestId, replyTo }, call);
+	}
+
+	/** Report a request fact that a primary could not save in its session. */
+	continuityFactFailure(ownerId: string, error: unknown): void {
+		this.failures.set(
+			`continuity:${ownerId}`,
+			`An admission fact was not saved; the continuity note after a compaction can omit or misstate this request. ${errorText(error)}`,
+		);
 	}
 
 	/** Report or clear the state of a primary's continuity note in the status overview. */
@@ -3126,7 +3131,7 @@ export class AgentManager {
 	/** The figures of one page; a `+` after the count marks a page that does not cover every row. */
 	private figuresForPage(ownerId: string, page: AgentConversationPage): string {
 		const text = this.figuresForRows(ownerId, page.rows);
-		return !page.coverage.complete ? text.replace(/(agents: \d+\/\d+)( active)/u, "$1+$2") : text;
+		return !page.coverage.complete ? text.replace(/^(agents: \d+\/\d+)/u, "$1+") : text;
 	}
 
 	private figuresForRows(ownerId: string, rows: readonly AgentConversationSummary[]): string {

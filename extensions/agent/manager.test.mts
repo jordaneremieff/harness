@@ -330,7 +330,7 @@ for (const failure of ["persistence", "status", "listener"] as const)
 		const page = await manager.dashboardPage();
 		assert.equal(
 			await manager.sessionFigures("primary", page),
-			"agents: 0/1 active",
+			"agents: 0/1",
 			"admitted scope survives callback failure and excludes reused cost",
 		);
 		const overview = (await manager.status()) as { failures: Array<{ error: string }> };
@@ -1825,7 +1825,7 @@ it("refreshes the durable footer from published views at startup and after a hos
 	const primary = fakePrimary(new AbortController().signal);
 	try {
 		await manager.registerPrimary("owner-1", primary.client);
-		await primary.statuses.waitFor((items) => items.includes("agents: 0/1+ active"));
+		await primary.statuses.waitFor((items) => items.includes("agents: 0/1+"));
 		assert.ok(connection, "a due record delegates endpoint attachment and lease exclusion to acquisition");
 		publish("idle");
 		let changes = 0;
@@ -1841,7 +1841,7 @@ it("refreshes the durable footer from published views at startup and after a hos
 		const afterClose = changes;
 		connection.change();
 		assert.equal(changes, afterClose);
-		await primary.statuses.waitFor((items) => items.includes("agents: 0/1+ active"));
+		await primary.statuses.waitFor((items) => items.includes("agents: 0/1+"));
 		assert.equal(methods.includes("dashboard"), false, "the footer never requests native dashboard state");
 	} finally {
 		await manager.close();
@@ -1922,7 +1922,7 @@ for (const scope of ["creation", "sent-work"] as const)
 			...primary.client,
 			...(scope === "sent-work" ? { sentWork: new Set([record.storageId]) } : {}),
 		});
-		const idle = scope === "creation" ? "agents: 0/2+ active · ~$0.75" : "agents: 0/1+ active";
+		const idle = scope === "creation" ? "agents: 0/2+ · ~$0.75" : "agents: 0/1+";
 		assert.equal(primary.statuses.at(-1), idle);
 		const notices = eventLog<void>();
 		const off = manager.subscribeRoster(() => notices.push(undefined));
@@ -1978,7 +1978,7 @@ it("shares catalog observation across primary reload, replacement, and roster te
 	oldAbort.abort();
 	assert.equal(registrations().length, 1, "a replaced primary cannot stop its replacement's observer");
 	publish("working");
-	await replacement.statuses.waitFor((items) => items.at(-1) === "agents: 0/1+ active");
+	await replacement.statuses.waitFor((items) => items.at(-1) === "agents: 0/1+");
 	assert.equal(old.statuses.length, oldCount, "the replaced callback receives no further status");
 	replacementAbort.abort();
 	assert.equal(replacement.statuses.at(-1), undefined);
@@ -1986,10 +1986,10 @@ it("shares catalog observation across primary reload, replacement, and roster te
 	const reloadAbort = new AbortController();
 	const reload = fakePrimary(reloadAbort.signal);
 	await manager.registerPrimary("primary", reload.client);
-	assert.equal(reload.statuses.at(-1), "agents: 0/1+ active", "reload qualifies the current published state");
+	assert.equal(reload.statuses.at(-1), "agents: 0/1+", "reload qualifies the current published state");
 	assert.equal(registrations().length, 1);
 	publish("idle");
-	await reload.statuses.waitFor((items) => items.at(-1) === "agents: 0/1+ active");
+	await reload.statuses.waitFor((items) => items.at(-1) === "agents: 0/1+");
 	const roster = eventLog<void>();
 	const offRoster = manager.subscribeRoster(() => roster.push(undefined));
 	reloadAbort.abort();
@@ -2863,7 +2863,11 @@ it("stops repeated live host losses in Attention and permits an explicit attach 
 		"the notice names only an action that exists",
 	);
 	assert.match(dashboardText({ observedAt: Date.now(), sessions: stopped.rows }), /1 with errors/u);
-	assert.match(await manager.sessionFigures("owner-1", stopped), /1 needs attention/u);
+	assert.doesNotMatch(
+		await manager.sessionFigures("owner-1", stopped),
+		/attention/u,
+		"the roster names the error, not the footer",
+	);
 	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
 	assert.equal(connections.length, 5);
 	const recovered = await manager.dashboardPage();
@@ -4559,7 +4563,7 @@ it("shows current-host publications without changing raw claim coverage", { time
 	assert.match(current.rows[0].ownerLabel ?? "", /Current host publication at 2026-01-01T00:00:01/u);
 	assert.equal(current.coverage.inventory.unknownClaims, 1);
 	assert.equal(current.coverage.complete, true);
-	assert.equal(await manager.sessionFigures("owner-1", current), "agents: 1/1 active");
+	assert.equal(await manager.sessionFigures("owner-1", current), "agents: 1/1");
 	const projection = manager as unknown as {
 		catalogRows(
 			record: CatalogRecord,
@@ -4675,7 +4679,7 @@ it("uses a startup recovery link publication before explicit attachment", { time
 	assert.equal(page.rows[0].currentTool?.argument, "recovery publication");
 	assert.equal(page.coverage.inventory.unknownClaims, 1);
 	assert.equal(page.coverage.complete, true);
-	assert.equal(await manager.sessionFigures("owner-1", page), "agents: 1/1 active");
+	assert.equal(await manager.sessionFigures("owner-1", page), "agents: 1/1");
 	assert.ok(
 		requests.every((method) => method === "recovery-state"),
 		"presentation uses the existing recovery feed without a status request",

@@ -417,12 +417,12 @@ test("session start restores sent-work figures in a fresh manager and admissions
 		} as unknown as ExtensionContext;
 		await events.get("session_start")?.({ reason: "resume" }, ctx);
 		assert.equal(reads, 1, "all session entries are scanned once at start");
-		assert.equal(statuses.at(-1), "agents: 0/1 active");
+		assert.equal(statuses.at(-1), "○ agents: 0/1");
 		const page = await manager.dashboardPage();
 		manager.catalog.page = async () => {
 			throw new Error("figures must reuse the supplied page");
 		};
-		assert.equal(await manager.sessionFigures(session.getSessionId(), page), "agents: 0/1 active");
+		assert.equal(await manager.sessionFigures(session.getSessionId(), page), "agents: 0/1");
 		const send = tools.get("agent_send");
 		assert.ok(send);
 		await send.execute(
@@ -454,10 +454,10 @@ test("session start restores sent-work figures in a fresh manager and admissions
 		assert.equal(reads, 1, "incremental work does not rescan history");
 		assert.equal(
 			statuses.at(-1),
-			"agents: 0/2 active",
+			"○ agents: 0/2",
 			"admission reuses already observed rows without scanning the catalog",
 		);
-		assert.equal(await manager.sessionFigures(session.getSessionId(), page), "agents: 0/2 active");
+		assert.equal(await manager.sessionFigures(session.getSessionId(), page), "agents: 0/2");
 		assert.ok(getEntries().some((entry) => entry.type === "custom" && entry.customType === SENT_WORK_ENTRY));
 	};
 	await start();
@@ -491,7 +491,7 @@ test("session start restores sent-work figures in a fresh manager and admissions
 	} as unknown as ExtensionContext);
 	assert.equal(
 		statuses.at(-1),
-		"agents: 0/2 active",
+		"○ agents: 0/2",
 		"a fresh manager restores historical top-level work and a forward nested send through its marker",
 	);
 });

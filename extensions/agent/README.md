@@ -1747,16 +1747,25 @@ It uses sent work rather than open requests because an alternate `replyTo`
 routes settlement elsewhere; the primary's retained results cannot establish
 that every request settled. No catalog schema or host protocol carries this scope.
 
-The status says `agents: <working>/<total> active · ~$<cost>` and disappears when
-no session-scoped rows are found. The numerator counts displayed `working` rows
+The status says `● agents: <working>/<total> · ~$<cost>`. The leading dot shows
+whether work that this session sent with the agent tools will still come back
+and start one of its turns: a filled dot (`●`, accent colour) while an answer-bearing
+request routed to this session has no delivered result or refusal, a scheduled
+send has not delivered, or a question that this session asked has no reply or
+non-reply notice; a hollow dot (`○`, muted) when none is out. The dot describes
+only that work, also while the session itself works, so when the session is idle
+a filled dot means that it starts again by itself and a hollow dot means that
+the next step is the operator's. The dot follows the
+[footer status convention](../../docs/conventions/status-keys.md); only the
+interactive terminal draws its colours, and other hosts receive the plain glyphs. The entry disappears when no
+session-scoped rows are found and no work is out; with work out and no rows it
+reads `● agents`. A scheduled send stays open from its schedule until the result
+of its delivery, which carries the same request ID, or until a cancellation that
+stops its timer. A row's need for intervention only scopes it into the count;
+the roster names the cause. The numerator counts displayed `working` rows
 with a verified current-host publication; the denominator includes every scoped
-row. A nonzero attention count follows `active`. It counts published provider
-and task blocks, errors reported by a current host, automatic host recovery that
-stopped, and unavailable rows with recorded unread inputs or open work. A failed
-turn alone remains a retained outcome. Compaction diagnostics and scheduled
-retries do not by themselves ask for intervention. The count describes the
-observed rows, not every possible block. Each registered primary receives its
-own caller-prioritized page and figures. A `+` after the denominator marks unresolved selected claims, unseen
+row. Each registered primary receives its own caller-prioritized page and
+figures. A `+` after the denominator marks unresolved selected claims, unseen
 records, unreadable records, or incomplete published projections. Connected
 publications resolve selected claims for presentation only; raw catalogue
 coverage, including `unknownClaims`, remains unchanged. The loaded count is not
@@ -1774,7 +1783,7 @@ reads never add the same usage twice. These figures cover this session's readabl
 agent data. The
 `~` marks a recorded-pricing estimate, like the main session cost, not a billing
 statement. Cost uses two decimals; the entire cost segment is hidden below half
-a cent, leaving, for example, `agents: 0/1 active`. The dashboard shows unreadable
+a cent, leaving, for example, `○ agents: 0/1`. The dashboard shows unreadable
 agents and partial costs.
 
 ## Agent collaboration and placement

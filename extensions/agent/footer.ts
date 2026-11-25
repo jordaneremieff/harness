@@ -62,20 +62,17 @@ export function sessionFigures(
 				(sentWork.has(row.storageId) || inLineage(row.storageId, sentWork)))
 		);
 	});
-	return formatDurableFooter(scopedRows, creationRows, needsAttention);
+	return formatDurableFooter(scopedRows, creationRows);
 }
 
-/** Recorded-pricing estimate for already-scoped rows; hide costs below half a cent. */
+/** Working and scoped agents with the recorded-pricing estimate; costs below half a cent are hidden. */
 export function formatDurableFooter(
 	rows: readonly AgentConversationSummary[],
 	costRows: readonly AgentConversationSummary[] = rows,
-	needsAttention: (row: AgentConversationSummary) => boolean = actionableAttention,
 ): string {
 	if (rows.length === 0) return "";
 	const working = rows.filter((row) => row.state === "working").length;
-	const attention = rows.filter(needsAttention).length;
 	const cost = costRows.reduce((sum, row) => sum + (Number.isFinite(row.cost) && row.cost >= 0 ? row.cost : 0), 0);
-	const alert = attention ? ` · ${attention} ${attention === 1 ? "needs" : "need"} attention` : "";
 	const estimate = cost >= 0.005 ? ` · ~$${cost.toFixed(2)}` : "";
-	return `agents: ${working}/${rows.length} active${alert}${estimate}`;
+	return `agents: ${working}/${rows.length}${estimate}`;
 }

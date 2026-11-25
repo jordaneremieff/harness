@@ -25,11 +25,11 @@ function row(id = "a", overrides: Partial<AgentConversationSummary> = {}): Agent
 
 test("cost always uses a two-decimal recorded-pricing estimate", () => {
 	for (const partial of [false, true]) {
-		assert.equal(formatDurableFooter([row("a", { cost: 0.256, partial })]), "agents: 0/1 active · ~$0.26");
+		assert.equal(formatDurableFooter([row("a", { cost: 0.256, partial })]), "agents: 0/1 · ~$0.26");
 	}
 });
 
-test("counts working conversations separately from actionable attention and keeps the empty footer", () => {
+test("counts working conversations among every scoped row and keeps the empty footer", () => {
 	assert.equal(formatDurableFooter([]), "");
 	const rows = [
 		row("working", { state: "working", cost: 0.25 }),
@@ -41,7 +41,7 @@ test("counts working conversations separately from actionable attention and keep
 		row("compaction", { health: { compactionFailure: { trigger: "overflow" } } }),
 		row("retry", { health: { autoRetry: { attempt: 2, maxAttempts: 3, delayMs: 1, errorMessage: "Rate limit" } } }),
 	];
-	assert.equal(formatDurableFooter(rows), "agents: 1/8 active · ~$15.25");
+	assert.equal(formatDurableFooter(rows), "agents: 1/8 · ~$15.25");
 	rows.push(
 		row("provider", { state: "failed", attention: "provider-blocked" }),
 		row("task", { attention: "task-blocked" }),
@@ -49,27 +49,24 @@ test("counts working conversations separately from actionable attention and keep
 		row("unread", { state: "unavailable", unplaced: 1 }),
 		row("open", { owner: "unavailable", openWorkCount: 1 }),
 	);
-	assert.equal(formatDurableFooter(rows), "agents: 1/13 active · 5 need attention · ~$15.25");
+	assert.equal(formatDurableFooter(rows), "agents: 1/13 · ~$15.25");
 });
 
 test("hides cost below half a cent and rounds the summed estimate to cents", () => {
 	for (const cost of [0, 0.0001, 0.004999]) {
-		assert.equal(formatDurableFooter([row("a", { cost })]), "agents: 0/1 active");
+		assert.equal(formatDurableFooter([row("a", { cost })]), "agents: 0/1");
 	}
-	assert.equal(formatDurableFooter([row("a", { cost: 0.005 })]), "agents: 0/1 active · ~$0.01");
-	assert.equal(formatDurableFooter([row("a", { cost: 0.0099 })]), "agents: 0/1 active · ~$0.01");
-	assert.equal(
-		formatDurableFooter([row("a", { cost: 0.003 }), row("b", { cost: 0.003 })]),
-		"agents: 0/2 active · ~$0.01",
-	);
-	assert.equal(formatDurableFooter([row("a", { cost: 0.1 }), row("b", { cost: 0.2 })]), "agents: 0/2 active · ~$0.30");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.005 })]), "agents: 0/1 · ~$0.01");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.0099 })]), "agents: 0/1 · ~$0.01");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.003 }), row("b", { cost: 0.003 })]), "agents: 0/2 · ~$0.01");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.1 }), row("b", { cost: 0.2 })]), "agents: 0/2 · ~$0.30");
 });
 
 test("sums only readable nonnegative costs without a completeness marker", () => {
-	assert.equal(formatDurableFooter([row("a", { cost: 0.25, partial: true })]), "agents: 0/1 active · ~$0.25");
+	assert.equal(formatDurableFooter([row("a", { cost: 0.25, partial: true })]), "agents: 0/1 · ~$0.25");
 	assert.equal(
 		formatDurableFooter([row("a", { cost: 0.25 }), row("b", { cost: 0.75, partial: true })]),
-		"agents: 0/2 active · ~$1.00",
+		"agents: 0/2 · ~$1.00",
 	);
 	assert.equal(
 		formatDurableFooter([
@@ -77,7 +74,7 @@ test("sums only readable nonnegative costs without a completeness marker", () =>
 			row("b", { cost: -1 }),
 			row("c", { cost: Number.POSITIVE_INFINITY }),
 		]),
-		"agents: 0/3 active",
+		"agents: 0/3",
 	);
 	assert.doesNotMatch(formatDurableFooter([row("a", { state: "working" })]), /detached/);
 });
@@ -92,10 +89,10 @@ test("session figures ignore unrelated rows and owners", () => {
 		["other", "other-primary"],
 	]);
 	const owner = (storageId: string) => owners.get(storageId);
-	assert.equal(sessionFigures(rows, "primary", owner), "agents: 1/1 active · ~$0.25");
-	assert.equal(sessionFigures(rows, "other-primary", owner), "agents: 0/1 active");
+	assert.equal(sessionFigures(rows, "primary", owner), "agents: 1/1 · ~$0.25");
+	assert.equal(sessionFigures(rows, "other-primary", owner), "agents: 0/1");
 	assert.equal(sessionFigures(rows, "empty-primary", owner), "");
-	assert.equal(sessionFigures([{ ...rows[0], partial: true }], "primary", owner), "agents: 1/1 active · ~$0.25");
+	assert.equal(sessionFigures([{ ...rows[0], partial: true }], "primary", owner), "agents: 1/1 · ~$0.25");
 });
 
 test("each primary counts only its created agents and descendants through conversation owners", () => {
@@ -117,9 +114,9 @@ test("each primary counts only its created agents and descendants through conver
 		reads.push(storageId);
 		return owners.get(storageId);
 	};
-	assert.equal(sessionFigures(rows, "primary-a", readOwner), "agents: 2/4 active · ~$10.00");
+	assert.equal(sessionFigures(rows, "primary-a", readOwner), "agents: 2/4 · ~$10.00");
 	assert.equal(reads.filter((id) => id === "first").length, 1, "forks reuse one creating-owner read");
-	assert.equal(sessionFigures(rows, "primary-b", readOwner), "agents: 1/1 active · ~$8.00");
+	assert.equal(sessionFigures(rows, "primary-b", readOwner), "agents: 1/1 · ~$8.00");
 	assert.equal(sessionFigures(rows, "empty-primary", readOwner), "");
 });
 
@@ -130,7 +127,7 @@ test("owner traversal reads ancestors absent from the roster and preserves exact
 		["ancestor", "primary:2"],
 	]);
 	const readOwner = (storageId: string) => owners.get(storageId);
-	assert.equal(sessionFigures(rows, "primary:2", readOwner), "agents: 0/1 active · ~$0.50");
+	assert.equal(sessionFigures(rows, "primary:2", readOwner), "agents: 0/1 · ~$0.50");
 	assert.equal(sessionFigures(rows, "primary:3", readOwner), "");
 	assert.equal(sessionFigures(rows, "primary", readOwner), "");
 });
@@ -155,11 +152,11 @@ test("sent-work scope keeps exact reused targets and only working creation desce
 	const sent = new Set(["reused:2", "owned"]);
 	assert.equal(
 		sessionFigures(rows, "primary", (id) => owners.get(id), sent),
-		"agents: 2/4 active · ~$0.25",
+		"agents: 2/4 · ~$0.25",
 	);
 	assert.equal(
 		sessionFigures(rows.slice(0, 6), "primary", (id) => owners.get(id), sent),
-		"agents: 2/3 active",
+		"agents: 2/3",
 	);
 	assert.equal(
 		sessionFigures(rows, "other", (id) => owners.get(id)),
@@ -169,7 +166,7 @@ test("sent-work scope keeps exact reused targets and only working creation desce
 	rows[4].state = "interrupted";
 	assert.equal(
 		sessionFigures(rows, "primary", (id) => owners.get(id), sent),
-		"agents: 0/2 active · ~$0.25",
+		"agents: 0/2 · ~$0.25",
 	);
 });
 
@@ -182,31 +179,28 @@ test("sent-work roots include only working same-storage delegates; non-root targ
 		row("owned", { storageId: "owned", cost: 0.25 }),
 	];
 	const owner = (id: string) => (id === "owned" ? "primary" : "other-primary");
-	assert.equal(sessionFigures(rows, "primary", owner, new Set(["reused"])), "agents: 1/3 active · ~$0.25");
+	assert.equal(sessionFigures(rows, "primary", owner, new Set(["reused"])), "agents: 1/3 · ~$0.25");
 	assert.equal(
 		sessionFigures(rows.slice(1), "primary", owner, new Set(["reused"])),
-		"agents: 1/2 active · ~$0.25",
+		"agents: 1/2 · ~$0.25",
 		"root scope does not require the root row to be present",
 	);
 	rows[0].state = "working";
 	assert.equal(
 		sessionFigures(rows, "primary", owner, new Set(["reused:3"])),
-		"agents: 0/2 active · ~$0.25",
+		"agents: 0/2 · ~$0.25",
 		"a non-root target excludes its working root and siblings",
 	);
 	assert.equal(
 		sessionFigures(rows.slice(0, 4), "primary", owner, new Set(["reused"])),
-		"agents: 2/2 active",
+		"agents: 2/2",
 		"same-storage reused scope never contributes lifetime cost",
 	);
 	rows[2].attention = "provider-blocked";
-	assert.equal(
-		sessionFigures(rows, "primary", owner, new Set(["reused"])),
-		"agents: 2/4 active · 1 needs attention · ~$0.25",
-	);
+	assert.equal(sessionFigures(rows, "primary", owner, new Set(["reused"])), "agents: 2/4 · ~$0.25");
 	assert.equal(
 		sessionFigures(rows, "primary", owner, new Set(["reused:4"])),
-		"agents: 0/2 active · ~$0.25",
+		"agents: 0/2 · ~$0.25",
 		"a non-root target does not import a blocked sibling",
 	);
 });
@@ -219,7 +213,7 @@ test("creation lineage keeps idle reused descendants and cost when both scope ru
 	]);
 	assert.equal(
 		sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["created:2"])),
-		"agents: 0/2 active · ~$3.00",
+		"agents: 0/2 · ~$3.00",
 	);
 });
 
@@ -235,7 +229,7 @@ test("working reused descendants follow exact ancestors absent from the roster a
 	];
 	assert.equal(
 		sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["reused:2"])),
-		"agents: 1/1 active",
+		"agents: 1/1",
 	);
 	assert.equal(
 		sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["reused:3"])),
@@ -261,7 +255,7 @@ test("cycles terminate without importing unrelated agents into a primary scope",
 		reads++;
 		return owners.get(storageId);
 	});
-	assert.equal(text, "agents: 0/1 active · ~$8.00");
+	assert.equal(text, "agents: 0/1 · ~$8.00");
 	assert.equal(reads, 4);
 });
 
@@ -276,7 +270,7 @@ test("owner traversal stops at a fixed depth and excludes unproven descendants",
 		},
 	);
 	assert.equal(reads, 65);
-	assert.equal(text, "agents: 0/1 active · ~$1.00");
+	assert.equal(text, "agents: 0/1 · ~$1.00");
 });
 
 test("owner reads have a total bound across unrelated chains", () => {
@@ -287,7 +281,7 @@ test("owner reads have a total bound across unrelated chains", () => {
 		return "primary";
 	});
 	assert.equal(reads, 1024);
-	assert.equal(text, "agents: 0/1024 active");
+	assert.equal(text, "agents: 0/1024");
 });
 
 for (const kind of ["incomplete", "omitted", "unavailable", "missing", "empty", "partial"] as const) {
@@ -346,7 +340,7 @@ for (const kind of ["incomplete", "omitted", "unavailable", "missing", "empty", 
 			);
 			const count = !inScope || kind === "empty" ? 1 : 2;
 			const cost = inScope && ["incomplete", "omitted", "partial"].includes(kind) ? "0.75" : "0.25";
-			const expected = `agents: 0/${count}${observed.coverage.complete ? "" : "+"} active · ~$${cost}`;
+			const expected = `agents: 0/${count}${observed.coverage.complete ? "" : "+"} · ~$${cost}`;
 			assert.equal(await manager.sessionFigures("primary", observed), expected);
 			assert.equal(
 				await manager.sessionFigures("primary"),
@@ -425,8 +419,8 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 			},
 		});
 	}
-	assert.equal(statuses.get("primary-a"), "agents: 0/3 active · ~$6.00");
-	assert.equal(statuses.get("primary-b"), "agents: 0/1 active · ~$8.00");
+	assert.equal(statuses.get("primary-a"), "agents: 0/3 · ~$6.00");
+	assert.equal(statuses.get("primary-b"), "agents: 0/1 · ~$8.00");
 	assert.equal(statuses.has("empty-primary"), true, "the empty primary receives an explicit status clear");
 	assert.equal(statuses.get("empty-primary"), undefined);
 	const page = await manager.dashboardPage();
@@ -446,7 +440,7 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 		coverage: { complete: true, omitted: 0 },
 		rows: [row(second, { storageId: second, cost: 9 })],
 	});
-	assert.deepEqual(await updatedCost, ["agents: 0/1 active · ~$9.00"]);
+	assert.deepEqual(await updatedCost, ["agents: 0/1 · ~$9.00"]);
 	assert.equal(writes.get("primary-b"), (before.get("primary-b") ?? 0) + 1);
 	assert.equal(writes.get("primary-a"), before.get("primary-a"), "an unrelated owner's text stays unwritten");
 
@@ -487,11 +481,11 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 		sentWork: new Set([second]),
 		status: (text) => changes.emit("reused-primary", text),
 	});
-	assert.deepEqual(await pendingAttention, ["agents: 0/2 active · 1 needs attention"]);
-	assert.equal(await manager.sessionFigures("reused-primary"), "agents: 0/2 active · 1 needs attention");
+	assert.deepEqual(await pendingAttention, ["agents: 0/2"]);
+	assert.equal(await manager.sessionFigures("reused-primary"), "agents: 0/2");
 	const clearedAttention = nextStatus("reused-primary");
 	publish(child);
-	assert.deepEqual(await clearedAttention, ["agents: 0/1 active"], "a later publication clears the block");
+	assert.deepEqual(await clearedAttention, ["agents: 0/1"], "a later publication clears the block");
 });
 
 test("projects the footer once for a burst of catalogue notices and shows the last state", async (t) => {
@@ -548,7 +542,7 @@ test("projects the footer once for a burst of catalogue notices and shows the la
 			changes.emit("status", text);
 		},
 	});
-	assert.deepEqual(texts, ["agents: 0/1 active · ~$1.00"]);
+	assert.deepEqual(texts, ["agents: 0/1 · ~$1.00"]);
 	const internals = manager as unknown as { priorityPage(...input: unknown[]): Promise<unknown> };
 	const project = internals.priorityPage.bind(manager);
 	let projections = 0;
@@ -559,7 +553,7 @@ test("projects the footer once for a burst of catalogue notices and shows the la
 
 	const last = new Promise<void>((resolve) => {
 		changes.on("status", (text) => {
-			if (text === "agents: 0/1 active · ~$40.00") resolve();
+			if (text === "agents: 0/1 · ~$40.00") resolve();
 		});
 	});
 	// Each publication sends one catalogue notice. The pause lets a projection end before the next notice.
@@ -569,7 +563,7 @@ test("projects the footer once for a burst of catalogue notices and shows the la
 	}
 	await last;
 	assert.ok(projections <= 3, `39 notices ran ${projections} footer projections`);
-	assert.equal(texts.at(-1), "agents: 0/1 active · ~$40.00");
+	assert.equal(texts.at(-1), "agents: 0/1 · ~$40.00");
 });
 
 test("the footer text of a first send keeps the mark of an incomplete page", async (t) => {
@@ -625,12 +619,12 @@ test("the footer text of a first send keeps the mark of an incomplete page", asy
 		send: () => {},
 		status: (text) => texts.push(text),
 	});
-	assert.deepEqual(texts, ["agents: 0/1+ active · ~$1.00"]);
+	assert.deepEqual(texts, ["agents: 0/1+ · ~$1.00"]);
 	// A first task admission to an agent of another session adds it to this session's figures at once.
 	(manager as unknown as { rememberSentWork(owner: string, target: unknown): void }).rememberSentWork(
 		"sending-primary",
 		reused,
 	);
-	assert.equal(texts.at(-1), "agents: 0/2+ active · ~$1.00");
+	assert.equal(texts.at(-1), "agents: 0/2+ · ~$1.00");
 	assert.equal(texts.at(-1), await manager.sessionFigures("sending-primary"));
 });

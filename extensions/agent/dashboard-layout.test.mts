@@ -389,7 +389,7 @@ it("the framed Agents view displays its size control and leaves z as text in Fin
 });
 
 it("the top rule right-aligns session figures below 100 columns when they fit", async (t) => {
-	const figures = "agents: 1/1 active · ~$0.42";
+	const figures = "agents: 1/1 · ~$0.42";
 	const f = fixture(80, 24, undefined, { sessionFigures: async () => figures });
 	t.after(() => f.ui.dispose());
 	await turn();

@@ -149,7 +149,7 @@ it("the dashboard gets its context window and session figures from the current p
 		assert.deepEqual(roster, published);
 		assert.equal(roster.coverage, published.coverage);
 		assert.equal(primary.sessionManager.getSessionId(), "current-primary");
-		return "agents: 1/1 active · ~$0.42";
+		return "agents: 1/1 · ~$0.42";
 	});
 	const opened = command.openDashboard(ctx);
 	try {
@@ -162,7 +162,7 @@ it("the dashboard gets its context window and session figures from the current p
 		assert.match(text, /test\/model \[high\].*16%.*163k\/1.0M/);
 		assert.match(text, / Related {2}All /, "the scope controls stay on the Find row");
 		const heading = stripVTControlCharacters(dashboard.render(160)[0] ?? "");
-		assert.match(heading, /agents: 1\/1 active · ~\$0\.42/, "the primary's session figures sit in the heading");
+		assert.match(heading, /agents: 1\/1 · ~\$0\.42/, "the primary's session figures sit in the heading");
 		assert.doesNotMatch(heading, /New conversation|Help|Close/, "the heading holds no commands");
 		assert.match(text, /x more/u, "secondary actions stay in More");
 		dashboard.handleInput("x");
