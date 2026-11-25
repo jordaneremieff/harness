@@ -196,9 +196,9 @@ function statusHit(layout: FooterLine2, x: number): string | undefined {
 }
 
 /**
- * The target under a plain left click: the model identity or its level bracket opens Model, the
- * hidden-status count opens Statuses, and a status cell names its key. Anything else stays with Pi,
- * so drag selection keeps working.
+ * The target under a plain left press or click: the model identity or its level bracket opens Model,
+ * the hidden-status count opens Statuses, and a status cell names its key. Anything else stays with
+ * Pi, so drag selection keeps working.
  */
 type ClickTarget = "model" | "statuses" | { status: string };
 
@@ -207,7 +207,8 @@ function clickTarget(
 	spans: Line1Spans | undefined,
 	layout: FooterLine2,
 ): ClickTarget | undefined {
-	if (event.type !== "click" || event.button !== "left" || event.shift || event.alt || event.ctrl) return undefined;
+	if (event.type !== "press" && event.type !== "click") return undefined;
+	if (event.button !== "left" || event.shift || event.alt || event.ctrl) return undefined;
 	if (event.y === 0) return onModel(spans, event.x) ? "model" : undefined;
 	if (event.y !== 1) return undefined;
 	if (overflowHit(layout, event.x)) return "statuses";
@@ -285,12 +286,12 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	 * A click on a status cell runs the extension command named like its key, with no arguments, as the Commands
 	 * view runs one. False when no extension registers such a command, so the click stays with Pi.
 	 */
-	function runStatusCommand(ctx: ExtensionContext, key: string): boolean {
-		const command = pi.getCommands().find((candidate) => candidate.source === "extension" && candidate.name === key);
-		if (!command) return false;
-		if (dispatchCommand(pi, command, "").kind !== "sent")
+	const statusCommand = (key: string) =>
+		pi.getCommands().find((candidate) => candidate.source === "extension" && candidate.name === key);
+	function runStatusCommand(ctx: ExtensionContext, key: string): void {
+		const command = statusCommand(key);
+		if (!command || dispatchCommand(pi, command, "").kind !== "sent")
 			ctx.ui.notify(`The /${sanitizeDisplay(key)} registration changed; Pi did not run it.`, "warning");
-		return true;
 	}
 
 	/** Read current usage and catch the metrics up; false when no session is attached. */
@@ -344,7 +345,10 @@ export default function registerStatusline(pi: ExtensionAPI) {
 			/** Do what a footer click asks; undefined leaves the click with Pi. */
 			const followClick = (target: ClickTarget): TuiMouseEventResult | undefined => {
 				const ctx = session();
-				if (typeof target === "object") return runStatusCommand(ctx, target.status) ? { handled: true } : undefined;
+				if (typeof target === "object") {
+					runStatusCommand(ctx, target.status);
+					return { handled: true };
+				}
 				void openOwn(ctx, target).catch((error: unknown) =>
 					ctx.ui.notify(viewFailure(viewNames[target], error), "error"),
 				);
@@ -389,7 +393,10 @@ export default function registerStatusline(pi: ExtensionAPI) {
 						!composerPresent && pointer && layout && event.width === renderedWidth
 							? clickTarget(event, spans, layout)
 							: undefined;
-					return target === undefined ? undefined : followClick(target);
+					if (target === undefined || (typeof target === "object" && !statusCommand(target.status))) return undefined;
+					// Claiming the press makes the footer Pi's press target, so a release on the same cell becomes a
+					// click even when the terminal reports pointer motion in between.
+					return event.type === "press" ? { handled: true } : followClick(target);
 				},
 			};
 		});

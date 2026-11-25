@@ -987,6 +987,14 @@ describe("status clicks", () => {
 				assert.ok(x >= 0, `${text} is shown in ${line}`);
 				return x;
 			};
+			const press = { ...click(at("jobs: 1/2") + 2, 1, 120), type: "press" as const };
+			assert.equal(footer.handleMouse?.(press)?.handled, true, "the press on a target is claimed");
+			assert.equal(sent.length, 0, "a press alone runs nothing");
+			assert.equal(
+				footer.handleMouse?.({ ...click(at("notes ready"), 1, 120), type: "press" as const }),
+				undefined,
+				"a press outside the targets stays with Pi for selection",
+			);
 			assert.equal(footer.handleMouse?.(click(at("jobs: 1/2") + 2, 1, 120))?.handled, true);
 			assert.equal(
 				footer.handleMouse?.(click(at("\u25cf agents"), 1, 120))?.handled,
