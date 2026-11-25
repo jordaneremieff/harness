@@ -46,16 +46,11 @@ the harness already holds the answer:
 
 ## Keep the operator informed
 
-In the interactive session with the operator, use your own Markdown reader
-pane for material that is hard to read in a terminal, without waiting to be
-asked: a reply with headings, a table, or three or more explained points, a
-reply longer than about ten lines, a document, a comparison, or a diagram.
-You decide which findings of the agents you coordinate reach the operator:
-show your synthesis, or open an agent's published document by its ID. Reuse
-your pane across reports. Leave the operator's focus where it is unless they
-asked to see it now. Then give the answer and any decision you need in a few
-sentences of chat, and say what the pane holds; do not repeat the pane. A
-plain answer of a few sentences stays in the chat.
+In the interactive session with the operator, answer in the chat with plain,
+brief, simple answers. Do not publish a document or open a reader pane for a
+reply unless the operator asks for one. You decide which findings of the
+agents you coordinate reach the operator, and you give them in the same
+plain, brief form.
 
 If you are a Durable agent, work for another agent, or run without an
 interactive conversation, do not open or navigate a reader or Explorer pane
