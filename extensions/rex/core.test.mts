@@ -134,7 +134,7 @@ function fixture(
 		transport,
 		isCallActive: () => false,
 		...options,
-		env: options.env ?? { REX_SERVER: "launch", REX_SESSION: session, REX_BLOCK: block },
+		env: options.env ?? { REX_SERVER: "launch", REX_BLOCK: block },
 	});
 	return { core, store, transport };
 }
@@ -1616,6 +1616,28 @@ test("native Lua and actions resolve explicit inherited context for the CLI", as
 		assert.deepEqual(command.slice(command.indexOf("-b"), command.indexOf("-b") + 2), ["-b", block]);
 		assert.equal(command.includes("--client"), false);
 	}
+});
+
+test("the inherited block names the inherited session, not a launch session that may name an old one", async () => {
+	const f = fixture({ env: { REX_SERVER: "launch", REX_SESSION: otherSession, REX_BLOCK: block } });
+	const response = await f.core.execute(
+		{ op: "native", kind: "lua", code: "return 1", target: { source: "inherited" } },
+		{ ...context, callId: "moved" },
+	);
+	assert.equal(response.ok, true, response.error);
+	assert.equal(response.target?.sessionId, session, "the session that holds the block now");
+	const lookups = f.transport.calls.filter((call) => call.method === "target.resolve");
+	assert.deepEqual(
+		lookups.map((call) => call.data),
+		[{ kinds: ["block"], queries: [block] }],
+		"one unscoped block lookup, so a block in any session resolves",
+	);
+	const environment = await f.core.execute({ op: "environment" }, { ...context, callId: "environment" });
+	assert.deepEqual((environment.data as { inherited?: unknown }).inherited, {
+		server: "launch",
+		block,
+		client: undefined,
+	});
 });
 
 test("focused native context resolves the focused block within the named session", async () => {

@@ -19,10 +19,9 @@ const exact = {
 	server: "unix:///private/rex.sock",
 	hostId: "11111111-1111-1111-1111-111111111111",
 	instanceId: "22222222-2222-2222-2222-222222222222",
-	sessionId: "session:33333333-3333-3333-3333-333333333333",
 	blockId: "block:44444444-4444-4444-4444-444444444444",
 };
-const env = { REX_SERVER: exact.server, REX_SESSION: exact.sessionId, REX_BLOCK: exact.blockId };
+const env = { REX_SERVER: exact.server, REX_BLOCK: exact.blockId };
 const origin = {
 	version: 1 as const,
 	terminal: "Rex" as const,
@@ -39,9 +38,7 @@ const receipt = {
 	server: exact.server,
 	hostId: exact.hostId,
 	instanceId: exact.instanceId,
-	sessionId: exact.sessionId,
 	anchorId: exact.blockId,
-	windowId: "window:55555555-5555-5555-5555-555555555555",
 	blockId: "block:66666666-6666-6666-6666-666666666666",
 	direction: "horizontal" as const,
 };
@@ -52,7 +49,8 @@ test("the fixed helper preserves literal argv and exact inherited IDs in one gua
 		calls++;
 		assert.equal(executable, trustedRexExecutable());
 		assert.ok(args.includes(`--server=${exact.server}`));
-		assert.equal(args[args.indexOf("--session") + 1], exact.sessionId);
+		assert.equal(args.includes("--session"), false, "the anchor's block names its session at the time of the call");
+		assert.equal(args[args.indexOf("--block") + 1], exact.blockId);
 		const payload = JSON.parse(args[args.indexOf("--args") + 1]);
 		assert.deepEqual(payload.argv.slice(0, 1), ["/usr/bin/env"]);
 		const offer = JSON.parse(String(payload.argv[1]).replace(/^PI_PANE_STACKING=/u, "")) as string[];
@@ -62,7 +60,8 @@ test("the fixed helper preserves literal argv and exact inherited IDs in one gua
 		assert.equal(payload.blockId, exact.blockId);
 		const script = args[args.indexOf("-e") + 1];
 		assert.match(script, /s\.host_id ~= a\.hostId/u);
-		assert.match(script, /anchor_id=a\.blockId/u);
+		assert.match(script, /local session = rex\.session_id/u);
+		assert.match(script, /session_id=session, anchor_id=a\.blockId/u);
 		assert.match(script, /shell="none", command=a\.argv/u);
 		assert.match(script, /anchorWindow ~= paneWindow/u);
 		assert.match(script, /focus=false/u);
@@ -98,15 +97,16 @@ test("absent, application-only and mismatched launch context never create", asyn
 		).outcome,
 		"unavailable",
 	);
-	for (const changed of [
-		{},
-		{ ...env, REX_BLOCK: "other" },
-		{ ...env, REX_SERVER: "other" },
-		{ ...env, REX_SESSION: "other" },
-	]) {
+	for (const changed of [{}, { ...env, REX_BLOCK: "other" }, { ...env, REX_SERVER: "other" }]) {
 		assert.equal((await splitPane(request(), changed, run)).outcome, "stale");
 	}
 	assert.equal(calls, 0);
+	const created = { code: 0, stderr: "", stdout: JSON.stringify({ outcome: "created", detail: "Created.", receipt }) };
+	assert.equal(
+		(await splitPane(request(), { ...env, REX_SESSION: "session:other" }, async () => created)).outcome,
+		"created",
+		"a launch session does not name the pane: its tab can move to another session",
+	);
 });
 
 for (const outcome of ["stale", "unavailable", "uncertain"] as const)
@@ -261,26 +261,24 @@ test("defaults and explicit placement map to Rex direction, side, ratio and labe
 	}
 });
 
-test("resize matches the receipt window and asks Rex to move one ordered split", async () => {
+test("resize finds the window that holds both blocks and asks Rex to move one ordered split", async () => {
 	let calls = 0;
 	const request: PaneResizeRequest = { version: 1, receipt: { ...receipt, direction: "vertical" }, share: 0.185 };
 	const run: Runner = async (executable, args, options) => {
 		calls++;
 		assert.equal(executable, trustedRexExecutable());
 		assert.ok(args.includes(`--server=${exact.server}`));
-		assert.equal(args[args.indexOf("--session") + 1], exact.sessionId);
+		assert.equal(args.includes("--session"), false);
+		assert.equal(args[args.indexOf("--block") + 1], receipt.anchorId);
 		assert.equal(options.timeout, 5000);
 		assert.equal(options.maxBuffer, 32768);
 		assert.deepEqual(JSON.parse(args[args.indexOf("--args") + 1]), { ...request.receipt, ratio: 0.815 });
 		const script = args[args.indexOf("-e") + 1];
 		assert.match(script, /s\.host_id ~= a\.hostId or s\.instance_id ~= a\.instanceId/u);
+		assert.match(script, /placement\(view, a\.blockId\) == window/u);
 		assert.match(
 			script,
-			/placement\(view, a\.anchorId\) ~= a\.windowId or placement\(view, a\.blockId\) ~= a\.windowId/u,
-		);
-		assert.match(
-			script,
-			/"session\.resize_pane".*before_block_id=a\.anchorId, after_block_id=a\.blockId, direction=a\.direction, ratio=a\.ratio/u,
+			/"session\.resize_pane", \{session_id=session, before_block_id=a\.anchorId, after_block_id=a\.blockId, direction=a\.direction, ratio=a\.ratio/u,
 		);
 		return { code: 0, stdout: JSON.stringify({ outcome: "resized", detail: "Resized." }), stderr: "" };
 	};
@@ -298,7 +296,8 @@ test("resize rejects bad receipts and shares, and does not retry uncertain effec
 		{ share: "0.5" },
 		{ receipt: { ...receipt, direction: undefined } },
 		{ receipt: { ...receipt, blockId: receipt.anchorId } },
-		{ receipt: { ...receipt, windowId: "window:other" } },
+		{ receipt: { ...receipt, windowId: "window:55555555-5555-5555-5555-555555555555" } },
+		{ receipt: { ...receipt, sessionId: "session:33333333-3333-3333-3333-333333333333" } },
 	]) {
 		assert.throws(() => parseResizeRequest(JSON.stringify({ ...request, ...invalid })));
 	}
@@ -315,24 +314,22 @@ test("resize rejects bad receipts and shares, and does not retry uncertain effec
 	}
 });
 
-test("focus moves Rex focus to the receipt anchor only in the window the session shows", async () => {
+test("focus moves Rex focus to the receipt anchor only in the window its session shows", async () => {
 	let calls = 0;
 	const request: PaneFocusRequest = { version: 1, receipt: { ...receipt, direction: "vertical" } };
 	const run: Runner = async (executable, args, options) => {
 		calls++;
 		assert.equal(executable, trustedRexExecutable());
 		assert.ok(args.includes(`--server=${exact.server}`));
-		assert.equal(args[args.indexOf("--session") + 1], exact.sessionId);
+		assert.equal(args.includes("--session"), false);
+		assert.equal(args[args.indexOf("--block") + 1], receipt.anchorId);
 		assert.equal(options.timeout, 5000);
 		assert.deepEqual(JSON.parse(args[args.indexOf("--args") + 1]), request.receipt);
 		const script = args[args.indexOf("-e") + 1];
 		assert.match(script, /s\.host_id ~= a\.hostId or s\.instance_id ~= a\.instanceId/u);
-		assert.match(
-			script,
-			/placement\(view, a\.anchorId\) ~= a\.windowId or placement\(view, a\.blockId\) ~= a\.windowId/u,
-		);
-		assert.match(script, /view\.active_window_id ~= a\.windowId/u);
-		assert.match(script, /"session\.focus_block", \{session_id=a\.sessionId, block_id=a\.anchorId\}/u);
+		assert.match(script, /local view, window = shared\(\)/u);
+		assert.match(script, /view\.active_window_id ~= window/u);
+		assert.match(script, /"session\.focus_block", \{session_id=session, block_id=a\.anchorId\}/u);
 		return { code: 0, stdout: JSON.stringify({ outcome: "focused", detail: "Focused." }), stderr: "" };
 	};
 	assert.equal((await focusPane(request, env, run)).outcome, "focused");
@@ -363,4 +360,23 @@ test("focus rejects bad receipts and extra fields, and does not retry uncertain 
 		assert.equal((await focusPane(request, env, run)).outcome, outcome);
 		assert.equal(calls, 1);
 	}
+});
+
+test("a gone anchor block is stale for split, resize and focus, without retry", async () => {
+	let calls = 0;
+	const gone =
+		(block: string): Runner =>
+		async () => {
+			calls++;
+			return { code: 3, failure: "failed", stdout: "", stderr: `Error: block target "${block}" not found\n` };
+		};
+	assert.equal((await splitPane(request(), env, gone(exact.blockId))).outcome, "stale");
+	assert.equal((await resizePane({ version: 1, receipt, share: 0.5 }, env, gone(receipt.anchorId))).outcome, "stale");
+	assert.equal((await focusPane({ version: 1, receipt }, env, gone(receipt.anchorId))).outcome, "stale");
+	assert.equal(calls, 3);
+	assert.equal(
+		(await splitPane(request(), env, gone("block:other"))).outcome,
+		"uncertain",
+		"another failure after dispatch stays uncertain",
+	);
 });

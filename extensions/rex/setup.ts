@@ -364,8 +364,9 @@ async function change(verb: "setup" | "remove", deps: SetupDeps, path: string, c
 }
 
 /**
- * Shows Pi's commands in Rex's own picker, run as if from this pane so that a command opens its pane beside it. The
- * picker waits for the person for up to five minutes, so Pi does not wait for it; only a failure becomes a notice.
+ * Shows Pi's commands in Rex's own picker, run as if from this pane so that a command opens its pane beside it. Rex
+ * finds the pane's session from its block, wherever its tab is now. The picker waits for the person for up to five
+ * minutes, so Pi does not wait for it; only a failure becomes a notice.
  */
 function choosePiCommand(executable: string, ctx: ExtensionCommandContext): void {
 	const transport = new CliTransport(executable, process.env);
@@ -377,7 +378,6 @@ function choosePiCommand(executable: string, ctx: ExtensionCommandContext): void
 		...(env.REX_SERVER ? ["--server", env.REX_SERVER] : []),
 		"do",
 		"pi_command",
-		...(env.REX_SESSION ? ["--session", env.REX_SESSION] : []),
 		...(env.REX_BLOCK ? ["--block", env.REX_BLOCK] : []),
 	];
 	void transport

@@ -17,7 +17,7 @@ const session = "session:11111111-1111-4111-8111-111111111111";
 const block = "block:33333333-3333-4333-8333-333333333333";
 const otherBlock = "block:55555555-5555-4555-8555-555555555555";
 const server = "unix:///rex/server.sock";
-const env = { REX_SERVER: server, REX_SESSION: session, REX_BLOCK: block };
+const env = { REX_SERVER: server, REX_BLOCK: block };
 
 async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
 	const agentDir = await mkdtemp(join(tmpdir(), "rex-session-pane-"));
@@ -32,10 +32,15 @@ function recordFile(agentDir: string, sessionId: string): string {
 	return join(sessionPaneDirectory(agentDir), `${createHash("sha256").update(sessionId).digest("hex")}.json`);
 }
 
-test("a launch environment names a pane only with an exact session and block", () => {
-	assert.deepEqual(launchPane(env), { server, session, block });
-	assert.deepEqual(launchPane({ ...env, REX_SERVER: "" }), { session, block }, "an empty server is no server");
-	assert.equal(launchPane({ REX_SESSION: session }), undefined);
+test("a launch environment names a pane only with an exact block", () => {
+	assert.deepEqual(launchPane(env), { server, block });
+	assert.deepEqual(launchPane({ ...env, REX_SERVER: "" }), { block }, "an empty server is no server");
+	assert.deepEqual(
+		launchPane({ ...env, REX_SESSION: session }),
+		{ server, block },
+		"a launch session is not part of the pane: the block's tab can move to another session",
+	);
+	assert.equal(launchPane({ REX_SESSION: session }), undefined, "a session without a block names no pane");
 	assert.equal(launchPane({ ...env, REX_BLOCK: "work" }), undefined, "a label is not a block ID");
 	assert.equal(launchPane({ ...env, REX_SERVER: "bad\nserver" }), undefined);
 });
@@ -46,13 +51,13 @@ test("a registered pane reads back while its process runs, and private files hol
 			agentDir,
 			sessionId: "ordinary-1",
 			pid: 101,
-			pane: { server, session, block },
+			pane: { server, block },
 			now: new Date("2026-11-18T00:00:00.000Z"),
 			alive: () => true,
 		});
 		assert.deepEqual(
 			readSessionPane(agentDir, "ordinary-1", (pid) => pid === 101),
-			{ ok: true, pane: { server, session, block } },
+			{ ok: true, pane: { server, block } },
 		);
 		assert.deepEqual(
 			readSessionPane(agentDir, "ordinary-1", () => false),
@@ -64,11 +69,10 @@ test("a registered pane reads back while its process runs, and private files hol
 		);
 		const path = recordFile(agentDir, "ordinary-1");
 		assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
-			version: 1,
+			version: 2,
 			sessionId: "ordinary-1",
 			pid: 101,
 			server,
-			session,
 			block,
 			updatedAt: "2026-11-18T00:00:00.000Z",
 		});
@@ -78,24 +82,25 @@ test("a registered pane reads back while its process runs, and private files hol
 			agentDir,
 			sessionId: "ordinary-1",
 			pid: 102,
-			pane: { session, block: otherBlock },
+			pane: { block: otherBlock },
 			alive: () => true,
 		});
 		assert.deepEqual(
 			readSessionPane(agentDir, "ordinary-1", () => true),
-			{ ok: true, pane: { session, block: otherBlock } },
+			{ ok: true, pane: { block: otherBlock } },
 			"a later process of the same session replaces the record",
 		);
 	}));
 
 test("records that are not exact current records read as unregistered", async () =>
 	withAgentDir(async (agentDir) => {
-		registerSessionPane({ agentDir, sessionId: "ordinary", pid: 101, pane: { session, block }, alive: () => true });
+		registerSessionPane({ agentDir, sessionId: "ordinary", pid: 101, pane: { block }, alive: () => true });
 		const path = recordFile(agentDir, "ordinary");
 		const valid = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
 		for (const invalid of [
 			{ ...valid, extra: true },
-			{ ...valid, version: 2 },
+			{ ...valid, session },
+			{ ...valid, version: 1 },
 			{ ...valid, sessionId: "other" },
 			{ ...valid, block: "work" },
 			{ ...valid, pid: 0 },
@@ -116,7 +121,7 @@ test("records that are not exact current records read as unregistered", async ()
 
 test("release removes a session's record only while it names the releasing process", async () =>
 	withAgentDir(async (agentDir) => {
-		registerSessionPane({ agentDir, sessionId: "ordinary", pid: 101, pane: { session, block }, alive: () => true });
+		registerSessionPane({ agentDir, sessionId: "ordinary", pid: 101, pane: { block }, alive: () => true });
 		releaseSessionPane({ agentDir, sessionId: "ordinary", pid: 202 });
 		assert.equal(
 			readSessionPane(agentDir, "ordinary", () => true).ok,
@@ -134,8 +139,8 @@ test("release removes a session's record only while it names the releasing proce
 test("a registration removes records of ended processes, invalid records and stale temporary files", async () =>
 	withAgentDir(async (agentDir) => {
 		const now = new Date("2026-11-18T00:00:00.000Z");
-		registerSessionPane({ agentDir, sessionId: "ended", pid: 301, pane: { session, block }, now, alive: () => true });
-		registerSessionPane({ agentDir, sessionId: "running", pid: 302, pane: { session, block }, now, alive: () => true });
+		registerSessionPane({ agentDir, sessionId: "ended", pid: 301, pane: { block }, now, alive: () => true });
+		registerSessionPane({ agentDir, sessionId: "running", pid: 302, pane: { block }, now, alive: () => true });
 		const directory = sessionPaneDirectory(agentDir);
 		const invalid = join(directory, `${"a".repeat(64)}.json`);
 		await writeFile(invalid, "not a record");
@@ -151,7 +156,7 @@ test("a registration removes records of ended processes, invalid records and sta
 			agentDir,
 			sessionId: "new",
 			pid: 303,
-			pane: { session, block },
+			pane: { block },
 			now,
 			alive: (pid) => pid !== 301,
 		});
@@ -179,7 +184,7 @@ test("the registrar records interactive sessions in Rex panes and releases each 
 		const ctx = (mode: string) => ({ mode, sessionManager: { getSessionId: () => sessionId } }) as never;
 		const registrar = createSessionPaneRegistrar({ agentDir, env, pid: process.pid });
 		registrar.start(ctx("tui"));
-		assert.deepEqual(readSessionPane(agentDir, "first"), { ok: true, pane: { server, session, block } });
+		assert.deepEqual(readSessionPane(agentDir, "first"), { ok: true, pane: { server, block } });
 		sessionId = "second";
 		registrar.start(ctx("tui"));
 		assert.deepEqual(

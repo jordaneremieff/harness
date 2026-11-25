@@ -49,11 +49,15 @@ function exited(stdout: unknown, exitCode = 0, stderr = ""): CliResult {
 	};
 }
 
+const paneSession = "session:11111111-1111-4111-8111-111111111111";
+
 /** A Rex server that lists the current question action and answers each `rex do` with the next scripted reply. */
 class AskTransport implements RexTransport {
 	calls: Array<{ args: readonly string[]; call: CliCall }> = [];
 	revision = 18;
 	actions: unknown[] = [{ name: "pi_ask", kind: "lua", description: ASK_ACTION_DESCRIPTION }];
+	/** The session that holds block `b1` now. */
+	paneSession = paneSession;
 	view: unknown = {};
 	replies: Array<CliResult | ((call: CliCall) => Promise<CliResult>)>;
 	whoami?: CliResult;
@@ -79,6 +83,10 @@ class AskTransport implements RexTransport {
 				})
 			);
 		if (args.includes("actions")) return exited({ actions: this.actions });
+		if (args.includes("target.resolve"))
+			return exited({
+				results: [{ status: "resolved", target: { kind: "block", block_id: "b1", session_id: this.paneSession } }],
+			});
 		if (args.includes("session.view")) return exited(this.view);
 		if (args.includes("do")) {
 			const reply = this.replies.shift();
@@ -210,7 +218,7 @@ test("the action's reply settles as an offered choice with its note, or as Rex's
 
 test("an answer returns the choice and the note, and tells the agent what it approves", async () => {
 	const transport = new AskTransport(exited({ choice: "delete", note: "empty the bin too" }));
-	const result = await ask(transport, {}, { askPane: { session: "s1", block: "b1" } });
+	const result = await ask(transport, {}, { askPane: { block: "b1" } });
 	assert.equal(result.ok, true);
 	assert.equal(result.outcome, "answered");
 	const data = result.data as Record<string, unknown>;
@@ -237,8 +245,30 @@ test("the asking tab's label names the asker in place of the session name", asyn
 	transport.view = {
 		windows: [{ window_id: "window-1", label: "Release", layers: [{ blocks: [{ block_id: "b1" }] }] }],
 	};
-	await ask(transport, {}, { askPane: { session: "s1", block: "b1" } });
+	await ask(transport, {}, { askPane: { block: "b1" } });
 	assert.equal(transport.asks[0]?.title, "Delete 3 folders another agent made? · Release");
+	const lookup = transport.calls.find(({ args }) => args.includes("target.resolve"));
+	assert.deepEqual(JSON.parse(lookup?.args.at(-1) ?? "{}"), { kinds: ["block"], queries: ["b1"] });
+	const read = transport.calls.find(({ args }) => args.includes("session.view"));
+	assert.deepEqual(
+		JSON.parse(read?.args.at(-1) ?? "{}"),
+		{ session_id: paneSession },
+		"the tab is read in the session that holds the pane now",
+	);
+});
+
+test("a pane that Rex no longer finds leaves the session name as the asker", async () => {
+	const transport = new AskTransport(exited({ choice: "keep", note: "" }));
+	transport.paneSession = "s1";
+	transport.view = {
+		windows: [{ window_id: "window-1", label: "Release", layers: [{ blocks: [{ block_id: "b1" }] }] }],
+	};
+	await ask(transport, {}, { askPane: { block: "b1" } });
+	assert.equal(transport.asks[0]?.title, "Delete 3 folders another agent made? · harness");
+	assert.equal(
+		transport.calls.some(({ args }) => args.includes("session.view")),
+		false,
+	);
 });
 
 test("while every app shows another question, the question asks again for the rest of its wait", async () => {

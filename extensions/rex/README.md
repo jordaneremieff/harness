@@ -170,6 +170,9 @@ These represent different facts:
 
 - An explicit selector expresses requested intent. A label must resolve uniquely.
 - `source: "inherited"` uses the verified launch context, not operator focus or ownership.
+  The inherited block names the inherited session and window: a block keeps its ID when its
+  tab moves to another session, so the extension looks the block up in every session and
+  never selects by a launch session ID.
   An agent without a pane of its own inherits the pane of the ordinary session that started
   its chain of agents; see [Agents inherit their session's pane](#agents-inherit-their-sessions-pane).
 - `source: "focus"` explicitly asks for current focus, optionally within a named session.
@@ -292,8 +295,10 @@ waits for a later moment, the other panes of the decision still move, and after 
 failed moves the pane stays where it is. Failures report one
 warning per extension runtime. No timer or poll repeats a decision.
 
-The extension acts only when inherited `REX_SESSION` and `REX_BLOCK` name a block
-whose foreground process is this Pi process, the same proof that tab names use. It
+The extension acts only when the inherited `REX_BLOCK` names a block whose foreground
+process is this Pi process, the same proof that tab names use. Each decision first looks
+up the session that holds the block, since a block keeps its ID when its tab moves to
+another session. It
 holds no store: floating panes created before a reload get no decision. Each decision
 runs bounded CLI calls; a session change or shutdown aborts them and forgets the
 waiting panes. Durable, RPC, JSON and print sessions do not move panes.
@@ -310,11 +315,13 @@ the tab of the ordinary session that started its chain of agents. A request with
 such as a reader pane that the operator asked for, then appears beside the conversation that the
 work belongs to, not on whatever tab the operator looks at.
 
-Ordinary interactive Pi records its pane when a session starts and its inherited `REX_SESSION`
-and `REX_BLOCK` name a full session and block ID. RPC, JSON and print sessions record nothing.
+Ordinary interactive Pi records its pane when a session starts and its inherited `REX_BLOCK`
+names a full block ID. RPC, JSON and print sessions record nothing. The pane is its block: a block
+keeps its ID when its tab moves to another Rex session, so the record names no Rex session, and
+each use finds the session that holds the block at that time.
 The record lives in `<agentDir>/rex/session-panes/`, in a `0600` file named by the SHA-256 of the
-Pi session ID inside a `0700` directory. It holds `version` 1, `sessionId`, the process `pid`,
-the launch `server` when `REX_SERVER` is set, `session`, `block` and `updatedAt`. A later process
+Pi session ID inside a `0700` directory. It holds `version` 2, `sessionId`, the process `pid`,
+the launch `server` when `REX_SERVER` is set, `block` and `updatedAt`. A later process
 of the same session replaces it through a temporary file and an atomic rename. Session shutdown,
 including a session switch or reload, removes the record while it still names this process. Each
 registration also removes, among the first 512 directory entries, records whose process no
@@ -323,7 +330,7 @@ longer runs, invalid records, and temporary files older than one day.
 A native conversation asks its agent host for the ordinary session at the top of its storage's
 chain of creating owners (`ordinarySession` in the
 [Durable contribution contract](../../docs/conventions/durable-contributions.md#shape)). At each
-tool call its inherited server, session and block are that session's recorded pane while the
+tool call its inherited server and block are that session's recorded pane while the
 recorded process runs. The host process's own `REX_SESSION`, `REX_BLOCK` and `REX_CLIENT` describe
 whichever process started the host, so a native call never uses them; the host's `REX_SERVER`
 stays the server selection only when no pane is known. `rex_environment` names the source of the
@@ -525,23 +532,30 @@ This implements the package-level
 [pane stacking contract](../../docs/conventions/pane-stacking.md).
 
 A consumer starts the helper without a shell, with the pane's environment and
-piped standard input and output. The helper reads `REX_SESSION`, `REX_BLOCK`
-and `REX_SERVER`, and uses `REX_BIN_DIR/rex` when available, otherwise `rex`.
+piped standard input and output. The helper reads `REX_BLOCK` and `REX_SERVER`,
+and uses `REX_BIN_DIR/rex` when available, otherwise `rex`. It looks up the
+session that holds the block with `target.resolve` and watches that session's
+events. A block keeps its ID when its tab moves to another session, so when a
+view no longer holds the block, the helper looks the block up again and moves
+its event stream to the session that holds it now, without the reconnect delay.
 It writes only JSON report lines: the pane rectangle and intersecting layers
-above it, or a null pane when the block is absent. Reports use window fractions,
-account for zoom, and change only when the geometry changes. They describe the
-session's layout, not one client's screen: a pane in a background tab still has
-its geometry. The layers of `session.view` carry no minimised or hidden state,
-so the helper has no undrawn layer to leave out.
+above it, or a null pane when the block is in no window, for example while it
+is detached or no session holds it. Reports use window fractions, account for
+zoom, and change only when the geometry changes. They describe the session's
+layout, not one client's screen: a pane in a background tab still has its
+geometry. The layers of `session.view` carry no minimised or hidden state, so the
+helper has no undrawn layer to leave out.
 
-Each consumer costs one Rex events stream and one initial `session.view` call.
+Each consumer costs one Rex events stream, one `target.resolve` call per
+connection and one initial `session.view` call.
 A newer layout revision requests another `session.view`; concurrent events
 coalesce and revisions already covered by the current view require no call.
 The helper bounds event lines and snapshot output: it skips an event line over
 64 KiB and reads the view again, and it tries a failed or timed-out
 `session.view` call again after one, two, four and then every five seconds.
-When its event stream exits or fails, it reconnects after one, two, four and
-then every five seconds, and reads the view again after each start. A stream
+When its event stream exits or fails, or the block lookup fails, it reconnects
+after one, two, four and then every five seconds, and reads the view again after
+each start. A stream
 that stays open for at least five seconds resets that reconnect backoff. Each
 new connection resets revision tracking so a restarted server's lower revisions
 remain visible. Standard-input EOF or a signal ends the helper and terminates
@@ -688,7 +702,7 @@ Use `kind: "action"` for an existing configured action, not an arbitrary script
 path. For these two kinds, `source: "inherited"` and `source: "focus"` resolve even
 when the request names no IDs. The CLI then receives `-s`, `-b` and `--client` for
 the resolved session, block and client. Inherited context uses the launch
-environment and fails when it names no session; it never falls back to focus.
+environment and fails when it names no block; it never falls back to focus.
 Explicit IDs stay authoritative, and no arbitrary block is selected. A focused
 block resolves the same way as other focus requests. The extension does not freeze
 Rex's full API into handwritten wrappers.
@@ -956,9 +970,12 @@ terminal. The current working directory basename supplies the fallback when the 
 The projection never changes the canonical Pi name, the Rex workspace label, or Pi's terminal status
 reporter. Durable, RPC, JSON and print sessions do not project a label.
 
-Each update requires inherited `REX_SESSION` and `REX_BLOCK` values, the launch `REX_SERVER` when set,
-and a terminal process snapshot whose foreground PID is the Pi process. `session.view` locates the
-containing tab across all layers. A missing block, a different foreground process, or a tab with
+Each update requires an inherited `REX_BLOCK` value, the launch `REX_SERVER` when set, the session
+that holds the block now, which `target.resolve` finds from the block, and a terminal process
+snapshot whose foreground PID is the Pi process. A block keeps its ID when its tab moves to another
+session, so each update looks the session up again, and a claim made in one session is not
+dispatched after the tab has moved to another. `session.view` locates the containing tab across all
+layers. A missing block, a different foreground process, or a tab with
 multiple blocks makes the update ineligible without a diagnostic. Display labels lose control and
 format characters, collapse whitespace, cut to at most 128 Unicode code points, and trim the cut
 result. Every recorded label and pending value meets the same rule, so a cut that lands on whitespace
@@ -1068,12 +1085,15 @@ The standalone `terminal-origin.ts` helper implements the package-level
 [terminal origin contract](../../docs/conventions/terminal-origin.md). A local
 opener runs `node <fixed helper path> capture` in its own environment and keeps
 the resulting origin with the open request and reader window, never document
-metadata. Capture confirms the inherited server, session and terminal block;
-missing confirmation preserves only the Rex application identity.
+metadata. Capture confirms the inherited server and terminal block; missing
+confirmation preserves only the Rex application identity. The origin names no
+Rex session: each call runs `rex do --block` for the captured block, so Rex
+attaches it to the session that holds the block at that time, even after the
+block's tab moved to another session.
 
 `node <fixed helper path> focus` reads that origin from stdin. It revalidates
-the server host and instance, session and placed block before the server
-selects the exact block. It reports `focused`, `stale` or `unavailable` and
+the server host and instance and the placed block before the server selects
+the exact block. It reports `focused`, `stale` or `unavailable` and
 never guesses, sends input, creates resources or calls a client action. The
 helper uses only the fixed installed Rex executable under the OS account's
 home directory, bounded subprocesses and no retained state. Importing it does

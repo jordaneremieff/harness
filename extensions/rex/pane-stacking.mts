@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { paneStacking } from "./pane-stacking.ts";
+import { type PaneStackingReport, paneStacking } from "./pane-stacking.ts";
 import { CliTransport } from "./transport.ts";
 
 const MAX_EVENT_BYTES = 65536;
@@ -30,6 +30,30 @@ async function snapshot(
 	if (typeof view.revision !== "number" || !Number.isSafeInteger(view.revision))
 		throw new Error("Invalid view revision");
 	return { ...view, revision: view.revision };
+}
+
+/**
+ * The session that holds the block now, or undefined when no open block has its ID. A block keeps its ID when its tab
+ * moves to another session, so the block, not a launch session, names the session to watch. A lookup without a caller
+ * context searches every session.
+ */
+async function locate(
+	transport: CliTransport,
+	prefix: string[],
+	block: string,
+	signal: AbortSignal,
+): Promise<string | undefined> {
+	const result = await transport.run(
+		[...prefix, "api", "call", "target.resolve", JSON.stringify({ kinds: ["block"], queries: [block] })],
+		{ timeoutMs: 5000, maxOutputBytes: MAX_EVENT_BYTES, signal },
+	);
+	if (result.outcome !== "exited" || result.exitCode !== 0) throw new Error("Lookup unavailable");
+	const results = object(JSON.parse(result.stdout)).results;
+	const entry = object(Array.isArray(results) ? results[0] : undefined);
+	const session = object(entry.target).session_id;
+	if (entry.status === "resolved" && typeof session === "string" && session) return session;
+	if (entry.status === "not_found") return undefined;
+	throw new Error("Invalid lookup");
 }
 
 /** Splits the event stream into lines. A line over the limit is dropped up to its end. */
@@ -69,11 +93,14 @@ function writeReport(report: string, signal: AbortSignal): Promise<void> {
 	});
 }
 
-/** One consumer owns one event stream, one serial snapshot call and no retained state. */
+/**
+ * One consumer owns one event stream, one serial snapshot call and no retained state. The stream follows the session
+ * that holds the pane's block: each connection looks the session up, and a view that no longer holds the block moves
+ * the stream to the block's new session.
+ */
 export async function runPaneStacking(): Promise<void> {
-	const session = process.env.REX_SESSION;
 	const block = process.env.REX_BLOCK;
-	if (!session || !block) return;
+	if (!block) return;
 	const executable = process.env.REX_BIN_DIR ? join(process.env.REX_BIN_DIR, "rex") : "rex";
 	const prefix = [
 		"--autostart=false",
@@ -85,6 +112,10 @@ export async function runPaneStacking(): Promise<void> {
 	let reconnect: ReturnType<typeof setTimeout> | undefined;
 	let reconnectDelay = 0;
 	let epoch = 0;
+	/** The session whose events the stream carries. */
+	let session: string | undefined;
+	/** The block moved to another session: the next connection starts without waiting. */
+	let moved = false;
 	const killEvents = () => {
 		if (!events?.pid) return;
 		try {
@@ -117,29 +148,45 @@ export async function runPaneStacking(): Promise<void> {
 	let lastReport: string | undefined;
 	let retryDelay = 0;
 	let retry: ReturnType<typeof setTimeout> | undefined;
-	const publishView = async (view: Record<string, unknown> & { revision: number }) => {
-		retryDelay = 0;
-		// A restarted server's lower view supersedes pending revisions from the old server.
-		if (view.revision < revision) requested = -1;
-		revision = view.revision;
-		if (requested <= revision) dirty = false;
-		const report = JSON.stringify(paneStacking(view, block));
+	const publish = async (value: PaneStackingReport) => {
+		const report = JSON.stringify(value);
 		if (report !== lastReport) {
 			lastReport = report;
 			await writeReport(report, abort.signal);
 		}
 	};
+	const publishView = async (view: { revision: number }, report: PaneStackingReport) => {
+		retryDelay = 0;
+		// A restarted server's lower view supersedes pending revisions from the old server.
+		if (view.revision < revision) requested = -1;
+		revision = view.revision;
+		if (requested <= revision) dirty = false;
+		await publish(report);
+	};
+	/** Ends the stream of the old session; its exit connects to the session that holds the block now. */
+	const follow = (next: string) => {
+		session = next;
+		moved = true;
+		killEvents();
+	};
+	/** The session that holds the block after a view: a view without the block can mean that its tab moved. */
+	const holderAfter = async (watched: string, report: PaneStackingReport) =>
+		report.pane === null ? locate(transport, prefix, block, abort.signal) : watched;
 	const refresh = async () => {
-		while (dirty && !stopped) {
+		while (dirty && !stopped && session) {
 			dirty = false;
 			const startedEpoch = epoch;
-			const view = await snapshot(transport, prefix, session, abort.signal);
+			const watched = session;
+			const view = await snapshot(transport, prefix, watched, abort.signal);
+			const report = paneStacking(view, block);
+			const holder = await holderAfter(watched, report);
 			if (stopped) return;
 			if (startedEpoch !== epoch) {
 				dirty = true;
 				continue;
 			}
-			await publishView(view);
+			if (holder !== undefined && holder !== watched) return follow(holder);
+			await publishView(view, report);
 		}
 	};
 	// Failed view calls retry after one, two, four, then five seconds until input ends.
@@ -176,9 +223,36 @@ export async function runPaneStacking(): Promise<void> {
 		dirty = true;
 		startRefresh();
 	};
-	const connect = () => {
+	// Failed connections retry after one, two, four, then five seconds; a connection that lasted five seconds resets it.
+	const later = (lasted = 0) => {
 		if (stopped) return;
-		const child = spawn(executable, [...prefix, "events", "-s", session, "--json"], {
+		if (lasted >= 5000) reconnectDelay = 0;
+		reconnectDelay = reconnectDelay === 0 ? 1000 : Math.min(reconnectDelay * 2, 5000);
+		reconnect = setTimeout(() => {
+			reconnect = undefined;
+			void connect();
+		}, reconnectDelay);
+	};
+	const connect = async () => {
+		if (stopped) return;
+		let holder: string | undefined;
+		try {
+			holder = await locate(transport, prefix, block, abort.signal);
+		} catch {
+			return later();
+		}
+		if (stopped) return;
+		if (holder === undefined) {
+			// No open block has this ID, so the pane is in no window.
+			await publish({ version: 1, pane: null });
+			return later();
+		}
+		session = holder;
+		listen(holder);
+	};
+	const listen = (watched: string) => {
+		moved = false;
+		const child = spawn(executable, [...prefix, "events", "-s", watched, "--json"], {
 			detached: true,
 			stdio: ["ignore", "pipe", "ignore"],
 		});
@@ -189,12 +263,12 @@ export async function runPaneStacking(): Promise<void> {
 			if (ended || stopped) return;
 			ended = true;
 			killEvents();
-			if (performance.now() - started >= 5000) reconnectDelay = 0;
-			reconnectDelay = reconnectDelay === 0 ? 1000 : Math.min(reconnectDelay * 2, 5000);
-			reconnect = setTimeout(() => {
-				reconnect = undefined;
-				connect();
-			}, reconnectDelay);
+			if (moved) {
+				moved = false;
+				reconnectDelay = 0;
+				return void connect();
+			}
+			later(performance.now() - started);
 		};
 		child.once("spawn", () => {
 			if (stopped) {
@@ -226,7 +300,7 @@ export async function runPaneStacking(): Promise<void> {
 	process.once("exit", stop);
 	process.stdin.resume();
 	if (process.stdin.readableEnded || process.stdin.destroyed) stop();
-	connect();
+	void connect();
 	await ended;
 	await active;
 	process.stdin.pause();

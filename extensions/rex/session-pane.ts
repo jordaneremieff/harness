@@ -19,12 +19,12 @@ import { boundedText, fullId } from "./ownership.ts";
 /**
  * Where an ordinary interactive Pi session is shown: the Rex pane that its process was launched in. An agent without a
  * pane of its own takes the pane of the ordinary session at the top of its chain of creating owners as its inherited
- * launch context, so the panes it opens appear on that session's tab.
+ * launch context, so the panes it opens appear on that session's tab. The pane is its block: a block keeps its ID when
+ * its tab moves to another Rex session, so the session that holds it is looked up when it is needed.
  */
 export interface SessionPane {
 	/** The `REX_SERVER` launch value of the session's process, when it had one. */
 	readonly server?: string;
-	readonly session: string;
 	readonly block: string;
 }
 
@@ -34,13 +34,13 @@ export type SessionPaneLookup =
 	| { readonly ok: false; readonly reason: "unregistered" | "ended" };
 
 interface SessionPaneRecord extends SessionPane {
-	readonly version: 1;
+	readonly version: 2;
 	readonly sessionId: string;
 	readonly pid: number;
 	readonly updatedAt: string;
 }
 
-const RECORD_FIELDS = new Set(["version", "sessionId", "pid", "server", "session", "block", "updatedAt"]);
+const RECORD_FIELDS = new Set(["version", "sessionId", "pid", "server", "block", "updatedAt"]);
 const RECORD_BYTES = 4096;
 const RECORD_NAME = /^[a-f0-9]{64}\.json$/u;
 const TEMPORARY_NAME = /^\.tmp-[a-f0-9-]{36}$/u;
@@ -67,12 +67,12 @@ export function processAlive(pid: number): boolean {
 	}
 }
 
-/** The pane that a process's Rex launch environment names, or undefined when it names no exact session and block. */
+/** The pane that a process's Rex launch environment names, or undefined when it names no exact block. */
 export function launchPane(env: Readonly<Record<string, string | undefined>>): SessionPane | undefined {
 	const server = env.REX_SERVER || undefined;
-	if (!fullId(env.REX_SESSION, "session") || !fullId(env.REX_BLOCK, "block")) return undefined;
+	if (!fullId(env.REX_BLOCK, "block")) return undefined;
 	if (server !== undefined && !boundedText(server, 4096)) return undefined;
-	return { ...(server === undefined ? {} : { server }), session: env.REX_SESSION, block: env.REX_BLOCK };
+	return { ...(server === undefined ? {} : { server }), block: env.REX_BLOCK };
 }
 
 /** Record a process's pane for one ordinary session, replacing an earlier record, then remove records of ended processes. */
@@ -90,11 +90,10 @@ export function registerSessionPane(options: {
 	const directory = sessionPaneDirectory(options.agentDir);
 	mkdirSync(directory, { recursive: true, mode: 0o700 });
 	const record: SessionPaneRecord = {
-		version: 1,
+		version: 2,
 		sessionId: options.sessionId,
 		pid: options.pid,
 		...(options.pane.server === undefined ? {} : { server: options.pane.server }),
-		session: options.pane.session,
 		block: options.pane.block,
 		updatedAt: now.toISOString(),
 	};
@@ -135,11 +134,7 @@ export function readSessionPane(
 	if (!alive(record.pid)) return { ok: false, reason: "ended" };
 	return {
 		ok: true,
-		pane: {
-			...(record.server === undefined ? {} : { server: record.server }),
-			session: record.session,
-			block: record.block,
-		},
+		pane: { ...(record.server === undefined ? {} : { server: record.server }), block: record.block },
 	};
 }
 
@@ -233,15 +228,14 @@ function parseRecord(text: string): SessionPaneRecord | undefined {
 	const record = value as Record<string, unknown>;
 	if (Object.keys(record).some((key) => !RECORD_FIELDS.has(key))) return undefined;
 	if (
-		record.version !== 1 ||
+		record.version !== 2 ||
 		!boundedText(record.sessionId, 512) ||
 		!Number.isSafeInteger(record.pid) ||
 		(record.pid as number) <= 0
 	)
 		return undefined;
 	if (record.server !== undefined && !boundedText(record.server, 4096)) return undefined;
-	if (!fullId(record.session, "session") || !fullId(record.block, "block") || typeof record.updatedAt !== "string")
-		return undefined;
+	if (!fullId(record.block, "block") || typeof record.updatedAt !== "string") return undefined;
 	return record as unknown as SessionPaneRecord;
 }
 

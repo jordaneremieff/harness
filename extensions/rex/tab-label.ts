@@ -243,11 +243,13 @@ class Projector implements TabLabelProjector {
 	/** One observation pass. A pass reports the demands it covered; an invalidated run reports none. */
 	private async update(run: Run, covered: RefreshCoverage): Promise<RefreshCoverage | undefined> {
 		if (run.ctx.mode !== "tui") return covered;
-		const sessionId = this.env.REX_SESSION;
 		const blockId = this.env.REX_BLOCK;
-		if (!sessionId || !blockId) return covered;
+		if (!blockId) return covered;
 		const identity = await this.serverIdentity(run);
 		if (!this.current(run)) return undefined;
+		const sessionId = await this.holder(run, blockId);
+		if (!this.current(run)) return undefined;
+		if (!sessionId) return covered;
 		if (!(await this.foregroundMatches(run, sessionId, blockId))) return this.current(run) ? covered : undefined;
 		const selected = await this.containingWindow(run, sessionId, blockId);
 		if (!this.current(run)) return undefined;
@@ -268,6 +270,18 @@ class Projector implements TabLabelProjector {
 		if (!text(identity.host_id) || !text(identity.instance_id))
 			throw new Error("Rex did not report its host and instance IDs.");
 		return { hostId: identity.host_id, instanceId: identity.instance_id };
+	}
+
+	/**
+	 * The session that holds the block now: a block keeps its ID when its tab moves to another session. A lookup without
+	 * a caller context searches every session.
+	 */
+	private async holder(run: Run, blockId: string): Promise<string | undefined> {
+		const found = object(await this.api(run, "target.resolve", { kinds: ["block"], queries: [blockId] }));
+		const entry = object(Array.isArray(found.results) ? found.results[0] : undefined);
+		if (entry.status !== "resolved") return undefined;
+		const session = object(entry.target).session_id;
+		return text(session) ? session : undefined;
 	}
 
 	private async foregroundMatches(run: Run, sessionId: string, blockId: string): Promise<boolean> {
@@ -371,7 +385,6 @@ class Projector implements TabLabelProjector {
 		return (
 			this.current(run) &&
 			this.env.REX_SERVER === server &&
-			this.env.REX_SESSION === key.sessionId &&
 			this.env.REX_BLOCK === key.blockId &&
 			this.label(this.ctx ?? run.ctx) === desired
 		);
@@ -388,6 +401,8 @@ class Projector implements TabLabelProjector {
 		if (!currentName()) return false;
 		const identity = await this.serverIdentity(run);
 		if (!currentName() || identity.hostId !== key.hostId || identity.instanceId !== key.instanceId) return false;
+		// A tab that moved to another session since the claim waits for a later pass in its new session.
+		if ((await this.holder(run, key.blockId)) !== key.sessionId || !currentName()) return false;
 		if (!(await this.foregroundMatches(run, key.sessionId, key.blockId)) || !currentName()) return false;
 		const selected = await this.containingWindow(run, key.sessionId, key.blockId);
 		const observed = claim.label ?? `Window ${key.windowId.slice(-8)}`;

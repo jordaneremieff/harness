@@ -558,7 +558,10 @@ export class RexCore {
 		return target;
 	}
 
-	/** The label of the asking session's Rex tab, read within a second so the question keeps its time. */
+	/**
+	 * The label of the asking session's Rex tab, read within a second so the question keeps its time. The pane's block
+	 * names the session that holds it now, since its tab can move to another session.
+	 */
 	private async askTab(
 		request: AskRequest,
 		target: ResolvedTarget,
@@ -566,9 +569,25 @@ export class RexCore {
 	): Promise<string | undefined> {
 		const pane = context.askPane;
 		if (!pane) return undefined;
-		const allowance = Math.min(1000, askWaitMs(request.timeoutMs) - (context.budget?.elapsed() ?? 0) - 2000);
-		if (allowance < 1) return undefined;
-		const view = await this.api("session.view", { session_id: pane.session }, target.server, context, allowance).catch(
+		// Both reads share the second.
+		const deadline =
+			performance.now() + Math.min(1000, askWaitMs(request.timeoutMs) - (context.budget?.elapsed() ?? 0) - 2000);
+		const left = () => Math.floor(deadline - performance.now());
+		if (left() < 1) return undefined;
+		const found = object(
+			await this.api(
+				"target.resolve",
+				{ kinds: ["block"], queries: [pane.block] },
+				target.server,
+				context,
+				left(),
+			).catch(() => undefined),
+		);
+		context.budget?.check("observe");
+		const entry = object(Array.isArray(found.results) ? found.results[0] : undefined);
+		const session = object(entry.target).session_id;
+		if (entry.status !== "resolved" || !fullId(session, "session") || left() < 1) return undefined;
+		const view = await this.api("session.view", { session_id: session }, target.server, context, left()).catch(
 			() => undefined,
 		);
 		context.budget?.check("observe");
@@ -692,7 +711,6 @@ export class RexCore {
 				hosts,
 				inherited: {
 					server: this.env.REX_SERVER,
-					session: this.env.REX_SESSION,
 					block: this.env.REX_BLOCK,
 					client: this.env.REX_CLIENT,
 				},
@@ -2195,12 +2213,16 @@ function targetSource(intent: TargetIntent | undefined, query?: string): "explic
 	if (hasResources(intent) || query !== undefined || intent?.source === "explicit") return "explicit";
 	return "inherited";
 }
+/**
+ * The inherited block names the inherited session and window: a block keeps its ID when its tab moves to another
+ * session, while a launch session ID would keep naming the old one.
+ */
 function selectors(
 	intent: TargetIntent | undefined,
 	env: Readonly<Record<string, string | undefined>>,
 ): [TargetKind, string | undefined][] {
 	return [
-		["session", intent?.session ?? env.REX_SESSION],
+		["session", intent?.session],
 		["window", intent?.window],
 		["block", intent?.block ?? env.REX_BLOCK],
 		["client", intent?.client ?? env.REX_CLIENT],

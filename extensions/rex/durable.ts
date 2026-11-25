@@ -183,7 +183,6 @@ export function durableLaunch(
 		env: {
 			...base,
 			...(found.pane.server === undefined ? {} : { REX_SERVER: found.pane.server }),
-			REX_SESSION: found.pane.session,
 			REX_BLOCK: found.pane.block,
 		},
 		launch: {

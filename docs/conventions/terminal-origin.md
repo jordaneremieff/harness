@@ -25,8 +25,8 @@ document.
 
 ## Version 1 data
 
-Capture returns `null` when none of `REX_SERVER`, `REX_SESSION` and `REX_BLOCK`
-is present. Otherwise it returns this record:
+Capture returns `null` when neither `REX_SERVER` nor `REX_BLOCK` is present.
+Otherwise it returns this record:
 
 ```ts
 type TerminalOrigin = {
@@ -37,7 +37,6 @@ type TerminalOrigin = {
     server: string;
     hostId: string;
     instanceId: string;
-    sessionId: string;
     blockId: string;
   };
 };
@@ -46,17 +45,19 @@ type TerminalOrigin = {
 Consumers copy the envelope shape locally and treat `exact` as opaque. They
 must not construct, repair or interpret the Rex-owned members. Only the helper
 captures and validates them. `server` is the explicit inherited connection route;
-`hostId` and `instanceId` come from `server.status`. Session and block IDs are
-full server IDs, never labels, prefixes or positions. The helper confirms the
-session ID and a terminal block in a window through `session.view`, across all
-layers. Detached blocks do not qualify.
+`hostId` and `instanceId` come from `server.status`. The block ID is a full
+server ID, never a label, prefix or position. The block is the pane's identity:
+it keeps its ID when its tab moves to another session, while a session ID would
+keep naming the old session, so the record names no session. The helper
+confirms a terminal block in a window of the session that holds it, through
+`session.view` across all layers. Detached blocks do not qualify.
 
 Missing or invalid launch hints, an unreachable server, an unsupported response
 or an unconfirmed block produce an application-only record, without `exact`.
 The helper does not discover a default server, infer another target or use
 current global focus. A containing Rex window is a tab, not a Mac workspace
-window. It is not retained: an exact block follows a move between tabs within
-the captured session.
+window. Neither the tab nor the session is retained: an exact block follows a
+move to another tab or to another session.
 
 ## Fixed helper invocation
 
@@ -73,7 +74,7 @@ node <fixed helper path> focus
 ```
 
 `capture` inherits the opener's environment. It makes one bounded CLI call to
-read server identity and session membership. It prints exactly one JSON value
+read server identity and the block's placement. It prints exactly one JSON value
 and a newline, then exits zero, including when only an application return is
 available. It never focuses or launches an application.
 
@@ -94,20 +95,23 @@ type FocusResult = {
 | Outcome | Meaning |
 |---|---|
 | `focused` | The server acknowledged selection of the exact terminal block and its containing tab. This does not verify a visible client or Mac window. |
-| `stale` | The host or server instance changed, the session disappeared, or the block is gone, detached or outside that session. No replacement target is selected. |
+| `stale` | The host or server instance changed, or the block is gone or detached. No replacement target is selected. |
 | `unavailable` | No verified exact target exists, the fixed Rex program is missing, or the operation did not receive a valid acknowledgement. A timeout leaves focus uncertain. |
 
+Each call runs `rex do --block <blockId>`, so Rex attaches the call to the
+session that holds the block at that time; when no session holds it, the call
+fails with `block target "<blockId>" not found`, and focus returns `stale`.
 Focus first reads identity and membership, then rechecks both on the same CLI
-connection that calls `session.focus_block`. No connection change between the
-last identity check and mutation is permitted. A target that disappears during
-that operation returns `stale` when the server reports `not_found` or
-`session_not_found`. Other failures remain `unavailable`.
+connection that calls `session.focus_block` in that session. No connection
+change between the last identity check and mutation is permitted. A target that
+disappears during that operation returns `stale` when the server reports
+`not_found` or `session_not_found`. Other failures remain `unavailable`.
 
 Every Rex child has a 3000 ms deadline, a 32768-byte output limit per stream,
 and a two-second CLI request timeout. Capture starts at most one child; focus
 starts at most two. The helper disables server autostart and removes inherited
-`REX_*` variables from child environments. Explicit route and full session IDs
-select each request. It never retries a timed-out effect.
+`REX_*` variables from child environments. The explicit route and the full block
+ID select each request. It never retries a timed-out effect.
 
 The helper computes the only Rex executable path from the current OS account's
 home directory, independent of `HOME`, `PATH`, `REX_BIN_DIR`, harness settings

@@ -55,11 +55,20 @@ class FixtureTransport implements RexTransport {
 		const method = args.includes("whoami") ? "whoami" : (args.at(-2) ?? "");
 		if (call.signal?.aborted) return { ...response({}), outcome: "cancelled", exitCode: null };
 		if (method === "whoami") return response({ host_id: "host", instance_id: "instance" });
+		if (method === "target.resolve")
+			return response({
+				results: [
+					{
+						status: "resolved",
+						target: { kind: "block", block_id: process.env.REX_BLOCK, session_id: "session:test" },
+					},
+				],
+			});
 		if (method === "com.superlogical.terminal.process") return response({ foreground: { pid: 4242 }, last_exit: null });
 		if (method === "session.view") {
 			return response({
 				revision: 1,
-				session_id: process.env.REX_SESSION,
+				session_id: "session:test",
 				windows: [
 					{ window_id: WINDOW_ID, label: DEFAULT_LABEL, layers: [{ blocks: [{ block_id: process.env.REX_BLOCK }] }] },
 				],

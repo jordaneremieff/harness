@@ -660,7 +660,7 @@ test("a confirmed floating pane that rex_terminal creates is handed to the conve
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
 });
 
-const LABEL_CHECKS = ["whoami", "com.superlogical.terminal.process", "session.view"];
+const LABEL_CHECKS = ["whoami", "target.resolve", "com.superlogical.terminal.process", "session.view"];
 
 class LabelTransport implements RexTransport {
 	readonly methods: string[] = [];
@@ -675,6 +675,12 @@ class LabelTransport implements RexTransport {
 		const method = args.includes("whoami") ? "whoami" : (args.at(-2) ?? "");
 		this.methods.push(method);
 		if (method === "whoami") return reply({ host_id: "host", instance_id: "instance" });
+		if (method === "target.resolve")
+			return reply({
+				results: [
+					{ status: "resolved", target: { kind: "block", block_id: "block:test", session_id: "session:test" } },
+				],
+			});
 		if (method === "com.superlogical.terminal.process")
 			return reply({ foreground: { pid: this.pid }, last_exit: null });
 		if (method === "session.view")
@@ -731,7 +737,7 @@ test("ordinary tab label wiring runs no process for an unchanged name event and 
 			const created = createTabLabelProjector({
 				...options,
 				agentDir,
-				env: { REX_SESSION: "session:test", REX_BLOCK: "block:test" },
+				env: { REX_BLOCK: "block:test" },
 				createTransport: () => transport,
 			});
 			projector = created;

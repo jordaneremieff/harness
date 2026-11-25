@@ -29,8 +29,8 @@ Send one UTF-8 JSON record on stdin, at most 16384 bytes:
 
 `origin` is the unchanged opaque result of the [terminal-origin capture](terminal-origin.md)
 from this local opening process. The adapter alone interprets its exact fields. It refuses an
-absent exact origin or inherited server/session/block hints that differ from that origin. It
-never chooses global focus, a default server or another tab.
+absent exact origin or inherited server or block hints that differ from that origin. It never
+chooses global focus, a default server or another tab.
 
 `placement` is optional and defaults to `{ side: "right", share: 0.5 }`. `share` is the new
 pane's share of the split space and is inclusive from 0.15 to 0.85. `side: "right"` maps to a
@@ -49,10 +49,13 @@ interpolation occurs. The terminal's documented working-directory semantics stil
 ## Effect and result
 
 The adapter uses the trusted Rex executable from the terminal-origin contract. It removes
-inherited Rex routing variables from the child environment, supplies the exact server/session,
-disables autostart, and checks host/instance identity on the same connection as its single
-`session.new_split` call. It finds the verified terminal block in that session's window layout,
-then uses that full block ID as the explicit split anchor. The public Rex API owns splitting,
+inherited Rex routing variables from the child environment, supplies the exact server and runs
+`rex do --block` for the anchor block, so Rex attaches the request to the session that holds the
+anchor at that time. A block keeps its ID when its tab moves to another session, so no request
+names a session from an earlier one. The adapter disables autostart and checks host/instance
+identity on the same connection as its single `session.new_split` call. It finds the verified
+terminal block in that session's window layout, then uses that full block ID as the explicit
+split anchor. The public Rex API owns splitting,
 startup and exit behaviour. The split follows `placement`: it sits right or below the anchor,
 after it in that direction, and takes the requested share, defaulting to the right and half the
 anchor's space. Its label defaults to `Reader`. The split does not take focus. Rex ends zoom in
@@ -62,8 +65,9 @@ the [pane stacking](pane-stacking.md) offer in its environment, so a program tha
 window over the pane learns from Rex's layout which content lies above it.
 
 One creation attempt is the maximum. A post-create read checks that the new block and anchor
-occupy the same tab. Moving the conversation before creation follows its exact block, not a
-remembered tab. Concurrent movement that prevents confirmation remains uncertain.
+occupy the same tab. Moving the conversation before creation, to another tab or another session,
+follows its exact block, not a remembered tab or session. Concurrent movement that prevents
+confirmation remains uncertain.
 
 The adapter prints one JSON record and exits zero for domain results:
 
@@ -74,7 +78,7 @@ The adapter prints one JSON record and exits zero for domain results:
   detail: string; // one line, at most 256 UTF-8 bytes
   receipt?: {
     server: string; hostId: string; instanceId: string;
-    sessionId: string; windowId: string; anchorId: string; blockId: string;
+    anchorId: string; blockId: string;
     direction: "horizontal" | "vertical";
   };
 }
@@ -83,8 +87,8 @@ The adapter prints one JSON record and exits zero for domain results:
 - `created` includes a validated receipt with exact IDs and same-tab placement observed after
   creation. It does not establish that the program accepted its input, that a native window
   rendered, or that a client displays the tab.
-- `stale` means identity or membership no longer agrees before creation. No alternate target
-  receives the program.
+- `stale` means identity or membership no longer agrees before creation, including an invoking
+  block that no session holds any more. No alternate target receives the program.
 - `unavailable` means an exact origin, server identity or trusted executable was unavailable
   before creation.
 - `uncertain` means a dispatched operation, its acknowledgement or its resulting placement did
@@ -111,16 +115,17 @@ Invoke `node <package>/extensions/rex/terminal-pane.ts resize` with one bounded 
 ```
 
 Pass the receipt from a `created` result unchanged. The new pane's share is inclusive from
-0.1 to 0.9. The adapter checks the inherited anchor, server host and instance, and both blocks'
-membership in the receipt window. Rex selects the innermost split in the receipt's direction
-with the anchor before the new block, then sets its ratio to `1 - share`. The adapter makes one
+0.1 to 0.9. The adapter checks the inherited anchor, server host and instance, and that one
+window of the session that holds the anchor now holds both blocks. Rex selects the innermost
+split in the receipt's direction with the anchor before the new block, then sets its ratio to
+`1 - share`. The adapter makes one
 attempt with the split operation's deadlines and output bounds. It neither moves focus nor picks
 an alternate border.
 
 The result is `{ version: 1, outcome, detail }`. `resized` means Rex acknowledged the change,
-not that a client rendered it. `stale` means the inherited anchor, server identity or window
-membership changed. `unavailable` means the required terminal service is unavailable before
-mutation. `uncertain` means no resize acknowledgement; do not retry automatically.
+not that a client rendered it. `stale` means the inherited anchor or server identity changed, the
+anchor is gone, or the two blocks no longer share a window. `unavailable` means the required
+terminal service is unavailable before mutation. `uncertain` means no resize acknowledgement; do not retry automatically.
 
 ## Focus the anchor of a confirmed split
 
@@ -131,17 +136,18 @@ Invoke `node <package>/extensions/rex/terminal-pane.ts focus` with one bounded J
 ```
 
 Pass the receipt from a `created` result unchanged. The adapter checks the inherited anchor,
-server host and instance, and both blocks' membership in the receipt window, as resize does.
-It then gives Rex focus to the receipt's anchor block, so typing that Rex receives reaches the
-invoking terminal rather than another pane of the window. It acts only while the session shows
-the receipt window: focus never switches the session to another window. When the anchor already
+server host and instance, and that one window holds both blocks, as resize does. It then gives
+Rex focus to the receipt's anchor block, so typing that Rex receives reaches the invoking
+terminal rather than another pane of the window. It acts only while the anchor's session shows
+that window: focus never switches the session to another window. When the anchor already
 has focus, the adapter changes nothing. It makes one attempt with the split operation's deadlines
 and output bounds. Rex focus does not activate the terminal application; the caller's own
 program decides when to hand the keyboard to it.
 
 The result is `{ version: 1, outcome, detail }`. `focused` means the anchor had focus or Rex
-acknowledged the change. `stale` means the inherited anchor, server identity or window membership
-changed. `unavailable` means the session shows another window or the required terminal service is
+acknowledged the change. `stale` means the inherited anchor or server identity changed, the anchor
+is gone, or the two blocks no longer share a window. `unavailable` means the session shows another
+window or the required terminal service is
 unavailable; nothing changed. `uncertain` means no acknowledgement; do not retry automatically.
 
 ## Consumers

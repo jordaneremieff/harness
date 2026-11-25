@@ -39,12 +39,14 @@ export interface PaneFocusResult {
 	outcome: "focused" | "stale" | "unavailable" | "uncertain";
 	detail: string;
 }
+/**
+ * The split that `split` created. Blocks keep their IDs when their tab moves to another session, so a receipt names
+ * blocks only; each later request finds the session and window that hold them at that time.
+ */
 export interface PaneReceipt {
 	server: string;
 	hostId: string;
 	instanceId: string;
-	sessionId: string;
-	windowId: string;
 	anchorId: string;
 	blockId: string;
 	direction: Direction;
@@ -117,14 +119,18 @@ export function parsePaneRequest(input: string): PaneRequest {
 }
 
 // Identity validation and the single mutation share one Rex connection. A block anchor never
-// means global focus, and placement is checked again without a second creation attempt.
+// means global focus, and placement is checked again without a second creation attempt. A block
+// keeps its ID when its tab moves to another session, so each request runs with --block for the
+// anchor, and Rex attaches the request to the session that holds the anchor at that time.
 const identityScript = `
 local a = rex.args
 local s = rex.call("server.status")
 if not s then return {outcome="unavailable", detail="Rex server identity is unavailable."} end
 if s.host_id ~= a.hostId or s.instance_id ~= a.instanceId then return {outcome="stale", detail="Rex server identity changed."} end
+local session = rex.session_id
+if type(session) ~= "string" then return {outcome="unavailable", detail="Rex session of the anchor is unavailable."} end
 local function placement(v, id)
-  if not v or v.session_id ~= a.sessionId then return nil end
+  if not v then return nil end
   for _, w in ipairs(v.windows or {}) do
     for _, l in ipairs(w.layers or {}) do
       for _, b in ipairs(l.blocks or {}) do
@@ -133,31 +139,34 @@ local function placement(v, id)
     end
   end
 end
+-- The anchor's view and the window that holds both blocks, when one does.
+local function shared()
+  local view = rex.call("session.view", {session_id=session})
+  local window = placement(view, a.anchorId)
+  if window and placement(view, a.blockId) == window then return view, window end
+end
 `;
 const splitScript = `${identityScript}
-local before = rex.call("session.view", {session_id=a.sessionId})
-local window = placement(before, a.blockId)
-if not window then return {outcome="stale", detail="The invoking terminal block is gone or detached."} end
-local created = rex.call("session.new_split", {session_id=a.sessionId, anchor_id=a.blockId, direction=a.direction, side="after", ratio=a.ratio, focus=false,
+local before = rex.call("session.view", {session_id=session})
+if not placement(before, a.blockId) then return {outcome="stale", detail="The invoking terminal block is gone or detached."} end
+local created = rex.call("session.new_split", {session_id=session, anchor_id=a.blockId, direction=a.direction, side="after", ratio=a.ratio, focus=false,
   layout={block={flavor="com.superlogical.terminal.shell", label=a.label, options={shell="none", command=a.argv, cwd=a.cwd, exit={on_completion=true}}}}})
 if not created or created.anchor_id ~= a.blockId or type(created.block_ids) ~= "table" or #created.block_ids ~= 1 or type(created.block_ids[1]) ~= "string" then
   return {outcome="uncertain", detail="Rex did not confirm split creation. Do not retry automatically."}
 end
-local receipt = {server=a.server, hostId=a.hostId, instanceId=a.instanceId, sessionId=a.sessionId, windowId=window, anchorId=a.blockId, blockId=created.block_ids[1], direction=a.direction}
-local after = rex.call("session.view", {session_id=a.sessionId})
+local receipt = {server=a.server, hostId=a.hostId, instanceId=a.instanceId, anchorId=a.blockId, blockId=created.block_ids[1], direction=a.direction}
+local after = rex.call("session.view", {session_id=session})
 local anchorWindow = placement(after, a.blockId)
 local paneWindow = placement(after, receipt.blockId)
 if not anchorWindow or anchorWindow ~= paneWindow then return {outcome="uncertain", receipt=receipt, detail="Rex created a block but same-tab placement is unconfirmed. Do not retry automatically."} end
-receipt.windowId = paneWindow
 return {outcome="created", receipt=receipt, detail="Rex created a split beside the invoking terminal. Visibility and program acceptance are not verified."}
 `;
 const resizeScript = `${identityScript}
-local view = rex.call("session.view", {session_id=a.sessionId})
-if placement(view, a.anchorId) ~= a.windowId or placement(view, a.blockId) ~= a.windowId then
-  return {outcome="stale", detail="The terminal blocks are no longer in the receipt window."}
+if not shared() then
+  return {outcome="stale", detail="The terminal blocks no longer share a window."}
 end
 -- The server selects the innermost split in the requested direction with this ordered pair.
-local resized = rex.call("session.resize_pane", {session_id=a.sessionId, before_block_id=a.anchorId, after_block_id=a.blockId, direction=a.direction, ratio=a.ratio})
+local resized = rex.call("session.resize_pane", {session_id=session, before_block_id=a.anchorId, after_block_id=a.blockId, direction=a.direction, ratio=a.ratio})
 if not resized or type(resized.revision) ~= "number" then
   return {outcome="uncertain", detail="Rex did not confirm the resize. Do not retry automatically."}
 end
@@ -165,19 +174,19 @@ return {outcome="resized", detail="Rex confirmed the split resize."}
 `;
 // Focus never switches the session's tab: an anchor in a window that the session does not show stays unfocused.
 const focusScript = `${identityScript}
-local view = rex.call("session.view", {session_id=a.sessionId})
-if placement(view, a.anchorId) ~= a.windowId or placement(view, a.blockId) ~= a.windowId then
-  return {outcome="stale", detail="The terminal blocks are no longer in the receipt window."}
+local view, window = shared()
+if not view then
+  return {outcome="stale", detail="The terminal blocks no longer share a window."}
 end
-if view.active_window_id ~= a.windowId then
-  return {outcome="unavailable", detail="The session does not show the receipt window."}
+if view.active_window_id ~= window then
+  return {outcome="unavailable", detail="The session does not show the window of these panes."}
 end
 for _, w in ipairs(view.windows or {}) do
-  if w.window_id == a.windowId and w.focused_block_id == a.anchorId then
+  if w.window_id == window and w.focused_block_id == a.anchorId then
     return {outcome="focused", detail="The anchor terminal already has focus."}
   end
 end
-local focused = rex.call("session.focus_block", {session_id=a.sessionId, block_id=a.anchorId})
+local focused = rex.call("session.focus_block", {session_id=session, block_id=a.anchorId})
 if not focused or type(focused.revision) ~= "number" then
   return {outcome="uncertain", detail="Rex did not confirm the focus. Do not retry automatically."}
 end
@@ -202,7 +211,7 @@ const runChild: Runner = (executable, args, options) =>
 	});
 const result = (outcome: PaneResult["outcome"], detail: string): PaneResult => ({ version: 1, outcome, detail });
 const uuid = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
-const receiptFields = ["server", "hostId", "instanceId", "sessionId", "windowId", "anchorId", "blockId", "direction"];
+const receiptFields = ["server", "hostId", "instanceId", "anchorId", "blockId", "direction"];
 function readReceipt(value: unknown): PaneReceipt | undefined {
 	if (
 		!value ||
@@ -219,8 +228,6 @@ function readReceipt(value: unknown): PaneReceipt | undefined {
 		/[\p{Cc}\p{Cf}\p{Cs}]/u.test(r.server) ||
 		!id(r.hostId) ||
 		!id(r.instanceId) ||
-		!id(r.sessionId, "session:") ||
-		!id(r.windowId, "window:") ||
 		!id(r.anchorId, "block:") ||
 		!id(r.blockId, "block:") ||
 		r.anchorId === r.blockId ||
@@ -263,10 +270,19 @@ export function parseFocusRequest(input: string): PaneFocusRequest {
 	if (!receipt) throw new Error("Pane focus requires an exact split receipt.");
 	return { version: 1, receipt };
 }
-function matchesOrigin(env: Readonly<NodeJS.ProcessEnv>, server: string, session: string, block: string): boolean {
-	return env.REX_SERVER === server && env.REX_SESSION === session && env.REX_BLOCK === block;
+/** The inherited pane is the captured one: the same server route and block, wherever its tab is now. */
+function matchesOrigin(env: Readonly<NodeJS.ProcessEnv>, server: string, block: string): boolean {
+	return env.REX_SERVER === server && env.REX_BLOCK === block;
 }
-function runRex(run: Runner, server: string, sessionId: string, script: string, args: object): Promise<RunResult> {
+/** Rex refused to attach the request because no session holds the anchor block any more. */
+function blockGone(result: RunResult, block: string): boolean {
+	return (
+		result.code === 3 &&
+		result.failure !== "timeout" &&
+		result.stderr.trim() === `Error: block target "${block}" not found`
+	);
+}
+function runRex(run: Runner, server: string, anchor: string, script: string, args: object): Promise<RunResult> {
 	const env = { ...process.env };
 	for (const key of Object.keys(env)) if (key.startsWith("REX_")) delete env[key];
 	return run(
@@ -277,8 +293,8 @@ function runRex(run: Runner, server: string, sessionId: string, script: string, 
 			"--timeout=3s",
 			`--server=${server}`,
 			"do",
-			"--session",
-			sessionId,
+			"--block",
+			anchor,
 			"-e",
 			script,
 			"--args",
@@ -296,7 +312,7 @@ export async function splitPane(
 	request = parsePaneRequest(JSON.stringify(request));
 	const exact = request.origin?.exact;
 	if (!exact) return result("unavailable", "No verified invoking terminal is available. No pane was created.");
-	if (!matchesOrigin(env, exact.server, exact.sessionId, exact.blockId))
+	if (!matchesOrigin(env, exact.server, exact.blockId))
 		return result("stale", "The inherited terminal differs from the captured origin. No pane was created.");
 	// The program learns which content of the window lies over its pane from Rex's layout, as panes that rex_terminal creates do.
 	const argv = withPaneStacking(request.argv, paneStackingCommand(exact.server, env));
@@ -306,7 +322,7 @@ export async function splitPane(
 	const label = request.label ?? DEFAULT_LABEL;
 	let child: RunResult;
 	try {
-		child = await runRex(run, exact.server, exact.sessionId, splitScript, {
+		child = await runRex(run, exact.server, exact.blockId, splitScript, {
 			...exact,
 			argv,
 			cwd: request.cwd,
@@ -319,6 +335,8 @@ export async function splitPane(
 	}
 	if (child.failure === "missing")
 		return result("unavailable", "The trusted Rex program is missing. No pane was created.");
+	if (blockGone(child, exact.blockId))
+		return result("stale", "The invoking terminal block no longer exists. No pane was created.");
 	if (child.failure || child.code !== 0 || Buffer.byteLength(child.stdout) > 32768)
 		return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically.");
 	return readResult(child.stdout, exact, direction);
@@ -338,7 +356,6 @@ function readResult(stdout: string, exact: NonNullable<TerminalOrigin["exact"]>,
 			r?.server === exact.server &&
 			r.hostId === exact.hostId &&
 			r.instanceId === exact.instanceId &&
-			r.sessionId === exact.sessionId &&
 			r.anchorId === exact.blockId &&
 			r.direction === direction
 				? r
@@ -360,11 +377,12 @@ export async function resizePane(
 		outcome,
 		detail,
 	});
-	if (!matchesOrigin(env, receipt.server, receipt.sessionId, receipt.anchorId))
+	if (!matchesOrigin(env, receipt.server, receipt.anchorId))
 		return response("stale", "The inherited terminal differs from the receipt anchor.");
 	try {
-		const child = await runRex(run, receipt.server, receipt.sessionId, resizeScript, { ...receipt, ratio: 1 - share });
+		const child = await runRex(run, receipt.server, receipt.anchorId, resizeScript, { ...receipt, ratio: 1 - share });
 		if (child.failure === "missing") return response("unavailable", "The trusted Rex program is missing.");
+		if (blockGone(child, receipt.anchorId)) return response("stale", "The receipt anchor no longer exists.");
 		if (!child.failure && child.code === 0 && Buffer.byteLength(child.stdout) <= 32768) {
 			const { outcome, detail } = JSON.parse(child.stdout) as PaneResizeResult;
 			if (
@@ -391,11 +409,12 @@ export async function focusPane(
 		outcome,
 		detail,
 	});
-	if (!matchesOrigin(env, receipt.server, receipt.sessionId, receipt.anchorId))
+	if (!matchesOrigin(env, receipt.server, receipt.anchorId))
 		return response("stale", "The inherited terminal differs from the receipt anchor.");
 	try {
-		const child = await runRex(run, receipt.server, receipt.sessionId, focusScript, receipt);
+		const child = await runRex(run, receipt.server, receipt.anchorId, focusScript, receipt);
 		if (child.failure === "missing") return response("unavailable", "The trusted Rex program is missing.");
+		if (blockGone(child, receipt.anchorId)) return response("stale", "The receipt anchor no longer exists.");
 		if (!child.failure && child.code === 0 && Buffer.byteLength(child.stdout) <= 32768) {
 			const { outcome, detail } = JSON.parse(child.stdout) as PaneFocusResult;
 			if (

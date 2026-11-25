@@ -513,7 +513,6 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 	}
 });
 
-const paneSession = "session:11111111-1111-4111-8111-111111111111";
 const paneBlock = "block:33333333-3333-4333-8333-333333333333";
 const hostEnv = {
 	PATH: "/bin",
@@ -530,14 +529,13 @@ test("a native conversation inherits the registered pane of its storage's ordina
 			agentDir,
 			sessionId: "ordinary",
 			pid: 4242,
-			pane: { server: "unix:///pane.sock", session: paneSession, block: paneBlock },
+			pane: { server: "unix:///pane.sock", block: paneBlock },
 			alive: () => true,
 		});
 		const known = durableLaunch({ agentDir, ordinarySession: () => "ordinary" }, hostEnv, () => true);
 		assert.deepEqual(known.env, {
 			PATH: "/bin",
 			REX_SERVER: "unix:///pane.sock",
-			REX_SESSION: paneSession,
 			REX_BLOCK: paneBlock,
 		});
 		assert.match(known.launch.description, /pane of ordinary Pi session ordinary/);
@@ -635,7 +633,7 @@ test("each native tool call builds its core from the current ordinary pane", { t
 			agentDir,
 			sessionId: "ordinary",
 			pid: process.pid,
-			pane: { session: paneSession, block: paneBlock },
+			pane: { block: paneBlock },
 			alive: () => true,
 		});
 		await run();

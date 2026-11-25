@@ -321,9 +321,10 @@ class Keeper implements ConversationKeeper {
 	 * lose to the move. A change of the window's focus during the decision stops it.
 	 */
 	private async place(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal): Promise<void> {
-		const sessionId = this.env.REX_SESSION;
 		const blockId = this.env.REX_BLOCK;
-		if (ctx.mode !== "tui" || !sessionId || !blockId) return;
+		if (ctx.mode !== "tui" || !blockId) return;
+		const sessionId = await this.holder(ctx, transport, signal, blockId);
+		if (!sessionId) return;
 		const block = { session_id: sessionId, block_id: blockId, args: {} };
 		const processes = object(await this.api(ctx, transport, signal, "com.superlogical.terminal.process", block));
 		if (object(processes.foreground).pid !== this.pid) return;
@@ -357,6 +358,24 @@ class Keeper implements ConversationKeeper {
 				unconfirmed = attempt;
 			}
 		}
+	}
+
+	/**
+	 * The session that holds the conversation's block now: a block keeps its ID when its tab moves to another session.
+	 * A lookup without a caller context searches every session.
+	 */
+	private async holder(
+		ctx: ExtensionContext,
+		transport: RexTransport,
+		signal: AbortSignal,
+		blockId: string,
+	): Promise<string | undefined> {
+		const found = object(
+			await this.api(ctx, transport, signal, "target.resolve", { kinds: ["block"], queries: [blockId] }),
+		);
+		const entry = object(Array.isArray(found.results) ? found.results[0] : undefined);
+		const session = object(entry.target).session_id;
+		return entry.status === "resolved" && typeof session === "string" && session ? session : undefined;
 	}
 
 	/** Settles the waiting panes that this view decides, and returns the first covering pane not yet attempted. */

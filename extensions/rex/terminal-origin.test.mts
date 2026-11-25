@@ -18,15 +18,15 @@ const instanceId = "00000000-0000-0000-0000-000000000002";
 const sessionId = "session:00000000-0000-0000-0000-000000000003";
 const blockId = "block:00000000-0000-0000-0000-000000000004";
 const server = "unix:///synthetic/rex.sock";
-const env = { REX_SERVER: server, REX_SESSION: sessionId, REX_BLOCK: blockId };
-const exact = { server, hostId, instanceId, sessionId, blockId };
+const env = { REX_SERVER: server, REX_BLOCK: blockId };
+const exact = { server, hostId, instanceId, blockId };
 const origin: TerminalOrigin = {
 	version: 1,
 	terminal: "Rex",
 	application: { bundleId: "com.superlogical.rex" },
 	exact,
 };
-const snapshot = { hostId, instanceId, sessionId, placed: true };
+const snapshot = { hostId, instanceId, placed: true };
 function reply(value: unknown): RunResult {
 	return { code: 0, stdout: JSON.stringify(value), stderr: "" };
 }
@@ -45,11 +45,16 @@ test("capture returns null without a Rex terminal environment and never invokes 
 	const f = fake();
 	assert.equal(await captureOrigin({}, f.run), null);
 	assert.equal(await captureOrigin({ REX_BIN_DIR: "/untrusted" }, f.run), null);
+	assert.equal(
+		await captureOrigin({ REX_SESSION: sessionId }, f.run),
+		null,
+		"a launch session without a server or block names no Rex terminal",
+	);
 	assert.equal(f.calls.length, 0);
 });
 
 test("partial or invalid launch hints retain only the Rex application", async () => {
-	for (const partial of [{ REX_SERVER: server }, { REX_SESSION: sessionId }, { ...env, REX_BLOCK: "label" }]) {
+	for (const partial of [{ REX_SERVER: server }, { REX_BLOCK: blockId }, { ...env, REX_BLOCK: "label" }]) {
 		const f = fake();
 		assert.deepEqual(await captureOrigin(partial, f.run), {
 			version: 1,
@@ -63,7 +68,10 @@ test("partial or invalid launch hints retain only the Rex application", async ()
 test("complete capture records confirmed host and instance, not ambient executable or focus", async () => {
 	const f = fake(reply(snapshot));
 	assert.deepEqual(
-		await captureOrigin({ ...env, REX_BIN_DIR: "/untrusted", REX_CLIENT: "client:wrong" }, f.run),
+		await captureOrigin(
+			{ ...env, REX_SESSION: sessionId, REX_BIN_DIR: "/untrusted", REX_CLIENT: "client:wrong" },
+			f.run,
+		),
 		origin,
 	);
 	assert.equal(f.calls.length, 1);
@@ -74,11 +82,12 @@ test("complete capture records confirmed host and instance, not ambient executab
 		/Library\/Application Support\/com\.superlogical\.rex\/RexServer\/Versions\/Current\/Rex Server\.app\/Contents\/MacOS\/rex$/,
 	);
 	assert.ok(call.args.includes(`--server=${server}`));
-	assert.ok(call.args.includes(sessionId));
+	assert.ok(!call.args.includes("--session"), "the block names its session wherever its tab is");
+	assert.equal(call.args[call.args.indexOf("--block") + 1], blockId);
 	assert.equal(call.options.timeout, 3000);
 	assert.equal(call.options.maxBuffer, 32768);
 	assert.ok(Object.keys(call.options.env).every((key) => !key.startsWith("REX_")));
-	assert.deepEqual(JSON.parse(call.args[call.args.indexOf("--args") + 1]), { sessionId, blockId });
+	assert.deepEqual(JSON.parse(call.args[call.args.indexOf("--args") + 1]), { blockId });
 });
 
 test("unreachable, incomplete, mismatched or unplaced captures retain the application only", async () => {
@@ -88,8 +97,9 @@ test("unreachable, incomplete, mismatched or unplaced captures retain the applic
 		{ code: null, stdout: "", stderr: "", failure: "timeout" as const },
 		reply({ ...snapshot, hostId: undefined }),
 		reply({ ...snapshot, instanceId: "invalid" }),
-		reply({ ...snapshot, sessionId: "session:00000000-0000-0000-0000-000000000005" }),
 		reply({ ...snapshot, placed: false }),
+		reply({ outcome: "stale", detail: "Rex terminal block is gone or detached." }),
+		{ code: 3, stdout: "", stderr: `Error: block target "${blockId}" not found\n`, failure: "failed" as const },
 		{ code: 0, stdout: "not json", stderr: "" },
 	]) {
 		const f = fake(result);
@@ -108,15 +118,19 @@ test("focus validates the exact record and uses a second identity-guarded mutati
 	assert.deepEqual(JSON.parse(args[args.indexOf("--args") + 1]), { ...exact, focus: true });
 	const script = String(args[args.indexOf("-e") + 1]);
 	assert.ok(script.indexOf("s.instance_id ~= a.instanceId") < script.indexOf('rex.call("session.focus_block"'));
-	assert.ok(script.includes("v.session_id ~= a.sessionId or not placed"));
+	assert.ok(script.includes("local session = rex.session_id"));
+	assert.ok(
+		script.includes('rex.call("session.focus_block", {session_id=session, block_id=a.blockId})'),
+		"focus selects the block in the session that holds it at the time of the call",
+	);
+	assert.ok(f.calls.every((call) => call.args[call.args.indexOf("--block") + 1] === blockId));
 	assert.ok(!script.includes("client."));
 });
 
-test("changed server host or instance, session gone and block gone/detached are stale without focus", async () => {
+test("changed server host or instance and block gone or detached are stale without focus", async () => {
 	for (const value of [
 		{ ...snapshot, hostId: "00000000-0000-0000-0000-000000000006" },
 		{ ...snapshot, instanceId: "00000000-0000-0000-0000-000000000006" },
-		{ ...snapshot, sessionId: "session:00000000-0000-0000-0000-000000000006" },
 		{ ...snapshot, placed: false },
 		{ outcome: "stale", detail: "Rex terminal block is gone or detached." },
 	]) {
@@ -124,13 +138,8 @@ test("changed server host or instance, session gone and block gone/detached are 
 		assert.equal((await focusOrigin(origin, f.run)).outcome, "stale");
 		assert.equal(f.calls.length, 1);
 	}
-	const f = fake({
-		code: 3,
-		stdout: "",
-		stderr: `Error: session target "${sessionId}" not found\n`,
-		failure: "failed",
-	});
-	assert.equal((await focusOrigin(origin, f.run)).outcome, "stale");
+	const f = fake({ code: 3, stdout: "", stderr: `Error: block target "${blockId}" not found\n`, failure: "failed" });
+	assert.equal((await focusOrigin(origin, f.run)).outcome, "stale", "Rex finds no session that holds the block");
 	assert.equal(f.calls.length, 1);
 });
 
@@ -172,6 +181,7 @@ test("stdin rejects malformed data, controls, oversized input and executable fie
 		JSON.stringify({ ...origin, application: { bundleId: "untrusted.application" } }),
 		JSON.stringify({ ...origin, exact: { ...exact, executable: "/untrusted/rex" } }),
 		JSON.stringify({ ...origin, exact: { ...exact, blockId: "label" } }),
+		JSON.stringify({ ...origin, exact: { ...exact, sessionId } }),
 		JSON.stringify({ ...origin, exact: { ...exact, server: "unix:///path\ncommand" } }),
 		Buffer.from([0xff]),
 	]) {

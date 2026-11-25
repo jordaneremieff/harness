@@ -49,7 +49,8 @@ ends the command when it stops using the information.
 
 While its standard input stays open, the command keeps reporting through
 interruptions of its own connection to the terminal application: it connects
-again and writes a fresh report once it has one.
+again and writes a fresh report once it has one. It follows the pane when the
+terminal application moves the pane's tab to another session.
 
 The command writes UTF-8 lines to standard output. Each line holds one JSON
 object of at most 16 KiB. It writes a line when it starts and again whenever the

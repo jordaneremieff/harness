@@ -82,7 +82,10 @@ test("rectangles clamp to fractions, unknown layers act as floating, and coverag
 	}
 });
 
-async function helperFixture(t: test.TestContext, options: { failures?: number; eventExitCode?: number } = {}) {
+async function helperFixture(
+	t: test.TestContext,
+	options: { failures?: number; eventExitCode?: number; session?: string | null } = {},
+) {
 	const root = await mkdtemp(join(tmpdir(), "rex-stacking-"));
 	const sockets = new Set<Socket>();
 	let events!: Socket;
@@ -91,27 +94,53 @@ async function helperFixture(t: test.TestContext, options: { failures?: number; 
 		connected = resolve;
 	});
 	const calls: string[][] = [];
-	const state = { view: view(), hold: false, pending: [] as Socket[], failures: options.failures ?? 0 };
+	const lookups: string[][] = [];
+	const streams: string[][] = [];
+	const state = {
+		view: view(),
+		/** The session that holds block `pane`; null when no open block has its ID. */
+		session: options.session === undefined ? "session:test" : options.session,
+		/** Views of other sessions, by session ID. */
+		views: new Map<string, unknown>(),
+		hold: false,
+		pending: [] as Socket[],
+		failures: options.failures ?? 0,
+	};
 	const server = createServer((socket) => {
 		sockets.add(socket);
 		socket.once("close", () => sockets.delete(socket));
 		socket.once("data", (data) => {
-			const message = JSON.parse(data.toString());
-			if (message.kind === "events") {
-				events = socket;
-				connected();
-				server.emit("events", socket);
-			} else {
-				calls.push(message.args);
-				if (state.hold) state.pending.push(socket);
-				else if (state.failures > 0) {
-					state.failures -= 1;
-					socket.end("not a view");
-				} else socket.end(JSON.stringify(state.view));
-				server.emit("view");
-			}
+			const { kind, args } = JSON.parse(data.toString()) as { kind: string; args: string[] };
+			if (kind === "events") stream(socket, args);
+			else if (args.includes("target.resolve")) lookup(socket, args);
+			else answerView(socket, args);
 		});
 	});
+	const stream = (socket: Socket, args: string[]) => {
+		streams.push(args);
+		events = socket;
+		connected();
+		server.emit("events", socket);
+	};
+	const lookup = (socket: Socket, args: string[]) => {
+		lookups.push(args);
+		const result =
+			state.session === null
+				? { status: "not_found", target: null }
+				: { status: "resolved", target: { kind: "block", block_id: "pane", session_id: state.session } };
+		socket.end(JSON.stringify({ results: [result] }));
+		server.emit("lookup");
+	};
+	const answerView = (socket: Socket, args: string[]) => {
+		calls.push(args);
+		const session = JSON.parse(args.at(-1) ?? "{}").session_id as string;
+		if (state.hold) state.pending.push(socket);
+		else if (state.failures > 0) {
+			state.failures -= 1;
+			socket.end("not a view");
+		} else socket.end(JSON.stringify(state.views.get(session) ?? state.view));
+		server.emit("view");
+	};
 	const socketPath = join(root, "control.sock");
 	server.listen(socketPath);
 	await once(server, "listening");
@@ -130,7 +159,7 @@ socket.on('end', () => process.exit(streaming ? ${options.eventExitCode ?? 0} : 
 	const child = spawn(process.execPath, [fileURLToPath(new URL("./pane-stacking.mts", import.meta.url))], {
 		env: {
 			...process.env,
-			REX_SESSION: "session:test",
+			REX_SESSION: "session:launch",
 			REX_BLOCK: "pane",
 			REX_SERVER: "unix:///test",
 			REX_BIN_DIR: root,
@@ -153,12 +182,16 @@ socket.on('end', () => process.exit(streaming ? ${options.eventExitCode ?? 0} : 
 		await closed;
 		await rm(root, { recursive: true, force: true });
 	});
-	await ready;
-	if (!output.length) await once(lines, "line");
+	if (state.session !== null) {
+		await ready;
+		if (!output.length) await once(lines, "line");
+	}
 	return {
 		root,
 		state,
 		calls,
+		lookups,
+		streams,
 		output,
 		get events() {
 			return events;
@@ -181,6 +214,21 @@ test("helper emits only changed reports, ignores old revisions and exits on stdi
 }, async (t) => {
 	const f = await helperFixture(t);
 	assert.deepEqual(JSON.parse(f.output[0] ?? ""), paneStacking(f.state.view, "pane"));
+	assert.deepEqual(f.lookups[0], [
+		"--autostart=false",
+		"--color=never",
+		"--server",
+		"unix:///test",
+		"api",
+		"call",
+		"target.resolve",
+		'{"kinds":["block"],"queries":["pane"]}',
+	]);
+	assert.deepEqual(
+		f.streams[0]?.slice(-4),
+		["events", "-s", "session:test", "--json"],
+		"the stream watches the session that holds the block, not the launch session",
+	);
 	assert.deepEqual(f.calls[0], [
 		"--autostart=false",
 		"--color=never",
@@ -347,4 +395,55 @@ test("helper skips an oversized event line and cancels an active view on stdin E
 	second.child.stdin.end();
 	assert.deepEqual(await second.closed, [0, null]);
 	await disconnected;
+});
+
+test("helper follows its block to the session that holds it after its tab moves", { timeout: 10000 }, async (t) => {
+	const f = await helperFixture(t);
+	const moved = { ...view([layer("pane", overlap, "tiled")]), revision: 1 };
+	f.state.views.set("session:moved", moved);
+	f.state.session = "session:moved";
+	f.state.view = { ...view([layer("other", full, "tiled")]), revision: 2 };
+	const followed = once(f.server, "events");
+	const report = once(f.lines, "line");
+	f.event(2);
+	await followed;
+	await report;
+	assert.deepEqual(f.streams.at(-1)?.slice(-4), ["events", "-s", "session:moved", "--json"]);
+	assert.deepEqual(JSON.parse(f.output.at(-1) ?? ""), paneStacking(moved, "pane"));
+	assert.equal(
+		f.output.some((line) => JSON.parse(line).pane === null),
+		false,
+		"a moved pane is followed, not reported as gone",
+	);
+	assert.deepEqual(JSON.parse(f.calls.at(-1)?.at(-1) ?? "{}"), { session_id: "session:moved" });
+	f.child.stdin.end();
+	assert.deepEqual(await f.closed, [0, null]);
+	assert.equal(f.stderr(), "");
+});
+
+test("a detached block stays in its session and reports no pane", { timeout: 10000 }, async (t) => {
+	const f = await helperFixture(t);
+	f.state.view = { ...view([layer("other", full, "tiled")]), revision: 2 };
+	const report = once(f.lines, "line");
+	f.event(2);
+	await report;
+	assert.deepEqual(JSON.parse(f.output.at(-1) ?? ""), { version: 1, pane: null });
+	assert.equal(f.streams.length, 1, "the stream stays on the session that still holds the block");
+	f.child.stdin.end();
+	assert.deepEqual(await f.closed, [0, null]);
+});
+
+test("a block that no session holds reports no pane until Rex finds it", { timeout: 10000 }, async (t) => {
+	const f = await helperFixture(t, { session: null });
+	await once(f.lines, "line");
+	assert.deepEqual(JSON.parse(f.output[0] ?? ""), { version: 1, pane: null });
+	assert.equal(f.streams.length, 0);
+	f.state.session = "session:test";
+	const connected = once(f.server, "events");
+	const report = once(f.lines, "line");
+	await connected;
+	await report;
+	assert.deepEqual(JSON.parse(f.output.at(-1) ?? ""), paneStacking(f.state.view, "pane"));
+	f.child.stdin.end();
+	assert.deepEqual(await f.closed, [0, null]);
 });

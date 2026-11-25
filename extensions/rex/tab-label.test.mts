@@ -72,6 +72,8 @@ class FakeTransport implements RexTransport {
 	windowId = WINDOW_ID;
 	extraBlocks = 0;
 	failWhoami = false;
+	/** The session that holds the block; null when no open block has its ID. */
+	session: string | null = "session:test";
 	disposals = 0;
 	onMethod: ((method: string) => void | Promise<void>) | undefined;
 	readonly env: NodeJS.ProcessEnv;
@@ -99,6 +101,14 @@ class FakeTransport implements RexTransport {
 		await this.onMethod?.(method);
 		if (call.signal?.aborted) return { ...response({}), outcome: "cancelled", exitCode: null };
 		if (method === "whoami") return this.whoami();
+		if (method === "target.resolve")
+			return response({
+				results: [
+					this.session === null
+						? { status: "not_found", target: null }
+						: { status: "resolved", target: { kind: "block", block_id: this.env.REX_BLOCK, session_id: this.session } },
+				],
+			});
 		if (method === "com.superlogical.terminal.process")
 			return response({ foreground: { pid: this.processPid }, last_exit: null });
 		if (method === "session.view") return this.view();
@@ -118,7 +128,7 @@ class FakeTransport implements RexTransport {
 		];
 		return response({
 			revision: 1,
-			session_id: this.env.REX_SESSION,
+			session_id: this.session,
 			windows: [{ window_id: this.windowId, label: this.tab.label, layers: [{ blocks }] }],
 		});
 	}
@@ -169,7 +179,6 @@ async function fixture(
 	const agentDir = await mkdtemp(join(tmpdir(), "rex-tab-label-"));
 	const env: NodeJS.ProcessEnv = {
 		REX_SERVER: "unix:///launch",
-		REX_SESSION: "session:test",
 		...(options.block === false ? {} : { REX_BLOCK: "block:test" }),
 	};
 	const transport = new FakeTransport(env, options.tab);
@@ -454,7 +463,7 @@ test("default and recorded automatic labels accept updates and repeated input ob
 	await f.projector.idle();
 	assert.deepEqual(
 		f.transport.calls.slice(settledCalls).map((call) => call.method),
-		["whoami", "com.superlogical.terminal.process", "session.view"],
+		["whoami", "target.resolve", "com.superlogical.terminal.process", "session.view"],
 	);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 
@@ -478,10 +487,10 @@ test("default and recorded automatic labels accept updates and repeated input ob
 	assert.deepEqual(f.transport.writes, ["fallback", "Named", "Latest"]);
 });
 
-const CHECKS = ["whoami", "com.superlogical.terminal.process", "session.view"];
+const CHECKS = ["whoami", "target.resolve", "com.superlogical.terminal.process", "session.view"];
 const WRITE_CHECKS = [...CHECKS, ...CHECKS, "session.set_window_label"];
 
-test("an unchanged name event launches no process and every input keeps three fresh checks", async (t) => {
+test("an unchanged name event launches no process and every input keeps four fresh checks", async (t) => {
 	const f = await fixture(t);
 	f.projector.start(f.ctx);
 	await f.projector.idle();
@@ -592,7 +601,7 @@ test("an input during a gated foreground query receives its own observation pass
 	await f.projector.idle();
 	assert.deepEqual(
 		f.transport.calls.map((call) => call.method),
-		["whoami", "com.superlogical.terminal.process", ...WRITE_CHECKS],
+		["whoami", "target.resolve", "com.superlogical.terminal.process", ...WRITE_CHECKS],
 	);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 });
@@ -650,7 +659,7 @@ test("a name change during a gated foreground query receives its own observation
 	await f.projector.idle();
 	assert.deepEqual(
 		f.transport.calls.map((call) => call.method),
-		["whoami", "com.superlogical.terminal.process", ...WRITE_CHECKS],
+		["whoami", "target.resolve", "com.superlogical.terminal.process", ...WRITE_CHECKS],
 	);
 	assert.deepEqual(f.transport.writes, ["Named"]);
 });
@@ -876,9 +885,9 @@ const attachmentChanges: readonly [string, (f: Awaited<ReturnType<typeof fixture
 		},
 	],
 	[
-		"a different inherited session",
+		"a move of the tab to another session",
 		(f) => {
-			f.env.REX_SESSION = "session:other";
+			f.transport.session = "session:other";
 		},
 	],
 	[
@@ -1331,7 +1340,7 @@ test("a fresh factory in the same pane updates the recorded label", async (t) =>
 test("record pruning retains the configured bound", async (t) => {
 	const first = await fixture(t, { maxRecords: 3 });
 	for (let index = 0; index < 5; index++) {
-		const env: NodeJS.ProcessEnv = { REX_SESSION: "session:test", REX_BLOCK: `block:${index}` };
+		const env: NodeJS.ProcessEnv = { REX_BLOCK: `block:${index}` };
 		const transport = new FakeTransport(env);
 		const projector = createTabLabelProjector({
 			agentDir: first.agentDir,
@@ -1451,7 +1460,7 @@ interface ChildProjector {
 /** Starts a real projector in a child process and stops it when the test ends. */
 async function startChildProjector(t: TestContext, prefix: string, name: string): Promise<ChildProjector> {
 	const agentDir = await mkdtemp(join(tmpdir(), prefix));
-	const env: NodeJS.ProcessEnv = { REX_SERVER: "unix:///launch", REX_SESSION: "session:test", REX_BLOCK: "block:test" };
+	const env: NodeJS.ProcessEnv = { REX_SERVER: "unix:///launch", REX_BLOCK: "block:test" };
 	const child = spawn(process.execPath, [join(import.meta.dirname, "tab-label-process-fixture.mts"), agentDir, name], {
 		env: { ...process.env, ...env },
 		stdio: ["pipe", "pipe", "pipe"],
@@ -1715,4 +1724,34 @@ test("an unlocked lock file left by a dead holder does not block an update", asy
 	const [record] = await recordFiles(f.agentDir);
 	assert.equal(record?.label, "Second");
 	assert.deepEqual(await lockFiles(f.agentDir), []);
+});
+
+test("the label goes to the tab in the session that holds the block, not the launch session", async (t) => {
+	const f = await fixture(t);
+	f.env.REX_SESSION = "session:launch";
+	f.transport.session = "session:moved";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["fallback"]);
+	const lookup = f.transport.calls.find((call) => call.method === "target.resolve");
+	assert.deepEqual(JSON.parse(lookup?.args.at(-1) ?? "{}"), { kinds: ["block"], queries: ["block:test"] });
+	for (const method of ["com.superlogical.terminal.process", "session.view", "session.set_window_label"]) {
+		const call = f.transport.calls.find((candidate) => candidate.method === method);
+		assert.equal(JSON.parse(call?.args.at(-1) ?? "{}").session_id, "session:moved", method);
+	}
+	const [record] = await recordFiles(f.agentDir);
+	assert.equal(record?.sessionId, "session:moved");
+});
+
+test("a block that no session holds labels nothing", async (t) => {
+	const f = await fixture(t);
+	f.transport.session = null;
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(
+		f.transport.calls.map((call) => call.method),
+		["whoami", "target.resolve"],
+	);
+	assert.deepEqual(f.transport.writes, []);
+	assert.deepEqual(f.notices, []);
 });

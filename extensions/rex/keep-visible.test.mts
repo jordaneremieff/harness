@@ -193,6 +193,8 @@ class FakeRex implements RexTransport {
 	zoomed: string | undefined;
 	focus = CONVERSATION;
 	failViews = 0;
+	/** The session that holds the conversation's block; null when no open block has its ID. */
+	session: string | null = "session:test";
 	/** Per block: `exit` refuses the move; `timeout` applies it but reports no answer. */
 	moveFailures = new Map<string, ("exit" | "timeout")[]>();
 	/** Holds a call before Rex answers it; the hook may change the session meanwhile. */
@@ -225,6 +227,14 @@ class FakeRex implements RexTransport {
 		const input = JSON.parse(args.at(-1) ?? "{}") as Record<string, unknown>;
 		this.calls.push({ method, args: input });
 		await this.hold?.(method);
+		if (method === "target.resolve")
+			return reply({
+				results: [
+					this.session === null
+						? { status: "not_found", target: null }
+						: { status: "resolved", target: { kind: "block", block_id: CONVERSATION, session_id: this.session } },
+				],
+			});
 		if (method === "com.superlogical.terminal.process") return reply({ foreground: { pid: this.foreground } });
 		if (method === "com.superlogical.terminal.size")
 			return reply({ columns: 137, rows: 63, cell_width_px: 18, cell_height_px: 35 });
@@ -294,7 +304,8 @@ function context(mode = "tui") {
 	return { ctx, notices };
 }
 
-const ENV = { REX_SESSION: "session:test", REX_BLOCK: CONVERSATION };
+// A launch session can name a session that no longer holds the conversation's block.
+const ENV = { REX_SESSION: "session:launch", REX_BLOCK: CONVERSATION };
 const SETTINGS = { executable: "rex", maxOutputBytes: 65536, maxWaitMs: 1000 };
 const READER = [0.1, 0.1, 0.8, 0.8];
 const PROBE = [0.1, 0.55, 0.3, 0.3];
@@ -343,6 +354,7 @@ test("covering panes move beside the conversation, one decision after another", 
 	assert.deepEqual(
 		order,
 		[
+			"target.resolve",
 			"com.superlogical.terminal.process",
 			"com.superlogical.terminal.size",
 			"session.view",
@@ -667,4 +679,32 @@ test("panes floated before a session switch belong to the old session", async ()
 	await decide(keeper, ctx);
 	assert.deepEqual(rex.calls, []);
 	await keeper.shutdown();
+});
+
+test("the conversation's block names its session; a block that no session holds moves nothing", async () => {
+	const rex = new FakeRex([["block:reader", READER]]);
+	rex.session = "session:moved";
+	const keeper = keeperFor(rex);
+	const { ctx } = context();
+	keeper.start(ctx);
+	keeper.floated([{ blockId: "block:reader", bounds: READER }]);
+	await decide(keeper, ctx);
+	assert.deepEqual(rex.calls[0], { method: "target.resolve", args: { kinds: ["block"], queries: [CONVERSATION] } });
+	assert.deepEqual(
+		rex.moves().map((move) => move.session_id),
+		["session:moved"],
+		"the move acts in the session that holds the conversation now",
+	);
+	await keeper.shutdown();
+	const gone = new FakeRex([["block:reader", READER]]);
+	gone.session = null;
+	const second = keeperFor(gone);
+	second.start(ctx);
+	second.floated([{ blockId: "block:reader", bounds: READER }]);
+	await decide(second, ctx);
+	assert.deepEqual(
+		gone.calls.map((call) => call.method),
+		["target.resolve"],
+	);
+	await second.shutdown();
 });

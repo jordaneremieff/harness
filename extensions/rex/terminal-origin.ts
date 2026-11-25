@@ -7,7 +7,7 @@ export type TerminalOrigin = {
 	version: 1;
 	terminal: "Rex";
 	application: { bundleId: "com.superlogical.rex" };
-	exact?: { server: string; hostId: string; instanceId: string; sessionId: string; blockId: string };
+	exact?: { server: string; hostId: string; instanceId: string; blockId: string };
 };
 export type FocusResult = { outcome: "focused" | "stale" | "unavailable"; detail: string };
 export type RunResult = {
@@ -26,7 +26,9 @@ const inputLimit = 16384;
 const childLimit = 32768;
 const childTimeout = 3000;
 
-// The mutation checks the identity on the same connection that performs the focus.
+// The mutation checks the identity on the same connection that performs the focus. The block is the target: it keeps
+// its ID when its tab moves to another session, so each call runs with --block, and Rex attaches the call to the
+// session that holds the block at that time.
 const snapshotScript = `
 local a = rex.args
 local s, se = rex.call("server.status")
@@ -34,13 +36,10 @@ if not s then return {outcome="unavailable", detail="Rex server identity is unav
 if a.hostId and (s.host_id ~= a.hostId or s.instance_id ~= a.instanceId) then
   return {outcome="stale", detail="Rex server host or instance changed."}
 end
-local v, ve = rex.call("session.view", {session_id=a.sessionId})
-if not v then
-  if ve and string.find(ve, "code=session_not_found", 1, true) then
-    return {outcome="stale", detail="Rex session no longer exists."}
-  end
-  return {outcome="unavailable", detail="Rex session view is unavailable."}
-end
+local session = rex.session_id
+if type(session) ~= "string" then return {outcome="unavailable", detail="Rex session of the block is unavailable."} end
+local v = rex.call("session.view", {session_id=session})
+if not v then return {outcome="unavailable", detail="Rex session view is unavailable."} end
 local placed = false
 for _, w in ipairs(v.windows or {}) do
   if w.window_id then
@@ -52,10 +51,10 @@ for _, w in ipairs(v.windows or {}) do
   end
 end
 if a.focus then
-  if v.session_id ~= a.sessionId or not placed then
+  if not placed then
     return {outcome="stale", detail="Rex terminal block is gone or detached."}
   end
-  local r, e = rex.call("session.focus_block", {session_id=a.sessionId, block_id=a.blockId})
+  local r, e = rex.call("session.focus_block", {session_id=session, block_id=a.blockId})
   if not r then
     if e and (string.find(e, "code=not_found", 1, true) or string.find(e, "code=session_not_found", 1, true)) then
       return {outcome="stale", detail="Rex target disappeared before focus."}
@@ -67,7 +66,7 @@ if a.focus then
   end
   return {outcome="focused", detail="Rex selected the terminal block; client and Mac window are not verified."}
 end
-return {hostId=s.host_id, instanceId=s.instance_id, sessionId=v.session_id, placed=placed}
+return {hostId=s.host_id, instanceId=s.instance_id, placed=placed}
 `;
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -112,11 +111,10 @@ function validEnvelope(value: unknown): value is Record<string, unknown> {
 function validExact(value: unknown): value is NonNullable<TerminalOrigin["exact"]> {
 	return (
 		record(value) &&
-		onlyKeys(value, ["server", "hostId", "instanceId", "sessionId", "blockId"]) &&
+		onlyKeys(value, ["server", "hostId", "instanceId", "blockId"]) &&
 		text(value.server) &&
 		id(value.hostId, "") &&
 		id(value.instanceId, "") &&
-		id(value.sessionId, "session:") &&
 		id(value.blockId, "block:")
 	);
 }
@@ -145,12 +143,7 @@ function childEnvironment(): NodeJS.ProcessEnv {
 	for (const key of Object.keys(env)) if (key.startsWith("REX_")) delete env[key];
 	return env;
 }
-async function invoke(
-	server: string,
-	sessionId: string,
-	args: Record<string, unknown>,
-	run: Runner,
-): Promise<RunResult> {
+async function invoke(server: string, blockId: string, args: Record<string, unknown>, run: Runner): Promise<RunResult> {
 	try {
 		return await run(
 			trustedRexExecutable(),
@@ -160,8 +153,8 @@ async function invoke(
 				"--timeout=2s",
 				`--server=${server}`,
 				"do",
-				"--session",
-				sessionId,
+				"--block",
+				blockId,
 				"-e",
 				snapshotScript,
 				"--args",
@@ -182,22 +175,15 @@ function decoded(result: RunResult): unknown {
 		return undefined;
 	}
 }
-function readSnapshot(
-	value: unknown,
-): value is { hostId: string; instanceId: string; sessionId: string; placed: boolean } {
-	return (
-		record(value) &&
-		id(value.hostId, "") &&
-		id(value.instanceId, "") &&
-		id(value.sessionId, "session:") &&
-		typeof value.placed === "boolean"
-	);
+function readSnapshot(value: unknown): value is { hostId: string; instanceId: string; placed: boolean } {
+	return record(value) && id(value.hostId, "") && id(value.instanceId, "") && typeof value.placed === "boolean";
 }
-function sessionGone(result: RunResult, sessionId: string): boolean {
+/** Rex refused to attach the call because no session holds the block any more. */
+function blockGone(result: RunResult, blockId: string): boolean {
 	return (
 		result.code === 3 &&
-		!result.failure?.includes("timeout") &&
-		result.stderr.trim() === `Error: session target "${sessionId}" not found`
+		result.failure !== "timeout" &&
+		result.stderr.trim() === `Error: block target "${blockId}" not found`
 	);
 }
 function unavailable(result: RunResult): FocusResult {
@@ -221,13 +207,13 @@ export async function captureOrigin(
 	env: Readonly<Record<string, string | undefined>> = process.env,
 	run: Runner = runChild,
 ): Promise<TerminalOrigin | null> {
-	const { REX_SERVER: server, REX_SESSION: sessionId, REX_BLOCK: blockId } = env;
-	if (![server, sessionId, blockId].some((value) => value !== undefined)) return null;
+	const { REX_SERVER: server, REX_BLOCK: blockId } = env;
+	if (server === undefined && blockId === undefined) return null;
 	const origin = appOrigin();
-	if (!text(server) || !id(sessionId, "session:") || !id(blockId, "block:")) return origin;
-	const snapshot = decoded(await invoke(server, sessionId, { sessionId, blockId }, run));
-	if (readSnapshot(snapshot) && snapshot.sessionId === sessionId && snapshot.placed) {
-		origin.exact = { server, hostId: snapshot.hostId, instanceId: snapshot.instanceId, sessionId, blockId };
+	if (!text(server) || !id(blockId, "block:")) return origin;
+	const snapshot = decoded(await invoke(server, blockId, { blockId }, run));
+	if (readSnapshot(snapshot) && snapshot.placed) {
+		origin.exact = { server, hostId: snapshot.hostId, instanceId: snapshot.instanceId, blockId };
 	}
 	return origin;
 }
@@ -241,18 +227,16 @@ export async function focusOrigin(origin: TerminalOrigin, run: Runner = runChild
 			outcome: "unavailable",
 			detail: "This origin has no verified terminal block. Return to Rex at application level.",
 		};
-	const result = await invoke(exact.server, exact.sessionId, exact, run);
-	if (sessionGone(result, exact.sessionId)) return { outcome: "stale", detail: "Rex session no longer exists." };
+	const result = await invoke(exact.server, exact.blockId, exact, run);
+	if (blockGone(result, exact.blockId)) return { outcome: "stale", detail: "Rex terminal block no longer exists." };
 	const snapshot = decoded(result);
 	if (!readSnapshot(snapshot)) return focusResult(snapshot) ?? unavailable(result);
 	if (snapshot.hostId !== exact.hostId || snapshot.instanceId !== exact.instanceId) {
 		return { outcome: "stale", detail: "Rex server host or instance changed." };
 	}
-	if (snapshot.sessionId !== exact.sessionId || !snapshot.placed) {
-		return { outcome: "stale", detail: "Rex terminal block is gone or detached." };
-	}
-	const focused = await invoke(exact.server, exact.sessionId, { ...exact, focus: true }, run);
-	if (sessionGone(focused, exact.sessionId)) return { outcome: "stale", detail: "Rex session no longer exists." };
+	if (!snapshot.placed) return { outcome: "stale", detail: "Rex terminal block is gone or detached." };
+	const focused = await invoke(exact.server, exact.blockId, { ...exact, focus: true }, run);
+	if (blockGone(focused, exact.blockId)) return { outcome: "stale", detail: "Rex terminal block no longer exists." };
 	return focusResult(decoded(focused)) ?? unavailable(focused);
 }
 
