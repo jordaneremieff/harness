@@ -246,12 +246,42 @@ const DEFAULT_DELIVERED_LIMIT = 1024;
 /** The refusal of a delivery to a session whose extension reloads; its source keeps the delivery for a retry. */
 export const PRIMARY_RELOADING_REFUSAL = "Primary session is reloading; the delivery stays unacknowledged for a retry";
 /**
- * Whether a failed delivery waits for the next registration: the primary refused as reloading, or its link closed
- * before an answer, as a reload closes the channel a sender holds. After a closed link the outcome is unknown; the
- * receiver admits one source identity once, so a message that did arrive does not arrive twice.
+ * Whether a delivery got no answer from the primary: its link closed, as a reload closes the channel a sender holds,
+ * or the request timed out on a live link. The primary may have taken the message, so its outcome is unknown. A retry
+ * is safe: the receiver admits one source identity once.
  */
-function retriesPrimaryDelivery(error: unknown, connection: PrimaryChannelConnection): boolean {
-	return errorText(error).includes(PRIMARY_RELOADING_REFUSAL) || !connection.connected;
+function unansweredDelivery(error: unknown, connection: PrimaryChannelConnection): boolean {
+	return !connection.connected || (error as { name?: unknown }).name === "TimeoutError";
+}
+
+/**
+ * The failure of a message to an ordinary primary. Without an unanswered attempt every attempt was refused or never
+ * reached the primary, so the message was not delivered. After an unanswered attempt the primary may hold it, so
+ * the failure names its source identity for reconciliation instead of asking for another send.
+ */
+function undeliveredPrimaryMessage(
+	sessionId: string,
+	sourceId: string,
+	cause: string,
+	attempt: { readonly unanswered: boolean },
+): Error {
+	const waited = `${Math.round(PRIMARY_RELOAD_WAIT_MS / 1000)} s`;
+	if (attempt.unanswered) {
+		const then =
+			cause === "ended"
+				? "the session ended"
+				: cause === "deadline"
+					? `it took no message for ${waited}`
+					: `the next attempt failed: ${cause}`;
+		return new Error(
+			`Delivery to primary session ${sessionId} is unconfirmed: a request got no answer before its link closed or its deadline passed, and then ${then}. The session can hold the message under source ID ${sourceId} and place it when it runs. Check the session before you send the message again; a new send is a second message.`,
+		);
+	}
+	if (cause === "ended")
+		return new Error(`Primary session ${sessionId} ended during its reload; the message was not delivered.`);
+	return new Error(
+		`Primary session ${sessionId} took no message for ${waited}: it was reloading or its channel was unreachable. The message was not delivered; send it again after the reload.`,
+	);
 }
 /** How long a message to a reloading ordinary primary waits for its next registration, and between attempts. */
 const PRIMARY_RELOAD_WAIT_MS = 15_000;
@@ -1545,15 +1575,17 @@ export class AgentManager {
 	): Promise<unknown> {
 		if (method !== "submit" && method !== "report")
 			throw new Error("A registered primary accepts messages, not Durable session controls");
+		const sourceId = typeof input.requestId === "string" ? input.requestId : randomUUID();
 		const deadline = Date.now() + PRIMARY_RELOAD_WAIT_MS;
 		const channel = await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root }).catch(
-			(error: unknown) => {
+			async (error: unknown) => {
 				// The record can name a channel that a reload closes before the connection; a live owner publishes the next.
 				if (primaryEndpointStatus(this.options.root, sessionId).state !== "live") throw error;
-				return this.reconnectReloadingPrimary(sessionId, deadline, signal);
+				const next = await this.reconnectReloadingPrimary(sessionId, deadline, signal);
+				if (typeof next === "string") throw undeliveredPrimaryMessage(sessionId, sourceId, next, { unanswered: false });
+				return next;
 			},
 		);
-		const sourceId = typeof input.requestId === "string" ? input.requestId : randomUUID();
 		const origin: DeliveryOrigin = input.origin === "operator" ? "operator" : "model";
 		const sender = this.primaryChannels.get(caller.id)?.info();
 		const name = "name" in caller ? caller.name : sender?.name;
@@ -1601,8 +1633,9 @@ export class AgentManager {
 	/**
 	 * Deliver one message through `channel` and close every connection it used. A reloading primary refuses until
 	 * it registers again, and a reload closes the channel a sender may hold, so the message waits for the next
-	 * registration within a bound; its source identity makes a retry arrive once. An aborted `signal` starts no
-	 * further attempt.
+	 * registration within a bound; its source identity makes a retry arrive once. An attempt that got no answer
+	 * leaves the outcome unknown, and every later failure reports it unconfirmed, not undelivered. An aborted
+	 * `signal` starts no further attempt.
 	 */
 	private async deliverPrimaryMessage(
 		sessionId: string,
@@ -1611,19 +1644,17 @@ export class AgentManager {
 		deadline: number,
 		signal?: AbortSignal,
 	): Promise<void> {
+		const attempt = { unanswered: false };
 		let open: PrimaryChannelConnection | undefined = channel;
 		try {
 			for (let connection = channel; ; ) {
 				signal?.throwIfAborted();
-				try {
-					await connection.deliver(message);
-					return;
-				} catch (error) {
-					if (!retriesPrimaryDelivery(error, connection)) throw error;
-				}
+				if (await this.primaryAttempt(sessionId, connection, message, attempt)) return;
 				open = undefined;
 				await connection.close();
-				connection = await this.reconnectReloadingPrimary(sessionId, deadline, signal);
+				const next = await this.reconnectReloadingPrimary(sessionId, deadline, signal);
+				if (typeof next === "string") throw undeliveredPrimaryMessage(sessionId, message.sourceId, next, attempt);
+				connection = next;
 				open = connection;
 			}
 		} finally {
@@ -1631,18 +1662,39 @@ export class AgentManager {
 		}
 	}
 
-	/** A new connection to a primary that reloads, after a short wait; past the deadline the message is not delivered. */
+	/** One delivery: true when the primary took it, false when it waits for the next registration. */
+	private async primaryAttempt(
+		sessionId: string,
+		connection: PrimaryChannelConnection,
+		message: Parameters<PrimaryChannelConnection["deliver"]>[0],
+		attempt: { unanswered: boolean },
+	): Promise<boolean> {
+		try {
+			await connection.deliver(message);
+			return true;
+		} catch (error) {
+			if (unansweredDelivery(error, connection)) {
+				attempt.unanswered = true;
+				return false;
+			}
+			if (errorText(error).includes(PRIMARY_RELOADING_REFUSAL)) return false;
+			if (!attempt.unanswered) throw error;
+			throw undeliveredPrimaryMessage(sessionId, message.sourceId, errorText(error), attempt);
+		}
+	}
+
+	/**
+	 * A new connection to a primary that reloads, after a short wait. `"ended"` when the session ended, and
+	 * `"deadline"` when no registration took a connection within the bound.
+	 */
 	private async reconnectReloadingPrimary(
 		sessionId: string,
 		deadline: number,
 		signal?: AbortSignal,
-	): Promise<PrimaryChannelConnection> {
+	): Promise<PrimaryChannelConnection | "ended" | "deadline"> {
 		let absent = 0;
 		for (;;) {
-			if (Date.now() >= deadline)
-				throw new Error(
-					`Primary session ${sessionId} took no message for ${Math.round(PRIMARY_RELOAD_WAIT_MS / 1000)} s: it was reloading or its channel was unreachable. The message was not delivered; send it again after the reload.`,
-				);
+			if (Date.now() >= deadline) return "deadline";
 			await delay(PRIMARY_RELOAD_RETRY_MS, undefined, signal === undefined ? undefined : { signal });
 			try {
 				return await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root });
@@ -1651,8 +1703,7 @@ export class AgentManager {
 				// keeps the endpoint published, so a dead owner, or an endpoint absent at two attempts, ended the session.
 				const state = primaryEndpointStatus(this.options.root, sessionId).state;
 				absent = state === "absent" ? absent + 1 : 0;
-				if (state === "dead" || absent >= 2)
-					throw new Error(`Primary session ${sessionId} ended during its reload; the message was not delivered.`);
+				if (state === "dead" || absent >= 2) return "ended";
 			}
 		}
 	}

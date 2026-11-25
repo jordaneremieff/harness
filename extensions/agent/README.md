@@ -2645,11 +2645,15 @@ therefore either refused with nothing stored or accepted. A message from an
 ordinary session to a reloading ordinary primary waits up to 15 s for the new
 registration and arrives once under its source identity. The wait also covers a
 connection to the channel that the reload closes: a first connection that fails
-while the endpoint names a live process, and a link that closes before the
-answer. After that wait the sender's call fails and states that the message was
-not delivered. When the target session ends during the reload, the call fails
-at once with the same statement. When the caller withdraws the call, no further
-attempt starts. The
+while the endpoint names a live process, and a request that gets no answer
+because its link closes or its 5 s deadline passes. After that wait the
+sender's call fails, and when the target session ends during the reload, the
+call fails at once. If every attempt was refused or never reached the session,
+the failure states that the message was not delivered. If an attempt got no
+answer, the session can hold the message, so the failure states that the
+delivery is unconfirmed and names the message's source ID; a new send is a
+second message. When the caller withdraws the call, no further attempt starts.
+The
 check runs only at points that already read the questions, and only when
 questions are open, with one endpoint read per distinct asked session:
 

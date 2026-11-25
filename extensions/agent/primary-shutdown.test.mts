@@ -705,3 +705,113 @@ test("a message whose first connection meets a channel that the reload closed ar
 	assert.equal(receipt.admitted, true);
 	assert.equal(delivered.length, 1);
 });
+
+test("a message that its primary took before the link closed and the session ended is reported unconfirmed", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-ack-lost-")));
+	const target = randomUUID();
+	const sender = randomUUID();
+	const first = new AbortController();
+	const taken: string[] = [];
+	let markClosed!: () => void;
+	const closed = new Promise<void>((done) => {
+		markClosed = done;
+	});
+	const manager: AgentManager = new AgentManager({
+		root,
+		agentDir: root,
+		packageDir: root,
+		createPrimary: async (options) => {
+			if (options.id !== target) return createPrimaryChannel(options);
+			// The primary takes the message, then its session ends before the answer leaves.
+			const channel = await createPrimaryChannel({
+				...options,
+				deliver: async (message) => {
+					await options.deliver(message);
+					void manager.closePrimary(target, first.signal);
+					await closed;
+					throw new Error("the ended session answered");
+				},
+			});
+			const close = channel.close;
+			channel.close = () => {
+				const closing = close();
+				markClosed();
+				return closing;
+			};
+			return channel;
+		},
+	});
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	await manager.registerPrimary(sender, { signal: new AbortController().signal, cwd: root, send() {} });
+	await manager.registerPrimary(target, {
+		signal: first.signal,
+		cwd: root,
+		send: (_text, _details, sourceId) => taken.push(sourceId),
+	});
+	const outcome = await manager
+		.control(
+			"submit",
+			{ sessionId: target, message: "taken before the end", origin: "model", requestId: "source-taken" },
+			{ id: sender, cwd: root },
+		)
+		.then(
+			() => "admitted",
+			(error: Error) => error.message,
+		);
+	assert.deepEqual(taken, ["source-taken"]);
+	assert.doesNotMatch(outcome, /not delivered/u);
+	assert.match(outcome, /is unconfirmed: .* and then the session ended\. .*source ID source-taken/u);
+});
+
+test("a message whose request timed out is sent once more and confirmed by the same primary", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-ack-timeout-")));
+	const target = randomUUID();
+	const sender = randomUUID();
+	const taken = new Set<string>();
+	let calls = 0;
+	let answerLate!: () => void;
+	const late = new Promise<void>((done) => {
+		answerLate = done;
+	});
+	const manager = new AgentManager({
+		root,
+		agentDir: root,
+		packageDir: root,
+		createPrimary: async (options) => {
+			if (options.id !== target) return createPrimaryChannel(options);
+			return createPrimaryChannel({
+				...options,
+				// The first request is taken and answered only after its deadline; the repeat of its source identity is
+				// answered at once.
+				deliver: async (message) => {
+					await options.deliver(message);
+					if (++calls === 1) await late;
+				},
+			});
+		},
+	});
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	await manager.registerPrimary(sender, { signal: new AbortController().signal, cwd: root, send() {} });
+	await manager.registerPrimary(target, {
+		signal: new AbortController().signal,
+		cwd: root,
+		// The receiving inbox admits one source identity once.
+		send: (_text, _details, sourceId) => taken.add(sourceId),
+	});
+	const receipt = (await manager.control(
+		"submit",
+		{ sessionId: target, message: "slow to answer", origin: "model", requestId: "source-slow" },
+		{ id: sender, cwd: root },
+	)) as { admitted?: boolean; sourceId?: string };
+	answerLate();
+	assert.equal(calls, 2);
+	assert.equal(receipt.admitted, true);
+	assert.equal(receipt.sourceId, "source-slow");
+	assert.deepEqual([...taken], ["source-slow"]);
+});
