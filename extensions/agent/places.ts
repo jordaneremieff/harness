@@ -30,7 +30,6 @@ import {
 	closeSync,
 	constants,
 	fstatSync,
-	ftruncateSync,
 	linkSync,
 	lstatSync,
 	mkdirSync,
@@ -445,10 +444,10 @@ export class PlaceBook {
 						final: true,
 					};
 				}
-				// Overwrite, then cut to length, so the file never reads as empty.
-				const claim = Buffer.from(`${JSON.stringify(this.newClaim())}\n`, "utf8");
+				// Overwrite in place, padded with whitespace to the old length, so the file always parses as one claim.
+				const text = `${JSON.stringify(this.newClaim())}\n`;
+				const claim = Buffer.from(text.padEnd(Math.max(text.length, stat.size), " "), "utf8");
 				writeSync(descriptor, claim, 0, claim.length, 0);
-				ftruncateSync(descriptor, claim.length);
 			}
 			return { kind: "held", release: () => this.release(lockFile, held) };
 		} catch (error) {
@@ -500,7 +499,12 @@ export class PlaceBook {
 			closeSync(descriptor);
 			throw error;
 		} finally {
-			unlinkSync(privateFile);
+			// The outcome stands when the private name cannot be removed; the name is then left over and unread.
+			try {
+				unlinkSync(privateFile);
+			} catch {
+				/* Kept as a hidden leftover. */
+			}
 		}
 	}
 
