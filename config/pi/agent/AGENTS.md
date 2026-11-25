@@ -62,15 +62,12 @@ ranges for relevant code.
 
 - Lead with the answer. Use plain words, and explain any project term you
   must use.
-- In the interactive session with the operator, end an answer with a short
-  note only while background jobs that this session started, or agents that
-  it gave work to, still run for it. The note is one sentence, two at most.
-  It opens with **Waiting**, then says exactly what the session waits on
-  and what happens next. Write the note of `agent_yield` and `jobs_yield`
-  the same way, without the bold. With no such work open, end the answer
-  without a note.
+- Do not end an answer with a note about background jobs or agents that
+  still run: the statusline shows them. The note of `agent_yield` and
+  `jobs_yield` says in one plain sentence what still runs and what happens
+  next.
 - When he asks whether a session is done, still needed or safe to close,
-  answer yes or no first, then give the note if work is still open.
+  answer yes or no first, then say what still runs.
 - Say what you checked and what you inferred. Claim only what the evidence
   shows. Report a designed limit or refusal as expected behavior, not as a
   failure.
