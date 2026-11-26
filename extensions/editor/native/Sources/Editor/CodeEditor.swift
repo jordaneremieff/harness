@@ -3,8 +3,8 @@ import AppKit
 @MainActor
 final class CodeEditor: NSObject, NSTextViewDelegate {
     private let api: any EditorAPI
-    private let scroll = CodeScrollView()
-    private let textView = CodeTextView(usingTextLayoutManager: false)
+    let scroll = CodeScrollView()
+    let textView = CodeTextView(usingTextLayoutManager: false)
     private let undoHistory = UndoManager()
     private var sharedText: String
     private var sharedDirty: Bool
@@ -26,6 +26,10 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
     var onStatus: ((String) -> Void)?
     var onChange: (() -> Void)?
     var onNote: ((Fields) -> Void)?
+    /// Runs after the selection or the insertion point moves.
+    var onSelectionChange: (() -> Void)?
+    /// The indentation that typing uses in this file: spaces or tabs, and the width of one level.
+    private(set) var indentation = (spaces: true, width: 4)
 
     init(api: any EditorAPI, record: Fields) {
         self.api = api
@@ -66,6 +70,57 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         textView.setSyntax(for: doc)
         textView.delegate = self
         textView.noteTarget = { [weak self] range in self?.noteItem(range) }
+    }
+
+    /// The language of the file, such as `markdown`, for per-language settings.
+    var languageID: String? { nil }
+
+    /// The 1-based line and column (in characters) of the insertion point.
+    var caretPosition: (line: Int, column: Int) {
+        let source = findText
+        let caret = min(textView.selectedRange().location, source.length)
+        var line = 1
+        var start = 0
+        var offset = 0
+        while offset < caret {
+            let found = source.range(of: "\n", options: .literal, range: NSRange(location: offset, length: caret - offset))
+            guard found.location != NSNotFound else { break }
+            line += 1
+            start = NSMaxRange(found)
+            offset = start
+        }
+        return (line, (source.substring(with: NSRange(location: start, length: caret - start)) as String).count + 1)
+    }
+
+    /// The text of the file in the last Git commit, for change marks; nil when it has none.
+    func setBaseText(_ text: String?) {}
+
+    func textViewDidChangeSelection(_ notification: Notification) { onSelectionChange?() }
+
+    /// Applies the font, colours and view settings of this file's language.
+    func apply(settings: EditorSettings, theme: EditorTheme) {
+        let font = settings.sourceFont
+        if textView.font != font { textView.font = font }
+        scroll.backgroundColor = theme.editor
+        textView.backgroundColor = theme.editor
+        textView.textColor = theme.text
+        textView.insertionPointColor = theme.caret
+        textView.selectedTextAttributes = [.backgroundColor: theme.selection]
+        let style = NSMutableParagraphStyle()
+        style.defaultTabInterval = CGFloat(settings.tabSize) * (" " as NSString).size(withAttributes: [.font: font]).width
+        style.tabStops = []
+        if textView.defaultParagraphStyle != style {
+            textView.defaultParagraphStyle = style
+            textView.typingAttributes[.paragraphStyle] = style
+            if let storage = textView.textStorage, storage.length > 0 {
+                storage.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: storage.length))
+            }
+        }
+        indentation = (settings.indentWithSpaces, settings.tabSize)
+        textView.typingAttributes[.font] = font
+        textView.typingAttributes[.foregroundColor] = theme.text
+        setWrap(settings.wordWrap)
+        textView.invalidateSyntax()
     }
 
     func focus() { textView.window?.makeFirstResponder(textView) }

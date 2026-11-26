@@ -26,7 +26,10 @@ function fixture(t: TestContext) {
 		writeFileSync(join(pkg, "Sources", "Source.swift"), "source");
 	}
 	writeFileSync(join(sources, "build.mts"), "bundle builder");
-	return { nativePane, sources, agentDir: join(root, "agent") };
+	const palette = join(root, "assets/themes/catppuccin.css");
+	mkdirSync(dirname(palette), { recursive: true });
+	writeFileSync(palette, "palette");
+	return { nativePane, sources, palette, agentDir: join(root, "agent") };
 }
 
 function writeBundle({ app, digest }: EditorBuild, mode = 0o755) {
@@ -39,10 +42,11 @@ function writeBundle({ app, digest }: EditorBuild, mode = 0o755) {
 }
 
 test("Editor caches the app for matching sources and keeps the previous executable on an update", async (t) => {
-	const { sources, nativePane, agentDir } = fixture(t);
+	const { sources, nativePane, palette, agentDir } = fixture(t);
 	let builds = 0;
 	const installer = editorAppInstaller(sources, async (build) => {
 		builds++;
+		assert.equal(build.paneAppearance, join(agentDir, "pane-appearance.json"));
 		writeBundle(build);
 	});
 	const [first, same] = await Promise.all([installer(agentDir), installer(agentDir)]);
@@ -53,6 +57,9 @@ test("Editor caches the app for matching sources and keeps the previous executab
 	assert.notEqual(next, first);
 	assert.equal(await installer(agentDir), next);
 	assert.equal(builds, 2);
+	writeFileSync(palette, "changed palette");
+	assert.notEqual(await installer(agentDir), next);
+	assert.equal(builds, 3);
 	assert.equal(readFileSync(first, "utf8"), "built app");
 });
 

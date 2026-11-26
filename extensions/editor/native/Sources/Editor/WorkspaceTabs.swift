@@ -297,7 +297,7 @@ final class WorkspaceTabStrip: NSView {
 final class WorkspaceGroupView: NSView {
     let id: Int
     let strip = WorkspaceTabStrip()
-    let pageHost = WorkspaceRegion(WorkspaceStyle.content)
+    let pageHost = WorkspaceRegion(.content)
     var onActivate: (() -> Void)?
     private var page: NSView?
     override var isFlipped: Bool { true }

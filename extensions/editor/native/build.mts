@@ -17,6 +17,9 @@ import { promisify } from "node:util";
 
 const native = dirname(fileURLToPath(import.meta.url));
 const nativePane = "../../../native-pane";
+/** The shared Catppuccin palette (assets/themes), copied into the bundle for the app's own theme code. */
+const palette = "../../../assets/themes/catppuccin.css";
+export const paletteInApp = "Contents/Resources/catppuccin.css";
 const exec = promisify(execFile);
 
 export const executableInApp = "Contents/MacOS/Editor";
@@ -36,6 +39,7 @@ export function editorSourceDigest(sources: string): string {
 		"Package.swift",
 		"build.mts",
 		join(nativePane, "Package.swift"),
+		palette,
 		...sourceFiles(sources, "Sources"),
 		...sourceFiles(sources, join(nativePane, "Sources")),
 	];
@@ -65,6 +69,8 @@ export interface EditorBuild {
 	scratch: string;
 	log: string;
 	digest: string;
+	/** The machine's shared pane appearance file (docs/conventions/pane-appearance.md), when known. */
+	paneAppearance?: string;
 }
 
 async function run(log: string, command: string, args: string[], timeout: number): Promise<string> {
@@ -86,7 +92,14 @@ async function run(log: string, command: string, args: string[], timeout: number
 }
 
 /** Builds a bundle at a new, private staging path. The caller publishes it afterwards. */
-export async function buildEditorApp({ sources, app, scratch, log, digest }: EditorBuild): Promise<void> {
+export async function buildEditorApp({
+	sources,
+	app,
+	scratch,
+	log,
+	digest,
+	paneAppearance,
+}: EditorBuild): Promise<void> {
 	if (process.platform !== "darwin") throw new Error("Editor requires macOS 26 or later.");
 	const flags = ["build", "--package-path", sources, "--scratch-path", scratch, "-c", "release", "--product", "Editor"];
 	await run(log, "/usr/bin/swift", flags, 120_000);
@@ -96,8 +109,10 @@ export async function buildEditorApp({ sources, app, scratch, log, digest }: Edi
 	mkdirSync(dirname(join(app, executableInApp)), { recursive: true });
 	mkdirSync(dirname(join(app, recordInApp)), { recursive: true });
 	copyFileSync(join(products, "Editor"), join(app, executableInApp));
+	copyFileSync(join(sources, palette), join(app, paletteInApp));
 	writeFileSync(join(app, "Contents/Info.plist"), plist);
-	writeFileSync(join(app, recordInApp), `${JSON.stringify({ sourceDigest: digest })}\n`);
+	const record = paneAppearance ? { sourceDigest: digest, paneAppearance } : { sourceDigest: digest };
+	writeFileSync(join(app, recordInApp), `${JSON.stringify(record)}\n`);
 	await run(log, "/usr/bin/codesign", ["--force", "--sign", "-", app], 15_000);
 }
 

@@ -44,12 +44,12 @@ final class WorkspaceChrome: NSView {
     private static let toolHeight: CGFloat = 38
     private static let footHeight: CGFloat = 24
     private let defaults: UserDefaults
-    private let bar = WorkspaceRegion(line: .bottom)
+    private let bar = WorkspaceRegion(.bar, line: .bottom)
     private let side = WorkspaceRegion()
-    private let stage = WorkspaceRegion(WorkspaceStyle.content)
+    private let stage = WorkspaceRegion(.content)
     private let banner = WorkspaceRegion(line: .bottom)
     private let pathRow = WorkspaceRegion(line: .bottom)
-    private let foot = WorkspaceRegion(line: .top)
+    private let foot = WorkspaceRegion(.bar, line: .top)
     private let overlay = WorkspaceOverlay()
     private let dropMark = WorkspaceDropMark()
     private let sidebarEdge = WorkspaceDivider(label: "Sidebar width")
@@ -100,6 +100,7 @@ final class WorkspaceChrome: NSView {
         var point: CGPoint
     }
     private var drag: TabDrag?
+    private var styleObserver: NSObjectProtocol?
     private var escape: Any?
     private var settle: (() -> Void)?
     private var creep: Task<Void, Never>?
@@ -179,8 +180,27 @@ final class WorkspaceChrome: NSView {
             guard let self else { return }
             resizeGroups(to: groupEdge.position + distance)
         }
+        styleObserver = NotificationCenter.default.addObserver(forName: .workspaceStyleDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.styleChanged() }
+        }
+        styleChanged()
     }
     required init?(coder: NSCoder) { nil }
+
+    /// Repaints every part after the theme or the interface size changes.
+    private func styleChanged() {
+        let theme = WorkspaceStyle.theme
+        folder.textColor = theme.text
+        status.textColor = theme.text
+        details.textColor = theme.secondaryText
+        message.textColor = theme.text
+        func repaint(_ view: NSView) {
+            view.needsDisplay = true
+            view.subviews.forEach(repaint)
+        }
+        repaint(self)
+        needsLayout = true
+    }
 
     private func noteMenu(_ kind: String, _ key: String) -> NSMenu {
         let menu = NSMenu()
@@ -189,18 +209,38 @@ final class WorkspaceChrome: NSView {
     }
     override func menu(for event: NSEvent) -> NSMenu? { noteMenu("pane", "workspace") }
 
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        let mods = event.modifierFlags.intersection([.command, .shift, .control, .option])
-        let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
-        var action: String?
-        if mods == .command {
-            action = ["s": "save", "n": "scratch", "o": "files", "p": "search"][key]
-            if key == "f", window?.firstResponder is CodeTextView { action = "find" }
-        } else if mods == [.command, .shift] {
-            action = ["s": "saveAs", "n": "newFile", "f": "searchContents", "[": "previous", "{": "previous", "]": "next", "}": "next"][key]
-        } else if mods == [.command, .option] && key == "t" { action = "notes" }
-        if let action { onCommand?(action); return true }
-        return super.performKeyEquivalent(with: event)
+    // MARK: Overlays
+
+    /// Where an overlay sits: floating at the top of the pane, like Go to Anything, or docked at
+    /// the bottom of the stage above the status line, like Find.
+    enum OverlayPlacement { case top, bottom }
+    private var overlayView: NSView?
+    private var overlayPlacement = OverlayPlacement.top
+    /// The size an overlay wants inside a pane of the given size.
+    private var overlaySize: ((NSSize) -> NSSize)?
+    var hasOverlay: Bool { overlayView != nil }
+
+    /// Shows one overlay above the workspace, replacing the one on show. A docked overlay takes
+    /// its height from the stage, so the source never sits under it.
+    func presentOverlay(_ view: NSView, placement: OverlayPlacement, size: @escaping (NSSize) -> NSSize) {
+        if overlayView !== view {
+            overlayView?.removeFromSuperview()
+            addSubview(view, positioned: .below, relativeTo: overlay)
+        }
+        overlayView = view
+        overlayPlacement = placement
+        overlaySize = size
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+    }
+
+    func dismissOverlay(_ view: NSView? = nil) {
+        guard let current = overlayView, view == nil || view === current else { return }
+        current.removeFromSuperview()
+        overlayView = nil
+        overlaySize = nil
+        needsLayout = true
+        layoutSubtreeIfNeeded()
     }
 
     // MARK: Status, messages and the path row
@@ -214,6 +254,12 @@ final class WorkspaceChrome: NSView {
     private func showStatus() {
         if status.stringValue != statusText { status.stringValue = statusText }
         status.toolTip = statusText
+    }
+    /// Returns the status line to the current status before its notice ends.
+    func clearNotice() {
+        notice?.cancel()
+        notice = nil
+        showStatus()
     }
     /// Reports a finished action in the status line for a few seconds. The page does not move.
     func notify(_ text: String) {
@@ -558,7 +604,19 @@ final class WorkspaceChrome: NSView {
             top += height
         }
 
-        let height = max(0, h - top - Self.footHeight)
+        var bottomDock: CGFloat = 0
+        if let overlayView, let overlaySize {
+            let size = overlaySize(bounds.size)
+            switch overlayPlacement {
+            case .top:
+                let width = min(size.width, w - 16)
+                overlayView.frame = NSRect(x: ((w - width) / 2).rounded(), y: top + 8, width: width, height: min(size.height, max(0, h - top - 16)))
+            case .bottom:
+                bottomDock = min(size.height, max(0, h - top - Self.footHeight - 60))
+                overlayView.frame = NSRect(x: 0, y: h - Self.footHeight - bottomDock, width: w, height: bottomDock)
+            }
+        }
+        let height = max(0, h - top - Self.footHeight - bottomDock)
         let count = max(1, groupViews.count)
         let beside = accessory != nil && showsSideBySide
         let sideWidth: CGFloat = accessory == nil ? 0 : beside ? WorkspaceLayout.sidebar(chosen: chosenSidebar, pane: w, groups: count) : w

@@ -55,14 +55,14 @@ final class WorkspaceDivider: NSView {
         if let band {
             band.colour.setFill()
             NSRect(x: 0, y: bounds.height - band.height, width: bounds.width, height: band.height).fill()
-            NSColor.separatorColor.setFill()
+            WorkspaceStyle.line.setFill()
             NSRect(x: band.lineStart, y: bounds.height - band.height, width: bounds.width - band.lineStart, height: 1).fill(using: .sourceOver)
         }
         if lit {
-            NSColor.controlAccentColor.setFill()
+            WorkspaceStyle.theme.accent.setFill()
             NSRect(x: Self.reachBefore - 1, y: 0, width: 3, height: bounds.height).fill(using: .sourceOver)
         } else {
-            NSColor.separatorColor.setFill()
+            WorkspaceStyle.line.setFill()
             NSRect(x: Self.reachBefore, y: 0, width: 1, height: bounds.height).fill(using: .sourceOver)
         }
     }

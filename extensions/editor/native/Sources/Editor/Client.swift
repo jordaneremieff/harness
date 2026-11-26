@@ -24,6 +24,10 @@ struct EditorTicket: Decodable {
     let token: String
     let root: String
     let file: String?
+    /// The machine's Editor settings file, which this app owns.
+    let settings: String?
+    /// The arrangement file of this folder's workspace, which this app owns.
+    let layout: String?
 
     static func consume(_ path: String) throws -> Self {
         let invalid = EditorIssue(code: "launch", message: "This pane needs a new private launch request from /editor.")
@@ -39,7 +43,9 @@ struct EditorTicket: Decodable {
               let ticket = try? JSONDecoder().decode(Self.self, from: data), ticket.version == 1,
               (1...65535).contains(ticket.port), ticket.token.utf8.count == 64,
               ticket.token.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
-              ticket.root.hasPrefix("/"), !ticket.root.contains("\0") else { throw invalid }
+              ticket.root.hasPrefix("/"), !ticket.root.contains("\0"),
+              [ticket.settings, ticket.layout].allSatisfy({ $0.map { $0.hasPrefix("/") && !$0.contains("\0") } ?? true })
+        else { throw invalid }
         var current = stat()
         guard lstat(path, &current) == 0, current.st_ino == info.st_ino, current.st_dev == info.st_dev,
               unlink(path) == 0 else { throw invalid }

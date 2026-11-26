@@ -9,7 +9,7 @@ final class PaneHost {
     private let api: any EditorAPI
     private let screen: WorkspaceScreen
     private let overlay = PaneOverlay(
-        background: { .windowBackgroundColor },
+        background: { MainActor.assumeIsolated { WorkspaceStyle.content } },
         logger: Logger(subsystem: "local.harness.editor", category: "pane"),
         eventDriven: true
     )

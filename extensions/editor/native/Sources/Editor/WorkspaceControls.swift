@@ -71,14 +71,28 @@ final class WorkspaceChoice: NSMenuItem {
 @MainActor
 final class WorkspaceRegion: NSView {
     enum Edge { case top, bottom }
-    var colour: NSColor { didSet { needsDisplay = true } }
+    /// The role of a surface; its colour follows the theme.
+    enum Surface { case chrome, content, bar, panel }
+    var surface: Surface { didSet { needsDisplay = true } }
+    var colour: NSColor {
+        switch surface {
+        case .chrome: WorkspaceStyle.chrome
+        case .content: WorkspaceStyle.content
+        case .bar: WorkspaceStyle.bar
+        case .panel: WorkspaceStyle.theme.panel
+        }
+    }
     var line: Edge? { didSet { needsDisplay = true } }
     override var isFlipped: Bool { true }
+    private var styleObserver: NSObjectProtocol?
 
-    init(_ colour: NSColor = WorkspaceStyle.chrome, line: Edge? = nil) {
-        self.colour = colour
+    init(_ surface: Surface = .chrome, line: Edge? = nil) {
+        self.surface = surface
         self.line = line
         super.init(frame: .zero)
+        styleObserver = NotificationCenter.default.addObserver(forName: .workspaceStyleDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.needsDisplay = true }
+        }
     }
     required init?(coder: NSCoder) { nil }
 
