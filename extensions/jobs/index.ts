@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { arr, bool, int, nul, num, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
 import { createJobActivity, type Delivery } from "./activity.ts";
+import { ObservedAgentJobs } from "./agent-activity.ts";
 import {
 	commandPreview,
 	completionContent,
@@ -408,15 +409,22 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	/** The open `/jobs` view, and the selection that survives closing and reopening it. */
 	let jobsView: { close(): void } | undefined;
 	const jobsSelection: { id?: string } = {};
+	const agents = new ObservedAgentJobs();
+	const stopAgentEvents = pi.events.on("harness:live-activity", (event) => {
+		if (closed) return;
+		agents.receive(event);
+		activity.agentCount(agents.count);
+	});
 	const jobsSource = {
-		list: () => manager.list(),
+		list: () => [...manager.list(), ...agents.list()],
+		onAgents: () => agents.count,
 		logs: (id: string, cursor?: number) => manager.logs(id, cursor),
 		cancel: (id: string) => void cancelJob(id),
 		started: activity.startedCount,
 	};
 
 	pi.registerCommand("jobs", {
-		description: "Show this session's background jobs and the last output of the selected one",
+		description: "Show local background jobs and active commands reported by this session's connected agents",
 		handler: async (args, ctx) => {
 			if (args.trim()) {
 				if (ctx.hasUI) ctx.ui.notify("/jobs takes no arguments.", "warning");
@@ -424,7 +432,7 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 			}
 			const { openJobsView, summaryText } = await import("./view.ts");
 			if (ctx.mode !== "tui") {
-				const text = summaryText(manager.list(), Date.now(), activity.startedCount());
+				const text = summaryText(jobsSource.list(), Date.now(), activity.startedCount(), agents.count);
 				if (ctx.hasUI) ctx.ui.notify(text, "info");
 				else console.error(text);
 				return;
@@ -440,6 +448,8 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 
 	// The footer entry counts the session's jobs from its first one, across reloads and resumes.
 	pi.on("session_start", async (_event, ctx) => {
+		agents.bind(ctx.sessionManager.getSessionId());
+		activity.agentCount(agents.count);
 		activity.restore(ctx, startedJobs(ctx));
 	});
 	pi.on("agent_start", async (_event, ctx) => {
@@ -477,6 +487,7 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	pi.on("session_tree", async (_event, ctx) => activity.onBranch(retainedCompletions(ctx)));
 	pi.on("session_shutdown", async (_event, ctx) => {
 		closed = true;
+		stopAgentEvents();
 		jobsView?.close();
 		try {
 			activity.shutdown(ctx);

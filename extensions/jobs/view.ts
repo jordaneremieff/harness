@@ -1,6 +1,6 @@
 /**
- * The `/jobs` view: this session runtime's background jobs, newest first, and the last output of the selected job,
- * in the editor slot below the transcript. Reading is the main job; cancelling a running job is the one action.
+ * The `/jobs` view shows local jobs and active commands reported by this session's connected agents.
+ * Only a local job has an output tail or a cancellation action.
  */
 
 import { homedir } from "node:os";
@@ -14,12 +14,15 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import type { DisplayJob } from "./agent-activity.ts";
 import { completionTail, displayText } from "./completion.ts";
 import type { JobLogs, JobSnapshot } from "./manager.ts";
 
 /** What the view reads and does; the extension binds it to its job manager. */
 export interface JobsSource {
-	list(): JobSnapshot[];
+	list(): DisplayJob[];
+	/** Active jobs reported by connected agents, including rows beyond the list limit. */
+	onAgents?(): number;
 	logs(id: string, cursor?: number): JobLogs;
 	cancel(id: string): void;
 	/** Session total, including jobs whose records are no longer available. */
@@ -66,6 +69,7 @@ export function elapsedText(ms: number): string {
 
 export interface JobRow {
 	readonly id: string;
+	readonly agent?: DisplayJob["agent"];
 	readonly state: RowState;
 	readonly word: string;
 	readonly elapsed: string;
@@ -84,11 +88,12 @@ function order(a: JobSnapshot, b: JobSnapshot): number {
 }
 
 /** One row per job: the jobs that run, then the jobs that ended, newest first in each. */
-export function jobRows(jobs: readonly JobSnapshot[], now: number): JobRow[] {
+export function jobRows(jobs: readonly DisplayJob[], now: number): JobRow[] {
 	return [...jobs].sort(order).map((job) => {
 		const state = rowState(job);
 		return {
 			id: job.id,
+			...(job.agent && { agent: job.agent }),
 			state,
 			word: WORD[state],
 			elapsed: elapsedText((job.endedAt ?? now) - job.startedAt),
@@ -100,10 +105,19 @@ export function jobRows(jobs: readonly JobSnapshot[], now: number): JobRow[] {
 	});
 }
 
-/** Counts of the title row: jobs that run now out of every job this session started. */
-export function countsText(rows: readonly JobRow[], started: number): string {
-	const running = rows.filter((row) => row.state === "running" || row.state === "stopping").length;
-	return `${running} running · ${started} started`;
+function agentLabel(agent: NonNullable<JobRow["agent"]>): string {
+	if (agent.name) return agent.name;
+	const [storage, conversation] = agent.identity.split(":");
+	return `${storage.slice(0, 8)}${conversation ? `:${conversation}` : ""}`;
+}
+
+/** The local lifetime total and observed live agent count cover different work. */
+export function countsText(rows: readonly JobRow[], started: number, onAgents = 0): string {
+	const running = rows.filter((row) => !row.agent && (row.state === "running" || row.state === "stopping")).length;
+	if (!onAgents) return `${running} running · ${started} started`;
+	const shown = rows.filter((row) => row.agent).length;
+	const agents = `${onAgents} on agents${shown < onAgents ? ` (${shown} shown)` : ""}`;
+	return started ? `${running}/${started} local · ${agents}` : agents;
 }
 
 /** What the view says when it has no job to show. */
@@ -114,11 +128,14 @@ export function emptyText(earlier: number): string {
 }
 
 /** The `/jobs` answer outside the interactive terminal: one line per job, in the order of the view. */
-export function summaryText(jobs: readonly JobSnapshot[], now: number, started: number): string {
+export function summaryText(jobs: readonly DisplayJob[], now: number, started: number, onAgents = 0): string {
 	const rows = jobRows(jobs, now);
 	if (rows.length === 0) return emptyText(started);
-	const lines = rows.map((row) => `${DOT[row.state].glyph} ${row.word} ${row.elapsed}  ${row.command}`);
-	return [`Jobs: ${countsText(rows, started)}`, ...lines].join("\n");
+	const lines = rows.map(
+		(row) =>
+			`${DOT[row.state].glyph} ${row.word} ${row.elapsed}  ${row.agent ? `${agentLabel(row.agent)}: ` : ""}${row.command}`,
+	);
+	return [`Jobs: ${countsText(rows, started, onAgents)}`, ...lines].join("\n");
 }
 
 /** One display line: controls removed, tabs as spaces, whitespace runs kept. */
@@ -206,9 +223,9 @@ export class JobsView {
 	refresh(): void {
 		this.rows = jobRows(this.options.source.list(), this.now());
 		if (!this.rows.some((row) => row.id === this.selection.id)) this.selection.id = this.rows[0]?.id;
-		const id = this.selection.id;
+		const selected = this.selected();
 		try {
-			this.output = id === undefined ? [] : outputLines(this.options.source, id);
+			this.output = !selected || selected.agent ? [] : outputLines(this.options.source, selected.id);
 		} catch {
 			this.output = [];
 		}
@@ -234,7 +251,7 @@ export class JobsView {
 
 	private cancelSelected(): void {
 		const row = this.selected();
-		if (row?.state !== "running") return;
+		if (row?.state !== "running" || row.agent) return;
 		try {
 			this.options.source.cancel(row.id);
 		} catch {
@@ -247,7 +264,8 @@ export class JobsView {
 	keys(): Array<{ key: string; text: string; label: string }> {
 		const keys: Array<{ key: string; text: string; label: string }> = [];
 		if (this.rows.length > 1) keys.push({ key: "up/down", text: "↑↓", label: "select" });
-		if (this.selected()?.state === "running") keys.push({ key: "c", text: "c", label: "cancel" });
+		const row = this.selected();
+		if (row?.state === "running" && !row.agent) keys.push({ key: "c", text: "c", label: "cancel" });
 		keys.push({ key: "escape", text: "esc", label: "close" });
 		return keys;
 	}
@@ -318,9 +336,12 @@ export class JobsView {
 		const rule = (text: string) => theme.fg("borderMuted", text);
 		const head = `${rule("─")}${theme.bold(theme.fg("accent", " Jobs "))}${rule("─")}`;
 		const started = this.options.source.started();
-		const counts = ` ${countsText(this.rows, started)} `;
+		const onAgents = this.options.source.onAgents?.() ?? 0;
+		const counts = ` ${countsText(this.rows, started, onAgents)} `;
 		const tail =
-			started > 0 && visibleWidth(head) + counts.length + 4 <= width ? `${theme.fg("muted", counts)}${rule("─")}` : "";
+			(started > 0 || onAgents > 0) && visibleWidth(head) + counts.length + 4 <= width
+				? `${theme.fg("muted", counts)}${rule("─")}`
+				: "";
 		return `${head}${rule("─".repeat(Math.max(0, width - visibleWidth(head) - visibleWidth(tail))))}${tail}`;
 	}
 
@@ -338,6 +359,20 @@ export class JobsView {
 		const selected = this.selected();
 		if (selected) lines.push(this.outputRule(selected, width));
 		const outputHeight = height - lines.length;
+		if (selected?.agent) {
+			const detail = [
+				`${agentLabel(selected.agent)} · ${selected.agent.identity}`,
+				selected.command,
+				"Read-only here. For this agent’s job history, open /agent and choose Owner views (o), then Jobs.",
+			];
+			lines.push(
+				...detail
+					.flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width - 1)).map((part) => ` ${part}`))
+					.slice(0, outputHeight),
+			);
+			while (lines.length < height) lines.push("");
+			return lines;
+		}
 		const theme = this.options.theme;
 		const output =
 			this.output.length > 0
@@ -363,7 +398,10 @@ export class JobsView {
 		const word = row.word.padEnd(WORD_WIDTH);
 		const elapsed = row.elapsed.padStart(ELAPSED_WIDTH);
 		const marker = selected ? theme.fg("accent", "›") : " ";
-		const text = `${theme.fg(dot.colour, dot.glyph)} ${theme.fg(dot.colour, word)}  ${theme.fg("muted", elapsed)}  ${selected ? theme.bold(row.command) : row.command}`;
+		const agent = row.agent
+			? `${theme.fg("accent", truncateToWidth(agentLabel(row.agent), Math.max(6, Math.min(20, Math.floor(width / 4)))))}: `
+			: "";
+		const text = `${theme.fg(dot.colour, dot.glyph)} ${theme.fg(dot.colour, word)}  ${theme.fg("muted", elapsed)}  ${agent}${selected ? theme.bold(row.command) : row.command}`;
 		const line = fitLine(`${marker}${text}`, width);
 		return selected ? theme.bg("selectedBg", line) : line;
 	}
@@ -371,7 +409,7 @@ export class JobsView {
 	private outputRule(row: JobRow, width: number): string {
 		const theme = this.options.theme;
 		const rule = (text: string) => theme.fg("borderMuted", text);
-		const head = `${rule("─")}${theme.fg("muted", " Output ")}`;
+		const head = `${rule("─")}${theme.fg("muted", row.agent ? " Agent job " : " Output ")}`;
 		const outcome = outcomeText(row);
 		const tail =
 			outcome && visibleWidth(head) + visibleWidth(outcome) + 6 <= width

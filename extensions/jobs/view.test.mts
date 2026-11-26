@@ -225,6 +225,34 @@ describe("jobs view", () => {
 		assert.equal(closes(), 1);
 	});
 
+	it("shows an agent's name and command without reading logs or offering local cancellation", () => {
+		const agent = { identity: "aabbccdd:2", name: "Compiler" };
+		const observed = { ...job("agent:aabbccdd:2:7", { commandPreview: "make docs" }), agent };
+		const selected = { id: observed.id };
+		const component = new JobsView({
+			source: {
+				list: () => [observed],
+				onAgents: () => 1,
+				started: () => 0,
+				logs: () => assert.fail("Remote logs reached the local manager"),
+				cancel: () => assert.fail("Remote cancellation"),
+			},
+			selected,
+			theme: plain,
+			rows: () => 10,
+			requestRender() {},
+			close() {},
+			now: () => NOW,
+		});
+		const lines = component.render(80);
+		assert.match(lines[0] ?? "", /1 on agents/u);
+		assert.match(lines[1] ?? "", /Compiler: make docs/u);
+		assert.ok(lines.some((line) => line.includes("Agent job")));
+		assert.ok(lines.some((line) => line.includes("aabbccdd:2")));
+		assert.ok(!lines.at(-1)?.includes("cancel"));
+		component.handleInput("c");
+	});
+
 	it("selects a clicked row and runs a clicked key-row control", () => {
 		const jobs = JOBS.map((entry) => ({ ...entry }));
 		const { component, cancelled, selected, closes } = view(jobs);

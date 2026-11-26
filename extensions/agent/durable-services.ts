@@ -61,6 +61,8 @@ import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { createNativeAgentEntry } from "./native-entry.ts";
 import { readSettings } from "./settings.ts";
 import { limitExtensionToolTime } from "./tool-time-limit.ts";
+import type { CatalogView } from "./catalog-view.ts";
+import { withLiveActivity, type ChangesView, type LiveActivityItem } from "./live-activity.ts";
 import {
 	readDisplayDescriptor,
 	readPanelDescriptor,
@@ -111,6 +113,8 @@ export interface DurableContribution {
 	readonly source: string;
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 	readonly commands?: readonly DurableCommand[];
+	/** Pure in-memory presentation of current activity; read only by the live feed. */
+	liveActivity?(host: DurableContributionHost): readonly LiveActivityItem[];
 	/** Presentation-only module the attached terminal imports locally; see docs/conventions/tool-display.md. */
 	readonly display?: DisplayDescriptor;
 	/** Interactive browser module the attached terminal imports locally; see docs/conventions/operator-panels.md. */
@@ -259,6 +263,8 @@ export interface DurableServices {
 	readonly registry: Durable.Registry;
 	readonly inventory: DurableInventory;
 	readonly commands: ReadonlyMap<string, DurableCommand>;
+	/** Only contributed getters; absent when none installed. Receives the base for one live feed publication. */
+	liveActivityView?(view: CatalogView): ChangesView;
 	/** Harness settings read through the settings manager at every resolution. */
 	readonly settings: Durable.HarnessSettings;
 	/** Execution environments by conversation cwd. `close()` cleans every one. */
@@ -492,6 +498,9 @@ function readContribution(
 		source,
 		create: record.create as DurableContribution["create"],
 		...(commands === undefined ? {} : { commands }),
+		...(typeof record.liveActivity === "function"
+			? { liveActivity: record.liveActivity as NonNullable<DurableContribution["liveActivity"]> }
+			: {}),
 		...(display === undefined ? {} : { display }),
 		...(panel === undefined ? {} : { panel }),
 	};
@@ -1138,6 +1147,21 @@ function realpathOrExact(path: string): string {
 	}
 }
 
+function activityProjection(
+	contributions: readonly DurableContribution[],
+	host: DurableContributionHost,
+	ready: () => boolean,
+): Pick<DurableServices, "liveActivityView"> {
+	const providers = contributions.flatMap((contribution) => {
+		const getter = contribution.liveActivity;
+		return getter === undefined ? [] : [{ source: contribution.name, read: () => getter(host) }];
+	});
+	if (providers.length === 0) return {};
+	return {
+		liveActivityView: (view) => (ready() ? withLiveActivity(view, providers, Durable.ROOT_CONVERSATION_ID) : view),
+	};
+}
+
 /**
  * Create cwd-bound Pi services, collect native Durable contributions from the
  * loaded configured extensions, and install the Durable registry.
@@ -1351,6 +1375,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 			registry,
 			inventory,
 			commands,
+			...activityProjection(matched, host, () => installed && !closed),
 			settings,
 			env,
 			install,

@@ -117,9 +117,11 @@ export type FooterDot = "running" | "failed" | "quiet";
 const DOT_GLYPH: Record<FooterDot, string> = { running: "●", failed: "●", quiet: "○" };
 const DOT_COLOUR = { running: "warning", failed: "error", quiet: "muted" } as const;
 
-/** The footer entry from the session's first job on: the dot, then the jobs that run out of every job started. */
-export function footerText(running: number, started: number, dot: string): string | undefined {
-	return started > 0 ? `${dot} jobs: ${running}/${started}` : undefined;
+/** The local running/started count and the separate count of active jobs observed on agents. */
+export function footerText(running: number, started: number, dot: string, onAgents = 0): string | undefined {
+	const local = started > 0 ? `${running}/${started}` : "";
+	const observed = onAgents > 0 ? `${onAgents} on agents` : "";
+	return local || observed ? `${dot} jobs: ${[local, observed].filter(Boolean).join(" + ")}` : undefined;
 }
 
 export interface ActivityOutput {
@@ -149,6 +151,7 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 	let closed = false;
 	/** Jobs that this session started, including those before this runtime. */
 	let started = 0;
+	let onAgents = 0;
 	/** Whether a job that ended since jobs last stopped failed, timed out or was lost. */
 	let failed = false;
 
@@ -157,14 +160,20 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 	const write = (record: StatusRecord) => output.write(formatStatusRecord(record));
 	const showFooter = () => {
 		if (!footer?.hasUI) return;
-		const state: FooterDot = running.size > 0 ? "running" : failed ? "failed" : "quiet";
+		const state: FooterDot = running.size > 0 || onAgents > 0 ? "running" : failed ? "failed" : "quiet";
 		// Only the interactive terminal draws colour; other hosts receive the plain dot.
 		const dot = footer.mode === "tui" ? footer.ui.theme.fg(DOT_COLOUR[state], DOT_GLYPH[state]) : DOT_GLYPH[state];
-		footer.ui.setStatus(FOOTER_STATUS_KEY, footerText(running.size, started, dot));
+		footer.ui.setStatus(FOOTER_STATUS_KEY, footerText(running.size, started, dot, onAgents));
 	};
 
 	return {
 		startedCount: () => started,
+		/** Observations change only the cell, never a local job, completion, or terminal activity record. */
+		agentCount(count: number): void {
+			if (closed || count === onAgents) return;
+			onAgents = count;
+			showFooter();
+		},
 		/** Shows the entry of a session whose earlier runtimes started jobs; their outcomes are not known again. */
 		restore(ctx: FooterContext, startedBefore: number): void {
 			if (closed) return;

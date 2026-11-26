@@ -23,7 +23,7 @@ key, and a consumer must not parse a sibling's status text.
 |---|---|---|---|
 | `agent` | [Agent roster and coverage](../../extensions/agent/README.md#roster-and-coverage) | A dot for work that this session sent with the agent tools, then working and total agents created by the current primary session, including agents they create, with observed native cost. Each primary receives its own figures. | No agents in that session scope and no such work out, primary lifecycle cleanup, or manager close. Retained idle agents remain in scope. |
 | `explorer` | [Explorer app update](../../extensions/explorer/README.md#open-explorer) | The Explorer native app update is active. | Update completion or session shutdown. |
-| `jobs` | [Background job status](../../extensions/jobs/README.md#footer-status-and-terminal-records) | A dot, then the background commands that run now out of every one that the session started, from its first job on. | Session shutdown; the next runtime of the session shows it again. |
+| `jobs` | [Background job status](../../extensions/jobs/README.md#footer-status-and-terminal-records) | A dot, the local running/started count from the first local job, and a separate active count from this session's connected agents when nonzero. | No local history and no observed agent jobs, or session shutdown. The next runtime restores local history. |
 | `stash` | [Background distillation](../../extensions/stash/README.md#background-distillation) | A `/stash new` request is starting. The status covers admission, not the work that follows. | The last pending admission returns or fails, or the session shuts down. |
 
 ## Rules

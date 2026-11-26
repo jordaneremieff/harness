@@ -61,7 +61,8 @@ import {
 	type CatalogRecord,
 } from "./catalog.ts";
 import type { CatalogView } from "./catalog-view.ts";
-import type { NativeOwnerEvidence } from "./host-changes.ts";
+import type { HostChanges, NativeOwnerEvidence } from "./host-changes.ts";
+import { PrimaryLiveActivity, type LiveActivityReplacement } from "./live-activity.ts";
 import { CatalogObservationCapacityError, subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
 import { FooterProjection, sessionFooter, type FooterStorage, type SessionFooter } from "./footer.ts";
 import { sentWorkIdentity } from "./session-work.ts";
@@ -212,6 +213,8 @@ export interface AgentManagerOptions {
 		model: { provider: string; modelId: string },
 		thinkingLevel: string,
 	) => string | void | Promise<string> | Promise<void>;
+	/** Ask for activity only on an ordinary process's existing changes feeds. */
+	observeLiveActivity?: boolean;
 	/** Largest recorded-failure memory; the oldest failure evicts first. */
 	failureLimit?: number;
 	/**
@@ -233,6 +236,7 @@ interface PrimaryClient {
 	resumeInbox?(): void;
 	/** The footer figures, and the agents in the primary's scope that need intervention (see `SessionFooter`). */
 	status?(text: string | undefined, stuck?: readonly string[]): void;
+	liveActivity?(event: LiveActivityReplacement): void;
 	signal: AbortSignal;
 	cwd?: string;
 	sessionFile?: string;
@@ -675,6 +679,7 @@ export class AgentManager {
 		{ client: HostConnection; close: () => void; refresh: () => Promise<void> }
 	>();
 	private readonly primaries = new Map<string, PrimaryClient>();
+	private readonly liveActivity?: PrimaryLiveActivity;
 	private readonly primaryChannels = new Map<string, PrimaryChannel>();
 	private readonly closingPrimaries = new Map<string, Promise<void>>();
 	/** Registrations of sessions whose extension reloads; each keeps its channel published until it registers again. */
@@ -715,6 +720,13 @@ export class AgentManager {
 		this.places = new PlaceBook(join(options.root, "durable"));
 		this.delivered = new BoundedMap(options.deliveredLimit ?? DEFAULT_DELIVERED_LIMIT);
 		this.failures = new BoundedMap(options.failureLimit ?? DEFAULT_FAILURE_LIMIT);
+		if (options.observeLiveActivity) {
+			this.liveActivity = new PrimaryLiveActivity((ownerId) => {
+				const primary = this.primaries.get(ownerId);
+				if (!primary || this.reloadedSignals.has(primary.signal)) return undefined;
+				return primary.liveActivity;
+			});
+		}
 	}
 
 	private async connection(record: CatalogRecord, primary?: PrimaryClient, launch = true): Promise<HostConnection> {
@@ -763,6 +775,10 @@ export class AgentManager {
 	}
 
 	private async subscribeClient(storageId: string, client: HostConnection): Promise<void> {
+		if (this.liveActivity !== undefined) {
+			const previous = this.clients.get(storageId) ?? this.recoveryClients.get(storageId)?.client;
+			if (previous !== undefined && previous !== client) this.liveActivity.withdraw(storageId, previous);
+		}
 		this.clients.set(storageId, client);
 		this.recoveryHolds.delete(storageId);
 		try {
@@ -2380,6 +2396,7 @@ export class AgentManager {
 		return registration.finally(() => {
 			if (pending.get(ownerId) === registration) pending.delete(ownerId);
 			if (this.replacingPrimaries.get(ownerId) === primary) this.replacingPrimaries.delete(ownerId);
+			if (!this.activityPrimary(ownerId)) this.liveActivity?.forgetOwner(ownerId);
 		});
 	}
 
@@ -2399,6 +2416,7 @@ export class AgentManager {
 		timer.unref?.();
 		this.reloadingPrimaries.set(ownerId, { primary, timer });
 		this.reloadedSignals.add(owner.signal);
+		this.liveActivity?.forOwner(ownerId, primary.liveActivity, false);
 		try {
 			primary.status?.(undefined);
 		} catch (error) {
@@ -2497,6 +2515,7 @@ export class AgentManager {
 		this.primaryClosures.get(primary.signal)?.delete(ownerId);
 		this.primaryChannels.set(ownerId, channel);
 		this.primaries.set(ownerId, primary);
+		this.liveActivity?.forOwner(ownerId, primary.liveActivity, true);
 		// References reported while the channel was opening reach the record now.
 		const workRefs = primary.workRefs ?? [];
 		if (JSON.stringify(workRefs) !== JSON.stringify(channel.info().workRefs ?? [])) {
@@ -2713,6 +2732,10 @@ export class AgentManager {
 		const closures = this.primaryClosures.get(signal);
 		const channel = this.primaryChannels.get(ownerId);
 		this.primaries.delete(ownerId);
+		if (!this.reloadedSignals.has(signal)) {
+			this.liveActivity?.forOwner(ownerId, primary.liveActivity, false);
+		}
+		if (!this.activityPrimary(ownerId)) this.liveActivity?.forgetOwner(ownerId);
 		this.primaryChannels.delete(ownerId);
 		this.partyEpochs.delete(ownerId);
 		const closing = Promise.resolve()
@@ -3242,6 +3265,7 @@ export class AgentManager {
 
 	private async monitorRecovery(storageId: string, client: HostConnection, primary: RecoveryOwner): Promise<void> {
 		let closed = false;
+		const activity = this.activityFeed(storageId, client, () => !closed && !this.clients.has(storageId));
 		let unsubscribe = () => {};
 		let removeClose = () => {};
 		let checking = false;
@@ -3249,6 +3273,7 @@ export class AgentManager {
 		const close = () => {
 			if (closed) return;
 			closed = true;
+			activity?.unavailable();
 			unsubscribe();
 			removeClose();
 			primary.signal.removeEventListener("abort", close);
@@ -3297,9 +3322,14 @@ export class AgentManager {
 		};
 		try {
 			if (client.subscribeChanges) {
-				unsubscribe = await client.subscribeChanges(() => {
-					void check();
-				}, primary.signal);
+				unsubscribe = await client.subscribeChanges(
+					(frame) => {
+						activity?.receive(frame);
+						void check();
+					},
+					primary.signal,
+					activity,
+				);
 				if (closed) unsubscribe();
 			}
 			await check();
@@ -3313,11 +3343,47 @@ export class AgentManager {
 		return this.shuttingDown || primary.signal.aborted;
 	}
 
+	private activityPrimary(sessionId: string): boolean {
+		const primary = this.replacingPrimaries.get(sessionId) ?? this.primaries.get(sessionId);
+		return primary?.liveActivity !== undefined && !this.stopping(primary);
+	}
+
+	/** Look up creation lineage at link setup, never on a catalogue notice or an ordinary render. */
+	private activityFeed(storageId: string, client: HostConnection, current: () => boolean) {
+		const projection = this.liveActivity;
+		if (
+			projection === undefined ||
+			client.subscribeChanges === undefined ||
+			(this.primaries.size === 0 && this.replacingPrimaries.size === 0)
+		)
+			return undefined;
+		let sessionId: string | undefined;
+		try {
+			sessionId = this.catalog.ordinaryOwner(client.metadata.ownerId);
+		} catch {
+			return undefined;
+		}
+		if (sessionId === undefined || !this.activityPrimary(sessionId)) return undefined;
+		const owner = sessionId;
+		const active = () => current() && this.activityPrimary(owner);
+		return {
+			sessionId,
+			active,
+			unavailable: () => projection.withdraw(storageId, client),
+			receive: (frame: HostChanges) => {
+				if (active()) projection.replace(storageId, client, owner, frame.writerId, frame.view);
+			},
+		};
+	}
+
 	private async subscribe(storageId: string, client: HostConnection): Promise<void> {
+		const current = () => this.clients.get(storageId) === client;
+		const activity = this.activityFeed(storageId, client, current);
 		this.subscriptions.get(storageId)?.();
 		this.subscriptions.delete(storageId);
 		client.onClose(() => {
-			if (this.clients.get(storageId) !== client) return;
+			activity?.unavailable();
+			if (!current()) return;
 			this.clients.delete(storageId);
 			this.launchRows.delete(storageId);
 			this.recoveryNotes.delete(storageId);
@@ -3328,9 +3394,14 @@ export class AgentManager {
 			this.catalogChanged([storageId]);
 		});
 		if (!client.subscribeChanges) return;
-		const unsubscribe = await client.subscribeChanges(() => {
-			this.catalogChanged([storageId]);
-		}, this.lifecycle.signal);
+		const unsubscribe = await client.subscribeChanges(
+			(frame) => {
+				activity?.receive(frame);
+				this.catalogChanged([storageId]);
+			},
+			this.lifecycle.signal,
+			activity,
+		);
 		if (client.closed) unsubscribe();
 		else this.subscriptions.set(storageId, unsubscribe);
 	}
@@ -3509,6 +3580,7 @@ export class AgentManager {
 	}
 
 	private releaseClients(): void {
+		this.liveActivity?.clear();
 		this.launchRows.clear();
 		for (const client of this.recoveryClients.values()) client.close();
 		for (const unsubscribe of this.subscriptions.values()) unsubscribe();

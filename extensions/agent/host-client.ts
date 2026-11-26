@@ -44,7 +44,13 @@ import {
 } from "./host-protocol.ts";
 import { HOST_CONTRACT, type RuntimeContract } from "./version-contract.ts";
 import { isObservationFrame, type ObservationFrame } from "./live-frames.ts";
-import { parseHostChanges, type HostChanges, type NativeOwnerEvidence } from "./host-changes.ts";
+import {
+	activityFeedToken,
+	baseChangesView,
+	parseHostChanges,
+	type HostChanges,
+	type NativeOwnerEvidence,
+} from "./host-changes.ts";
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30_000;
 // An unresolved project trust decision includes time for the primary UI answer.
@@ -169,7 +175,11 @@ export interface HostConnection {
 	 * Optional so structural test doubles remain valid; every acquired
 	 * connection implements it.
 	 */
-	subscribeChanges?(listener: (frame: HostChanges) => void, signal?: AbortSignal): Promise<() => void>;
+	subscribeChanges?(
+		listener: (frame: HostChanges) => void,
+		signal?: AbortSignal,
+		activity?: LiveActivityFeed,
+	): Promise<() => void>;
 	/**
 	 * Open one host-owned live observation. Frames arrive as published state,
 	 * coalesced by the host; cancelling the returned handle or aborting `signal`
@@ -201,8 +211,15 @@ interface PendingCall {
 	removeAbort: () => void;
 }
 
+interface LiveActivityFeed {
+	readonly sessionId: string;
+	active(): boolean;
+	unavailable(): void;
+}
+
 interface ChangeEntry {
 	readonly listener: (frame: HostChanges) => void;
+	readonly activity?: LiveActivityFeed;
 	binding?: symbol;
 	frame?: HostChanges;
 	readonly signal: AbortSignal | undefined;
@@ -966,7 +983,7 @@ class HostConnectionImpl implements HostConnection {
 			storageId: this.storageId,
 			socketPath: this.socketPathValue,
 			writerId: this.writerIdValue,
-			...(this.changeFrame.view === undefined ? {} : { view: this.changeFrame.view }),
+			...(this.changeFrame.view === undefined ? {} : { view: baseChangesView(this.changeFrame.view) }),
 		};
 	}
 	get ownedExit(): Promise<OwnedHostExit> | undefined {
@@ -1117,12 +1134,23 @@ class HostConnectionImpl implements HostConnection {
 		);
 	}
 
-	async subscribeChanges(listener: (frame: HostChanges) => void, signal?: AbortSignal): Promise<() => void> {
+	async subscribeChanges(
+		listener: (frame: HostChanges) => void,
+		signal?: AbortSignal,
+		activity?: LiveActivityFeed,
+	): Promise<() => void> {
 		if (this.closedValue) throw new Error("durable host connection is closed");
 		if (signal?.aborted) throw abortReason(signal);
 		const id = this.nextChangeId;
 		this.nextChangeId += 1;
-		const entry: ChangeEntry = { listener, signal, subscription: undefined, disposed: false, removeAbort: () => {} };
+		const entry: ChangeEntry = {
+			listener,
+			signal,
+			activity,
+			subscription: undefined,
+			disposed: false,
+			removeAbort: () => {},
+		};
 		this.changeEntries.set(id, entry);
 		try {
 			await this.bindChangeEntry(entry);
@@ -1168,7 +1196,7 @@ class HostConnectionImpl implements HostConnection {
 			entry.binding === binding;
 		const retain = (value: unknown) => {
 			if (!current()) return;
-			const frame = parseHostChanges(value, writerId, this.storageId);
+			const frame = parseHostChanges(value, writerId, this.storageId, entry.activity?.active() === true);
 			entry.frame = frame;
 			this.changeFrame = frame;
 			this.changeError = frame.view === undefined ? "The current host has no successful bounded publication" : "";
@@ -1180,7 +1208,7 @@ class HostConnectionImpl implements HostConnection {
 				(setup) =>
 					client.subscribe(
 						"changes",
-						undefined,
+						entry.activity?.active() ? activityFeedToken(entry.activity.sessionId) : undefined,
 						(value) => {
 							try {
 								retain(value);
@@ -1444,8 +1472,16 @@ class HostConnectionImpl implements HostConnection {
 		this.changeError = reason;
 		this.pendingChanges.clear();
 		for (const entry of this.changeEntries.values()) {
+			const hadFrame = entry.frame !== undefined;
 			entry.frame = undefined;
 			if (invalidateBindings) entry.binding = undefined;
+			if (hadFrame) {
+				try {
+					entry.activity?.unavailable();
+				} catch {
+					/* Presentation has no effect on connection state. */
+				}
+			}
 		}
 	}
 

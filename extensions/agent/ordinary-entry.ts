@@ -713,6 +713,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			root,
 			agentDir: process.env.PI_AGENT_DIR ?? getAgentDir(),
 			packageDir: getPackageDir(),
+			observeLiveActivity: true,
 			superviseHosts: true,
 		});
 		owners.managers.set(root, manager);
@@ -1787,6 +1788,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		if (ctx.sessionManager.getSessionFile() !== undefined && !sessionFileSaved(ctx)) unsavedSessions.add(sessionId);
 		else unsavedSessions.delete(sessionId);
 		await getManager().registerPrimary(sessionId, {
+			liveActivity: (replacement) => pi.events.emit("harness:live-activity", replacement),
 			freshSession: isFreshPrimary(_event.reason, ctx, retained),
 			sentWork: retainedSentWork(retained),
 			retainSentWork: (sessionId) => pi.appendEntry(SENT_WORK_ENTRY, { sessionId }),

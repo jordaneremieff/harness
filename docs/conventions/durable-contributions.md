@@ -59,6 +59,8 @@ interface DurableContribution {
   create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
   /** Commands that agent controls invoke by name, such as `agent_command`. */
   readonly commands?: readonly DurableCommand[];
+  /** Bounded, current activity held in this host's memory; see Live activity. */
+  liveActivity?(host: DurableContributionHost): readonly LiveActivityItem[];
   /**
    * Optional presentation-only module for the attached Agent terminal. `entry`
    * is a bare relative path inside the directory of `source`. See
@@ -82,6 +84,13 @@ interface DurableContribution {
     readonly export: "operatorPanel";
     readonly command: string;
   };
+}
+
+interface LiveActivityItem {
+  readonly id: string;
+  readonly conversationId: number;
+  readonly label: string;
+  readonly startedAt: number;
 }
 
 interface DurableContributionHost {
@@ -195,6 +204,53 @@ interface DurableCommandCall {
   readonly invocationId: string;
 }
 ```
+
+## Live activity
+
+A contribution can present active work it already tracks in memory. Its optional
+`liveActivity()` getter receives the same host object as `create()`. Keep the
+getter synchronous and pure: do not read Durable storage, start work, or create
+a listener. Add and remove items at work boundaries covered by existing host
+publications. Work that starts and ends between publications is not observed.
+The host uses the registered contribution name as `source`, not producer data.
+
+The existing writer-bound changes feed carries the optional projection inside
+its live view for an opted-in creating lineage. The host checks that lineage
+against the storage's creating owners. The scope selects display data; it does
+not authenticate an ordinary session separately from the local transport. The
+base view and its catalogue record do not contain the projection. A peer that
+does not opt in receives the same base view as before. The ordinary manager
+opts in at feed setup only if the creating session has a local registration or
+one in progress. A feed already open without that scope stays unscoped.
+
+An ordinary session receives full replacements on its Pi event bus:
+
+```ts
+// Channel: harness:live-activity
+interface LiveActivityReplacement {
+  readonly sessionId: string;
+  readonly source: string;
+  readonly storageId: string;
+  readonly items: readonly (LiveActivityItem & { readonly agentName?: string })[];
+}
+```
+
+Use `sessionId` to bind the ordinary registration and `source` plus `storageId`
+to select the group to replace. Items use storage-local positive conversation
+IDs, source-local string IDs, and a nonnegative integer start time in Unix
+milliseconds. The host joins `agentName` from an exact conversation row in the
+same published view, if present. The host admits up to eight items per storage,
+with source names and IDs of up to 128 UTF-16 code units, labels up to 160, and
+agent names up to 80. The projection has a 4 KiB JSON budget. It is omitted if
+it does not fit alongside the unchanged base within the existing view budget.
+
+Register the bus listener in the extension factory. A primary's initial
+replacements can precede another extension's `session_start` handler. An empty
+list withdraws a previously observed group after omission, link loss, or the
+end of a registration. Neither absence nor withdrawal proves that work ended.
+Only currently connected, observed work is represented. The transport does not
+start a host or add a connection, and events do not enter retained session
+history or the model's context.
 
 ## Independent command admission
 

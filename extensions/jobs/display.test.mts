@@ -84,8 +84,9 @@ test("ordinary publication answers a version 1 request and stops after unsubscri
 				const handlers = listeners.get(channel) ?? new Set<(data: unknown) => void>();
 				handlers.add(handler);
 				listeners.set(channel, handlers);
-				unsubscribe = () => handlers.delete(handler);
-				return unsubscribe;
+				const off = () => handlers.delete(handler);
+				if (channel === "harness:tool-display:request") unsubscribe = off;
+				return off;
 			},
 		},
 		registerTool() {},

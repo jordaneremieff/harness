@@ -9,12 +9,14 @@
  */
 import type { Context } from "@earendil-works/chord/context";
 import { withAbortSignal } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { ExecutionError, ShellExecResult } from "@earendil-works/pi-durable/env";
 import { arr, bool, int, nul, num, obj, opt, str, union, type Schema, type Static } from "@earendil-works/pi-schema";
 import {
 	commandPreview,
+	COMPLETION_LIMITS,
 	completionContent,
 	completionTail,
 	displayText,
@@ -34,13 +36,41 @@ import {
 	runningNextStep,
 } from "./next-step.ts";
 import { OutputTail } from "./output-tail.ts";
+import {
+	FINISHED_LIMIT,
+	OPEN_LIMIT,
+	panelText,
+	readPanelRequest,
+	type PanelJob,
+	type PanelSnapshot,
+} from "./panel-protocol.ts";
 
 /** Structural copy of the package-level Durable contribution contract. */
 export interface DurableContribution {
 	readonly name: string;
 	readonly source: string;
 	readonly display: { readonly version: 1; readonly entry: "./display.ts"; readonly export: "toolDisplay" };
+	readonly panel: {
+		readonly version: 1;
+		readonly entry: "./operator-panel.ts";
+		readonly export: "operatorPanel";
+		readonly command: "jobs";
+	};
+	readonly commands: readonly DurableCommand[];
+	liveActivity(host: DurableContributionHost): readonly LiveActivity[];
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
+}
+
+interface DurableCommand {
+	readonly name: string;
+	readonly description: string;
+	run(call: {
+		readonly args: string;
+		readonly data?: JsonValue;
+		readonly origin?: "operator" | "model";
+		readonly conversation: Durable.Conversation;
+		readonly context: Context;
+	}): Promise<string | { text: string; data: JsonValue }>;
 }
 
 /** Structural copy of the package-level contribution host, limited to the members this contribution reads. */
@@ -55,7 +85,17 @@ export interface DurableContributionHost {
 	onClose(dispose: () => void | Promise<void>): void;
 }
 
+interface LiveActivity {
+	readonly id: string;
+	readonly conversationId: number;
+	readonly label: string;
+	readonly startedAt: number;
+}
+
+const NO_ACTIVITY: readonly LiveActivity[] = Object.freeze([]);
+
 export const JOB_TASK_NAME = "jobs.run";
+const JOB_TASK_VERSION = 1;
 
 /** Durable input of one job; the command text lives here because the task, not the tool call, runs it. */
 export type JobInput = {
@@ -193,6 +233,10 @@ class LiveJobs {
 	readonly #entries = new Map<number, LiveJob>();
 	readonly #pendingAdmissions = new Map<number, number>();
 	readonly #launchTaskByJob = new Map<number, number>();
+	#activity: readonly LiveActivity[] = NO_ACTIVITY;
+	activity(): readonly LiveActivity[] {
+		return this.#activity;
+	}
 	reserveAdmission(launchTaskId: number, conversationId: number): void {
 		if (this.#pendingAdmissions.has(launchTaskId)) throw new Error("Duplicate job admission task");
 		this.#pendingAdmissions.set(launchTaskId, conversationId);
@@ -216,6 +260,17 @@ class LiveJobs {
 	runningCount(): number {
 		return this.#pendingAdmissions.size + [...this.#entries.values()].filter((entry) => entry.running).length;
 	}
+	start(id: number, input: JobInput, startedAt: number): void {
+		this.#activity = Object.freeze([
+			...this.#activity,
+			Object.freeze({
+				id: String(id),
+				conversationId: input.conversationId,
+				label: panelText(input.command, COMPLETION_LIMITS.commandChars),
+				startedAt,
+			}),
+		]);
+	}
 	open(id: number, conversationId: number): LiveJob {
 		if (this.#entries.size >= JOB_LIMITS.retained) {
 			const oldest = [...this.#entries.entries()]
@@ -228,7 +283,15 @@ class LiveJobs {
 		this.#entries.set(id, entry);
 		return entry;
 	}
+	settle(id: number, endedAt: number): void {
+		this.get(id)?.settle(endedAt);
+		const key = String(id);
+		if (!this.#activity.some((item) => item.id === key)) return;
+		const remaining = this.#activity.filter((item) => item.id !== key);
+		this.#activity = remaining.length ? Object.freeze(remaining) : NO_ACTIVITY;
+	}
 	clear(): void {
+		this.#activity = NO_ACTIVITY;
 		this.#entries.clear();
 		this.#pendingAdmissions.clear();
 		this.#launchTaskByJob.clear();
@@ -363,11 +426,88 @@ function textResult(details: JobsOutput, nextStep?: string): Durable.ToolExecuti
 	};
 }
 
+type ScannedTask = Awaited<ReturnType<Durable.Tx["scanTasks"]>>["items"][number];
+
+function isOwnedJobTask(
+	record: ScannedTask,
+	conversationId: Durable.ConversationId,
+): record is ScannedTask & JobRecord {
+	return (
+		record.kind === JOB_TASK_NAME &&
+		record.version === JOB_TASK_VERSION &&
+		record.conversationId === conversationId &&
+		record.owner === undefined &&
+		record.background
+	);
+}
+
+function panelJob(record: ScannedTask, conversationId: Durable.ConversationId): PanelJob {
+	if (!isOwnedJobTask(record, conversationId)) throw new Error("The task is not a supported job of this conversation.");
+	const job = jobFromRecord(record);
+	const state = record.state;
+	const startMark = state.checkpoint?.phase === "run" ? state.checkpoint.startedAt : job.startedAt;
+	const labels = {
+		running: job.cancellationRequested ? "Stopping" : record.state.status === "pending" ? "Queued" : "Running",
+		succeeded: "Succeeded",
+		failed: "Failed",
+		cancelled: "Cancelled",
+		timed_out: "Timed out",
+		lost: "Lost",
+	} as const;
+	return {
+		id: Number(record.id),
+		state: labels[job.status],
+		command: panelText(record.input.command, 512),
+		...(job.cwd === undefined ? {} : { cwd: panelText(job.cwd, 320) }),
+		...(startMark === undefined ? {} : { startedAt: startMark }),
+		...(job.endedAt === undefined ? {} : { endedAt: job.endedAt }),
+		...(job.exitCode === undefined ? {} : { exitCode: job.exitCode }),
+		...(job.error === undefined ? {} : { error: panelText(job.error, 320) }),
+		...(job.timeoutSeconds === undefined ? {} : { timeoutSeconds: job.timeoutSeconds }),
+	};
+}
+
+const jobsCommand: DurableCommand = {
+	name: "jobs",
+	description: "Inspect background commands in the selected agent’s Jobs view (operator only).",
+	async run({ args, origin, data, conversation, context }) {
+		if (origin !== "operator") throw new Error("Only an operator view can request this Jobs snapshot.");
+		if (args.trim() !== "") throw new Error("Jobs accepts no text arguments.");
+		if (data === undefined) return "Select the agent and open Owner views → Jobs to inspect its background commands.";
+		const { cursor } = readPanelRequest(data);
+		const snapshot = await conversation.commit(async (tx): Promise<PanelSnapshot> => {
+			const query = { conversationId: conversation.id, kind: JOB_TASK_NAME, background: true } as const;
+			// Newer terminal records cannot push an old running command out of the first page.
+			// The task definition never parks or owns child work, so it has no other open states.
+			const pending = cursor ? undefined : await tx.scanTasks({ ...query, status: "pending" }, OPEN_LIMIT);
+			const running = cursor ? undefined : await tx.scanTasks({ ...query, status: "running" }, OPEN_LIMIT);
+			const recent = await tx.scanTasks({ ...query, status: "terminal", order: "descending" }, FINISHED_LIMIT, cursor);
+			const observedAt = Date.now();
+			const open = [...(pending?.items ?? []), ...(running?.items ?? [])];
+			return {
+				observedAt,
+				jobs: [...open, ...recent.items].map((record) => panelJob(record, conversation.id)),
+				...(recent.next === undefined ? {} : { next: recent.next }),
+				...(pending?.next !== undefined || running?.next !== undefined ? { openIncomplete: true } : {}),
+			};
+		}, context);
+		return {
+			text: snapshot.jobs.length === 0 ? "No jobs on this page." : "Jobs snapshot for the selected agent.",
+			data: snapshot,
+		};
+	},
+};
+
 export function createJobsContribution(options: { source: string }): DurableContribution {
+	const liveByHarness = new WeakMap<Durable.Harness, LiveJobs>();
 	return {
 		name: "jobs",
 		source: options.source,
 		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
+		panel: { version: 1, entry: "./operator-panel.ts", export: "operatorPanel", command: "jobs" },
+		commands: [jobsCommand],
+		liveActivity: (host) =>
+			host.signal.aborted ? NO_ACTIVITY : (liveByHarness.get(host.harness)?.activity() ?? NO_ACTIVITY),
 		create(host) {
 			const commandPrefix = host.services.settingsManager.getShellCommandPrefix();
 			const live = new LiveJobs();
@@ -375,6 +515,7 @@ export function createJobsContribution(options: { source: string }): DurableCont
 			const streaks = new Map<number, CheckStreak>();
 			const endStreak = (conversationId: number) => streaks.delete(conversationId);
 			host.onClose(() => {
+				if (liveByHarness.get(host.harness) === live) liveByHarness.delete(host.harness);
 				live.clear();
 				streaks.clear();
 			});
@@ -460,13 +601,14 @@ export function createJobsContribution(options: { source: string }): DurableCont
 				const input = task.input;
 				const id = Number(task.id);
 				const startedAt = runtime.now();
-				let entry: LiveJob | undefined;
 				try {
+					liveByHarness.set(host.harness, live);
+					// The start checkpoint's commit publishes activity, even when environment setup is slow.
+					live.start(id, input, startedAt);
 					await runtime.commit(() => ({ status: "running", checkpoint: { phase: "run", startedAt } }), context);
 					const env = await jobEnvironment(runtime, context);
 					if (env === undefined) return;
 					const opened = live.open(id, input.conversationId);
-					entry = opened;
 					const exec = await env.exec(
 						commandPrefix ? `${commandPrefix}\n${input.command}` : input.command,
 						{
@@ -479,20 +621,20 @@ export function createJobsContribution(options: { source: string }): DurableCont
 						withAbortSignal(runtime.signal, context),
 					);
 					const endedAt = runtime.now();
-					entry.settle(endedAt);
+					live.settle(id, endedAt);
 					// An abort mark ends this invocation; the abort handler commits the terminal state.
 					if (runtime.signal.aborted) return;
-					const result = resultOf(exec, startedAt, endedAt, entry.end);
-					await retainOutcome(task, runtime, result, entry, context);
+					const result = resultOf(exec, startedAt, endedAt, opened.end);
+					await retainOutcome(task, runtime, result, opened, context);
 				} finally {
 					live.releaseJobAdmission(id);
-					entry?.settle(runtime.now());
+					live.settle(id, runtime.now());
 				}
 			}
 
 			const JobTask: JobRunTask = host.durable.defineTask<JobInput, JobState, JobResult>({
 				name: JOB_TASK_NAME,
-				version: 1,
+				version: JOB_TASK_VERSION,
 				initial: () => ({ phase: "run" }),
 				phases: {
 					run: async (task, runtime, context) => {
@@ -504,7 +646,7 @@ export function createJobsContribution(options: { source: string }): DurableCont
 				},
 				abort: async (task, runtime, context) => {
 					live.releaseJobAdmission(Number(task.id));
-					live.get(Number(task.id))?.settle(runtime.now());
+					live.settle(Number(task.id), runtime.now());
 					const checkpoint = task.state.checkpoint;
 					if (task.abortReason === "restart") {
 						if (checkpoint.phase === "deliver") return deliverOutcome(runtime, task.input, checkpoint, context);

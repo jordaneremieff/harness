@@ -35,7 +35,8 @@ import {
 import { HOST_CONTRACT, parseOperationContract, operationContractMismatch } from "./version-contract.ts";
 import { isObservationFrame } from "./live-frames.ts";
 import type { CatalogView } from "./catalog-view.ts";
-import type { HostChanges } from "./host-changes.ts";
+import { activityFeedOwner, type HostChanges } from "./host-changes.ts";
+import type { ChangesView } from "./live-activity.ts";
 import { createObservationPump, type ObservationClock, type ObservationPump } from "./observation-pump.ts";
 
 function hostOperationError(error: unknown): ChordError | PluginError {
@@ -83,6 +84,8 @@ export interface HostRuntime {
 	onChange?(listener: () => void): () => void;
 	/** Latest bounded view after its successful catalogue publication, not a disk reread. */
 	readonly publishedView?: CatalogView;
+	/** Scope the optional projection once at feed admission, without changing the base view. */
+	scopeLiveActivity?(sessionId: string): ((view: CatalogView) => ChangesView) | undefined;
 	/** Native view publications and committed invalidation wake observation feeds independently of catalog writes. */
 	onObservationChange?(listener: () => void): () => void;
 	/** Native commits and host-local control completion reset the idle interval without publishing a footer change. */
@@ -375,7 +378,7 @@ class HostProcessServer implements HostProcess {
 				this.pendingReplies++;
 				try {
 					return kind === "changes"
-						? this.subscribeChanges(publish, state)
+						? this.subscribeChanges(publish, state, activityFeedOwner(token))
 						: await this.subscribeObservation(token ?? "", publish, state);
 				} finally {
 					this.replyReady(true);
@@ -486,7 +489,9 @@ class HostProcessServer implements HostProcess {
 	private subscribeChanges(
 		publish: (value: unknown) => void,
 		state: AttachmentState,
+		activityOwner: string | undefined,
 	): { value: unknown; close: () => void } {
+		const activity = activityOwner === undefined ? undefined : this.runtime.scopeLiveActivity?.(activityOwner);
 		const id = randomUUID();
 		let sequence = 0;
 		let pending = false;
@@ -498,21 +503,21 @@ class HostProcessServer implements HostProcess {
 				queueMicrotask(() => {
 					pending = false;
 					if (state.subscriptions.get(id) !== entry) return;
-					publish(this.changesFrame(++sequence));
+					publish(this.changesFrame(++sequence, activity));
 				});
 			}) ?? (() => {});
 		state.subscriptions.set(id, entry);
 		return {
-			value: this.changesFrame(0),
+			value: this.changesFrame(0, activity),
 			close: () => {
 				if (state.subscriptions.delete(id)) entry.unsubscribe();
 			},
 		};
 	}
 
-	private changesFrame(revision: number): HostChanges {
+	private changesFrame(revision: number, activity?: (view: CatalogView) => ChangesView): HostChanges {
 		const view = this.runtime.publishedView;
-		return { revision, writerId: this.writerId, ...(view === undefined ? {} : { view }) };
+		return { revision, writerId: this.writerId, ...(view === undefined ? {} : { view: activity?.(view) ?? view }) };
 	}
 
 	private async subscribeObservation(

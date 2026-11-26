@@ -125,6 +125,15 @@ job's completion starts the session's next turn:
 - grey and hollow (`○`, theme colour `muted`) otherwise. A cancelled job is
   the caller's own act and does not turn the dot red.
 
+While a connected agent created under this session runs a managed command, the
+footer adds a separate count, for example `● jobs: 1/3 + 2 on agents`, or
+`● jobs: 2 on agents` with no local jobs. The dot is yellow while either
+kind runs. The local lifetime total and failure state do not change when an
+agent starts or finishes a command. Only agent jobs that the current host
+links report count; the number is not a total for the machine or a count of
+completions due to the primary. An agent job disappears when it ends or its
+link no longer supplies the observation. See [Jobs view](#jobs-view).
+
 Only the interactive terminal draws the colours; RPC hosts receive the plain
 glyphs. A restored count carries no outcome of the earlier runtime's jobs, so
 the dot starts grey. Sessions without a UI show no status, and shutdown clears
@@ -285,6 +294,37 @@ check whether another page is available. Use these requests for logs and
 cancellation while a job runs, not to poll for completion; the completion
 message above carries the outcome.
 
+#### Jobs in the Agent work view
+
+From ordinary `/agent` or the attached Agent terminal, select a live agent and
+open **Owner views → Jobs** (`o` opens Owner views). The view reads that
+conversation's native background jobs. It does not show ordinary `/jobs`
+records, read command output, run commands, or cancel work.
+
+The latest page puts open job tasks before the newest finished jobs, so a
+long-running command stays visible even after newer jobs finish. Each row
+shows the observed state and a command preview. Select a row for the command,
+execution directory, recorded start and end times, and outcome. Press Enter
+for a full-width detail view. Elapsed times stop at the end time or at the
+snapshot time. A running state does not prove process readiness.
+
+Press `r` to refresh or to return from an older page to the latest jobs.
+Press `]` for older finished jobs when the view offers that action. The view
+never polls. If the host does not answer, the view reports unavailability or
+marks the previous page stale. A stopped host does not advertise owner views;
+looking for Jobs does not start it.
+
+The panel uses the contribution's `jobs` command, not the `jobs` tool. The
+command requires operator origin. With no structured data it returns navigation
+help. Its sole structured request is `{ op: "list", cursor? }`. The response
+contains `{ jobs, observedAt, next?, openIncomplete? }`. `next` is the opaque
+continuation for the next finished page. The latest page reads at most eight
+pending tasks, eight running tasks, and twelve finished tasks. Older pages
+read at most twelve finished tasks. `openIncomplete` marks a bounded prefix
+when the open-task reads reach their limits. The command previews are flattened,
+control-free and limited to 512 characters. All reads use the bound
+conversation's native task records. No snapshot is a session-wide job count.
+
 ### Next step while a job runs
 
 A completion is a follow-up: an ordinary session receives it only once the
@@ -362,28 +402,39 @@ duration. The cards omit identity or clock facts absent from the record.
 
 ## Jobs view
 
-`/jobs` shows this Pi process's background jobs in the editor slot below the
+`/jobs` shows local background jobs and live jobs reported by connected agents
+in this session's creation lineage. It opens in the editor slot below the
 conversation, at 60% of the window's rows, as the other owner views do
 ([operator views](../../docs/conventions/operator-panels.md#ordinary-pi)). It
 reads the job records and starts nothing.
 
-- The title row counts the jobs that run now and every job that the session
-  started, as the footer entry does.
+- The title counts local running and started jobs separately from observed
+  active agent jobs. Agent rows show the agent name or short identity and its
+  command. Select one for the full identity. The list shows at most 64 agent
+  jobs and states when others are not shown; the count includes them.
 - One row per job: the jobs that run, then the jobs that ended, newest first in
   each. A row shows a dot, the state (`running`, `stopping`, `succeeded`,
   `failed`, `timed out`, `cancelled`), the elapsed time and the command preview.
   The dot uses the footer's colours: yellow while the job runs, red when it
   failed or timed out, grey hollow otherwise.
-- Below the list, a rule names the selected job's exit code or time limit and
+- For a local job, a rule names the selected job's exit code or time limit and
   its folder, and the rest of the view shows the last lines of its output,
   wrapped to the width. The view reads the records and the output again every
   second while it is open.
 - Up and Down, or the wheel, select a job; a click on a row selects it. `c`
-  cancels the selected job while it runs, through the same path as
+  cancels the selected **local** job while it runs, through the same path as
   `jobs cancel`, so it delivers no completion. Escape closes the view; a click
   on a key-row control runs its key.
 - Without jobs, the view keeps to three rows and says so. Jobs of earlier Pi
   processes of the session are not kept, and the view says that too.
+
+Agent rows are read-only. The parent does not read their logs, receive their
+completions, or count them for `jobs_yield`. Open `/agent`, select the agent,
+then choose **Owner views** (`o`) and **Jobs** for its retained job records.
+Neither the footer nor `/jobs` opens a connection to find agents. A short job
+can finish between updates without appearing. Disconnected hosts, hosts without
+the live activity capability, and updates without room for job details contribute
+no rows.
 
 The selection survives closing and reopening the view. A second `/jobs` while
 the view shows changes nothing, and session shutdown closes it. Outside the

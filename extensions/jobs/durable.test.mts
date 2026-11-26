@@ -6,6 +6,7 @@ import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import {
@@ -22,6 +23,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { createBashTool } from "@earendil-works/pi-durable/tools";
 import { JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./completion.ts";
 import { createJobsContribution, JOB_TASK_NAME, type DurableContributionHost, type JobInput } from "./durable.ts";
+import { FINISHED_LIMIT, readPanelSnapshot } from "./panel-protocol.ts";
 
 const ENTRYPOINT = fileURLToPath(new URL("./index.ts", import.meta.url));
 const context = BACKGROUND_CONTEXT;
@@ -190,7 +192,8 @@ async function openHarness(
 		signal: new AbortController().signal,
 		onClose: (dispose: () => void | Promise<void>) => closers.push(dispose),
 	} satisfies DurableContributionHost;
-	registry.install(await createJobsContribution({ source: ENTRYPOINT }).create(host));
+	const contribution = createJobsContribution({ source: ENTRYPOINT });
+	registry.install(await contribution.create(host));
 	if (options.failAdmission)
 		registry.install(
 			Durable.defineExtension({
@@ -239,7 +242,7 @@ async function openHarness(
 		for (const dispose of closers) await dispose();
 		assert.deepEqual(reports, [], "the harness reported no task or extension errors");
 	};
-	return { harness, faux, close, reports, registry };
+	return { harness, faux, close, reports, registry, contribution, host };
 }
 
 async function say(conversation: Durable.Conversation, text: string) {
@@ -661,6 +664,193 @@ test("host close clears a committed reservation before a fresh host admits work"
 	} finally {
 		await stopJobs(fresh.harness, ids);
 		await fresh.close();
+	}
+});
+
+test("live job activity appears at execution, ignores output, and disappears at settlement", {
+	timeout: 15_000,
+}, async () => {
+	const beforeCheckpoint = barrier();
+	const checkpoint = barrier();
+	const held = barrier();
+	const environment = barrier();
+	const entered = barrier();
+	const output = barrier();
+	const wrote = barrier();
+	const release = barrier();
+	const instance = await openHarness(
+		new Durable.MemoryStorage(),
+		(user, result) => {
+			if (!user.startsWith("LAUNCH") || result) return fauxAssistantMessage("Done.");
+			return fauxAssistantMessage(
+				fauxToolCall("bash", { command: `synthetic \u001b[31mred\u001b[0m ${"λ".repeat(220)}`, background: true }),
+				{ stopReason: "toolUse" },
+			);
+		},
+		{
+			probe: {
+				beforeRuntimeCommit: async (_id, ordinal) => {
+					if (ordinal === 1) {
+						beforeCheckpoint.resolve();
+						await boundedBarrier(checkpoint.promise);
+					}
+				},
+				beforeEnv: async () => {
+					held.resolve();
+					await boundedBarrier(environment.promise);
+				},
+			},
+			env: (target) => {
+				const env = new NodeExecutionEnv({ cwd: target.cwd ?? root });
+				env.exec = async (_command, options, executionContext) => {
+					entered.resolve();
+					await boundedBarrier(output.promise);
+					options?.onOutput?.("command output", executionContext, { stream: "stdout" });
+					wrote.resolve();
+					await boundedBarrier(release.promise);
+					return { ok: true, value: { exitCode: 0 } };
+				};
+				return env;
+			},
+		},
+	);
+	const { contribution, harness, host } = instance;
+	const activity = () => contribution.liveActivity(host);
+	try {
+		const owner = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } });
+		const empty = activity();
+		assert.deepEqual(empty, []);
+		const id = await launch(owner, "activity");
+		assert.ok(id);
+		await boundedBarrier(beforeCheckpoint.promise);
+		const running = activity();
+		assert.equal(running.length, 1);
+		assert.equal(running[0]?.id, id);
+		assert.equal(running[0]?.conversationId, owner.id);
+		assert.ok(Number.isFinite(running[0]?.startedAt));
+		assert.match(running[0]?.label ?? "", /^synthetic red λ+…$/u);
+		assert.equal(running[0]?.label.length, 200);
+		assert.ok(Object.isFrozen(running) && Object.isFrozen(running[0]));
+		const foreign = { ...host, harness: {} as Durable.Harness };
+		assert.equal(contribution.liveActivity(foreign), empty);
+		assert.equal(contribution.liveActivity({ ...host, signal: AbortSignal.abort() }), empty);
+		checkpoint.resolve();
+		await boundedBarrier(held.promise);
+		assert.equal(activity(), running, "environment startup leaves the active invocation visible");
+		environment.resolve();
+		await boundedBarrier(entered.promise);
+		output.resolve();
+		await boundedBarrier(wrote.promise);
+		assert.equal(activity(), running, "emission does not change the cached activity");
+		release.resolve();
+		await harness.waitForTask(Number(id) as Durable.TaskId, context);
+		assert.equal(activity(), empty);
+	} finally {
+		checkpoint.resolve();
+		environment.resolve();
+		output.resolve();
+		release.resolve();
+		await instance.close();
+	}
+});
+
+test("the Jobs command reads only the bound conversation and keeps old running jobs ahead of finished pages", {
+	timeout: 20_000,
+}, async () => {
+	const entered = barrier();
+	const instance = await openHarness(
+		await openNodeSqliteStorage(join(root, "jobs-panel.sqlite")),
+		(user, result) => {
+			if (result || !user.startsWith("LAUNCH ")) return fauxAssistantMessage("Done.");
+			return fauxAssistantMessage(fauxToolCall("bash", { command: user.slice(7), background: true, timeout: 20 }), {
+				stopReason: "toolUse",
+			});
+		},
+		{
+			responses: 150,
+			env: (target) => {
+				const env = waitingEnvironment(target);
+				const wait = env.exec.bind(env);
+				env.exec = async (command, options, executionContext) => {
+					if (typeof command === "string" && command.startsWith("hold")) {
+						entered.resolve();
+						return wait(command, options, executionContext);
+					}
+					options?.onOutput?.("PROTECTED OUTPUT", executionContext, { stream: "stdout" });
+					return { ok: true, value: { exitCode: 7 } };
+				};
+				return env;
+			},
+		},
+	);
+	const { harness, contribution } = instance;
+	const agent = { model: { provider: "faux", modelId: "faux-1" }, cwd: root };
+	try {
+		const owner = await harness.root(context, { agent });
+		const other = await harness.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
+		assert.equal(contribution.panel.command, "jobs");
+		const command = contribution.commands.find(({ name }) => name === contribution.panel.command);
+		assert.ok(command);
+		const request = (conversation: Durable.Conversation, data?: JsonValue, origin: "operator" | "model" = "operator") =>
+			command.run({ args: "", conversation, context, origin, ...(data === undefined ? {} : { data }) });
+		const load = async (conversation: Durable.Conversation, cursor?: Record<string, JsonValue>) => {
+			const result = await request(conversation, { op: "list", ...(cursor === undefined ? {} : { cursor }) });
+			assert.ok(typeof result !== "string");
+			assert.doesNotMatch(JSON.stringify(result.data), /PROTECTED OUTPUT/u);
+			return readPanelSnapshot(result.data, cursor !== undefined);
+		};
+		assert.match(String(await request(owner)), /Owner views → Jobs/u);
+		assert.deepEqual((await load(other)).jobs, []);
+		await assert.rejects(request(owner, { op: "list" }, "model"), /operator view/);
+		await assert.rejects(request(owner, { op: "cancel" }), /accepts only/);
+		await assert.rejects(request(owner, { op: "list", conversationId: other.id }), /accepts only/);
+		await assert.rejects(request(owner, { op: "list", cursor: "no" }), /continuation/);
+		await assert.rejects(request(owner, { op: "list", cursor: { head: "x".repeat(260) } }), /continuation/);
+		const liveId = await launch(owner, `hold \u001b]52;c;not-clipboard\u0007hidden\u202e\n${"λ".repeat(700)}`);
+		assert.ok(liveId);
+		await boundedBarrier(entered.promise);
+		const finished = [];
+		for (let index = 0; index <= FINISHED_LIMIT; index++) {
+			const id = await launch(owner, `finished-${index}`);
+			assert.ok(id);
+			finished.push(Number(id));
+			await harness.waitForTask(Number(id) as Durable.TaskId, context);
+		}
+		const otherId = await launch(other, "different-owner");
+		assert.ok(otherId);
+		await harness.waitForTask(Number(otherId) as Durable.TaskId, context);
+		await harness.waitForIdle(context);
+		const head = (await owner.context(context)).head?.id;
+		const latest = await load(owner);
+		assert.deepEqual(
+			latest.jobs.map(({ id }) => id),
+			[Number(liveId), ...finished.slice(1).reverse()],
+		);
+		assert.equal(latest.openIncomplete, undefined);
+		assert.equal(latest.jobs[0]?.state, "Running");
+		assert.equal(latest.jobs[0]?.timeoutSeconds, 20);
+		assert.ok(latest.jobs[0]?.startedAt);
+		assert.equal(latest.jobs[0]?.endedAt, undefined);
+		assert.match(latest.jobs[0]?.command ?? "", /^hold hidden λ+…$/u);
+		assert.equal(latest.jobs[0]?.command.length, 512);
+		assert.equal(latest.jobs[1]?.state, "Failed");
+		assert.equal(latest.jobs[1]?.exitCode, 7);
+		assert.ok(latest.jobs[1]?.endedAt);
+		assert.ok(latest.next);
+		const older = await load(owner, latest.next);
+		assert.deepEqual(
+			older.jobs.map(({ id }) => id),
+			finished.slice(0, 1),
+		);
+		assert.equal(older.next, undefined);
+		assert.deepEqual(
+			(await load(other)).jobs.map(({ id }) => id),
+			[Number(otherId)],
+		);
+		assert.equal((await owner.context(context)).head?.id, head, "a Jobs read does not write an entry or start a turn");
+		assert.equal((await taskRecord(harness, liveId)).abortRequested, false);
+	} finally {
+		await instance.close();
 	}
 });
 
@@ -1343,6 +1533,10 @@ test("cancellation settles quietly, another conversation cannot reach the job, a
 			"the job wrote its PID",
 		);
 		const pid = Number(readFileSync(pidFile, "utf8"));
+		assert.deepEqual(
+			one.contribution.liveActivity(one.host).map(({ id }) => id),
+			[first],
+		);
 		const other = await one.harness.createConversation(
 			{ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } },
 			context,
@@ -1361,6 +1555,7 @@ test("cancellation settles quietly, another conversation cannot reach the job, a
 		);
 		const cancelled = await taskRecord(one.harness, first);
 		assert.equal(cancelled.state.outcome?.status, "aborted");
+		assert.deepEqual(one.contribution.liveActivity(one.host), []);
 		await until(async () => {
 			try {
 				process.kill(pid, 0);
@@ -1379,9 +1574,14 @@ test("cancellation settles quietly, another conversation cannot reach the job, a
 		const live = await liveJobTasks(one.harness);
 		assert.equal(live.length, 1);
 		long = String(live[0].id);
+		assert.deepEqual(
+			one.contribution.liveActivity(one.host).map(({ id }) => id),
+			[long],
+		);
 	} finally {
 		await one.close();
 	}
+	assert.deepEqual(one.contribution.liveActivity(one.host), []);
 
 	const two = await openHarness(await openNodeSqliteStorage(storagePath), script);
 	try {

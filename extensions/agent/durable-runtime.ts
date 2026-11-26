@@ -55,6 +55,7 @@ import { hostActivityPublisher } from "./host-activity.ts";
 import { onStoredCommit } from "./commit-observation.ts";
 import { stopForeignReferences } from "./run-control.ts";
 import { createDurableServices, type DurableServices, type CreateDurableServicesOptions } from "./durable-services.ts";
+import type { ChangesView } from "./live-activity.ts";
 import { publishAgentControlDispatch, type AgentControlDispatch } from "./durable-agents.ts";
 import { projectConversationIntents } from "./durable-controls.ts";
 import { deliveryPendingCount, migrateDeliveryStore, pendingDeliveryPage } from "./delivery-store.ts";
@@ -490,6 +491,7 @@ export async function createDurableRuntime(
 	let retirementSealed = false;
 	const changeListeners = new Set<() => void>();
 	let publishedView: CatalogView | undefined;
+	let feedActivity: { base: CatalogView; services: DurableServices; view: ChangesView } | undefined;
 	const observationListeners = new Set<() => void>();
 	const activityListeners = new Set<() => void>();
 	const quiescentListeners = new Set<() => void>();
@@ -501,6 +503,34 @@ export async function createDurableRuntime(
 	let unsubscribeClose: (() => void) | undefined;
 	const catalog = new AgentCatalog(dirname(dirname(metadata.storagePath)));
 	const threadStorageOwner = isThreadStorage(metadata, catalog.root) ? metadata.ownerId : undefined;
+	function matchesActivityOwner(sessionId: string): boolean {
+		try {
+			return services.contributionHost.ordinarySession() === sessionId;
+		} catch {
+			return false;
+		}
+	}
+
+	function projectLiveActivity(
+		base: CatalogView,
+		project: NonNullable<DurableServices["liveActivityView"]>,
+	): ChangesView {
+		if (feedActivity?.base === base && feedActivity.services === services) return feedActivity.view;
+		const view = project(base);
+		feedActivity = { base, services, view };
+		return view;
+	}
+
+	function scopeLiveActivity(sessionId: string): (base: CatalogView) => ChangesView {
+		let scoped: boolean | undefined;
+		return (base) => {
+			const project = services.liveActivityView;
+			if (closed || project === undefined) return base;
+			scoped ??= matchesActivityOwner(sessionId);
+			return scoped ? projectLiveActivity(base, project) : base;
+		};
+	}
+
 	/** A recipient in this storage needs no catalog read; any other identity costs one record stat. */
 	function refuseThreadStorageRecipient(field: string, recipient: string): void {
 		let storageId: string;
@@ -906,6 +936,7 @@ export async function createDurableRuntime(
 				const view = withModelEvidence(intended, projection.modelEvidence);
 				if (!writeCatalogView(view, await projectCollaboration(host.harness, BACKGROUND_CONTEXT))) return;
 				publishedView = view;
+				feedActivity = undefined;
 				for (const listener of changeListeners) listener();
 			} catch (error) {
 				readEveryConversation = true;
@@ -1727,6 +1758,7 @@ export async function createDurableRuntime(
 	return {
 		request,
 		requestRelease,
+		scopeLiveActivity,
 		get publishedView() {
 			return publishedView;
 		},

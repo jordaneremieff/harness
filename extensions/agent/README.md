@@ -715,7 +715,7 @@ inventory uses the local definitions without a diagnostic. When the lookup
 changes, the selected transcript rebuilds from retained entries and keeps its
 reading position and disclosure choices. A host from another release
 refuses the status read through the existing operation identity check; there
-is no older reader. Owner views (clipboard, markdown, pillars, policy, stash) load the
+is no older reader. Owner views (clipboard, jobs, markdown, pillars, policy, stash) load the
 same way and open from Owner views (`o`) in the key row; see
 [operator panels](../../docs/conventions/operator-panels.md#attached-panels).
 The client accepts a module only in the current `version: 2` shape and refuses

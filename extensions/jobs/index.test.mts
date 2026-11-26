@@ -16,7 +16,7 @@ import { createJobActivity, formatStatusRecord, recordId } from "./activity.ts";
 import { COMPLETION_LIMITS, JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./completion.ts";
 import registerJobs from "./index.ts";
 import { JOB_LIMITS, type JobLogs, type JobSnapshot } from "./manager.ts";
-import { YIELD_ENDED_TEXT, YIELD_REFUSED, type YieldDetails } from "./yield.ts";
+import { YIELD_ENDED_TEXT, YIELD_REFUSED, YIELD_TOOL, type YieldDetails } from "./yield.ts";
 
 interface Result {
 	isError?: boolean;
@@ -488,6 +488,47 @@ describe("Command Jobs adapter", () => {
 			await pi.shutdown();
 		}
 		assert.deepEqual(terminal.statuses.at(-1), ["jobs", undefined], "shutdown clears the entry");
+	});
+
+	it("keeps observed agent jobs out of local totals, controls and completion delivery", async () => {
+		const notices: string[] = [];
+		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]>, notices };
+		const { pi, call } = setup(root, false, terminal, "rpc");
+		const command = pi.commands.get("jobs");
+		assert.ok(command && pi.ctx);
+		const update = {
+			source: "jobs",
+			sessionId: "job-session",
+			storageId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			items: [{ conversationId: 1, id: "5", startedAt: Date.now(), agentName: "Builder", label: "npm test" }],
+		};
+		try {
+			pi.events.emit("harness:live-activity", update);
+			await pi.emit("session_start", { reason: "startup" });
+			assert.deepEqual(terminal.statuses.at(-1), ["jobs", "● jobs: 1 on agents"]);
+			const paints = terminal.statuses.length;
+			pi.events.emit("harness:live-activity", update);
+			pi.events.emit("harness:live-activity", { ...update, sessionId: "elsewhere", items: [] });
+			pi.events.emit("harness:live-activity", { ...update, source: "other", items: [] });
+			assert.equal(terminal.statuses.length, paints);
+			await command.handler("", pi.ctx);
+			assert.match(notices.at(-1) ?? "", /^Jobs: 1 on agents\n● running \d+s {2}Builder: npm test$/u);
+			assert.deepEqual(detailsOf(await call("jobs", { action: "list" })).jobs, []);
+			await assert.rejects(
+				() => call(YIELD_TOOL, { note: "A job runs." }),
+				(error: Error) => error.message === YIELD_REFUSED,
+			);
+			const local = jobOf(await call("bash", { command: "tail -f /dev/null", background: true }));
+			assert.deepEqual(terminal.statuses.at(-1), ["jobs", "● jobs: 1/1 + 1 on agents"]);
+			pi.events.emit("harness:live-activity", { ...update, items: [] });
+			assert.deepEqual(terminal.statuses.at(-1), ["jobs", "● jobs: 1/1"]);
+			await call("jobs", { action: "cancel", id: local.id });
+		} finally {
+			await pi.shutdown();
+		}
+		pi.events.emit("harness:live-activity", update);
+		assert.deepEqual(terminal.statuses.at(-1), ["jobs", undefined]);
+		assert.equal(pi.sent.length, 0);
 	});
 
 	it("answers /jobs outside the interactive terminal with one line per job, newest first", async () => {
