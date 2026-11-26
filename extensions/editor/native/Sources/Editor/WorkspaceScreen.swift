@@ -38,6 +38,7 @@ final class WorkspaceScreen {
     private let welcome: WorkspaceLanding
     private var panel: Panel? = .files
     private var buffers: [String: CodeEditor] = [:]
+    private(set) var recentDocuments: [String] = []
     private var compositions: [String: CompositionPage] = [:]
     private var viewHeaders: [Fields] = []
     private var documents: [Fields] = []
@@ -287,12 +288,17 @@ final class WorkspaceScreen {
         if !chrome.showsSideBySide || panel == .notes { panel = nil }
         present(reveal: key)
         if let line { editor.go(line: line) }
-        if focus { editor.focus() }
+        if focus {
+            recentDocuments.removeAll { $0 == editor.doc }
+            recentDocuments.insert(editor.doc, at: 0)
+            if recentDocuments.count > 40 { recentDocuments.removeLast() }
+            editor.focus()
+        }
         if editor.conflicted || editor.diskConflict { conflictMessage(editor) }
     }
 
-    private func select(_ key: String) async throws {
-        if key.hasPrefix("doc:") { try await open(String(key.dropFirst(4))); return }
+    private func select(_ key: String, focus: Bool = true) async throws {
+        if key.hasPrefix("doc:") { try await open(String(key.dropFirst(4)), focus: focus); return }
         let id = String(key.dropFirst(5))
         guard let header = viewHeaders.first(where: { $0["id"] as? String == id }), let rev = header["rev"] as? Int else { return }
         selectionRequest += 1
@@ -534,29 +540,41 @@ final class WorkspaceScreen {
     /// Shows a file without moving the keyboard, as Go to Anything does while a person moves
     /// through its list. The next preview replaces it unless `endTransient(commit:)` keeps it.
     /// Requests apply in order; a preview that a later one supersedes is skipped.
-    func showTransient(_ doc: String, line: Int?) {
+    func showTransient(_ doc: String, line: Int?, onPreview: (@MainActor (Result<CodeEditor, Error>) -> Void)? = nil) {
         previewRequest += 1
         let request = previewRequest
-        if transient == nil && previewChain == nil { previewReturn = selected }
         enqueuePreview { screen in
             guard request == screen.previewRequest else { return }
+            if screen.transient == nil { screen.previewReturn = screen.selected }
             let key = screen.fileKey(doc)
-            if let current = screen.transient, current.key != key, !current.wasOpen { try await screen.closeTab(current.key) }
-            let wasOpen = screen.transient?.key == key ? screen.transient?.wasOpen == true : screen.groupIndex(of: key) != nil
-            screen.transient = (key, wasOpen)
-            try await screen.open(doc, line: line, focus: false)
+            do {
+                if let current = screen.transient, current.key != key, !current.wasOpen { try await screen.closeTab(current.key, focus: false) }
+                let wasOpen = screen.transient?.key == key ? screen.transient?.wasOpen == true : screen.groupIndex(of: key) != nil
+                screen.transient = (key, wasOpen)
+                try await screen.open(doc, line: line, focus: false)
+                if request == screen.previewRequest, let editor = screen.editor(for: key) { onPreview?(.success(editor)) }
+            } catch {
+                if request == screen.previewRequest, let onPreview { onPreview(.failure(error)) }
+                else if onPreview == nil { throw error }
+            }
         }
     }
 
     /// Keeps the previewed file open, or closes it and returns to the tab that was on show.
-    func endTransient(commit: Bool) {
+    func endTransient(commit: Bool, focus: Bool = true) {
+        if !commit { previewRequest += 1 }
         enqueuePreview { screen in
             defer { screen.previewReturn = nil }
-            guard let current = screen.transient else { return }
+            guard let current = screen.transient else {
+                if focus { screen.currentEditor?.focus() }
+                return
+            }
             screen.transient = nil
-            if commit { try await screen.open(String(current.key.dropFirst(4))); return }
-            if !current.wasOpen { try await screen.closeTab(current.key) }
-            if let previous = screen.previewReturn, screen.groupIndex(of: previous) != nil { try await screen.select(previous) }
+            if commit { try await screen.open(String(current.key.dropFirst(4)), focus: focus); return }
+            if !current.wasOpen { try await screen.closeTab(current.key, focus: false) }
+            if let previous = screen.previewReturn, screen.groupIndex(of: previous) != nil {
+                try await screen.select(previous, focus: focus)
+            } else if focus { screen.currentEditor?.focus() }
         }
     }
 
@@ -632,7 +650,7 @@ final class WorkspaceScreen {
             screen.chrome.setMessage("Your local text is in a new scratch. The original tab shows the shared draft.")
         }
     }
-    private func closeTab(_ key: String) async throws {
+    private func closeTab(_ key: String, focus: Bool = true) async throws {
         if let editor = editor(for: key) {
             try await editor.flush()
             guard !editor.hasPending else { chrome.setMessage("The tab changed during close. Your edits are still here."); return }
@@ -648,7 +666,7 @@ final class WorkspaceScreen {
                 groups[index].selected = nil
                 if let next = neighbour(in: index, at: place) {
                     active = groups[index].id
-                    try await select(next)
+                    try await select(next, focus: focus)
                 }
             }
         }
