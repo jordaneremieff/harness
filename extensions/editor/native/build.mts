@@ -102,7 +102,7 @@ export async function buildEditorApp({
 }: EditorBuild): Promise<void> {
 	if (process.platform !== "darwin") throw new Error("Editor requires macOS 26 or later.");
 	const flags = ["build", "--package-path", sources, "--scratch-path", scratch, "-c", "release", "--product", "Editor"];
-	await run(log, "/usr/bin/swift", flags, 120_000);
+	await run(log, "/usr/bin/swift", flags, 300_000);
 	const products = await run(log, "/usr/bin/swift", [...flags, "--show-bin-path"], 15_000);
 	if (editorSourceDigest(sources) !== digest) throw new Error("Editor sources changed during the build.");
 	mkdirSync(app, { mode: 0o700 });

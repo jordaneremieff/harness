@@ -1,31 +1,51 @@
 # Editor
 
-From interactive Pi in a local Rex pane on macOS, run `/editor [folder or file]`. Editor opens in a new split on the right of that Pi pane. With no argument it opens the current directory. A file argument also opens that file. Click in the source to edit; **Save** writes the shared draft to disk.
+From interactive Pi in a local Rex pane on macOS, run `/editor [folder or file]`. Editor opens in a new split on the right of that Pi pane. With no argument it opens the current directory. A file argument also opens that file. Click in the source to edit; `cmd+S` writes the shared draft to disk.
 
 To work with another agent, ask that ordinary Pi session or Durable conversation to join the same folder with the `editor` tool. No extra pane opens. Right-click a character, selection, file, folder, tab, pane or setting and choose its note action. Write a note, choose the recipient, then click **Send Request**. **Post Note** keeps the thread without sending it. To send a later reply to another participant, select their name in that thread. A receipt confirms delivery, not completion.
 
 A participant can read the unsaved draft, edit an exact passage, annotate a different file, or put a new tab beside your files. For example, ask one agent for a map of a folder. Its tab can mix explanations, code and buttons that open particular lines. Ask another agent to change a passage from the map. You see the changed draft before you decide to save. A composed tab contains data, not executable code, and does not take focus when an agent publishes it.
 
+## Look and settings
+
+- Editor paints every surface from the shared Catppuccin palette and follows the machine's [pane appearance](../../docs/conventions/pane-appearance.md): System, Light or Dark, and Frappé, Macchiato or Mocha for the dark appearance. A choice in Editor reaches the Markdown reader and Explorer, and their choices reach Editor.
+- **Settings** (`cmd+,`) shows the theme choice and every setting as a typed control: font family, size, line spacing, ligatures and interface size; caret style and width; line numbers, fold buttons, change marks, minimap, indent guides, rulers, whitespace and wrapping; tab width, spaces or tabs, indentation detection, automatic indentation and closing pairs; save cleanup; reopened tabs and previews. A change applies to every open pane at once. A language selector edits the values of one language, such as wrapping for Markdown.
+- The settings live in `<agentDir>/editor/settings.json`, which holds only the values that differ from the defaults, with per-language values under `languages`. The file accepts comments and trailing commas. Editor applies a change to the file at once, whether Settings, a person or an agent made it, and Settings lists any value it ignored and why.
+- `cmd+=`, `cmd+-` and `cmd+0` change the font size. The command palette (`cmd+shift+P`) lists every command with its shortcut, and toggles the view settings.
+
 ## Working with files
 
-- The four buttons on the left of the toolbar each show a panel in the sidebar: project files (`cmd+O`), project search (`cmd+P`) for paths or text, local Git, and conversations (`cmd+option+T`). The button of the panel on show hides the sidebar.
-- The project files panel shows the folder as a tree. A folder opens under its own row, and Editor reads it at that moment. A folder with more entries than one page ends with a **More files…** row. The refresh control reads the tree again and keeps the open folders open. Search and large listings mark partial results.
-- Find (`cmd+F`, **Find…** in the menu of the source, or **Find in this file…** in workspace actions) searches the open file.
-- Press `cmd+N` for an untitled scratch or `cmd+shift+N` for a new file. **New file in this folder…** in the menu of a folder in the project tree starts the path with that folder. Scratch drafts live with the folder. Save As (`cmd+shift+S`) requires an unused path in an existing directory. An existing file’s Save As leaves the original intact.
+- The sidebar shows **Open Files** above **Folders**. Its header switches between project files (`cmd+O`), project search, local Git and conversations (`cmd+option+T`); `cmd+K cmd+B` or the button at the left of the status line hides it. File icons show the type, and badges show Git changes.
+- A click in the tree previews a file in an italic tab that the next preview replaces; a double-click or an edit keeps it. The menu of a file or folder creates, renames (`F2`), duplicates, moves, copies the path of, reveals or deletes it. Deletion moves the entry to the macOS Trash after a confirmation that names any unsaved drafts, and keeps those drafts. Drag a file onto a folder to move it, or onto a tab strip or page edge to open it there. Open tabs and drafts follow a renamed or moved file.
+- `cmd+N` starts an untitled scratch and `cmd+shift+N` a new file. New File, New Folder, Save As (`cmd+shift+S`), Duplicate and Move ask for a project path; Tab completes folder names. Save As requires an unused path in an existing directory and leaves the original file intact.
+- Closing a tab with unsaved changes offers **Save**, **Keep as draft** and **Discard changes**. When a writer outside Editor changes an open file, Editor offers **Reload from disk**, **Save as…** and **Keep my draft**.
+- The status line shows the Git branch, the caret line and column, the selection, and the indentation, language, line endings and encoding of the file. Click the indentation or the language to change it. A save, a posted note or an accepted request shows there for a few seconds; a problem stays above the stage until you dismiss it.
 - The local Git panel shows the branch, changed files and file diffs. Git reads disk, not unsaved drafts. Editor does not stage, commit or contact a remote.
-- The status line confirms a save, a posted note or an accepted request for a few seconds. A problem or a conflict appears above the stage and stays until you dismiss it.
 - Text files must be valid UTF-8 and no larger than 2 MiB. Editor retains a file's mode and UTF-8 BOM. The draft uses LF; Save uses the first newline convention found in the original file. Symbolic links and version-control internals are not editable.
+
+## Navigating and searching
+
+- `cmd+P` finds a project file by fuzzy match and previews each result as you move through the list; Return keeps it and Escape returns to the tab you had. Add `:line`, `@symbol` or `#text` to go further inside the file. `control+G` goes to a line and `cmd+R` to a symbol of the current file.
+- `cmd+F` opens Find at the bottom of the page and `cmd+option+F` adds Replace. Both take regular expressions, case, whole word, in-selection and wrap options and show the match count. `cmd+G` and `cmd+shift+G` move between matches, `cmd+E` uses the selection, Find All selects every match, and Replace All is one undo step.
+- `cmd+shift+F` searches the project, including unsaved drafts. **Where** takes comma-separated folders and globs such as `src/, *.ts, -*.test.ts`. Results group by file with context; a click or `F4` opens a match. Replace All changes drafts only, so you review each file before you save it.
+
+## Source editing
+
+- The gutter shows line numbers, fold buttons and change marks against the last Git commit. The current line, indent guides, rulers, matching brackets in one colour per kind, and other occurrences of the selected word are marked as you move. On a wide page the minimap shows the file with Find results and changes; click or drag it to scroll.
+- `cmd+click` adds a caret, `option+drag` makes a column selection, `cmd+D` selects the word and then its next occurrence (`cmd+K cmd+D` skips one), `control+cmd+G` selects every occurrence, `cmd+shift+L` splits a selection into lines, and `control+shift+up` or `down` adds a caret. Typing, deleting, pasting and line commands apply to every selection as one undo step; Escape returns to one selection.
+- Line and selection commands include toggle comment (`cmd+/`), indent (`cmd+]`, `cmd+[`), move lines (`control+cmd+up`, `down`), duplicate (`cmd+shift+D`), delete line (`control+shift+K`), join lines (`cmd+J`), select line (`cmd+L`), expand to brackets (`control+shift+M`), jump to the matching bracket (`control+M`), case conversion, sorting and more in the command palette. Return keeps the indentation and indents after an opening bracket; brackets and quotes close in pairs.
+- Fold a block from the gutter or with `cmd+option+[`; folding never changes the draft. Editor detects the indentation of each file, and save cleanup (trailing spaces, a final line break) is one undoable edit before the save.
+- Colours follow the language of the file, including multi-line comments and strings and the language named by a Markdown code fence. Unknown file types stay plain.
 
 ## Layout
 
 You arrange a pane with the pointer. The arrangement belongs to that pane: it changes no draft, thread or file, and no other participant sees it.
 
-- Drag the line between the sidebar and the source to change the sidebar's width. The line lights up under the pointer. Double-click it to fit the width to the longest listed name.
-- Editor keeps the width you chose for later panes on this Mac, as a preference of the Editor app. A narrow pane limits the width so that the source stays usable; the chosen width returns when the pane has room again.
-- Drag a tab along its strip to change its place. The other tabs make room while you drag. Press Escape to leave the tab where it was.
-- A tab closes with its close control, with the middle mouse button or from its menu. A draft with unsaved changes shows a dot in place of the close control until the pointer is over the tab.
-- Drag a tab to the left or right part of the page to give it that side of the stage; a mark shows the side before you let go. With two sides, drag a tab to the other strip or page to move it across. Drag the line between the sides to change their widths, or double-click it to make them equal. A side goes away with its last tab. The tab menu offers the same moves.
-- A location button in a composed tab shows its file on the other side when the stage has two sides, so the composed tab stays on show. A composed tab that an agent publishes joins the side that holds your other composed tabs.
+- Drag the line between the sidebar and the stage to change the sidebar's width, or double-click it to fit the longest name. Editor keeps the width for later panes on this Mac; a narrow pane limits it, and the chosen width returns when there is room.
+- The stage holds up to four tab groups: one to four columns (`cmd+option+1` to `4`), two or three rows (`cmd+option+shift+2`, `3`) or a grid of four (`cmd+option+5`). Drag a tab along its strip to reorder it, to another strip to move it, or to the edge of a page to split there; Escape cancels the drag. Drag a divider to resize groups, or double-click it to even them. `control+1` to `4` focuses a group, and `control+shift+1` to `4` moves the tab there.
+- A tab closes with its control, the middle mouse button, `cmd+W` or its menu; `cmd+shift+T` reopens the last closed tab. A draft with unsaved changes shows a dot in place of the close control until the pointer is over the tab.
+- A location button in a composed tab shows its file in another group, so the composed tab stays on show. A composed tab that an agent publishes joins the group that holds your other composed tabs.
+- With **Reopen tabs** on, Editor keeps each folder's layout, tabs, sidebar, open folders, selections and scroll positions, and restores them when you open the folder again. A file named in `/editor` opens in front of the restored tabs.
 - A pane narrower than 480 points shows the sidebar or the stage, not both.
 
 ## Shared drafts and threads
@@ -34,7 +54,7 @@ The same canonical folder and Pi agent directory identify a workspace. Sessions 
 
 Typing updates the native text view immediately. After a pause, or before a dependent action, Editor sends a guarded edit to the shared draft. If another participant changed that revision first, **Keep both** puts your local text in a scratch and shows the shared revision in the original tab. If a writer outside Editor changed the file on disk, use **Save as…** to preserve the draft at a separate path.
 
-Editor stores drafts and threads in a private SQLite workspace beneath `<agentDir>/editor/`, outside the project. Each pane connects to its opening Pi through a private loopback endpoint and consumes a one-use launch file. There is no browser interface. Closing Pi disconnects that pane and its participant. Reopen the same folder to recover shared revisions; unsent local text belongs only to its pane.
+Editor stores drafts and threads in a private SQLite workspace beneath `<agentDir>/editor/`, outside the project, with the arrangement of the folder beside them. Each pane connects to its opening Pi through a private loopback endpoint and consumes a one-use launch file. There is no browser interface. When that Pi closes, the pane says so; it keeps any unsent text visible until you close it, and closes by itself when nothing is unsent. Reopen the same folder to recover shared revisions.
 
 The first open for a new set of app sources builds Editor with the macOS 26 Swift 6.2 toolchain and installs it in `<agentDir>/editor-apps/`. Other sessions with the same sources reuse it. A failed build names its log. The native panel follows its split when it moves or resizes. If you switch tabs while it opens, the workspace stays in its original split until you return. If the terminal reports an Accessibility permission error, grant the permission indicated there and reopen Editor from the visible Rex tab.
 
@@ -46,7 +66,8 @@ Ordinary and Durable sessions use the same `editor` tool. Each successful operat
 | --- | --- |
 | `join`, `members` | Connect silently, or list live participants in this folder. Other tool operations also connect the caller. |
 | `state` | List draft, view and thread headers. Continue a page with `nextOffset` as `offset` and the returned `seq`. |
-| `tree`, `search`, `git` | Inspect a directory page, look for paths or text, or read local Git information. |
+| `tree`, `files`, `search`, `git` | Inspect a directory page, list the project's files (inside a Git work tree, the tracked and unignored ones), look for paths or text, or read local Git information. Text search reads unsaved drafts and takes `caseSensitive`, `wholeWord`, `regex`, `include`, `exclude` and `contextLines`. |
+| `replace`, `revert` | Replace text across files as new draft revisions, never on disk, or return a draft to its disk text. |
 | `read` | Read the current draft. Continue with `nextOffset` as `offset` and the same `rev`. Offsets count UTF-16 units. |
 | `new`, `edit`, `patch`, `save` | Create a draft, replace a unique literal, splice a range or write to disk. Edits and saves require the exact document revision. |
 | `note`, `thread`, `reply` | Start an anchored thread, read it or post to it. Text notes take `doc`, `rev`, `start` and exclusive `end`. Other notes take `target: {kind, key}`. |
