@@ -288,7 +288,10 @@ test("exact input rejects lossy JSON, bounds payloads, and seals nested referenc
 	])
 		assert.equal(sameActionInput(value, {}), false);
 	const book = new ActionApprovals();
-	assert.match(book.gate(plan({ room: "room", text: "x".repeat(17000) }), "send", binding) ?? "", /byte bound/);
+	assert.match(
+		book.gate(plan({ room: "room", text: "x".repeat(17000) }), "send", binding) ?? "",
+		/16 KiB exact-approval limit/,
+	);
 	const value = { payload: { items: ["text"] } };
 	sealActionInput(value);
 	assert.throws(() => {

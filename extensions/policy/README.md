@@ -93,10 +93,11 @@ Permissions exist only in the loaded runtime, not the rule log, telemetry or
 Durable documents. Reload, restart, ordinary session navigation and shutdown lose
 them. Native sibling/fork conversations do not inherit them. A restart before
 native tool intent loses permission safely; after intent, Pi's unsafe-tool replay
-contract reports interruption instead of another external write. The action book
-has bounded capacity and complete-payload bounds; an oversized action or full book
-stays blocked rather than authorizing a clipped payload. Reject pending actions
-to free capacity. No expiry timer or external permission store exists.
+contract reports interruption instead of another external write. When a rule requires
+approval, the complete JSON arguments must fit 16 KiB in UTF-8. A call that does
+not match the gate is not subject to that approval limit. An oversized action or
+full action book stays blocked rather than authorizing a clipped payload. Reject
+pending actions to free capacity. No expiry timer or external permission store exists.
 
 ### Exact execution boundaries
 

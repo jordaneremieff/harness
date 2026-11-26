@@ -40,8 +40,6 @@ function strictInput(value: unknown): Record<string, unknown> {
 	checkStrictValue(value);
 	if (copied === null || typeof copied !== "object" || Array.isArray(copied))
 		throw new Error("Approval requires an argument object");
-	if (Buffer.byteLength(canonical(copied)) > ACTION_BYTES)
-		throw new Error("Complete action exceeds the approval byte bound");
 	return copied as Record<string, unknown>;
 }
 
@@ -196,6 +194,8 @@ export class ActionApprovals {
 		} catch (error) {
 			return `[policy] ${error instanceof Error ? error.message : "Exact arguments are unavailable"}`;
 		}
+		if (Buffer.byteLength(canonical(args)) > ACTION_BYTES)
+			return `[policy] The complete arguments exceed the ${ACTION_BYTES / 1024} KiB exact-approval limit. No pending action was created.`;
 		const rules = gates.map(({ id, revision }) => ({ id, revision })).sort((a, b) => a.id.localeCompare(b.id));
 		const fingerprint = digest({ binding, tool, arguments: args, rules });
 		const current = [...this.entries.values()].find((entry) => entry.fingerprint === fingerprint);

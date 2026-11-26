@@ -1,7 +1,7 @@
 /** Native task hooks with local side effects and no provider credentials. */
 import { obj, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -11,6 +11,8 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 
 import { createPolicyDurableExtension, type PolicyDurableHost } from "./durable.ts";
@@ -74,6 +76,7 @@ async function fixture(
 		safe?: boolean;
 		later?: boolean;
 		deferred?: boolean;
+		fileGate?: FactsProgram;
 		storage?: Durable.Storage;
 		directory?: string;
 		schema?: Record<string, unknown>;
@@ -95,9 +98,14 @@ async function fixture(
 	models.setProvider(faux.provider);
 	const registry = Durable.createRegistry();
 	const reports: unknown[] = [];
+	const env = options.fileGate ? new NodeExecutionEnv({ cwd: directory }) : undefined;
+	if (options.fileGate) {
+		await addRule(policy, "machine.files", options.fileGate);
+		registry.install(Durable.defineExtension({ name: "files", tools: [createWriteTool(), createEditTool()] }));
+	}
 	const harness = await Durable.Harness.open(
 		options.storage ?? new Durable.MemoryStorage(),
-		{ models, registry, onReport: (error) => reports.push(error) },
+		{ models, registry, env: () => env, onReport: (error) => reports.push(error) },
 		context,
 	);
 	if (options.beforeHook)
@@ -215,6 +223,7 @@ async function fixture(
 		approve,
 		close: async (remove = true) => {
 			await harness.close(context);
+			await env?.cleanup(context);
 			for (const close of closers.splice(0)) await close();
 			assert.deepEqual(reports, []);
 			if (remove) await rm(directory, { recursive: true, force: true });
@@ -260,6 +269,43 @@ test("native exact approval permits one unchanged action and leaves future opera
 		assert.deepEqual(f.writes[0].arguments, payload);
 		assert.equal((await f.call(SEND, payload)).isError, true);
 		assert.equal(f.writes.length, 1);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a path-specific file approval bounds protected arguments, not every write or edit", {
+	timeout: 30000,
+}, async () => {
+	const f = await fixture({
+		fileGate: {
+			...gate,
+			selector: { tools: ["write", "edit"] },
+			when: { op: "eq", path: ["input", "path"], value: "protected.txt" },
+		},
+	});
+	try {
+		const large = "文".repeat(6000);
+		const content = `before\n${large}\n`;
+		const edits = [{ oldText: large, newText: "after" }];
+		await writeFile(join(f.directory, "protected.txt"), content);
+		const write = await f.call("write", { path: "ordinary.txt", content });
+		assert.equal(write.isError, false, JSON.stringify(write.content));
+		assert.equal(await readFile(join(f.directory, "ordinary.txt"), "utf8"), content);
+		const edit = await f.call("edit", { path: "ordinary.txt", edits });
+		assert.equal(edit.isError, false, JSON.stringify(edit.content));
+		assert.equal(await readFile(join(f.directory, "ordinary.txt"), "utf8"), "before\nafter\n");
+
+		for (const [tool, args] of [
+			["write", { path: "protected.txt", content: large }],
+			["edit", { path: "protected.txt", edits }],
+		] as const) {
+			const result = await f.call(tool, args);
+			assert.equal(result.isError, true);
+			assert.match(JSON.stringify(result.content), /16 KiB/);
+		}
+		assert.equal(await readFile(join(f.directory, "protected.txt"), "utf8"), content);
+		assert.deepEqual(await f.pending(), []);
 	} finally {
 		await f.close();
 	}

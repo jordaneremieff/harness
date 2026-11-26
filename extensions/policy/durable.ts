@@ -872,7 +872,6 @@ class DurablePolicyRuntime {
 		if (tool.replay === "safe")
 			return "[policy] Exact-action approval refuses replay:safe tools; external writes require unsafe replay.";
 		try {
-			// The caller's sameActionInput check already established complete strict JSON.
 			const final = validateToolArguments(tool, {
 				type: "toolCall",
 				id: "policy-normalization",
@@ -902,9 +901,9 @@ class DurablePolicyRuntime {
 		observed: ObservedCall,
 		memo: PolicyCallMemo | undefined,
 		agent: Durable.Agent,
-		binding: ActionBinding,
+		binding: () => ActionBinding,
 	): string | undefined {
-		if (!observed.input || !sameActionInput(observed.input, plan.candidate))
+		if (!observed.input || plan.changed)
 			return "[policy] Final execution input is unavailable or needs a correction; retry the exact final payload.";
 		const gatedBefore = memo?.inputEvaluations.some(
 			(entry) => objectValue(entry)?.action === "require-approval" && objectValue(entry)?.truth === true,
@@ -916,7 +915,7 @@ class DurablePolicyRuntime {
 			if (this.uncoveredApproval(plan, observed.tool, observed.rules))
 				return "[policy] Native approval requires loaded wrappers and explicit selector.tools for every gate; reload policy after a new exact-tool rule.";
 			const reason =
-				this.actionSafety(agent, observed.tool, plan.candidate) ?? this.actions.gate(plan, observed.tool, binding);
+				this.actionSafety(agent, observed.tool, plan.candidate) ?? this.actions.gate(plan, observed.tool, binding());
 			if (reason) return reason;
 		}
 		return plan.denied || !plan.valid ? "[policy] Final approved input checks refused this action." : undefined;
@@ -955,11 +954,7 @@ class DurablePolicyRuntime {
 				);
 				observed.generation = base.state.generation;
 				const plan = this.inputPlan(observed, base.observation, now, true);
-				const reason = this.finalActionReason(
-					plan,
-					observed,
-					memo,
-					agent,
+				const reason = this.finalActionReason(plan, observed, memo, agent, () =>
 					this.actionBinding(api.conversationId, snapshot, agent, scope),
 				);
 				if (reason) return { isError: true, output: [{ type: "text", text: reason }] };
