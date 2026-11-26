@@ -307,6 +307,22 @@ struct WorkspaceScreenTests {
         #expect(screen.openDocuments == ["a.swift", "sample.swift", "b.swift"])
     }
 
+    @Test func selectedTabStaysClearOfTheAddButtonAfterAResize() async throws {
+        _ = NSApplication.shared
+        let screen = WorkspaceScreen(api: WorkspaceFixture(), root: "/project")
+        let window = window(screen, width: 920)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: nil)
+        for doc in ["app.swift", "palette.swift", "README.md", "workspace.ts", "settings.yml"] { try await screen.open(doc) }
+        resize(window, screen, width: 590)
+        let group = try #require(children(screen.view, WorkspaceGroupView.self).first)
+        let add = try #require(children(group.strip, WorkspaceButton.self).first { $0.accessibilityLabel() == "New scratch (cmd+N)" })
+        let tab = try tab("settings.yml", in: screen.view)
+        let visible = tab.convert(tab.bounds, to: group.strip)
+        #expect(visible.minX >= 0)
+        #expect(visible.maxX <= add.frame.minX)
+    }
+
     @Test func chosenGridRestoresGroupsCaretScrollAndSkipsMissingFiles() async throws {
         _ = NSApplication.shared
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

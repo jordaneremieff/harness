@@ -36,7 +36,7 @@ final class WorkspaceTabView: NSButton {
     static let minimumWidth: CGFloat = 76
     static let maximumWidth: CGFloat = 220
     /// The least width of a tab in a crowded strip, where a shorter name would not read.
-    static let crowdedWidth: CGFloat = 120
+    static let crowdedWidth: CGFloat = 140
     private static let dragDistance: CGFloat = 4
 
     private(set) var item: WorkspaceTab
@@ -204,6 +204,7 @@ final class WorkspaceTabStrip: NSView {
     private let add = WorkspaceButton("", symbol: "plus", help: "New scratch (cmd+N)")
     private(set) var tabs: [WorkspaceTabView] = []
     private var resting: [CGFloat] = []
+    private var revealedKey: String?
     /// The key of a tab that follows the pointer and takes no place in the row.
     private(set) var lifted: String?
     /// Room kept open among the resting tabs for a tab that would land there.
@@ -241,10 +242,12 @@ final class WorkspaceTabStrip: NSView {
         super.layout()
         let addWidth = min(30, bounds.width / 2)
         let addHeight = min(26, bounds.height)
-        scroll.frame = NSRect(x: 0, y: 0, width: bounds.width - addWidth, height: bounds.height)
-        add.frame = NSRect(x: bounds.width - addWidth + 2, y: (bounds.height - addHeight) / 2,
-                           width: max(0, addWidth - 4), height: addHeight)
+        let width = bounds.width - addWidth
+        let resized = scroll.frame.width != width
+        scroll.frame = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+        add.frame = NSRect(x: width + 2, y: (bounds.height - addHeight) / 2, width: max(0, addWidth - 4), height: addHeight)
         arrange()
+        if resized, lifted == nil, let revealedKey { scrollToTab(revealedKey) }
     }
 
     /// Replaces the tabs. Views are kept by key, so a tab under the pointer stays the same view.
@@ -286,9 +289,18 @@ final class WorkspaceTabStrip: NSView {
     }
 
     func reveal(_ key: String) {
-        guard let tab = tabs.first(where: { $0.item.key == key }) else { return }
+        revealedKey = key
         layoutSubtreeIfNeeded()
-        tab.scrollToVisible(tab.bounds)
+        scrollToTab(key)
+    }
+
+    private func scrollToTab(_ key: String) {
+        guard let tab = tabs.first(where: { $0.item.key == key }) else { return }
+        let clip = scroll.contentView.bounds
+        let start = tab.frame.minX
+        let end = tab.frame.maxX
+        if start < clip.minX { _ = scroll(by: start - clip.minX) }
+        else if end > clip.maxX { _ = scroll(by: min(start, end - clip.width) - clip.minX) }
     }
 
     private func arrange(animated: Bool = false) {
@@ -297,7 +309,8 @@ final class WorkspaceTabStrip: NSView {
         let room = max(0, visibleWidth - (opening?.width ?? 0))
         // Tabs share a crowded strip evenly while their names still read. After that the row scrolls.
         let share = placed.isEmpty ? 0 : max(WorkspaceTabView.crowdedWidth, (room / CGFloat(placed.count)).rounded(.down))
-        resting = placed.map { min($0.fittingWidth, share) }
+        let fit = max(WorkspaceTabView.minimumWidth, room)
+        resting = placed.map { min($0.fittingWidth, share, fit) }
         var x: CGFloat = 0
         var frames: [NSRect] = []
         for (index, width) in resting.enumerated() {

@@ -4,6 +4,10 @@ import AppKit
 func collaborationButton(_ title: String, symbol: String? = nil, run: (() -> Void)? = nil) -> WorkspaceButton {
     let button = WorkspaceButton(title, symbol: symbol)
     button.run = run
+    button.cell?.usesSingleLineMode = true
+    button.cell?.wraps = false
+    button.cell?.lineBreakMode = .byTruncatingTail
+    button.setContentCompressionResistancePriority(.required, for: .horizontal)
     button.heightAnchor.constraint(greaterThanOrEqualToConstant: 26).isActive = true
     return button
 }
