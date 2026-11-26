@@ -108,6 +108,31 @@ function assertPolicyCliAdmission(input: unknown, accepted: boolean): void {
 	else assert.throws(() => validateProposal(input), /Validation failed/);
 }
 
+it("accepts keyed input counters through the proposal tool and rule registry", async (t) => {
+	const { registry, execute } = await setup(t);
+	const input = request();
+	const withKeyPath = (keyPath: string[]) => ({
+		...input,
+		program: { ...input.program, state: { ...input.program.state, keyPath } },
+	});
+	const keyed = withKeyPath(["input", "target", "id"]);
+	assert.equal(transport.check(keyed), true);
+	assert.equal(validateFactsProgram(keyed.program), undefined);
+	await execute(keyed);
+	const [proposal] = (await registry.snapshot()).pending;
+	assert.deepEqual(proposal?.candidate?.matcher, { kind: "declarative", language: "facts/v1", spec: keyed.program });
+	for (const path of [["input"], ["result", "id"], ["input", "constructor"]])
+		assert.ok(validateFactsProgram(withKeyPath(path).program));
+	assert.match(
+		validateFactsProgram({
+			...keyed.program,
+			phase: "context",
+			action: { kind: "guide", text: "Check the target." },
+		}) ?? "",
+		/requires a tool call phase/,
+	);
+});
+
 describe("command-aware proposal admission", () => {
 	const commandRequest = () => ({
 		operation: "add",

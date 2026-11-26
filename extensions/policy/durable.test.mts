@@ -1513,6 +1513,64 @@ test("enforce mode completes a denied call and projects result guidance once", a
 	}
 });
 
+test("parallel native admissions use only completed calls for their own observation key", async (t) => {
+	const counter = { executed: 0 };
+	const fixture = await openFixture({ mode: "enforce", extension: probeExtension(counter) });
+	t.after(fixture.close);
+	await addRule(fixture.policy, "probe.target.limit", {
+		phase: "input",
+		selector: { tools: ["probe"] },
+		when: { op: "gte", path: ["state", "windowCount"], value: 2 },
+		state: {
+			keyPath: ["input", "target"],
+			observe: { op: "eq", path: ["outcome", "kind"], value: "success" },
+			window: { maxEvents: 2, maxAgeMs: 30_000 },
+		},
+		action: { kind: "deny" },
+		onUnavailable: "deny",
+	});
+	const alpha = "private-target-alpha";
+	const bravo = "private-target-bravo";
+	const call = (id: string, target: string | []) => fauxToolCall("probe", { target }, { id });
+	await submit(
+		fixture,
+		[
+			fauxAssistantMessage([call("alpha-1", alpha), call("bravo-1", bravo), call("alpha-2", alpha)], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("seeded"),
+		],
+		"Count completed probes.",
+	);
+	await submit(
+		fixture,
+		[
+			fauxAssistantMessage([call("alpha-3", alpha), call("bravo-2", bravo), call("malformed", [])], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("finished"),
+		],
+		"Check the separate limits.",
+	);
+	const outcomes = new Map(
+		(await toolResults(fixture.root, "probe")).map((result) => [result.toolCallId, result.isError]),
+	);
+	assert.deepEqual(
+		outcomes,
+		new Map([
+			["alpha-1", false],
+			["bravo-1", false],
+			["alpha-2", false],
+			["alpha-3", true],
+			["bravo-2", false],
+			["malformed", true],
+		]),
+	);
+	assert.equal(counter.executed, 4);
+	await fixture.closeHost();
+	assert.doesNotMatch((await telemetryLines(fixture.storeDir, localDate(new Date()))).join("\n"), /private-target/);
+});
+
 test("a new host enforces intact rules while another writer holds the store lock", async () => {
 	const counter = { executed: 0 };
 	const fixture = await openFixture({

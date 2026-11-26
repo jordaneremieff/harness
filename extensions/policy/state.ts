@@ -1,33 +1,44 @@
 /** Bounded observation periods. The runtime owns terminal-call deduplication. */
+import { createHash } from "node:crypto";
 import type { JsonRepresentation } from "@earendil-works/chord/json";
 import { cloneJson, readPath, UNKNOWN } from "./data.ts";
 import { evaluateCondition, PROGRAM_LIMITS, type ProgramRule, type StateSpec } from "./program.ts";
 import type { ObservationClock } from "./observation-clock.ts";
 
-export const STATE_LIMITS = { turns: 1024, events: 1024, total: Number.MAX_SAFE_INTEGER } as const;
+export const STATE_LIMITS = {
+	turns: 1024,
+	events: 1024,
+	total: Number.MAX_SAFE_INTEGER,
+	keyBytes: 256,
+	keysPerRule: 32,
+	keysPerSession: 128,
+} as const;
 
 /** JSON-safe persistence form of one window sample. */
 export type StoredEventSample = { at: number; turn: number; total: number | null };
 /** JSON-safe persistence form of one turn counter entry. */
 export type StoredTurnCounters = { turn: number; count: number; total: number | null };
+type StoredObservationCounters = {
+	count: number;
+	total: number | null;
+	turns: StoredTurnCounters[];
+	currentTurn?: StoredTurnCounters;
+	turnsUnavailable: boolean;
+	window: StoredEventSample[];
+	saturated: boolean;
+};
 /** JSON-safe persistence form of one observation period. `spec` is stored JSON. */
-export type StoredObservationPeriod = {
+export type StoredObservationPeriod = StoredObservationCounters & {
 	id: string;
 	revision: string;
 	generation: number;
 	spec?: JsonRepresentation<StateSpec>;
 	startedAt: number;
 	resetReason: string;
-	count: number;
-	total: number | null;
-	turns: StoredTurnCounters[];
-	currentTurn?: { turn: number; count: number; total: number | null };
-	turnsUnavailable: boolean;
-	window: StoredEventSample[];
 	projected: number;
 	lastProjectedAt?: number;
 	projectedTurns: number[];
-	saturated: boolean;
+	partitions?: Record<string, StoredObservationCounters>;
 };
 /** JSON-safe persistence form of the whole observation state. */
 export type StoredObservationState = { nextGeneration: number; periods: StoredObservationPeriod[] };
@@ -39,12 +50,12 @@ export interface StatePin {
 export interface StateView extends StatePin {
 	startedAt: number;
 	resetReason: string;
-	count: number;
+	count: number | typeof UNKNOWN;
 	total: number | typeof UNKNOWN;
 	turns: number | typeof UNKNOWN;
-	windowCount: number;
+	windowCount: number | typeof UNKNOWN;
 	windowTotal: number | typeof UNKNOWN;
-	windowTurns: number;
+	windowTurns: number | typeof UNKNOWN;
 	turnCount: number | typeof UNKNOWN;
 	turnTotal: number | typeof UNKNOWN;
 	projected: number;
@@ -57,20 +68,42 @@ interface EventSample {
 	turn: number;
 	total: ObservedTotal;
 }
-interface ObservationPeriod extends StatePin {
-	spec?: StateSpec;
-	startedAt: number;
-	resetReason: string;
+interface ObservationCounters {
 	count: number;
 	total: ObservedTotal;
 	turns: Map<number, { count: number; total: ObservedTotal }>;
 	currentTurn?: { turn: number; count: number; total: ObservedTotal };
 	turnsUnavailable: boolean;
 	window: EventSample[];
+	saturated: boolean;
+}
+interface ObservationPeriod extends StatePin, ObservationCounters {
+	spec?: StateSpec;
+	startedAt: number;
+	resetReason: string;
 	projected: number;
 	lastProjectedAt?: number;
 	projectedTurns: Set<number>;
-	saturated: boolean;
+	partitions?: Map<string, ObservationCounters>;
+}
+
+function emptyCounters(): ObservationCounters {
+	return { count: 0, total: 0, turns: new Map(), turnsUnavailable: false, window: [], saturated: false };
+}
+
+const EMPTY_COUNTERS = emptyCounters();
+
+function keyDigest(path: readonly string[], facts: Record<string, unknown>): string | undefined {
+	const key = readPath(facts, path).value;
+	if (
+		typeof key !== "string" ||
+		!key.length ||
+		key.length > STATE_LIMITS.keyBytes ||
+		/[\uD800-\uDFFF]/u.test(key) ||
+		Buffer.byteLength(key, "utf8") > STATE_LIMITS.keyBytes
+	)
+		return undefined;
+	return createHash("sha256").update(key, "utf8").digest("hex");
 }
 function validTime(now: number): boolean {
 	return Number.isFinite(now) && now >= 0;
@@ -89,14 +122,14 @@ function outcomeTotal(spec: StateSpec, facts: Record<string, unknown>): Observed
 }
 
 /** Period counters saturate at the bound and report saturation instead of wrapping. */
-function countOutcome(period: ObservationPeriod, total: ObservedTotal): void {
+function countOutcome(period: ObservationCounters, total: ObservedTotal): void {
 	if (period.count === STATE_LIMITS.total) period.saturated = true;
 	period.count = Math.min(STATE_LIMITS.total, period.count + 1);
 	period.total = addTotal(period.total, total);
 }
 
 /** Turn accounting stops at the turn bound and marks the hidden turns unavailable. */
-function countTurnSample(period: ObservationPeriod, turn: number, total: ObservedTotal): void {
+function countTurnSample(period: ObservationCounters, turn: number, total: ObservedTotal): void {
 	let stats = period.turns.get(turn);
 	if (!stats && period.turns.size < STATE_LIMITS.turns) {
 		stats = { count: 0, total: 0 };
@@ -112,7 +145,7 @@ function countTurnSample(period: ObservationPeriod, turn: number, total: Observe
 }
 
 /** The newest turn stays visible after the turn map saturates. */
-function countCurrentTurn(period: ObservationPeriod, turn: number, total: ObservedTotal): void {
+function countCurrentTurn(period: ObservationCounters, turn: number, total: ObservedTotal): void {
 	const current = period.currentTurn;
 	if (!current || turn > current.turn) {
 		period.currentTurn = { turn, count: 1, total };
@@ -129,7 +162,11 @@ function withinWindow(at: number, now: number, maxAge: number): boolean {
 }
 
 /** The age bound drops samples before the event bound trims the remaining window. */
-function recordWindow(period: ObservationPeriod, window: NonNullable<StateSpec["window"]>, sample: EventSample): void {
+function recordWindow(
+	period: ObservationCounters,
+	window: NonNullable<StateSpec["window"]>,
+	sample: EventSample,
+): void {
 	period.window = period.window.filter((event) => withinWindow(event.at, sample.at, window.maxAgeMs));
 	period.window.push(sample);
 	if (period.window.length > window.maxEvents) period.window.splice(0, period.window.length - window.maxEvents);
@@ -158,7 +195,7 @@ function expiredView(id: string, period: ObservationPeriod, now: number, reason 
 }
 
 /** A turn without samples reads as zero, or as unavailable when saturation hid it. */
-function turnCounters(period: ObservationPeriod, turn: number): { count: ObservedTotal; total: ObservedTotal } {
+function turnCounters(period: ObservationCounters, turn: number): { count: ObservedTotal; total: ObservedTotal } {
 	const current = period.currentTurn?.turn === turn ? period.currentTurn : period.turns.get(turn);
 	if (current) return { count: current.count, total: current.total };
 	const absent = period.turnsUnavailable && turn < (period.currentTurn?.turn ?? 0) ? UNKNOWN : 0;
@@ -168,6 +205,7 @@ function turnCounters(period: ObservationPeriod, turn: number): { count: Observe
 export class ObservationState {
 	private readonly periods = new Map<string, ObservationPeriod>();
 	private nextGeneration = 0;
+	private partitionCount = 0;
 
 	private readonly clock?: ObservationClock;
 
@@ -193,16 +231,19 @@ export class ObservationState {
 			...(spec ? { spec: cloneJson(spec) } : {}),
 			startedAt: now,
 			resetReason: reason.slice(0, 160),
-			count: 0,
-			total: 0,
-			turns: new Map(),
-			turnsUnavailable: false,
-			window: [],
+			...emptyCounters(),
 			projected: 0,
 			projectedTurns: new Set(),
-			saturated: false,
+			...(spec?.keyPath ? { partitions: new Map() } : {}),
 		};
 	}
+	private replace(id: string, next?: ObservationPeriod): void {
+		const previousSize = this.periods.get(id)?.partitions?.size ?? 0;
+		this.partitionCount += (next?.partitions?.size ?? 0) - previousSize;
+		if (next) this.periods.set(id, next);
+		else this.periods.delete(id);
+	}
+
 	private expired(period: ObservationPeriod, now: number): boolean {
 		return period.spec?.expiresAfterMs !== undefined && now - period.startedAt >= period.spec.expiresAfterMs;
 	}
@@ -210,19 +251,20 @@ export class ObservationState {
 		if (now < period.startedAt) {
 			this.nextGeneration = Math.max(this.nextGeneration, period.generation);
 			const next = this.fresh(period.id, period.revision, period.spec, "clock-regression", now);
-			this.periods.set(period.id, next);
+			this.replace(period.id, next);
 			return next;
 		}
 		if (this.expired(period, now)) {
 			const next = this.fresh(period.id, period.revision, period.spec, "expiry", now);
 			next.generation = period.generation;
-			this.periods.set(period.id, next);
+			this.replace(period.id, next);
 			return next;
 		}
 		if (period.lastProjectedAt !== undefined && period.lastProjectedAt > now) delete period.lastProjectedAt;
 		if (period.spec?.window) {
 			const maxAge = period.spec.window.maxAgeMs;
-			period.window = period.window.filter((event) => withinWindow(event.at, now, maxAge));
+			for (const counters of period.partitions?.values() ?? [period])
+				counters.window = counters.window.filter((event) => withinWindow(event.at, now, maxAge));
 		}
 		return period;
 	}
@@ -234,11 +276,11 @@ export class ObservationState {
 		if (rules.length > PROGRAM_LIMITS.rules || new Set(rules.map((rule) => rule.id)).size !== rules.length)
 			throw new Error("Invalid observation rule set");
 		const ids = new Set(rules.map((rule) => rule.id));
-		for (const id of this.periods.keys()) if (!ids.has(id)) this.periods.delete(id);
+		for (const id of this.periods.keys()) if (!ids.has(id)) this.replace(id);
 		for (const rule of rules) {
 			const prior = this.periods.get(rule.id);
 			if (!prior || prior.revision !== rule.revision)
-				this.periods.set(
+				this.replace(
 					rule.id,
 					this.fresh(rule.id, rule.revision, rule.program.state, prior ? "semantic-revision" : "activation", now),
 				);
@@ -250,8 +292,7 @@ export class ObservationState {
 		now = this.resolveTime(now);
 		if (!validTime(now)) throw new Error("Invalid observation time");
 		for (const [key, period] of this.periods)
-			if (id === undefined || key === id)
-				this.periods.set(key, this.fresh(key, period.revision, period.spec, reason, now));
+			if (id === undefined || key === id) this.replace(key, this.fresh(key, period.revision, period.spec, reason, now));
 	}
 	pin(id: string): StatePin | undefined {
 		const period = this.periods.get(id);
@@ -269,16 +310,62 @@ export class ObservationState {
 			return false;
 		const spec = period.spec;
 		if (!spec) return true;
+		if (spec.keyPath && period.partitions) {
+			this.completePartition(period, period.partitions, spec, spec.keyPath, facts, turn, now);
+			return true;
+		}
 		const actual = { ...facts, state: this.viewAt(pin.id, now, turn) };
 		if (spec.resetWhen && evaluateCondition(spec.resetWhen, actual) === true)
 			period = this.resetForOutcome(period, spec, now);
 		if (evaluateCondition(spec.observe, { ...facts, state: this.viewAt(pin.id, now, turn) }) !== true) return true;
-		const total = outcomeTotal(spec, facts);
-		countOutcome(period, total);
-		countTurnSample(period, turn, total);
-		countCurrentTurn(period, turn, total);
-		if (spec.window) recordWindow(period, spec.window, { at: now, turn, total });
+		this.record(period, spec, facts, turn, now);
 		return true;
+	}
+
+	private record(
+		counters: ObservationCounters,
+		spec: StateSpec,
+		facts: Record<string, unknown>,
+		turn: number,
+		now: number,
+	): void {
+		const total = outcomeTotal(spec, facts);
+		countOutcome(counters, total);
+		countTurnSample(counters, turn, total);
+		countCurrentTurn(counters, turn, total);
+		if (spec.window) recordWindow(counters, spec.window, { at: now, turn, total });
+	}
+
+	private partitionsFull(partitions: ReadonlyMap<string, ObservationCounters>): boolean {
+		return partitions.size >= STATE_LIMITS.keysPerRule || this.partitionCount >= STATE_LIMITS.keysPerSession;
+	}
+
+	private completePartition(
+		period: ObservationPeriod,
+		partitions: Map<string, ObservationCounters>,
+		spec: StateSpec,
+		path: readonly string[],
+		facts: Record<string, unknown>,
+		turn: number,
+		now: number,
+	): void {
+		const key = keyDigest(path, facts);
+		if (!key) return;
+		let counters = partitions.get(key);
+		if (!counters && this.partitionsFull(partitions)) return;
+		const state = () => this.liveView(period.id, period, now, turn, counters ?? EMPTY_COUNTERS);
+		if (counters && spec.resetWhen && evaluateCondition(spec.resetWhen, { ...facts, state: state() }) === true) {
+			partitions.delete(key);
+			this.partitionCount--;
+			counters = undefined;
+		}
+		if (evaluateCondition(spec.observe, { ...facts, state: state() }) !== true) return;
+		if (!counters) {
+			counters = emptyCounters();
+			partitions.set(key, counters);
+			this.partitionCount++;
+		}
+		this.record(counters, spec, facts, turn, now);
 	}
 
 	/** Outcome resets preserve the admission generation for concurrent completions. */
@@ -311,22 +398,63 @@ export class ObservationState {
 	private viewAt(id: string, now: number, turn: number): StateView | undefined {
 		const period = this.periods.get(id);
 		if (!period || !validTime(now)) return undefined;
-		if (now < period.startedAt) return expiredView(id, period, now, "clock-regression");
-		return this.expired(period, now) ? expiredView(id, period, now) : this.liveView(id, period, now, turn);
+		const view =
+			now < period.startedAt
+				? expiredView(id, period, now, "clock-regression")
+				: this.expired(period, now)
+					? expiredView(id, period, now)
+					: this.liveView(id, period, now, turn);
+		if (!period.partitions) return view;
+		return {
+			...view,
+			count: UNKNOWN,
+			total: UNKNOWN,
+			turns: UNKNOWN,
+			windowCount: UNKNOWN,
+			windowTotal: UNKNOWN,
+			windowTurns: UNKNOWN,
+			turnCount: UNKNOWN,
+			turnTotal: UNKNOWN,
+			saturated: view.saturated || (view.startedAt === period.startedAt && this.partitionsFull(period.partitions)),
+		};
 	}
 
-	private liveView(id: string, period: ObservationPeriod, now: number, turn: number): StateView {
-		const events = period.window.filter((event) => withinWindow(event.at, now, period.spec?.window?.maxAgeMs ?? 0));
-		const counters = turnCounters(period, turn);
+	/** Resolve a tool phase's state from the same decoded input facts as its conditions. */
+	viewFor(id: string, facts: Record<string, unknown>, now: number, turn: number): StateView | undefined {
+		now = this.resolveTime(now);
+		const period = this.periods.get(id);
+		if (!period || !validTime(now)) return undefined;
+		const { partitions, spec } = period;
+		if (!partitions || !spec?.keyPath) return undefined;
+		const key = keyDigest(spec.keyPath, facts);
+		if (!key) return undefined;
+		if (now < period.startedAt || this.expired(period, now)) {
+			if (this.partitionCount - partitions.size >= STATE_LIMITS.keysPerSession) return undefined;
+			return expiredView(id, period, now, now < period.startedAt ? "clock-regression" : "expiry");
+		}
+		const counters = partitions.get(key);
+		if (!counters && this.partitionsFull(partitions)) return undefined;
+		return this.liveView(id, period, now, turn, counters ?? EMPTY_COUNTERS);
+	}
+
+	private liveView(
+		id: string,
+		period: ObservationPeriod,
+		now: number,
+		turn: number,
+		stats = period as ObservationCounters,
+	): StateView {
+		const events = stats.window.filter((event) => withinWindow(event.at, now, period.spec?.window?.maxAgeMs ?? 0));
+		const counters = turnCounters(stats, turn);
 		return {
 			id,
 			revision: period.revision,
 			generation: period.generation,
 			startedAt: period.startedAt,
 			resetReason: period.resetReason,
-			count: period.count,
-			total: period.total,
-			turns: period.turnsUnavailable ? UNKNOWN : period.turns.size,
+			count: stats.count,
+			total: stats.total,
+			turns: stats.turnsUnavailable ? UNKNOWN : stats.turns.size,
 			windowCount: events.length,
 			windowTotal: events.reduce<ObservedTotal>((sum, event) => addTotal(sum, event.total), 0),
 			windowTurns: new Set(events.map((event) => event.turn)).size,
@@ -334,7 +462,7 @@ export class ObservationState {
 			turnTotal: counters.total,
 			projected: period.projected,
 			eligible: this.isEligible(period, now, turn),
-			saturated: period.saturated,
+			saturated: period.saturated || stats.saturated,
 		};
 	}
 	eligible(id: string, now: number, turn: number): boolean {
@@ -374,32 +502,17 @@ export class ObservationState {
 				...(period.spec ? { spec: cloneJson(period.spec) } : {}),
 				startedAt: period.startedAt,
 				resetReason: period.resetReason,
-				count: period.count,
-				total: storedTotal(period.total),
-				turns: [...period.turns.entries()].map(([turn, stats]) => ({
-					turn,
-					count: stats.count,
-					total: storedTotal(stats.total),
-				})),
-				...(period.currentTurn
-					? {
-							currentTurn: {
-								turn: period.currentTurn.turn,
-								count: period.currentTurn.count,
-								total: storedTotal(period.currentTurn.total),
-							},
-						}
-					: {}),
-				turnsUnavailable: period.turnsUnavailable,
-				window: period.window.map((sample) => ({
-					at: sample.at,
-					turn: sample.turn,
-					total: storedTotal(sample.total),
-				})),
+				...serializeCounters(period),
 				projected: period.projected,
 				...(period.lastProjectedAt !== undefined ? { lastProjectedAt: period.lastProjectedAt } : {}),
 				projectedTurns: [...period.projectedTurns],
-				saturated: period.saturated,
+				...(period.partitions
+					? {
+							partitions: Object.fromEntries(
+								[...period.partitions].map(([key, counters]) => [key, serializeCounters(counters)]),
+							),
+						}
+					: {}),
 			})),
 		};
 	}
@@ -414,11 +527,29 @@ export class ObservationState {
 		state.nextGeneration = raw.nextGeneration;
 		for (const entry of raw.periods) {
 			const period = storedPeriod(entry);
-			if (!period) return undefined;
+			if (!period || state.periods.has(period.id)) return undefined;
+			state.partitionCount += period.partitions?.size ?? 0;
+			if (state.partitionCount > STATE_LIMITS.keysPerSession) return undefined;
 			state.periods.set(period.id, period);
 		}
 		return state;
 	}
+}
+
+function serializeCounters(counters: ObservationCounters): StoredObservationCounters {
+	return {
+		count: counters.count,
+		total: storedTotal(counters.total),
+		turns: [...counters.turns].map(([turn, stats]) => ({ turn, count: stats.count, total: storedTotal(stats.total) })),
+		...(counters.currentTurn
+			? {
+					currentTurn: { ...counters.currentTurn, total: storedTotal(counters.currentTurn.total) },
+				}
+			: {}),
+		turnsUnavailable: counters.turnsUnavailable,
+		window: counters.window.map((sample) => ({ ...sample, total: storedTotal(sample.total) })),
+		saturated: counters.saturated,
+	};
 }
 
 function storedTotal(total: ObservedTotal): number | null {
@@ -477,14 +608,59 @@ function storedCurrentTurn(value: unknown): ObservationPeriod["currentTurn"] {
 		? { turn: current.turn, count: current.count, total: storedFromTotal(current.total) }
 		: undefined;
 }
+function storedCounters(raw: Record<string, unknown>): ObservationCounters | undefined {
+	if (!safeCount(raw.count)) return undefined;
+	const currentTurn = storedCurrentTurn(raw.currentTurn);
+	return {
+		count: raw.count,
+		total: storedFromTotal(raw.total),
+		turns: storedTurns(raw.turns),
+		...(currentTurn ? { currentTurn } : {}),
+		turnsUnavailable: raw.turnsUnavailable === true,
+		window: storedWindow(raw.window),
+		saturated: raw.saturated === true,
+	};
+}
+
+function storedPartition(value: unknown, maxEvents: number): ObservationCounters | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const fields = value as Record<string, unknown>;
+	if (!Array.isArray(fields.turns) || fields.turns.length > STATE_LIMITS.turns) return undefined;
+	if (!Array.isArray(fields.window) || fields.window.length > maxEvents) return undefined;
+	return storedCounters(fields);
+}
+
+function storedPartitions(
+	value: unknown,
+	spec: StateSpec | undefined,
+): Map<string, ObservationCounters> | null | undefined {
+	if (!spec?.keyPath) return undefined;
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const entries = Object.entries(value);
+	if (entries.length > STATE_LIMITS.keysPerRule) return null;
+	const declaredMax = spec.window?.maxEvents;
+	const maxEvents = safeCount(declaredMax) ? Math.min(STATE_LIMITS.events, declaredMax) : 0;
+	const partitions = new Map<string, ObservationCounters>();
+	for (const [key, raw] of entries) {
+		if (!/^[0-9a-f]{64}$/.test(key)) return null;
+		const counters = storedPartition(raw, maxEvents);
+		if (!counters) return null;
+		partitions.set(key, counters);
+	}
+	return partitions;
+}
+
 function storedPeriod(value: unknown): ObservationPeriod | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const raw = value as Record<string, unknown>;
 	if (typeof raw.id !== "string" || typeof raw.revision !== "string") return undefined;
-	if (!safeCount(raw.generation) || !safeCount(raw.count) || !safeCount(raw.projected)) return undefined;
+	if (!safeCount(raw.generation) || !safeCount(raw.projected)) return undefined;
 	if (typeof raw.startedAt !== "number" || !Number.isFinite(raw.startedAt)) return undefined;
+	const counters = storedCounters(raw);
+	if (!counters) return undefined;
 	const spec = storedSpec(raw.spec);
-	const currentTurn = storedCurrentTurn(raw.currentTurn);
+	const partitions = storedPartitions(raw.partitions, spec);
+	if (partitions === null) return undefined;
 	return {
 		id: raw.id,
 		revision: raw.revision,
@@ -492,17 +668,12 @@ function storedPeriod(value: unknown): ObservationPeriod | undefined {
 		...(spec ? { spec } : {}),
 		startedAt: raw.startedAt,
 		resetReason: typeof raw.resetReason === "string" ? raw.resetReason : "restore",
-		count: raw.count,
-		total: storedFromTotal(raw.total),
-		turns: storedTurns(raw.turns),
-		...(currentTurn ? { currentTurn } : {}),
-		turnsUnavailable: raw.turnsUnavailable === true,
-		window: storedWindow(raw.window),
+		...counters,
 		projected: raw.projected,
 		...(typeof raw.lastProjectedAt === "number" && Number.isFinite(raw.lastProjectedAt)
 			? { lastProjectedAt: raw.lastProjectedAt }
 			: {}),
 		projectedTurns: storedProjectedTurns(raw.projectedTurns),
-		saturated: raw.saturated === true,
+		...(partitions ? { partitions } : {}),
 	};
 }

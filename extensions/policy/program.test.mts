@@ -58,6 +58,32 @@ test("one frame reuses facts, applicability truth, and schema checks per candida
 	assert.deepEqual(correctedFacts.schema, { valid: false });
 });
 
+test("keyed admission uses the selected input view and the call's turn", () => {
+	const state = new ObservationState();
+	const gate = rule(
+		"target-count",
+		{ kind: "deny" },
+		{
+			inputView: "effective",
+			onUnavailable: "deny",
+			when: { op: "gte", path: ["state", "turnCount"], value: 1 },
+			state: { keyPath: ["input", "target"], observe: yes },
+		},
+	);
+	const rename = rule("normalise-args", { kind: "rename-key", path: [], from: "oldTarget", to: "target" });
+	state.sync([gate, rename], 1);
+	const pin = state.pin(gate.id);
+	assert.ok(pin);
+	state.complete(pin, { tool: "dispatch", input: { target: "first" } }, 1, 2);
+	const evaluate = (args: Record<string, unknown>, turn: number) =>
+		planInput([gate, rename], args, { ...context, now: 3, observation: { state, turn } });
+	assert.equal(evaluate({ oldTarget: "first" }, 1).denied, true);
+	assert.equal(evaluate({ oldTarget: "second" }, 1).denied, false);
+	assert.equal(evaluate({ oldTarget: "first" }, 2).denied, false);
+	assert.equal(evaluate({ oldTarget: null }, 1).evaluations.find((entry) => entry.id === gate.id)?.truth, "unknown");
+	assert.equal(evaluate({ oldTarget: null }, 1).denied, true);
+});
+
 test("closed grammar accepts nested facts through the public schema", () => {
 	const program = rule(
 		"deny",

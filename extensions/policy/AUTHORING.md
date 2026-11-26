@@ -122,10 +122,24 @@ the tool's schema or documented result contract. This list describes engine fact
 | `data.<name>` | Captured approved binding and status; use declared table lookups rather than private paths |
 
 At context projection there is no current tool, arguments, result, or outcome.
-Use state aggregates for context conditions. A completion guide evaluates final
-outcomes after state observation and retains eligible guidance for the next
-real context request. It does not force another request. Context and completion
-guides require exact authority. Input guides appear only after a matched success.
+Use rule-wide state aggregates for context conditions. A completion guide
+evaluates final outcomes after state observation and retains eligible guidance
+for the next real context request. It does not force another request. Context
+and completion guides require exact authority. Input guides appear only after a
+matched success.
+
+In a tool-call phase, use `state.keyPath`, for example
+`["input","target","id"]`, to count matching completions separately for each
+key. The path starts with `input` and follows the phase's argument view,
+including declared decoding. Use `inputView:"effective"` on a denial or guide
+when a correction changes the target to check. A key is a nonempty string of at
+most 256 UTF-8 bytes. Missing, invalid, and new over-capacity keys make `state`
+unavailable; choose `onUnavailable` to match the required behaviour. The rule
+retains up to 32 keys, within a session limit of 128. It does not evict existing
+keys. Set `expiresAfterMs` when the rule needs to release its keys periodically.
+Omit `keyPath` for rule-wide counters or a context-phase rule. Before proposing
+a keyed rule, update all readers of the shared policy directory. Older readers
+reject the syntax even in pending proposals.
 
 A condition uses exactly one form: `all:[conditions]`, `any:[conditions]`,
 `not:condition`, or a leaf with `op`, `path`, and its permitted `value`/`table`

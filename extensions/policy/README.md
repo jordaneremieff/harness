@@ -851,6 +851,7 @@ can declare:
 
 - an `observe` condition and optional `resetWhen` condition;
 - an optional numeric `totalPath`;
+- an optional input `keyPath` for independent aggregates;
 - a window with `maxEvents` and `maxAgeMs`;
 - `once:"period"` or `once:"turn"`;
 - a cooldown and optional natural expiry.
@@ -859,6 +860,33 @@ Windows mean the last declared number of matching completions intersected with
 the age bound. They do not claim an exhaustive time-window tally after the event
 limit. Missing metrics and unavailable historical turn totals remain unknown,
 not zero. Inspection renders unavailable values explicitly.
+
+With `keyPath`, a tool-call phase uses the period, turn, and window aggregates
+for the selected input value. For example, `"keyPath":["input","target","id"]`
+uses `target.id` from the phase's input facts, including decoded arguments when
+a codec applies. Without `keyPath`, the aggregates are rule-wide. The count
+reflects matching completions, not in-flight admissions. Use an effective-input
+check when a correction changes the key and the check must use the target that
+executes. Context-phase programs have no current input and cannot declare a key.
+
+A key is an exact nonempty string of at most 256 UTF-8 bytes. A new valid key
+starts at zero while capacity remains. Missing, invalid, or new over-capacity
+keys have unavailable state and do not enter observation. The rule's ordinary
+`onUnavailable` behaviour applies when its condition needs that state. A rule
+retains up to 32 keys, and a session retains up to 128 across all rules. Capacity
+never evicts a retained key. `resetWhen` clears only the selected key. A rule
+reset, expiry, removal, or revision change clears all its keys. Window expiry
+removes samples, not keys with retained period counters. Set `expiresAfterMs`
+when a rule needs to release its keys periodically. Guidance allowances and
+period identity remain rule-wide.
+
+Inspection does not list keys or combine their aggregates. Durable state retains
+only key digests for counter lookup; policy telemetry does not record the keys
+or digests from this feature. Older releases reject the new rule syntax even in
+a pending proposal. Do not write a keyed rule to a shared `PI_POLICY_DIR` until
+all processes that read it support `keyPath`; use a separate directory to test it
+while older readers remain. Existing unkeyed rules and observation documents
+require no changes.
 
 Observation windows, cooldowns and natural expiry use process elapsed time anchored
 to a wall timestamp. Calendar record times and approved data freshness retain their

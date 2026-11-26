@@ -37,9 +37,10 @@ test("completed outcomes count execution failures separately from denied, invali
 	const pin = pinOf(state);
 	for (const kind of ["denied", "invalid", "aborted", "success"])
 		assert.equal(state.complete(pin, { outcome: { kind } }, 1, 2), true);
-	state.complete(pin, failed, 1, 3);
-	state.complete(pin, failed, 2, 4);
+	state.complete(pin, { ...failed, input: { target: "first" } }, 1, 3);
+	state.complete(pin, { ...failed, input: { target: "second" } }, 2, 4);
 	assert.equal(state.view("failures", 4, 2)?.count, 2);
+	assert.equal(Object.hasOwn(state.toJSON().periods[0], "partitions"), false);
 	assert.equal(state.view("failures", 4, 2)?.total, 14);
 	assert.equal(state.view("failures", 4, 2)?.turns, 2);
 	assert.equal(state.view("failures", 4, 2)?.turnCount, 1);
@@ -386,4 +387,103 @@ test("invalid times and overbound rule sets do not enter state", () => {
 	assert.equal(state.complete(pinOf(state), failed, -1, 2), false);
 	assert.equal(state.project("failures", NaN, 1), false);
 	assert.equal(state.view("missing", 2), undefined);
+});
+
+const targetFacts = (target: unknown) => ({ ...failed, input: { target } });
+const keyedRule = (state: Partial<StateSpec> = {}): ProgramRule => {
+	const { id, revision, program } = rule({ keyPath: ["input", "target"], ...state });
+	return { id, revision, program: { ...program, phase: "input" } };
+};
+
+test("keyed observations keep separate turn, window and period totals across restore and reset", () => {
+	const spec = keyedRule({
+		totalPath: ["outcome", "tokens"],
+		window: { maxEvents: 2, maxAgeMs: 10 },
+		resetWhen: { op: "eq", path: ["outcome", "kind"], value: "success" },
+		expiresAfterMs: 20,
+	});
+	const state = new ObservationState();
+	state.sync([spec], 1);
+	const first = targetFacts("private-target-alpha");
+	const second = targetFacts("private-target-bravo");
+	const pin = pinOf(state);
+	state.complete(pin, first, 1, 2);
+	state.complete(pin, second, 1, 3);
+	state.complete(pin, first, 1, 4);
+	state.complete(pin, first, 1, 5);
+	const saved = state.toJSON();
+	assert.doesNotMatch(JSON.stringify(saved), /private-target/);
+	assert.equal(state.snapshot(5, 1)[0].count, UNKNOWN);
+	const restored = ObservationState.fromJSON(saved);
+	assert.ok(restored);
+	const view = restored.viewFor(spec.id, first, 5, 1);
+	assert.ok(view);
+	assert.equal(view.turnCount, 3);
+	assert.equal(view.windowCount, 2);
+	assert.equal(view.total, 21);
+	assert.equal(restored.viewFor(spec.id, first, 5, 2)?.turnCount, 0);
+	assert.equal(restored.viewFor(spec.id, second, 5, 1)?.turnCount, 1);
+	assert.equal(restored.viewFor(spec.id, second, 12, 1)?.windowCount, 1);
+	assert.equal(restored.viewFor(spec.id, second, 13, 1)?.windowCount, 0);
+	assert.equal(restored.viewFor(spec.id, first, 14, 1)?.windowCount, 1);
+	assert.equal(restored.viewFor(spec.id, { input: { target: "unseen" } }, 14, 1)?.count, 0);
+	assert.deepEqual(restored.toJSON(), saved, "a read does not allocate or prune partitions");
+	restored.complete(pin, { ...second, outcome: { kind: "success" } }, 2, 14);
+	assert.equal(restored.viewFor(spec.id, second, 14, 1)?.count, 0);
+	assert.equal(restored.viewFor(spec.id, first, 14, 1)?.count, 3);
+	assert.equal(Object.keys(restored.toJSON().periods[0].partitions ?? {}).length, 1);
+	assert.equal(restored.viewFor(spec.id, first, 21, 1)?.count, 0);
+	restored.sync([spec], 21);
+	assert.deepEqual(restored.toJSON().periods[0].partitions, {});
+	restored.complete(pin, second, 2, 21);
+	assert.equal(restored.viewFor(spec.id, second, 21, 2)?.count, 1);
+	restored.reset("operator", 22, spec.id);
+	assert.equal(restored.complete(pin, second, 2, 22), false);
+	assert.equal(restored.viewFor(spec.id, second, 22, 2)?.count, 0);
+});
+
+test("keyed state refuses malformed keys and stops allocating when capacity fills", () => {
+	const state = new ObservationState();
+	const ruleCount = STATE_LIMITS.keysPerSession / STATE_LIMITS.keysPerRule;
+	const rules = Array.from({ length: ruleCount + 1 }, (_, index) => ({ ...keyedRule(), id: `keyed-${index}` }));
+	state.sync(rules, 0);
+	const first = rules[0].id;
+	for (const key of [undefined, null, 3, [], {}, "", "\ud800", "é".repeat(STATE_LIMITS.keyBytes / 2 + 1)]) {
+		assert.equal(state.complete(pinOf(state, first), targetFacts(key), 1, 0), true);
+		assert.equal(state.viewFor(first, targetFacts(key), 0, 1), undefined);
+	}
+	assert.deepEqual(state.toJSON().periods[0].partitions, {});
+	const exactBytes = targetFacts("é".repeat(STATE_LIMITS.keyBytes / 2));
+	const extra = targetFacts("too-many-targets");
+	for (const { id } of rules.slice(0, -1)) {
+		const pin = pinOf(state, id);
+		state.complete(pin, exactBytes, 1, 1);
+		for (let index = 0; index < STATE_LIMITS.keysPerRule - 1; index++)
+			state.complete(pin, targetFacts(`target-${index}`), 1, 1);
+		assert.equal(state.viewFor(id, extra, 1, 1), undefined);
+		state.complete(pin, extra, 1, 1);
+	}
+	const last = rules[ruleCount].id;
+	assert.equal(state.viewFor(first, extra, 1, 1), undefined);
+	assert.equal(state.viewFor(last, extra, 1, 1), undefined);
+	state.complete(pinOf(state, last), extra, 1, 2);
+	state.complete(pinOf(state, first), exactBytes, 1, 2);
+	assert.equal(state.viewFor(first, exactBytes, 2, 1)?.count, 2);
+	const stored = state.toJSON();
+	assert.ok(ObservationState.fromJSON(stored));
+	assert.deepEqual(stored.periods.at(-1)?.partitions, {});
+	const localOverflow = structuredClone(stored);
+	const localPartitions = localOverflow.periods[0].partitions;
+	const sessionPartitions = stored.periods[ruleCount].partitions;
+	assert.ok(localPartitions);
+	assert.ok(sessionPartitions);
+	const [bucket] = Object.values(localPartitions);
+	localPartitions["a".repeat(64)] = bucket;
+	assert.equal(ObservationState.fromJSON(localOverflow), undefined);
+	sessionPartitions["a".repeat(64)] = bucket;
+	assert.equal(ObservationState.fromJSON(stored), undefined);
+	state.sync(rules.slice(1), 3);
+	assert.equal(state.viewFor(last, extra, 3, 1)?.count, 0);
+	state.complete(pinOf(state, last), extra, 1, 3);
+	assert.equal(state.viewFor(last, extra, 3, 1)?.count, 1);
 });

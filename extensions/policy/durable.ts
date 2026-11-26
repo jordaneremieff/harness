@@ -1194,6 +1194,7 @@ class DurablePolicyRuntime {
 			tool,
 			facts: { input, context: this.publicContext(snapshot, agent, turn, installed) },
 			states: this.statesOf(state, now, turn),
+			observation: { state, turn },
 			schema,
 			preparedSchema: prepareSchema(schema),
 			schemaTruth: new Map(),
@@ -1252,6 +1253,7 @@ class DurablePolicyRuntime {
 			data,
 			facts: this.factsFor(call, result, outcome),
 			states: this.statesOf(state, now, call.turn),
+			observation: { state, turn: call.turn },
 			matched: call.matches,
 			now,
 		};
@@ -1503,7 +1505,7 @@ class DurablePolicyRuntime {
 			const pin = call.pins.get(rule.id);
 			if (pin && selected === true && !observation.complete(pin, frame.factsFor(rule), call.turn, now)) stale += 1;
 		}
-		const guides = evaluatePrograms(current, "completion", context, frame).filter(
+		const guides = evaluatePrograms(current, "completion", context).filter(
 			(evaluation) => evaluation.action.kind === "guide",
 		);
 		if (PROJECTION_MODES.includes(mode)) this.retainGuidance(state, observation, guides, now, call.turn);

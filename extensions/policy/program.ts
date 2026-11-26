@@ -34,7 +34,7 @@ import {
 } from "./data.ts";
 import type { PolicyMode } from "./mode.ts";
 import type { RuleMatchContext } from "./rule.ts";
-import type { StateView } from "./state.ts";
+import type { ObservationState, StateView } from "./state.ts";
 
 export type { Truth } from "./data.ts";
 export { UNKNOWN } from "./data.ts";
@@ -75,6 +75,7 @@ export type Condition =
 export interface StateSpec {
 	observe: Condition;
 	resetWhen?: Condition;
+	keyPath?: string[];
 	totalPath?: string[];
 	/** The last maxEvents matching completions intersected with the age bound. */
 	window?: { maxEvents: number; maxAgeMs: number };
@@ -216,6 +217,12 @@ function stateShape<C extends Schema>(condition: C) {
 		{
 			observe: condition,
 			resetWhen: opt(condition),
+			keyPath: opt({
+				...PathSchema,
+				minItems: 2,
+				description:
+					"Input fact path for per-key observation counts. Starts with input. Propose a keyed rule only when every reader of this policy directory supports keyPath.",
+			}),
 			totalPath: opt(PathSchema),
 			window: opt(
 				obj(
@@ -448,6 +455,15 @@ function programConditionsError(program: FactsProgram, budget: { nodes: number }
 	return undefined;
 }
 
+function programStateError(program: FactsProgram): string | undefined {
+	const { keyPath, totalPath } = program.state ?? {};
+	if (keyPath && (!validPath(keyPath) || keyPath.length < 2 || keyPath[0] !== "input"))
+		return "Observation keyPath requires a safe path to an input field";
+	if (keyPath && program.phase === "context") return "Observation keyPath requires a tool call phase";
+	if (totalPath && (!validPath(totalPath) || !roots.has(totalPath[0]))) return "Invalid aggregate total path";
+	return undefined;
+}
+
 export function validateFactsProgram(value: unknown): string | undefined {
 	try {
 		const copied = cloneJson(value);
@@ -455,8 +471,8 @@ export function validateFactsProgram(value: unknown): string | undefined {
 		const program = copied as FactsProgram;
 		const conditionsError = programConditionsError(program, { nodes: 0 });
 		if (conditionsError) return conditionsError;
-		if (program.state?.totalPath && (!validPath(program.state.totalPath) || !roots.has(program.state.totalPath[0])))
-			return "Invalid aggregate total path";
+		const stateError = programStateError(program);
+		if (stateError) return stateError;
 		if (program.phase === "context" && program.selector && !program.state)
 			return "Context selectors require an observation state";
 		if (
@@ -586,6 +602,7 @@ export interface EvaluationContext {
 	facts?: Record<string, unknown>;
 	data?: Record<string, DataSnapshot>;
 	states?: Record<string, StateView>;
+	observation?: { state: ObservationState; turn: number };
 	schema?: JsonSchema;
 	/** Boundary-prepared schema; absent for direct evaluation calls. */
 	preparedSchema?: PreparedSchema;
@@ -738,6 +755,10 @@ class PreparedFrame implements EvaluationFrame {
 			data: context.data ?? {},
 			schema: { valid: schemaTruth === "unknown" ? UNKNOWN : schemaTruth },
 		};
+		if (rule.program.state?.keyPath) {
+			const observation = context.observation;
+			facts.state = observation?.state.viewFor(rule.id, facts, this.now, observation.turn) ?? UNKNOWN;
+		}
 		cache.set(rule.id, facts);
 		return facts;
 	}
