@@ -2,15 +2,14 @@
 
 This package-level contract gives applications one message format for the
 conversation that opened them. An application is an extension that serves a
-person outside the chat, such as the Markdown reader's Ask card or Explorer's
-review comments. Each application places its own messages through Pi and
+person outside the chat, such as the Markdown reader's Ask card. Each application places its own messages through Pi and
 follows its own replies with its own code, so it works whether or not any
 other extension is loaded. An extension that wants to show these messages
 reads them from Pi as every application writes them. No extension imports
 another, and no application depends on another extension to send or to
 receive a reply.
 
-The Markdown reader and Explorer write these messages for their Ask requests.
+The Markdown reader writes these messages for its Ask requests.
 The agent extension displays them.
 
 ## Message

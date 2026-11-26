@@ -2,8 +2,7 @@
 
 An extension that ships a native app builds it from its own sources and installs it outside the
 harness checkout. A harness update therefore leaves the installed app as it was. The Markdown
-reader and Explorer keep their apps in step with the loaded harness in the same way, each with its
-own code.
+reader keeps its app in step with the loaded harness by this procedure.
 
 ## When an app is replaced
 
@@ -39,14 +38,13 @@ name and command:
 | Failure | `<App> app update failed: <reason>; the previous app stays installed. See <log path> and run /<name> update to try again.` |
 | Earlier failure for these sources (start only) | `<App> app update failed earlier for these sources and was not retried; the previous app stays installed. See <log path> and run /<name> update to try again.` |
 
-Here `<App>` is `Markdown reader` or `Explorer`, and `<name>` is `markdown` or `explorer`.
+For the reader, `<App>` is `Markdown reader` and `<name>` is `markdown`.
 
 ## Ownership
 
 Each extension reads its own manifest, computes its own source digest and holds its own failure
 record and log beside its app. No module is shared between them. See
-[Keeping the reader app current](../../extensions/markdown/README.md#keeping-the-reader-app-current)
-and the [Explorer README](../../extensions/explorer/README.md#keeping-the-app-current).
+[Keeping the reader app current](../../extensions/markdown/README.md#keeping-the-reader-app-current).
 
 Pi has no hook that runs extension code after `pi update`, and a harness activation only changes
 which snapshot new Pi processes load, so the first interactive start after a change is the point

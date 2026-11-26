@@ -57,7 +57,7 @@ sentences of chat, and say what the pane holds; do not repeat the pane. A
 plain answer of a few sentences stays in the chat.
 
 If you are a Durable agent, work for another agent, or run without an
-interactive conversation, do not open or navigate a reader or Explorer pane
+interactive conversation, do not open or navigate a reader pane
 unless the operator explicitly asks you to show the material. Publish silently
 when a document helps the recipient. Give the coordinating session a complete
 report, including the ID and title of each publication and the paths and line

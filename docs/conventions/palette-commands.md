@@ -30,14 +30,14 @@ type PaletteRequestEvent = { version: 1 };
 These are process-local payloads on Pi's `pi.events` bus. Only version `1` is
 defined.
 
-- `source` is the publishing extension's directory name, such as `explorer`:
+- `source` is the publishing extension's directory name, such as `apps`:
   lowercase letters and digits, without underscores, so that each Rex action
   name belongs to one command.
 - `id` is `<source>.<name>`: lowercase letters, digits and underscores in each
   part, at most 48 characters, unique within the source. The runtime offers
   the command as the Rex action `pi_<source>_<name>`.
 - `title` is what the palette shows after `Pi: `, 1 to 64 characters, such as
-  `Explore a Folder…`.
+  `Show an App in a Pane…`.
 - `description` is one line of at most 200 characters.
 - `argv` is the command's program and its arguments: 1 to 16 entries, the first
   an absolute path. It usually names the Node executable of the publishing
@@ -140,7 +140,5 @@ same run. An agent can start a Rex action too, so a
 command that changes anything takes its effect only after an answer that names
 it; a command that only shows something needs no answer.
 
-The Rex extension owns the runtime, the registry and `/rex setup`. The
-[Explorer extension](../../extensions/explorer/README.md) publishes
-**Explore a Folder…**; the [apps extension](../../extensions/apps/README.md)
+The Rex extension owns the runtime, the registry and `/rex setup`. The [apps extension](../../extensions/apps/README.md)
 publishes **Show an App in a Pane…**.

@@ -392,8 +392,8 @@ Extensions offer the operator commands in the Rex command palette under `Pi:`, f
 of its extension that answers one step at a time: it asks a question, opens a pane, or ends. The
 runtime that `/rex setup` installs asks the questions with `rex.ui` in every connected Rex app,
 runs each step with `rex.exec` on the server's machine, and opens the panes. This extension
-publishes no command of its own. The [Explorer extension](../explorer/README.md) publishes
-**Explore a Folder…**.
+publishes no command of its own. The [apps extension](../apps/README.md) publishes
+**Show an App in a Pane…**.
 
 - Ordinary interactive Pi sessions record published commands in `<agentDir>/rex/palette.json`
   at session start and when a publication arrives later. Before each record, Pi checks that its
@@ -410,7 +410,7 @@ publishes no command of its own. The [Explorer extension](../explorer/README.md)
   configuration. Reload the configuration after a command first appears in the registry or drops
   out to refresh the palette. `Pi: Run Command…` (`pi_command`) lists Pi's commands in Rex's picker
   and runs the chosen one. With an `id` argument it runs that command directly, for a key binding,
-  for example `rex.bind("cmd+shift+o", "pi_command", { id = "explorer.folder" })`.
+  for example `rex.bind("cmd+shift+o", "pi_command", { id = "apps.open" })`.
 - The runtime looks up the command by ID each time an action runs. Updated arguments take effect
   without a reload, and an action cannot run a command absent from the registry. The runtime keeps
   only well-formed recorded commands, runs at most eight steps of 20 seconds
