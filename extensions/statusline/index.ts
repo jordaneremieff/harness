@@ -39,8 +39,6 @@ import { MetricsCache, type SessionMetrics } from "./metrics.ts";
 import type { CommandsState } from "./views.ts";
 
 const TICK_MS = 5_000;
-const PRESENCE_EVENT = "harness:composer:presence";
-const PRESENCE_REQUEST = "harness:composer:presence-request";
 /** Full reset bounds each label and status cell's own SGR state. */
 const RESET = "\x1b[0m";
 
@@ -214,23 +212,6 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	let contextUsage: ReturnType<ExtensionContext["getContextUsage"]>;
 	let requestRender = () => {};
 	let runFailed = false;
-	let composerPresent = false;
-	let stopPresence: (() => void) | undefined;
-	function observePresence(payload: unknown): void {
-		if (
-			!payload ||
-			typeof payload !== "object" ||
-			Array.isArray(payload) ||
-			!("version" in payload) ||
-			payload.version !== 1 ||
-			!("present" in payload) ||
-			typeof payload.present !== "boolean"
-		)
-			return;
-		if (payload.present === composerPresent) return;
-		composerPresent = payload.present;
-		requestRender();
-	}
 	/** The installed footer's status provider; the Statuses view reads through it. */
 	let readStatuses: (() => ReadonlyMap<string, string>) | undefined;
 
@@ -347,7 +328,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 			// would show different text; line 2 changes arrive with branch and status events that render
 			// on their own.
 			tick = setInterval(() => {
-				if (!update() || composerPresent) return;
+				if (!update()) return;
 				const next =
 					renderedWidth < 0
 						? undefined
@@ -368,7 +349,6 @@ export default function registerStatusline(pi: ExtensionAPI) {
 					renderedWidth = -1;
 				},
 				render(width: number): string[] {
-					if (composerPresent) return [];
 					renderedWidth = width;
 					layout = buildLine2(session(), footerData, fg, sep, width);
 					const first = buildLine1(session(), fg, sep, width, attachedAt, metrics.value, contextUsage, runFailed);
@@ -378,9 +358,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 				},
 				handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 					const target =
-						!composerPresent && pointer && layout && event.width === renderedWidth
-							? clickTarget(event, spans, layout)
-							: undefined;
+						pointer && layout && event.width === renderedWidth ? clickTarget(event, spans, layout) : undefined;
 					if (target === undefined || (typeof target === "object" && !statusCommand(target.status))) return undefined;
 					// Claiming the press makes the footer Pi's press target, so a release on the same cell becomes a
 					// click even when the terminal reports pointer motion in between.
@@ -394,10 +372,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		attachedAt = Date.now();
 		if (ctx.mode !== "tui") return;
 		runFailed = branchFailed(ctx.sessionManager);
-		composerPresent = false;
-		stopPresence ??= pi.events.on(PRESENCE_EVENT, observePresence);
 		if (enabled) install(ctx);
-		pi.events.emit(PRESENCE_REQUEST, { version: 1 });
 	});
 
 	pi.on("session_shutdown", async () => {
@@ -405,9 +380,6 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		activeView = undefined;
 		closing?.frame?.close();
 		commandState = undefined;
-		stopPresence?.();
-		stopPresence = undefined;
-		composerPresent = false;
 		stopTick();
 		current = undefined;
 		requestRender = () => {};

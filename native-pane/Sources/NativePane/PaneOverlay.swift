@@ -4,14 +4,6 @@ import OSLog
 @MainActor
 public final class PaneOverlay: NSObject, NSWindowDelegate {
     public let anchor: TerminalAnchor
-    private var requestedAbove: CGFloat = 0
-    private var growthHeight: CGFloat? = nil
-    private var prediction: (from: CGRect, to: CGRect)?
-    public private(set) var appliedAbove: CGFloat = 0
-    public private(set) var appliedGrowth: CGFloat = 0
-    /// The largest visible rectangle, from the pane bottom to the extension clamp.
-    public private(set) var viewportLimit: CGSize?
-    public private(set) var paneHeight: CGFloat = 0
     public let window: PaneWindow
     public let content: PaneContentView
     private var placement: TerminalAnchor.Placement?
@@ -39,8 +31,8 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
 
     private let paneLog: Logger
 
-    public init(background: @escaping () -> NSColor, logger: Logger, tracksWindowContent: Bool = false, perf: Logger? = nil, eventDriven: Bool = false) {
-        anchor = TerminalAnchor(tracksWindowContent: tracksWindowContent, perf: perf, eventDriven: eventDriven)
+    public init(background: @escaping () -> NSColor, logger: Logger, eventDriven: Bool = false) {
+        anchor = TerminalAnchor(eventDriven: eventDriven)
         paneLog = logger
         let bounds = NSRect(x: 0, y: 0, width: 640, height: 480)
         content = PaneContentView(frame: bounds, background: background)
@@ -57,41 +49,6 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]
         super.init()
         window.delegate = self
-        window.perf = perf
-    }
-
-    @discardableResult
-    public func extendAbove(_ points: CGFloat) -> CGFloat {
-        requestedAbove = points
-        apply(placement.map(TerminalAnchor.Status.placed) ?? .searching, notify: false)
-        return appliedAbove
-    }
-
-    public func grow(to height: CGFloat?) {
-        guard growthHeight != height else { return }
-        growthHeight = height
-        apply(placement.map(TerminalAnchor.Status.placed) ?? .searching, notify: false)
-    }
-
-    public func predictShrink(to height: CGFloat, from frame: CGRect) {
-        guard placement?.frame == frame,
-              placement?.covers.isEmpty == true, placement?.coveredBy == nil,
-              height.isFinite, height > 0, height < frame.height else { return }
-        prediction = (frame, CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: height))
-        apply(placement.map(TerminalAnchor.Status.placed) ?? .searching, notify: false)
-    }
-
-    public func clearPrediction() {
-        guard prediction != nil else { return }
-        prediction = nil
-        apply(placement.map(TerminalAnchor.Status.placed) ?? .searching, notify: false)
-    }
-
-    static func extensions(_ pane: CGRect, content: CGRect?, growthHeight: CGFloat?, menu: CGFloat) -> (growth: CGFloat, menu: CGFloat) {
-        let growth = growthHeight.map { max(0, $0 - pane.height) } ?? 0
-        let available = max(0, (content?.maxY ?? pane.maxY) - pane.maxY)
-        let appliedGrowth = min(growth, available)
-        return (appliedGrowth, min(menu, available - appliedGrowth))
     }
 
     /// AppKit places windows on whole points and expands a fractional frame outward. The terminal
@@ -102,36 +59,19 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
         return CGRect(x: minX, y: minY, width: rect.maxX.rounded() - minX, height: rect.maxY.rounded() - minY)
     }
 
-    static func extendedFrame(_ pane: CGRect, content: CGRect?, above: CGFloat) -> CGRect {
-        guard let content, above.isFinite, above > 0 else { return pane }
-        let height = min(above, max(0, content.maxY - pane.maxY))
-        return CGRect(x: pane.minX, y: pane.minY, width: pane.width, height: pane.height + height)
-    }
-
     /// Shows the window over the pane, with holes where other content of the terminal's window
     /// lies over the pane, or hides it.
-    func apply(_ status: TerminalAnchor.Status, notify: Bool = true) {
+    func apply(_ status: TerminalAnchor.Status) {
         switch status {
         case .placed(let shown) where !shown.coveredEntirely:
             placement = shown
-            if let prediction, prediction.from != shown.frame || !shown.covers.isEmpty || shown.coveredBy != nil {
-                self.prediction = nil
-            }
-            let pane = Self.snapped(prediction?.to ?? shown.frame)
-            let split = shown.contentFrame.map(Self.snapped)
-            paneHeight = pane.height
-            // The current pane can differ slightly from the AX split bounds.
-            viewportLimit = CGSize(width: pane.width, height: max(Self.snapped(shown.frame).height, (split?.maxY ?? pane.maxY) - pane.minY))
-            let offsets = Self.extensions(pane, content: split, growthHeight: growthHeight, menu: requestedAbove)
-            appliedGrowth = offsets.growth
-            appliedAbove = offsets.menu
-            let frame = Self.extendedFrame(pane, content: split, above: offsets.growth + offsets.menu)
+            let frame = Self.snapped(shown.frame)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            content.prepareBase(width: frame.width, paneHeight: pane.height)
+            content.prepareBase(width: frame.width, paneHeight: frame.height)
             if window.frame != frame { window.setFrame(frame, display: true) }
             CATransaction.commit()
-            let holes = shown.covers.map { $0.offsetBy(dx: -pane.minX, dy: -pane.minY) }
+            let holes = shown.covers.map { $0.offsetBy(dx: -frame.minX, dy: -frame.minY) }
             if holes != content.holes {
                 paneLog.notice("holes \(holes.count, privacy: .public): \(holes.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: "; "), privacy: .public)")
                 content.holes = holes
@@ -140,14 +80,9 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
             order()
         case .placed, .concealed, .searching, .untrusted:
             placement = nil
-            prediction = nil
-            viewportLimit = nil
-            paneHeight = 0
-            appliedAbove = 0
-            appliedGrowth = 0
             if window.isVisible { window.orderOut(nil) }
         }
-        if notify { onChange?() }
+        onChange?()
     }
 
     /// Keeps the window above its host's window. While the host or this app is the active
@@ -252,7 +187,6 @@ public final class PaneContentView: NSView {
 
 /// A non-activating panel whose first click reaches the page.
 public final class PaneWindow: NSPanel {
-    public var perf: Logger?
     public var onCancel: (() -> Void)?
     public var onClose: (() -> Void)?
 
@@ -260,17 +194,8 @@ public final class PaneWindow: NSPanel {
     public override var canBecomeMain: Bool { true }
 
     public override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown {
-            perf?.debug("click.mouseDown key=\(self.isKeyWindow)")
-            if !isKeyWindow { makeKey() }
-            perf?.debug("click.key key=\(self.isKeyWindow)")
-        }
+        if event.type == .leftMouseDown, !isKeyWindow { makeKey() }
         super.sendEvent(event)
-    }
-
-    public override func setFrame(_ frameRect: NSRect, display flag: Bool) {
-        super.setFrame(frameRect, display: flag)
-        perf?.debug("window.setFrame h=\(self.frame.height) bottom=\(self.frame.minY)")
     }
 
     public override func cancelOperation(_ sender: Any?) {

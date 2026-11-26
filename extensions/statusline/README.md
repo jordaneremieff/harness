@@ -243,9 +243,6 @@ set the window title, write the clipboard, or emit a hyperlink.
   `unref`'d (it cannot hold the process open) and is
   cleared on footer `dispose()`, on `session_shutdown`, and before any
   reinstall, so toggling or reloading can never accumulate intervals.
-- While a native composer is present and visible, the footer renders no lines.
-  It resumes its normal display when the composer is hidden, away, or closed.
-  See the [composer presence contract](../../docs/conventions/composer-presence.md).
 - Branch changes re-render through `footerData.onBranchChange`.
 
 ## Files

@@ -66,40 +66,6 @@ final class ModelTree: AccessibilityTree {
     func same(_ first: Int, _ second: Int) -> Bool { first == second }
 }
 
-@Suite struct SplitFrames {
-    @Test func prefersThePairAboveThePaneAndKeepsOuterBoundsForTheOverlay() {
-        let tree = ModelTree()
-        let window = CGRect(x: 0, y: 0, width: 1200, height: 1100)
-        let host = tree.add("AXWindow", window)
-        let outer = CGRect(x: 0, y: 40, width: 1200, height: 1060)
-        let container = tree.add("AXSplitGroup", outer, parent: host)
-        let pair = CGRect(x: 400, y: 104, width: 800, height: 996)
-        let split = tree.add("AXSplitGroup", pair, parent: container)
-        tree.add("AXTextArea", CGRect(x: 400, y: 104, width: 800, height: 500), parent: split)
-        let frame = CGRect(x: 402, y: 640, width: 795, height: 458)
-        let branch = tree.add("AXGroup", CGRect(x: 400, y: 610, width: 800, height: 490), parent: split)
-        let pane = tree.add("AXTextArea", frame, parent: branch)
-        tree.add("AXTextArea", CGRect(x: 0, y: 40, width: 400, height: 1060), parent: container)
-        let groups = AnchorWorker.splitFrames(tree, around: pane, frame: frame, in: window)
-        #expect(groups.vertical == pair)
-        #expect(groups.outer == outer)
-    }
-
-    @Test func sideBySideSiblingDoesNotIdentifyAVerticalPair() {
-        let tree = ModelTree()
-        let window = CGRect(x: 0, y: 0, width: 1200, height: 1100)
-        let host = tree.add("AXWindow", window)
-        let outer = CGRect(x: 0, y: 40, width: 1200, height: 1060)
-        let group = tree.add("AXSplitGroup", outer, parent: host)
-        let paneFrame = CGRect(x: 400, y: 40, width: 800, height: 1060)
-        let pane = tree.add("AXTextArea", paneFrame, parent: group)
-        tree.add("AXTextArea", CGRect(x: 0, y: 40, width: 399, height: 1060), parent: group)
-        let groups = AnchorWorker.splitFrames(tree, around: pane, frame: paneFrame, in: window)
-        #expect(groups.vertical == nil)
-        #expect(groups.outer == outer)
-    }
-}
-
 @Suite struct TerminalSearch {
     let marker = "reader-0123456789ab"
 

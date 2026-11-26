@@ -141,18 +141,10 @@ An uncertain result never permits automatic retry, fallback placement or cleanup
 unconfirmed pane. Program acceptance and visibility remain separate from split creation.
 
 Placement defaults to the right side with an even share. `left` and `right` place the new pane
-beside the anchor; `below` places it underneath. The share is the new pane's fraction of the
+beside the anchor. The share is the new pane's fraction of the
 split, from 0.15 to 0.85 inclusive. The optional label
 holds 1 to 32 printable Unicode characters and defaults to `Reader`. Neither option changes
-focus. The receipt preserves the block order for later resize requests.
-
-The fixed `terminal-pane.ts resize` operation accepts that receipt and a share from 0.1 to 0.9.
-It checks both blocks in the receipt window. Rex selects the innermost split with that ordered
-block pair and direction. The adapter makes one attempt and never retries an unconfirmed resize.
-
-The fixed `terminal-pane.ts focus` operation accepts that receipt and gives Rex focus to the
-receipt's anchor block. It acts only while the session shows the receipt window and never
-switches windows. The adapter makes one attempt and never retries an unconfirmed focus change.
+focus. The receipt names the anchor and the new block.
 
 The fixed `terminal-pane.ts float` operation opens the program in a new floating layer of the
 tab that holds the anchor, at `bounds` given as `[x, y, width, height]` fractions of that tab,
@@ -161,7 +153,7 @@ startup files, so it finds the commands and environment of the operator's own te
 arguments reach it unchanged. The receipt names the new block and layer. The same single-attempt
 and uncertain-effect rules apply.
 
-Troll uses the float operation for its session pane. Composer uses the adapter to open below Pi, resize its confirmed split, and focus Pi's pane before it hands Pi the keyboard. Markdown uses it for explicit Read actions. It supplies only its configured
+Troll uses the float operation for its session pane. Markdown uses the split for explicit Read actions. It supplies only its configured
 native reader and a pinned open request; document text never supplies a terminal program.
 The split's program receives the [pane stacking feed](#pane-stacking-feed) under the same
 conditions as a pane that `rex_terminal` creates.

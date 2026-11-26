@@ -10,7 +10,7 @@ final class ConfigHost {
                 ? NSColor(srgbRed: 48 / 255, green: 52 / 255, blue: 70 / 255, alpha: 1)
                 : NSColor(srgbRed: 239 / 255, green: 241 / 255, blue: 245 / 255, alpha: 1)
         }
-    }, logger: Logger(subsystem: "local.harness.config", category: "pane"), tracksWindowContent: true, eventDriven: true)
+    }, logger: Logger(subsystem: "local.harness.config", category: "pane"), eventDriven: true)
     private let terminal: PaneTerminal?
     let page: ConfigPage
     var capture: ((String) async throws -> Void)?

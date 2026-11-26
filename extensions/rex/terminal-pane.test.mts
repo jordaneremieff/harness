@@ -4,17 +4,11 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
 	floatPane,
-	focusPane,
 	parseFloatRequest,
-	parseFocusRequest,
 	parsePaneRequest,
-	parseResizeRequest,
-	resizePane,
 	splitPane,
 	type FloatRequest,
-	type PaneFocusRequest,
 	type PaneRequest,
-	type PaneResizeRequest,
 } from "./terminal-pane.ts";
 import { trustedRexExecutable, type Runner } from "./terminal-origin.ts";
 
@@ -43,7 +37,6 @@ const receipt = {
 	instanceId: exact.instanceId,
 	anchorId: exact.blockId,
 	blockId: "block:66666666-6666-6666-6666-666666666666",
-	direction: "horizontal" as const,
 };
 
 test("the fixed helper preserves literal argv and exact inherited IDs in one guarded mutation", async () => {
@@ -189,9 +182,9 @@ test("request admission bounds argv, rejects NUL and requires absolute program/c
 test("placement and label admission preserves absent defaults and accepts the inclusive share range", () => {
 	for (const share of [0.15, 0.5, 0.85]) {
 		const parsed = parsePaneRequest(
-			JSON.stringify({ ...request(), placement: { side: "below", share }, label: "Reader 2" }),
+			JSON.stringify({ ...request(), placement: { side: "left", share }, label: "Reader 2" }),
 		);
-		assert.deepEqual(parsed.placement, { side: "below", share });
+		assert.deepEqual(parsed.placement, { side: "left", share });
 		assert.equal(parsed.label, "Reader 2");
 	}
 	const plain = parsePaneRequest(JSON.stringify(request()));
@@ -202,6 +195,7 @@ test("placement and label admission preserves absent defaults and accepts the in
 		{ placement: [] },
 		{ placement: {} },
 		{ placement: { side: "above", share: 0.5 } },
+		{ placement: { side: "below", share: 0.5 } },
 		{ placement: { side: "right" } },
 		{ placement: { side: "right", share: "0.5" } },
 		{ placement: { side: "right", share: 0.149 } },
@@ -221,7 +215,7 @@ test("placement and label admission preserves absent defaults and accepts the in
 	assert.equal(parsePaneRequest(JSON.stringify({ ...request(), label: emoji })).label, emoji);
 });
 
-test("defaults and explicit placement map to Rex direction, side, ratio and label", async () => {
+test("defaults and explicit placement map to a horizontal Rex split with side, ratio and label", async () => {
 	const observe = async (change: Partial<PaneRequest>) => {
 		let calls = 0;
 		let payload: Record<string, unknown> | undefined;
@@ -233,11 +227,7 @@ test("defaults and explicit placement map to Rex direction, side, ratio and labe
 			return {
 				code: 0,
 				stderr: "",
-				stdout: JSON.stringify({
-					outcome: "created",
-					detail: "Created.",
-					receipt: { ...receipt, direction: payload.direction, before: payload.side === "before" || undefined },
-				}),
+				stdout: JSON.stringify({ outcome: "created", detail: "Created.", receipt }),
 			};
 		};
 		assert.equal((await splitPane({ ...request(), ...change }, env, run)).outcome, "created");
@@ -246,148 +236,24 @@ test("defaults and explicit placement map to Rex direction, side, ratio and labe
 		return { payload, script };
 	};
 	const defaults = await observe({});
-	assert.equal(defaults.payload.direction, "horizontal");
 	assert.equal(defaults.payload.ratio, 0.5);
 	assert.equal(defaults.payload.label, "Reader");
-	const left = await observe({ placement: { side: "left", share: 0.25 } });
-	assert.equal(left.payload.direction, "horizontal");
+	const left = await observe({ placement: { side: "left", share: 0.25 }, label: "Build log" });
 	assert.equal(left.payload.side, "before");
 	assert.equal(left.payload.ratio, 0.25);
+	assert.equal(left.payload.label, "Build log");
 	const right = await observe({ placement: { side: "right", share: 0.25 } });
-	assert.equal(right.payload.direction, "horizontal");
 	assert.equal(right.payload.ratio, 0.75);
 	assert.equal(right.payload.label, "Reader");
-	const below = await observe({ placement: { side: "below", share: 0.3 }, label: "Build log" });
-	assert.equal(below.payload.direction, "vertical");
-	assert.equal(below.payload.ratio, 0.7);
-	assert.equal(below.payload.label, "Build log");
-	for (const { payload } of [defaults, right, below]) assert.equal(payload.side, "after");
-	for (const { script } of [defaults, left, right, below]) {
-		assert.match(script, /direction=a\.direction, side=a\.side, ratio=a\.ratio/u);
+	for (const { payload } of [defaults, right]) assert.equal(payload.side, "after");
+	for (const { script } of [defaults, left, right]) {
+		assert.match(script, /direction="horizontal", side=a\.side, ratio=a\.ratio/u);
 		assert.match(script, /label=a\.label/u);
 		assert.match(script, /focus=false/u);
 	}
 });
 
-test("resize finds the window that holds both blocks and asks Rex to move one ordered split", async () => {
-	let calls = 0;
-	const request: PaneResizeRequest = { version: 1, receipt: { ...receipt, direction: "vertical" }, share: 0.185 };
-	const run: Runner = async (executable, args, options) => {
-		calls++;
-		assert.equal(executable, trustedRexExecutable());
-		assert.ok(args.includes(`--server=${exact.server}`));
-		assert.equal(args.includes("--session"), false);
-		assert.equal(args[args.indexOf("--block") + 1], receipt.anchorId);
-		assert.equal(options.timeout, 5000);
-		assert.equal(options.maxBuffer, 32768);
-		assert.deepEqual(JSON.parse(args[args.indexOf("--args") + 1]), {
-			...request.receipt,
-			beforeId: receipt.anchorId,
-			afterId: receipt.blockId,
-			ratio: 0.815,
-		});
-		const script = args[args.indexOf("-e") + 1];
-		assert.match(script, /s\.host_id ~= a\.hostId or s\.instance_id ~= a\.instanceId/u);
-		assert.match(script, /placement\(view, a\.blockId\) == window/u);
-		assert.match(
-			script,
-			/"session\.resize_pane", \{session_id=session, before_block_id=a\.beforeId, after_block_id=a\.afterId, direction=a\.direction, ratio=a\.ratio/u,
-		);
-		return { code: 0, stdout: JSON.stringify({ outcome: "resized", detail: "Resized." }), stderr: "" };
-	};
-	assert.equal((await resizePane(request, env, run)).outcome, "resized");
-	assert.equal((await resizePane(request, { ...env, REX_BLOCK: "other" }, run)).outcome, "stale");
-	assert.equal(calls, 1);
-});
-
-test("resize uses a left pane as the first block and gives it the requested share", async () => {
-	const request: PaneResizeRequest = { version: 1, receipt: { ...receipt, before: true }, share: 0.35 };
-	const result = await resizePane(request, env, async (_, args) => {
-		const payload = JSON.parse(args[args.indexOf("--args") + 1]);
-		assert.deepEqual([payload.beforeId, payload.afterId, payload.ratio], [receipt.blockId, receipt.anchorId, 0.35]);
-		return { code: 0, stdout: JSON.stringify({ outcome: "resized", detail: "Resized." }), stderr: "" };
-	});
-	assert.equal(result.outcome, "resized");
-});
-
-test("resize rejects bad receipts and shares, and does not retry uncertain effects", async () => {
-	const request: PaneResizeRequest = { version: 1, receipt, share: 0.5 };
-	for (const share of [0.1, 0.9]) assert.equal(parseResizeRequest(JSON.stringify({ ...request, share })).share, share);
-	for (const invalid of [
-		{ share: 0.099 },
-		{ share: 0.901 },
-		{ share: "0.5" },
-		{ receipt: { ...receipt, direction: undefined } },
-		{ receipt: { ...receipt, before: "left" } },
-		{ receipt: { ...receipt, before: true, direction: "vertical" } },
-		{ receipt: { ...receipt, blockId: receipt.anchorId } },
-		{ receipt: { ...receipt, windowId: "window:55555555-5555-5555-5555-555555555555" } },
-		{ receipt: { ...receipt, sessionId: "session:33333333-3333-3333-3333-333333333333" } },
-	]) {
-		assert.throws(() => parseResizeRequest(JSON.stringify({ ...request, ...invalid })));
-	}
-	for (const outcome of ["stale", "unavailable", "uncertain"] as const) {
-		let calls = 0;
-		const run: Runner = async () => {
-			calls++;
-			return outcome === "uncertain"
-				? { code: null, failure: "timeout", stdout: "", stderr: "" }
-				: { code: 0, stdout: JSON.stringify({ outcome, detail: "The split is unavailable." }), stderr: "" };
-		};
-		assert.equal((await resizePane(request, env, run)).outcome, outcome);
-		assert.equal(calls, 1);
-	}
-});
-
-test("focus moves Rex focus to the receipt anchor only in the window its session shows", async () => {
-	let calls = 0;
-	const request: PaneFocusRequest = { version: 1, receipt: { ...receipt, direction: "vertical" } };
-	const run: Runner = async (executable, args, options) => {
-		calls++;
-		assert.equal(executable, trustedRexExecutable());
-		assert.ok(args.includes(`--server=${exact.server}`));
-		assert.equal(args.includes("--session"), false);
-		assert.equal(args[args.indexOf("--block") + 1], receipt.anchorId);
-		assert.equal(options.timeout, 5000);
-		assert.deepEqual(JSON.parse(args[args.indexOf("--args") + 1]), request.receipt);
-		const script = args[args.indexOf("-e") + 1];
-		assert.match(script, /s\.host_id ~= a\.hostId or s\.instance_id ~= a\.instanceId/u);
-		assert.match(script, /local view, window = shared\(\)/u);
-		assert.match(script, /view\.active_window_id ~= window/u);
-		assert.match(script, /"session\.focus_block", \{session_id=session, block_id=a\.anchorId\}/u);
-		return { code: 0, stdout: JSON.stringify({ outcome: "focused", detail: "Focused." }), stderr: "" };
-	};
-	assert.equal((await focusPane(request, env, run)).outcome, "focused");
-	assert.equal((await focusPane(request, { ...env, REX_BLOCK: receipt.blockId }, run)).outcome, "stale");
-	assert.equal(calls, 1);
-});
-
-test("focus rejects bad receipts and extra fields, and does not retry uncertain effects", async () => {
-	const request: PaneFocusRequest = { version: 1, receipt };
-	assert.deepEqual(parseFocusRequest(JSON.stringify(request)), request);
-	for (const invalid of [
-		{ version: 2 },
-		{ share: 0.5 },
-		{ receipt: { ...receipt, anchorId: "block:other" } },
-		{ receipt: { ...receipt, blockId: receipt.anchorId } },
-		{ receipt: undefined },
-	]) {
-		assert.throws(() => parseFocusRequest(JSON.stringify({ ...request, ...invalid })));
-	}
-	for (const outcome of ["stale", "unavailable", "uncertain"] as const) {
-		let calls = 0;
-		const run: Runner = async () => {
-			calls++;
-			return outcome === "uncertain"
-				? { code: 0, stdout: "not json", stderr: "" }
-				: { code: 0, stdout: JSON.stringify({ outcome, detail: "The session shows another window." }), stderr: "" };
-		};
-		assert.equal((await focusPane(request, env, run)).outcome, outcome);
-		assert.equal(calls, 1);
-	}
-});
-
-test("a gone anchor block is stale for split, resize and focus, without retry", async () => {
+test("a gone anchor block is stale for split, without retry", async () => {
 	let calls = 0;
 	const gone =
 		(block: string): Runner =>
@@ -396,9 +262,7 @@ test("a gone anchor block is stale for split, resize and focus, without retry", 
 			return { code: 3, failure: "failed", stdout: "", stderr: `Error: block target "${block}" not found\n` };
 		};
 	assert.equal((await splitPane(request(), env, gone(exact.blockId))).outcome, "stale");
-	assert.equal((await resizePane({ version: 1, receipt, share: 0.5 }, env, gone(receipt.anchorId))).outcome, "stale");
-	assert.equal((await focusPane({ version: 1, receipt }, env, gone(receipt.anchorId))).outcome, "stale");
-	assert.equal(calls, 3);
+	assert.equal(calls, 1);
 	assert.equal(
 		(await splitPane(request(), env, gone("block:other"))).outcome,
 		"uncertain",

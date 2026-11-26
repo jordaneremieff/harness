@@ -1183,9 +1183,7 @@ Pi uses the first line of the title for the status message. Agent trust prompts
 and Policy's command-level approval and rejection prompts report `permission`.
 A review inside the Policy browser keeps the browser's status: Pi sets the
 status when the frame opens. Pi repaints after an asynchronous editor
-replacement or paste.
-Composer still owns the native draft and its separate bounded recall history;
-a repeated prompt moves to the newest position. Regular TUI
+replacement or paste. Regular TUI
 mode no longer writes OSC 133 prompt markers, which ended that status in some
 terminals. Hardware cursor,
 mouse-wheel, shifted-key, color-reply, image, and compaction-indicator fixes belong

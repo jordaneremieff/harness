@@ -1,6 +1,5 @@
 import AppKit
 import ApplicationServices
-import OSLog
 
 /// Finds the on-screen element that shows this process's terminal and follows its place.
 ///
@@ -32,11 +31,6 @@ public final class TerminalAnchor {
         public var host: pid_t
         /// The window-server number of the window that contains the element, when known.
         public var window: CGWindowID?
-        public var windowFrame: CGRect? = nil
-        /// The outer split group, excluding the title bar and tab strip.
-        public var contentFrame: CGRect? = nil
-        /// The nearest split with a sibling directly above the pane, when exposed by AX.
-        public var verticalSplitFrame: CGRect? = nil
         /// The lowest other window of the host that lies over the element, such as a command
         /// palette or a dialog that the host shows above the window that contains the element.
         public var coveredBy: CGWindowID?
@@ -70,8 +64,8 @@ public final class TerminalAnchor {
     public var onChange: ((Status) -> Void)?
     public var onMarker: (() -> Void)?
 
-    /// One step of the worker and the accessibility requests that it made.
-    private let read: @Sendable (String) -> (result: AnchorWorker.Result, calls: Int)
+    /// One step of the worker.
+    private let read: @Sendable (String) -> AnchorWorker.Result
     /// The window server's record of one window.
     private let windowInfo: @Sendable (CGWindowID) -> [String: Any]?
     private let idleInterval: TimeInterval?
@@ -88,23 +82,17 @@ public final class TerminalAnchor {
     /// Time after the start of a step after which it counts as stalled and the backing window
     /// is checked, independent of the poll interval.
     private static let stallTime: TimeInterval = 0.1
-    private let perf: Logger?
     private let eventDriven: Bool
     private var subscription: AnchorWorker.Subscription?
     private var wakePending = false
     private var fastUntil = Date.distantPast
 
     /// Starts the stacking command that the pane's environment offers, if any.
-    public init(tracksWindowContent: Bool = false, perf: Logger? = nil, eventDriven: Bool = false) {
-        self.perf = perf
+    public init(eventDriven: Bool = false) {
         self.eventDriven = eventDriven
         feed = StackingFeed.start()
-        let worker = AnchorWorker(feed: feed, tracksWindowContent: tracksWindowContent, eventDriven: eventDriven)
-        read = { marker in
-            let before = worker.axCalls
-            let result = worker.step(marker: marker)
-            return (result, worker.axCalls - before)
-        }
+        let worker = AnchorWorker(feed: feed, eventDriven: eventDriven)
+        read = { worker.step(marker: $0) }
         windowInfo = Self.windowServerInfo
         idleInterval = nil
         feed?.onReport = { [weak self] in
@@ -116,10 +104,9 @@ public final class TerminalAnchor {
     /// nothing changes.
     init(read: @escaping @Sendable (String) -> AnchorWorker.Result,
          windowInfo: @escaping @Sendable (CGWindowID) -> [String: Any]?, idleInterval: TimeInterval) {
-        perf = nil
         eventDriven = false
         feed = nil
-        self.read = { (read($0), 0) }
+        self.read = read
         self.windowInfo = windowInfo
         self.idleInterval = idleInterval
     }
@@ -167,10 +154,7 @@ public final class TerminalAnchor {
         }
         subscription = next
         if let next {
-            next.wake = { [weak self] in
-                self?.perf?.debug("anchor.notification")
-                self?.wake()
-            }
+            next.wake = { [weak self] in self?.wake() }
             CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(next.observer), .commonModes)
         }
     }
@@ -209,13 +193,8 @@ public final class TerminalAnchor {
         }
         let read = read
         let marker = marker
-        let period = interval
-        let perf = perf
         queue.async { [weak self] in
-            let start = DispatchTime.now().uptimeNanoseconds
-            let (result, calls) = read(marker)
-            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
-            perf?.debug("anchor.step ms=\(elapsed) calls=\(calls) poll_ms=\(period * 1000)")
+            let result = read(marker)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.finish(result) }
             }
@@ -279,10 +258,6 @@ public final class TerminalAnchor {
             fastUntil = Date().addingTimeInterval(1)
         }
         if next != status {
-            if case .placed(let shown) = next {
-                if case .placed(let before) = status, shown.frame == before.frame {}
-                else { perf?.debug("anchor.frame x=\(shown.frame.minX) y=\(shown.frame.minY) w=\(shown.frame.width) h=\(shown.frame.height)") }
-            }
             status = next
             onChange?(next)
         }
@@ -345,9 +320,6 @@ final class AnchorWorker: @unchecked Sendable {
         var frame: CGRect
         var host: pid_t
         var window: CGWindowID?
-        var windowFrame: CGRect? = nil
-        var contentFrame: CGRect? = nil
-        var verticalSplitFrame: CGRect? = nil
         var coveredBy: CGWindowID?
         var covers: [CGRect] = []
 
@@ -356,9 +328,6 @@ final class AnchorWorker: @unchecked Sendable {
                 frame: TerminalAnchor.appKitRect(frame, primaryHeight: primaryHeight),
                 host: host,
                 window: window,
-                windowFrame: windowFrame.map { TerminalAnchor.appKitRect($0, primaryHeight: primaryHeight) },
-                contentFrame: contentFrame.map { TerminalAnchor.appKitRect($0, primaryHeight: primaryHeight) },
-                verticalSplitFrame: verticalSplitFrame.map { TerminalAnchor.appKitRect($0, primaryHeight: primaryHeight) },
                 coveredBy: coveredBy,
                 covers: covers.map { TerminalAnchor.appKitRect($0, primaryHeight: primaryHeight) }
             )
@@ -402,7 +371,6 @@ final class AnchorWorker: @unchecked Sendable {
     static let wideRoundEvery = 8
 
     private let tree = LiveTree()
-    var axCalls: Int { tree.calls }
     private var search = AnchorSearch<LiveTree>()
     private var element: AXUIElement?
     private var windowElement: AXUIElement?
@@ -455,45 +423,13 @@ final class AnchorWorker: @unchecked Sendable {
         }
     }
 
-    private let tracksWindowContent: Bool
     private let eventDriven: Bool
     private var subscription: Subscription?
     private var observedPair: (AXUIElement, AXUIElement)?
 
-    init(feed: StackingFeed?, tracksWindowContent: Bool = false, eventDriven: Bool = false) {
+    init(feed: StackingFeed?, eventDriven: Bool = false) {
         self.feed = feed
-        self.tracksWindowContent = tracksWindowContent
         self.eventDriven = eventDriven
-    }
-
-    static func splitFrames<Tree: AccessibilityTree>(_ tree: Tree, around pane: Tree.Node, frame: CGRect,
-                                                      in window: CGRect) -> (outer: CGRect?, vertical: CGRect?) {
-        var node = pane
-        var outer: CGRect?
-        var vertical: CGRect?
-        for _ in 0..<10 {
-            let child = node
-            guard let parent = tree.parent(child).value else { break }
-            node = parent
-            let role = tree.role(node).value
-            if role == kAXWindowRole { break }
-            guard role == kAXSplitGroupRole, let group = tree.frame(node).value,
-                  window.insetBy(dx: -1, dy: -1).contains(group), group.insetBy(dx: -1, dy: -1).contains(frame) else { continue }
-            outer = group
-            // Composer opens below Pi. Look for a sibling above its branch, not a
-            // side-by-side pane or a splitter. AX screen coordinates increase downwards.
-            guard vertical == nil, let peers = tree.children(node).value,
-                  let branch = tree.same(child, pane) ? frame : tree.frame(child).value else { continue }
-            for peer in peers.prefix(8) where !tree.same(peer, child) && tree.role(peer).value != kAXSplitterRole {
-                guard let sibling = tree.frame(peer).value, sibling.height > 1,
-                      group.insetBy(dx: -1, dy: -1).contains(sibling),
-                      sibling.maxY <= branch.minY + 1,
-                      max(sibling.minX, branch.minX) < min(sibling.maxX, branch.maxX) else { continue }
-                vertical = group
-                break
-            }
-        }
-        return (outer, vertical)
     }
 
     func step(marker: String) -> Result {
@@ -572,10 +508,7 @@ final class AnchorWorker: @unchecked Sendable {
                 coversAt = Date()
             }
         }
-        let groups = tracksWindowContent ? windowFrame.map { Self.splitFrames(tree, around: element, frame: frame, in: $0) } : nil
-        let placement = RawPlacement(frame: frame, host: host, window: number, windowFrame: windowFrame,
-                                     contentFrame: groups?.outer, verticalSplitFrame: groups?.vertical,
-                                     coveredBy: coveredBy, covers: covers)
+        let placement = RawPlacement(frame: frame, host: host, window: number, coveredBy: coveredBy, covers: covers)
         let hidden = NSRunningApplication(processIdentifier: host)?.isHidden ?? false
         if minimised || hidden || detached || number == nil { return .concealed(placement) }
         return .placed(placement)

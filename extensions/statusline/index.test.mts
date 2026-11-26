@@ -178,22 +178,6 @@ function registration(name: string, over: RegistrationOverrides = {}): SlashComm
 	};
 }
 
-/** A small synchronous event bus, as Pi delivers composer presence. */
-function eventBus() {
-	const handlers = new Map<string, Set<(data: unknown) => void>>();
-	return {
-		on(name: string, handler: (data: unknown) => void) {
-			const set = handlers.get(name) ?? new Set();
-			set.add(handler);
-			handlers.set(name, set);
-			return () => set.delete(handler);
-		},
-		emit(name: string, data: unknown) {
-			for (const handler of [...(handlers.get(name) ?? [])]) handler(data);
-		},
-	};
-}
-
 interface PiOptions {
 	/** Pi's answer to setModel: false when the provider has no authentication. */
 	setModel?: (model: MockModel) => boolean;
@@ -210,7 +194,6 @@ function makePi(
 	const models: string[] = [];
 	const levels: string[] = [];
 	let level = "high";
-	const events = eventBus();
 	const pi = {
 		on: (event: string, handler: SessionHandler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
 		registerCommand: (name: string, command: MockCommand) => {
@@ -221,7 +204,6 @@ function makePi(
 		sendUserMessage: (content: string, options: unknown) => {
 			sent.push({ content, options });
 		},
-		events,
 		setModel: async (model: MockModel) => {
 			models.push(`${model.provider}/${model.id}`);
 			return options.setModel?.(model) ?? true;
@@ -241,7 +223,7 @@ function makePi(
 			for (const handler of registered) await handler(payload, ctx);
 		},
 	};
-	return { handlers: session, commands, sent, models, levels, events };
+	return { handlers: session, commands, sent, models, levels };
 }
 
 function makeCtx(over: CtxOverrides = {}) {
@@ -467,36 +449,6 @@ describe("registration and mode gating", () => {
 		assert.equal(mocks.footerCalls.length, 1);
 		installFooter(mocks); // Pi invokes the factory on install
 		assert.equal(liveTicks.size, 1);
-	});
-});
-
-describe("composer presence", () => {
-	it("requests current presence and hides only for a valid true until restored", async () => {
-		const { handlers, events } = makePi();
-		const mocks = makeCtx();
-		const presence = "harness:composer:presence";
-		let requests = 0;
-		events.on("harness:composer:presence-request", (payload) => {
-			assert.deepEqual(payload, { version: 1 });
-			requests++;
-			events.emit(presence, { version: 1, present: true });
-		});
-		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		assert.equal(requests, 1);
-		const footer = installFooter(mocks);
-		try {
-			assert.deepEqual(footer.render(100), []);
-			for (const payload of [{ version: 2, present: false }, { version: 1, present: "false" }, null])
-				events.emit(presence, payload);
-			assert.deepEqual(footer.render(100), []);
-			events.emit(presence, { version: 1, present: false });
-			assert.equal(footer.render(100).length, 2);
-			await handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mocks.ctx);
-			events.emit(presence, { version: 1, present: true });
-			assert.equal(footer.render(100).length, 2);
-		} finally {
-			footer.dispose();
-		}
 	});
 });
 

@@ -22,7 +22,7 @@ Send one UTF-8 JSON record on stdin, at most 16384 bytes:
   origin: TerminalOrigin | null;
   argv: string[];
   cwd: string;
-  placement?: { side: "left" | "right" | "below"; share: number };
+  placement?: { side: "left" | "right"; share: number };
   label?: string;
 }
 ```
@@ -35,8 +35,7 @@ chooses global focus, a default server or another tab.
 `placement` is optional and defaults to `{ side: "right", share: 0.5 }`. `share` is the new
 pane's share of the split space and is inclusive from 0.15 to 0.85. `side: "left"` maps to a
 horizontal split before the anchor with ratio `share`; `side: "right"` maps to a
-horizontal split after the anchor with ratio `1 - share`; `side: "below"` maps to a vertical
-split after the anchor with ratio `1 - share`. `label` is optional, defaults to `Reader`, and
+horizontal split after the anchor with ratio `1 - share`. `label` is optional, defaults to `Reader`, and
 contains 1 to 32 printable Unicode characters: one to 32 code points with no control, format or
 surrogate characters.
 
@@ -78,8 +77,6 @@ The adapter prints one JSON record and exits zero for domain results:
   receipt?: {
     server: string; hostId: string; instanceId: string;
     anchorId: string; blockId: string;
-    direction: "horizontal" | "vertical";
-    before?: true; // the new block is left of the anchor
   };
 }
 ```
@@ -143,50 +140,6 @@ The result has the split result's shape and outcomes. A `created` result carries
 `{ server, hostId, instanceId, anchorId, blockId, layerId }` with exact IDs. One creation attempt
 is the maximum; the deadlines, output bounds and uncertain-effect rules of a split apply.
 
-## Resize a confirmed split
-
-Invoke `node <package>/extensions/rex/terminal-pane.ts resize` with one bounded JSON record:
-
-```ts
-{ version: 1; receipt: PaneReceipt; share: number }
-```
-
-Pass the receipt from a `created` result unchanged. The new pane's share is inclusive from
-0.1 to 0.9. The adapter checks the inherited anchor, server host and instance, and that one
-window of the session that holds the anchor now holds both blocks. Rex selects the innermost
-split in the receipt's direction and block order. The ratio is `share` for a left pane and
-`1 - share` otherwise. The adapter makes one
-attempt with the split operation's deadlines and output bounds. It neither moves focus nor picks
-an alternate border.
-
-The result is `{ version: 1, outcome, detail }`. `resized` means Rex acknowledged the change,
-not that a client rendered it. `stale` means the inherited anchor or server identity changed, the
-anchor is gone, or the two blocks no longer share a window. `unavailable` means the required
-terminal service is unavailable before mutation. `uncertain` means no resize acknowledgement; do not retry automatically.
-
-## Focus the anchor of a confirmed split
-
-Invoke `node <package>/extensions/rex/terminal-pane.ts focus` with one bounded JSON record:
-
-```ts
-{ version: 1; receipt: PaneReceipt }
-```
-
-Pass the receipt from a `created` result unchanged. The adapter checks the inherited anchor,
-server host and instance, and that one window holds both blocks, as resize does. It then gives
-Rex focus to the receipt's anchor block, so typing that Rex receives reaches the invoking
-terminal rather than another pane of the window. It acts only while the anchor's session shows
-that window: focus never switches the session to another window. When the anchor already
-has focus, the adapter changes nothing. It makes one attempt with the split operation's deadlines
-and output bounds. Rex focus does not activate the terminal application; the caller's own
-program decides when to hand the keyboard to it.
-
-The result is `{ version: 1, outcome, detail }`. `focused` means the anchor had focus or Rex
-acknowledged the change. `stale` means the inherited anchor or server identity changed, the anchor
-is gone, or the two blocks no longer share a window. `unavailable` means the session shows another
-window or the required terminal service is
-unavailable; nothing changed. `uncertain` means no acknowledgement; do not retry automatically.
-
 ## Consumers
 
 The Markdown command's Read action requests a half-width split on the left for its native
@@ -200,9 +153,3 @@ workspace through the agent tool neither starts an app nor creates a split.
 
 The troll extension's `/troll` command opens a Pi session in a floating pane over the invoking
 Pi pane's tab. Pi's own startup establishes acceptance.
-
-The composer extension's `/composer` command opens Composer.app with a private launch file in
-a split below Pi labelled `Composer`. An authenticated request establishes app acceptance.
-Once visible, the composer asks Pi to resize the split through its confirmed receipt. Before
-the composer hands the keyboard to the terminal, it asks Pi to focus Pi's own pane through the
-same receipt.
