@@ -2,8 +2,16 @@ import AppKit
 
 @MainActor
 final class WorkspaceScreen {
-    private enum Panel { case files, search, git, notes }
+    private enum Panel: String { case files, search, git, notes }
     private enum PathRequest { case newFile, saveAs(CodeEditor) }
+    /// The tabs on one side of the stage, in the order a person gave them. The arrangement
+    /// belongs to this pane: it changes no draft, thread or other participant's view.
+    private struct Group {
+        let id: Int
+        var keys: [String]
+        var selected: String?
+    }
+
     private let api: any EditorAPI
     private let root: String
     private let chrome: WorkspaceChrome
@@ -13,12 +21,14 @@ final class WorkspaceScreen {
     private let welcome: NSView
     private var panel: Panel? = .files
     private var buffers: [String: CodeEditor] = [:]
-    private var fileOrder: [String] = []
     private var compositions: [String: CompositionPage] = [:]
     private var viewHeaders: [Fields] = []
     private var documents: [Fields] = []
     private var hiddenViews: [String: Int] = [:]
-    private var selected: String?
+    private var groups = [Group(id: 0, keys: [], selected: nil)]
+    /// The group that commands such as Save and Find apply to.
+    private var active = 0
+    private var nextGroup = 1
     private var sequence: Int?
     private var pathRequest: PathRequest?
     private var wraps = false
@@ -41,7 +51,14 @@ final class WorkspaceScreen {
         start.open.run = { [weak self] in self?.showNavigator(.files) }
         start.new.run = { [weak self] in self?.command("scratch") }
         chrome.onCommand = { [weak self] in self?.command($0) }
+        chrome.onSidebar = { [weak self] name in
+            guard let self, let panel = Panel(rawValue: name) else { return }
+            toggle(panel)
+        }
         chrome.onSelect = { [weak self] key in self?.act { try await $0.select(key) } }
+        chrome.onClose = { [weak self] key in self?.act { try await $0.closeTab(key) } }
+        chrome.onMove = { [weak self] key, drop in self?.move(key, to: drop) }
+        chrome.onActivate = { [weak self] id in self?.activate(id) }
         chrome.onNote = { [weak self] in self?.note($0, $1) }
         chrome.onTabMenu = { [weak self] in self?.tabMenu($0) ?? NSMenu() }
         chrome.onMenu = { [weak self] in self?.workspaceMenu() ?? NSMenu() }
@@ -98,7 +115,9 @@ final class WorkspaceScreen {
         for editor in Array(buffers.values) {
             do { try await editor.flush() }
             catch {
-                selected = fileKey(editor.doc); panel = nil; present(reveal: true)
+                let key = fileKey(editor.doc)
+                if let index = groupIndex(of: key) { groups[index].selected = key; active = groups[index].id }
+                panel = nil; present(reveal: key)
                 showProblem(error, editor: editor); return false
             }
         }
@@ -130,16 +149,46 @@ final class WorkspaceScreen {
         }
     }
 
+    // MARK: Tabs and groups
+
     private func fileKey(_ doc: String) -> String { "doc:" + doc }
     private func viewKey(_ id: String) -> String { "view:" + id }
-    private var currentEditor: CodeEditor? {
-        guard let selected, selected.hasPrefix("doc:") else { return nil }
-        return buffers[String(selected.dropFirst(4))]
+    private var activeIndex: Int { groups.firstIndex { $0.id == active } ?? 0 }
+    private var selected: String? { groups[activeIndex].selected }
+    private func groupIndex(of key: String) -> Int? { groups.firstIndex { $0.keys.contains(key) } }
+    private func editor(for key: String?) -> CodeEditor? {
+        guard let key, key.hasPrefix("doc:") else { return nil }
+        return buffers[String(key.dropFirst(4))]
     }
-    private var currentViewID: String? {
-        guard let selected, selected.hasPrefix("view:") else { return nil }
-        return String(selected.dropFirst(5))
+    private func viewID(for key: String?) -> String? {
+        guard let key, key.hasPrefix("view:") else { return nil }
+        return String(key.dropFirst(5))
     }
+    private var currentEditor: CodeEditor? { editor(for: selected) }
+
+    /// Puts a key in a group when none holds it, and returns the index of its group. A page that
+    /// sends the person to a file stays on show when the stage has a second group: the file
+    /// goes to that group, also when it was a tab beside the page.
+    private func place(_ key: String, awayFrom source: String? = nil) -> Int {
+        let beside = groups.count > 1 ? source.flatMap(groupIndex(of:)).map { 1 - $0 } : nil
+        if let index = groupIndex(of: key) {
+            guard let beside, beside != index, let place = groups[index].keys.firstIndex(of: key) else { return index }
+            groups[index].keys.remove(at: place)
+            if groups[index].selected == key { groups[index].selected = neighbour(in: index, at: place) }
+            groups[beside].keys.append(key)
+            return beside
+        }
+        let index = beside ?? activeIndex
+        groups[index].keys.append(key)
+        return index
+    }
+
+    /// The key that takes the place of a tab removed from `place` in a group.
+    private func neighbour(in index: Int, at place: Int) -> String? {
+        let keys = groups[index].keys
+        return keys.isEmpty ? nil : keys[min(place, keys.count - 1)]
+    }
+
     private func makeBuffer(_ record: Fields) throws -> CodeEditor {
         guard let doc = record["doc"] as? String, record["text"] is String, record["rev"] is Int else {
             throw EditorIssue(code: "response", message: "Pi did not return the requested draft.")
@@ -147,7 +196,6 @@ final class WorkspaceScreen {
         if let existing = buffers[doc] { return existing }
         let editor = CodeEditor(api: api, record: record)
         buffers[doc] = editor
-        fileOrder.append(doc)
         editor.setWrap(wraps)
         editor.onStatus = { [weak self, weak editor] text in
             guard let self, let editor, currentEditor === editor else { return }
@@ -156,14 +204,14 @@ final class WorkspaceScreen {
         }
         editor.onChange = { [weak self, weak editor] in
             guard let self, let editor else { return }
-            updateLabels()
+            refresh()
             if currentEditor === editor && (editor.conflicted || editor.diskConflict) { conflictMessage(editor) }
         }
         editor.onNote = { [weak self] anchor in self?.compose(anchor) }
         return editor
     }
 
-    func open(_ doc: String, line: Int? = nil, focus: Bool = true) async throws {
+    func open(_ doc: String, line: Int? = nil, focus: Bool = true, awayFrom source: String? = nil) async throws {
         selectionRequest += 1
         let token = selectionRequest
         let editor: CodeEditor
@@ -173,10 +221,13 @@ final class WorkspaceScreen {
             guard !stopped else { return }
             editor = try makeBuffer(record)
         }
-        guard token == selectionRequest else { updateLabels(); return }
-        selected = fileKey(editor.doc)
+        let key = fileKey(editor.doc)
+        let index = place(key, awayFrom: source)
+        guard token == selectionRequest else { refresh(); return }
+        groups[index].selected = key
+        active = groups[index].id
         if !chrome.showsSideBySide || panel == .notes { panel = nil }
-        present(reveal: true)
+        present(reveal: key)
         if let line { editor.go(line: line) }
         if focus { editor.focus() }
         if editor.conflicted || editor.diskConflict { conflictMessage(editor) }
@@ -189,19 +240,58 @@ final class WorkspaceScreen {
         selectionRequest += 1
         let token = selectionRequest
         hiddenViews[id] = nil
-        let composition: CompositionPage
-        if let page = compositions[id] { composition = page }
-        else {
-            composition = CompositionPage(api: api, id: id)
-            composition.onOpen = navigator.onOpen
-            composition.onNote = { [weak self] in self?.compose($0) }
-            compositions[id] = composition
-        }
-        try await composition.update(revision: rev)
+        try await composition(id).update(revision: rev)
         guard token == selectionRequest, !stopped else { return }
-        selected = key
+        let index = place(key)
+        groups[index].selected = key
+        active = groups[index].id
         if !chrome.showsSideBySide || panel == .notes { panel = nil }
-        present(reveal: true)
+        present(reveal: key)
+    }
+
+    private func composition(_ id: String) -> CompositionPage {
+        if let page = compositions[id] { return page }
+        let page = CompositionPage(api: api, id: id)
+        let key = viewKey(id)
+        page.onOpen = { [weak self] path, line in self?.act { try await $0.open(path, line: line, awayFrom: key) } }
+        page.onNote = { [weak self] in self?.compose($0) }
+        compositions[id] = page
+        return page
+    }
+
+    private func activate(_ id: Int) {
+        guard active != id, groups.contains(where: { $0.id == id }) else { return }
+        active = id
+        refresh()
+    }
+
+    /// Moves a tab to another place in its group, to the other group, or to a new group.
+    private func move(_ key: String, to drop: WorkspaceDrop) {
+        guard let from = groupIndex(of: key), let place = groups[from].keys.firstIndex(of: key) else { return }
+        let moved = editor(for: key)
+        let typing = moved?.hasFocus == true
+        let wasSelected = groups[from].selected == key
+        switch drop {
+        case .slot(let id, let index):
+            guard let to = groups.firstIndex(where: { $0.id == id }) else { return }
+            groups[from].keys.remove(at: place)
+            groups[to].keys.insert(key, at: min(max(0, index), groups[to].keys.count))
+            if to != from {
+                if wasSelected { groups[from].selected = neighbour(in: from, at: place) }
+                groups[to].selected = key
+            }
+            active = id
+        case .beside(let id, let trailing):
+            guard groups.count == 1, groups[from].keys.count > 1, let anchor = groups.firstIndex(where: { $0.id == id }) else { return }
+            groups[from].keys.remove(at: place)
+            if wasSelected { groups[from].selected = neighbour(in: from, at: place) }
+            groups.insert(Group(id: nextGroup, keys: [key], selected: key), at: trailing ? anchor + 1 : anchor)
+            active = nextGroup
+            nextGroup += 1
+        }
+        present(reveal: key)
+        // A page that changes its group leaves the responder chain for a moment.
+        if typing { moved?.focus() }
     }
 
     private func loadState() async throws {
@@ -212,45 +302,90 @@ final class WorkspaceScreen {
         documents = state["docs"] as? [Fields] ?? []
         viewHeaders = state["views"] as? [Fields] ?? []
         collaboration.update(state: state)
-        updateLabels()
+        refresh()
     }
     func synchronise() async throws {
         try await loadState()
-        if let currentEditor { try await currentEditor.refresh() }
-        if let id = currentViewID, let rev = viewHeaders.first(where: { $0["id"] as? String == id })?["rev"] as? Int {
-            try await compositions[id]?.update(revision: rev)
+        for key in groups.compactMap(\.selected) {
+            if let editor = editor(for: key) { try await editor.refresh() }
+            if let id = viewID(for: key), let rev = viewHeaders.first(where: { $0["id"] as? String == id })?["rev"] as? Int {
+                try await compositions[id]?.update(revision: rev)
+            }
         }
     }
-    private func tabs() -> [WorkspaceTab] {
-        var result = fileOrder.compactMap { doc -> WorkspaceTab? in
-            guard let b = buffers[doc] else { return nil }
-            let name = b.title == "Untitled" && doc.hasPrefix("scratch:") ? "Scratch \(doc.dropFirst(8).prefix(4))" : b.title
-            let symbol = b.conflicted || b.diskConflict ? "exclamationmark.triangle" : b.dirty ? "circle.fill" : "doc.plaintext"
-            return WorkspaceTab(key: fileKey(doc),label: name,detail: doc,symbol: symbol)
+
+    /// Brings the groups in line with the drafts and composed tabs that exist. A composed tab
+    /// arrives without a request: it joins the group that holds the latest one, or the active group.
+    private func reconcile() {
+        let composed = viewHeaders.reversed().compactMap { entry -> String? in
+            guard let id = entry["id"] as? String, let rev = entry["rev"] as? Int, hiddenViews[id] != rev, entry["title"] is String else { return nil }
+            return viewKey(id)
         }
-        for entry in viewHeaders.reversed() {
-            guard let id = entry["id"] as? String, let rev = entry["rev"] as? Int, hiddenViews[id] != rev, let label = entry["title"] as? String else { continue }
-            result.append(WorkspaceTab(key: viewKey(id),label: label,detail: "Composed tab: " + label,symbol: "rectangle.3.group"))
+        let shown = Set(composed)
+        for index in groups.indices {
+            groups[index].keys.removeAll { key in
+                key.hasPrefix("view:") ? !shown.contains(key) : editor(for: key) == nil
+            }
+            if let key = groups[index].selected, !groups[index].keys.contains(key) { groups[index].selected = groups[index].keys.last }
         }
-        return result
+        for key in composed where groupIndex(of: key) == nil {
+            let home = groups.lastIndex { $0.keys.contains { $0.hasPrefix("view:") } } ?? activeIndex
+            groups[home].keys.append(key)
+        }
+        if groups.count > 1, let keep = groups.first(where: { !$0.keys.isEmpty }) ?? groups.first {
+            groups.removeAll { $0.keys.isEmpty && $0.id != keep.id }
+        }
+        if !groups.contains(where: { $0.id == active }) { active = groups[0].id }
+        // A tab can become the selected one without a press, for example when its neighbour moves away.
+        for group in groups {
+            guard let id = viewID(for: group.selected), compositions[id] == nil,
+                  let rev = viewHeaders.first(where: { $0["id"] as? String == id })?["rev"] as? Int else { continue }
+            let page = composition(id)
+            act { screen in
+                try await page.update(revision: rev)
+                screen.refresh()
+            }
+        }
     }
-    private func updateLabels(reveal: Bool = false) {
-        chrome.setTabs(tabs(), selected: selected, reveal: reveal)
+
+    private func tab(for key: String) -> WorkspaceTab? {
+        if let editor = editor(for: key) {
+            let doc = editor.doc
+            let name = editor.title == "Untitled" && doc.hasPrefix("scratch:") ? "Scratch \(doc.dropFirst(8).prefix(4))" : editor.title
+            let warns = editor.conflicted || editor.diskConflict
+            return WorkspaceTab(key: key, label: name, detail: doc, symbol: warns ? "exclamationmark.triangle" : "doc.plaintext",
+                                unsaved: editor.dirty, warns: warns)
+        }
+        guard let id = viewID(for: key), let label = viewHeaders.first(where: { $0["id"] as? String == id })?["title"] as? String else { return nil }
+        return WorkspaceTab(key: key, label: label, detail: "Composed tab: " + label, symbol: "rectangle.3.group")
+    }
+
+    private func page(for group: Group) -> NSView? {
+        if let page = editor(for: group.selected)?.view ?? viewID(for: group.selected).flatMap({ compositions[$0]?.view }) { return page }
+        return groups.count == 1 ? welcome : nil
+    }
+
+    /// Shows the current tabs, pages and status. The chrome changes only what differs.
+    private func refresh(reveal: String? = nil) {
+        reconcile()
+        chrome.setGroups(groups.map { WorkspaceGroup(id: $0.id, tabs: $0.keys.compactMap(tab(for:)), selected: $0.selected, page: page(for: $0)) },
+                         active: active, reveal: reveal)
         if let e = currentEditor {
             let status = e.conflicted ? "Local conflict" : e.diskConflict ? "Disk changed" : e.hasPending ? "Local edits" : e.dirty ? "Draft" : "On disk"
             let path = e.doc.hasPrefix("scratch:") ? "Scratch" : e.doc
             chrome.setStatus(path,"\(status)  ·  r\(e.revision)",canSave: !e.conflicted)
-        } else if let id = currentViewID, let h = viewHeaders.first(where: { $0["id"] as? String == id }) {
+        } else if let id = viewID(for: selected), let h = viewHeaders.first(where: { $0["id"] as? String == id }) {
             chrome.setStatus(h["title"] as? String ?? "Composed tab","Composed  ·  r\(h["rev"] as? Int ?? 1)",canSave: false)
         } else { chrome.setStatus(root,"Workspace",canSave: false) }
     }
-    private func present(reveal: Bool = false) {
-        let page = currentEditor?.view ?? currentViewID.flatMap { compositions[$0]?.view } ?? welcome
+    private func present(reveal: String? = nil) {
         chrome.expandedPanel = expandedNavigator && panel != nil && panel != .notes
-        let accessory: NSView? = panel == nil ? nil : panel == .notes ? collaboration.view : navigator.view
-        chrome.setContent(page: page, panel: accessory)
-        updateLabels(reveal: reveal)
+        refresh(reveal: reveal)
+        chrome.setSidebar(panel == nil ? nil : panel == .notes ? collaboration.view : navigator.view, named: panel?.rawValue)
     }
+
+    // MARK: Sidebar and commands
+
     private func showNavigator(_ want: Panel) {
         selectionRequest += 1
         panel = want; present()
@@ -279,7 +414,9 @@ final class WorkspaceScreen {
         case "git": showNavigator(.git)
         case "find":
             guard let editor = currentEditor else { return }
-            panel = nil; present(); editor.find()
+            // A sidebar that covers the source would hide what Find shows.
+            if !chrome.showsSideBySide { panel = nil; present() }
+            editor.find()
         case "wrap":
             wraps.toggle(); chrome.setWrap(wraps)
             for buffer in buffers.values { buffer.setWrap(wraps) }
@@ -293,9 +430,9 @@ final class WorkspaceScreen {
             else if e.doc.hasPrefix("scratch:") || e.diskConflict { requestPath(.saveAs(e)) }
             else { mutate { try await $0.save(e, to: nil) } }
         case "next", "previous":
-            let items = tabs()
-            guard let i = items.firstIndex(where: { $0.key == selected }), !items.isEmpty else { return }
-            let key = items[(i + (name == "next" ? 1 : items.count - 1)) % items.count].key
+            let keys = groups[activeIndex].keys
+            guard let i = keys.firstIndex(where: { $0 == selected }) else { return }
+            let key = keys[(i + (name == "next" ? 1 : keys.count - 1)) % keys.count]
             act { try await $0.select(key) }
         default: break
         }
@@ -326,18 +463,21 @@ final class WorkspaceScreen {
         let record = try await api.call("new", path.map { ["path":$0] } ?? [:])
         guard !stopped else { return }
         let b = try makeBuffer(record)
-        if token == selectionRequest { try await open(b.doc) } else { updateLabels() }
+        if token == selectionRequest { try await open(b.doc) } else { _ = place(fileKey(b.doc)); refresh() }
     }
     private func save(_ editor: CodeEditor, to path: String?) async throws {
         let previous = editor.doc
         try await editor.save(path: path)
         if editor.doc != previous {
             buffers[previous] = nil; buffers[editor.doc] = editor
-            fileOrder = fileOrder.map { $0 == previous ? editor.doc : $0 }
-            if selected == fileKey(previous) { selected = fileKey(editor.doc) }
+            let old = fileKey(previous), new = fileKey(editor.doc)
+            for index in groups.indices {
+                groups[index].keys = groups[index].keys.map { $0 == old ? new : $0 }
+                if groups[index].selected == old { groups[index].selected = new }
+            }
         }
         chrome.setMessage("Saved \(editor.doc).")
-        updateLabels()
+        refresh()
         if panel == .files { navigator.showFiles() }
     }
     private func conflictMessage(_ editor: CodeEditor) {
@@ -365,31 +505,62 @@ final class WorkspaceScreen {
         }
     }
     private func closeTab(_ key: String) async throws {
-        if key.hasPrefix("doc:"), let editor = buffers[String(key.dropFirst(4))] {
+        if let editor = editor(for: key) {
             try await editor.flush()
             guard !editor.hasPending else { chrome.setMessage("The tab changed during close. Your edits are still here."); return }
-            buffers[editor.doc] = nil; fileOrder.removeAll { $0 == editor.doc }; editor.stop()
-        } else {
-            let id = String(key.dropFirst(5)); hiddenViews[id] = viewHeaders.first(where: { $0["id"] as? String == id })?["rev"] as? Int
+            buffers[editor.doc] = nil; editor.stop()
+        } else if let id = viewID(for: key) {
+            hiddenViews[id] = viewHeaders.first(where: { $0["id"] as? String == id })?["rev"] as? Int
             compositions[id] = nil
         }
-        if key == selected {
-            selected = nil
-            if let key = tabs().last?.key { try await select(key) } else { showNavigator(.files) }
+        if let index = groupIndex(of: key), let place = groups[index].keys.firstIndex(of: key) {
+            let wasSelected = groups[index].selected == key
+            groups[index].keys.remove(at: place)
+            if wasSelected {
+                groups[index].selected = nil
+                if let next = neighbour(in: index, at: place) {
+                    active = groups[index].id
+                    try await select(next)
+                }
+            }
         }
+        if groups.allSatisfy({ $0.keys.isEmpty }) { showNavigator(.files) }
         present()
     }
+    private func closeOthers(_ key: String) async throws {
+        guard let index = groupIndex(of: key) else { return }
+        for other in groups[index].keys where other != key { try await closeTab(other) }
+    }
+
+    // MARK: Menus
+
     private func tabMenu(_ key: String) -> NSMenu {
         let menu = NSMenu()
-        if key.hasPrefix("doc:") {
-            let doc = String(key.dropFirst(4))
+        if let doc = editor(for: key)?.doc {
             menu.addItem(WorkspaceChoice("Note on this tab…") { [weak self] in self?.note("tab",doc) })
             if !doc.hasPrefix("scratch:") { menu.addItem(WorkspaceChoice("Note on this file…") { [weak self] in self?.note("file",doc) }) }
-        } else {
-            let id = String(key.dropFirst(5)); menu.addItem(WorkspaceChoice("Note on this composed tab…") { [weak self] in self?.note("view",id) })
+        } else if let id = viewID(for: key) {
+            menu.addItem(WorkspaceChoice("Note on this composed tab…") { [weak self] in self?.note("view",id) })
         }
         menu.addItem(.separator())
-        menu.addItem(WorkspaceChoice("Close tab") { [weak self] in self?.act { try await $0.closeTab(key) } })
+        if let index = groupIndex(of: key) {
+            let group = groups[index]
+            if groups.count == 1, group.keys.count > 1, chrome.fitsSecondGroup {
+                menu.addItem(WorkspaceChoice("Move to the right side") { [weak self] in self?.move(key, to: .beside(group: group.id, trailing: true)) })
+                menu.addItem(WorkspaceChoice("Move to the left side") { [weak self] in self?.move(key, to: .beside(group: group.id, trailing: false)) })
+                menu.addItem(.separator())
+            } else if groups.count == 2 {
+                let other = groups[1 - index]
+                menu.addItem(WorkspaceChoice(index == 0 ? "Move to the right side" : "Move to the left side") { [weak self] in
+                    self?.move(key, to: .slot(group: other.id, index: other.keys.count))
+                })
+                menu.addItem(.separator())
+            }
+            menu.addItem(WorkspaceChoice("Close tab") { [weak self] in self?.act { try await $0.closeTab(key) } })
+            if group.keys.count > 1 {
+                menu.addItem(WorkspaceChoice("Close other tabs") { [weak self] in self?.act { try await $0.closeOthers(key) } })
+            }
+        }
         return menu
     }
     private func workspaceMenu() -> NSMenu {
@@ -398,7 +569,7 @@ final class WorkspaceScreen {
             menu.addItem(WorkspaceChoice(name) { [weak self] in self?.command(command) })
         }
         choice("New scratch   cmd+N","scratch"); choice("New file…   cmd+shift+N","newFile")
-        if currentEditor != nil { choice("Save as…   cmd+shift+S","saveAs") }
+        if currentEditor != nil { choice("Save as…   cmd+shift+S","saveAs"); choice("Find in this file…   cmd+F","find") }
         let drafts = NSMenu()
         for doc in documents {
             guard let path = doc["doc"] as? String else { continue }

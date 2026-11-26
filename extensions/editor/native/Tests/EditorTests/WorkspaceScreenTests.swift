@@ -57,7 +57,7 @@ struct WorkspaceScreenTests {
         try await screen.open("sample.swift")
         let view = screen.view
         view.layoutSubtreeIfNeeded()
-        let edge = try #require(children(view, WorkspaceDivider.self).first)
+        let edge = try #require(children(view, WorkspaceDivider.self).first { $0.accessibilityLabel() == "Sidebar width" })
         let source = try #require(children(view, CodeTextView.self).first)
         #expect(edge.position == 288)
         #expect(window.makeFirstResponder(source))
@@ -97,13 +97,80 @@ struct WorkspaceScreenTests {
         defer { next.stop(); nextWindow.orderOut(nil) }
         try await next.start(file: nil)
         next.view.layoutSubtreeIfNeeded()
-        let nextEdge = try #require(children(next.view, WorkspaceDivider.self).first)
+        let nextEdge = try #require(children(next.view, WorkspaceDivider.self).first { $0.accessibilityLabel() == "Sidebar width" })
         #expect(nextEdge.position == 420)
 
         // A double-click fits the sidebar to its longest name, within the limits.
         nextEdge.mouseDown(with: try pointer(.leftMouseDown, x: 421, in: nextWindow, clicks: 2))
         #expect(nextEdge.position == 200)
         #expect(defaults.double(forKey: "sidebarWidth") == 200)
+    }
+
+    private func tabs(_ view: NSView) -> [[String]] {
+        children(view, WorkspaceGroupView.self).filter { !$0.isHiddenOrHasHiddenAncestor }.sorted { $0.frame.minX < $1.frame.minX }.map { group in
+            children(group, WorkspaceTabView.self).sorted { $0.frame.minX < $1.frame.minX }.map { $0.accessibilityLabel() ?? "" }
+        }
+    }
+    private func tab(_ label: String, in view: NSView) throws -> WorkspaceTabView {
+        try #require(children(view, WorkspaceGroupView.self).flatMap { children($0, WorkspaceTabView.self) }.first { $0.accessibilityLabel() == label })
+    }
+    /// Presses a tab and moves the pointer to a window point. The caller releases it.
+    private func drag(_ tab: WorkspaceTabView, to point: NSPoint, in window: NSWindow) throws {
+        let box = tab.convert(tab.bounds, to: nil)
+        tab.mouseDown(with: try pointer(.leftMouseDown, x: box.midX, y: box.midY, in: window))
+        tab.mouseDragged(with: try pointer(.leftMouseDragged, x: (box.midX + point.x) / 2, y: (box.midY + point.y) / 2, in: window))
+        tab.mouseDragged(with: try pointer(.leftMouseDragged, x: point.x, y: point.y, in: window))
+    }
+
+    @Test func tabsChangePlaceAndSideWithThePointerWhileAnAgentPublishes() async throws {
+        _ = NSApplication.shared
+        let suite = "EditorTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let api = WorkspaceFixture()
+        let screen = WorkspaceScreen(api: api, root: "/project", defaults: defaults)
+        let window = window(screen, width: 900)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "a.swift")
+        try await screen.open("b.swift")
+        try await screen.open("sample.swift")
+        let view = screen.view
+        view.layoutSubtreeIfNeeded()
+        #expect(tabs(view) == [["a.swift", "b.swift", "sample.swift"]])
+        let source = try #require(children(view, CodeTextView.self).first { !$0.isHiddenOrHasHiddenAncestor })
+        #expect(window.makeFirstResponder(source))
+        source.setSelectedRange(NSRange(location: 4, length: 2))
+
+        // The selected tab moves to the front. A composed tab arrives during the drag.
+        let moved = try tab("sample.swift", in: view)
+        try drag(moved, to: NSPoint(x: 2, y: moved.convert(moved.bounds, to: nil).midY), in: window)
+        api.publishTab()
+        try await screen.synchronise()
+        moved.mouseUp(with: try pointer(.leftMouseUp, x: 2, y: 480, in: window))
+        #expect(tabs(view) == [["sample.swift", "a.swift", "b.swift", "Composed tab: Result"]])
+        #expect(window.firstResponder === source)
+        #expect(source.selectedRange() == NSRange(location: 4, length: 2))
+
+        // A tab dropped on the right part of the page takes the right side of the stage.
+        let other = try tab("b.swift", in: view)
+        try drag(other, to: NSPoint(x: 860, y: 200), in: window)
+        other.mouseUp(with: try pointer(.leftMouseUp, x: 860, y: 200, in: window))
+        try await eventually { self.tabs(view) == [["sample.swift", "a.swift", "Composed tab: Result"], ["b.swift"]] }
+
+        // A location in a composed tab shows its file on the other side, so the tab stays on show.
+        try click(view, label: "Composed tab: Result")
+        try await eventually { self.children(view, NSButton.self).contains { $0.accessibilityLabel() == "Open sample.swift:2" } }
+        try click(view, label: "Open sample.swift:2")
+        try await eventually { self.tabs(view) == [["a.swift", "Composed tab: Result"], ["b.swift", "sample.swift"]] }
+        #expect(children(view, NSButton.self).contains { $0.accessibilityLabel() == "Open sample.swift:2" && !$0.isHiddenOrHasHiddenAncestor })
+        #expect(!source.isHiddenOrHasHiddenAncestor)
+
+        // A side goes away with its last tab.
+        try click(view, label: "Close sample.swift")
+        try await eventually { self.tabs(view) == [["a.swift", "Composed tab: Result"], ["b.swift"]] }
+        try click(view, label: "Close b.swift")
+        try await eventually { self.tabs(view) == [["a.swift", "Composed tab: Result"]] }
+        #expect(await screen.prepareToClose())
     }
 
     @Test func textNoteReceivesReplyAndDraftWithoutOpeningTheComposedTab() async throws {
@@ -237,6 +304,7 @@ private final class WorkspaceFixture: EditorAPI {
     var savedPath: String?
     var savedText: String?
 
+    func publishTab() { composed = true; seq += 1 }
     func agentUpdate() {
         text = "let wave = 1\nreturn wave"; rev += 1; seq += 1; composed = true
         messages.append(["author":"Agent", "text":"Updated the greeting."])
@@ -252,6 +320,11 @@ private final class WorkspaceFixture: EditorAPI {
             treeReads += 1
             return ["entries":[["path":"sample.swift","name":"sample.swift","dir":false]],"next":NSNull()]
         case "read":
+            let doc = fields["doc"] as? String ?? "sample.swift"
+            guard doc == "sample.swift" else {
+                if fields["ifRev"] as? Int == 1 { return ["doc":doc,"unchanged":true,"rev":1,"dirty":false] }
+                return ["doc":doc,"title":(doc as NSString).lastPathComponent,"rev":1,"dirty":false,"text":"// \(doc)\n"]
+            }
             if fields["ifRev"] as? Int == rev { return ["doc":"sample.swift","unchanged":true,"rev":rev,"dirty":true] }
             return ["doc":"sample.swift","title":"sample.swift","rev":rev,"dirty":rev > 1,"text":text]
         case "new":

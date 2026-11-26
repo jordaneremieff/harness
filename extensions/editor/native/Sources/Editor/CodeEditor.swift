@@ -69,6 +69,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
     }
 
     func focus() { textView.window?.makeFirstResponder(textView) }
+    var hasFocus: Bool { textView.window?.firstResponder === textView }
 
     func find() {
         let item = NSMenuItem()

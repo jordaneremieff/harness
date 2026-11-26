@@ -8,16 +8,23 @@ A participant can read the unsaved draft, edit an exact passage, annotate a diff
 
 ## Working with files
 
-- Open the file navigator with `cmd+O`. Use project search (`cmd+P`) for paths or text, or Find (`cmd+F`) for the open file. Search and large listings mark partial results. Editor loads folders on demand.
+- The four buttons on the left of the toolbar each show a panel in the sidebar: project files (`cmd+O`), project search (`cmd+P`) for paths or text, local Git, and conversations (`cmd+option+T`). The button of the panel on show hides the sidebar. Search and large listings mark partial results. Editor loads folders on demand.
+- Find (`cmd+F`, or **Find in this file…** in workspace actions) searches the open file.
 - Press `cmd+N` for an untitled scratch or `cmd+shift+N` for a new file. Scratch drafts live with the folder. Save As (`cmd+shift+S`) requires an unused path in an existing directory. An existing file’s Save As leaves the original intact.
-- Choose **Local Git** from workspace actions for the branch, changed files and file diffs. Git reads disk, not unsaved drafts. Editor does not stage, commit or contact a remote.
+- The local Git panel shows the branch, changed files and file diffs. Git reads disk, not unsaved drafts. Editor does not stage, commit or contact a remote.
 - Text files must be valid UTF-8 and no larger than 2 MiB. Editor retains a file's mode and UTF-8 BOM. The draft uses LF; Save uses the first newline convention found in the original file. Symbolic links and version-control internals are not editable.
 
 ## Layout
 
+You arrange a pane with the pointer. The arrangement belongs to that pane: it changes no draft, thread or file, and no other participant sees it.
+
 - Drag the line between the sidebar and the source to change the sidebar's width. The line lights up under the pointer. Double-click it to fit the width to the longest listed name.
 - Editor keeps the width you chose for later panes on this Mac, as a preference of the Editor app. A narrow pane limits the width so that the source stays usable; the chosen width returns when the pane has room again.
-- A pane narrower than 480 points shows the sidebar or the source, not both.
+- Drag a tab along its strip to change its place. The other tabs make room while you drag. Press Escape to leave the tab where it was.
+- A tab closes with its close control, with the middle mouse button or from its menu. A draft with unsaved changes shows a dot in place of the close control until the pointer is over the tab.
+- Drag a tab to the left or right part of the page to give it that side of the stage; a mark shows the side before you let go. With two sides, drag a tab to the other strip or page to move it across. Drag the line between the sides to change their widths, or double-click it to make them equal. A side goes away with its last tab. The tab menu offers the same moves.
+- A location button in a composed tab shows its file on the other side when the stage has two sides, so the composed tab stays on show. A composed tab that an agent publishes joins the side that holds your other composed tabs.
+- A pane narrower than 480 points shows the sidebar or the stage, not both.
 
 ## Shared drafts and threads
 

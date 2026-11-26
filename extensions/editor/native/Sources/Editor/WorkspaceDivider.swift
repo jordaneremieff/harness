@@ -6,9 +6,9 @@ import AppKit
 /// such as a text view, would otherwise replace the resize cursor where the two overlap.
 @MainActor
 final class WorkspaceDivider: NSView {
-    static let reachBefore: CGFloat = 4
-    static let reachAfter: CGFloat = 4
-    static let thickness = reachBefore + 1 + reachAfter
+    nonisolated static let reachBefore: CGFloat = 4
+    nonisolated static let reachAfter: CGFloat = 4
+    nonisolated static let thickness = reachBefore + 1 + reachAfter
 
     /// Receives the wanted position of the line in the superview's coordinates.
     var onDrag: ((CGFloat) -> Void)?
@@ -20,11 +20,15 @@ final class WorkspaceDivider: NSView {
     var canGrow = true { didSet { if canGrow != oldValue { window?.invalidateCursorRects(for: self) } } }
     /// The surface colours of the regions before and after the line.
     var surfaces: (before: NSColor, after: NSColor) = (.clear, .clear) { didSet { needsDisplay = true } }
+    /// A band at the top that continues a tab strip beside the divider: its height, its colour
+    /// and where the line under the strip starts.
+    var band: (height: CGFloat, colour: NSColor, lineStart: CGFloat)? { didSet { needsDisplay = true } }
 
     private let label: String
     private var grab: CGFloat?
     private var hovering = false
     private var hover: Task<Void, Never>?
+    private var pointerArea: NSTrackingArea?
     private var lit = false { didSet { if lit != oldValue { needsDisplay = true } } }
 
     init(label: String) {
@@ -46,6 +50,12 @@ final class WorkspaceDivider: NSView {
         NSRect(x: 0, y: 0, width: Self.reachBefore, height: bounds.height).fill(using: .sourceOver)
         surfaces.after.setFill()
         NSRect(x: Self.reachBefore, y: 0, width: 1 + Self.reachAfter, height: bounds.height).fill(using: .sourceOver)
+        if let band {
+            band.colour.setFill()
+            NSRect(x: 0, y: bounds.height - band.height, width: bounds.width, height: band.height).fill()
+            NSColor.separatorColor.setFill()
+            NSRect(x: band.lineStart, y: bounds.height - band.height, width: bounds.width - band.lineStart, height: 1).fill(using: .sourceOver)
+        }
         if lit {
             NSColor.controlAccentColor.setFill()
             NSRect(x: Self.reachBefore - 1, y: 0, width: 3, height: bounds.height).fill(using: .sourceOver)
@@ -59,9 +69,11 @@ final class WorkspaceDivider: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        for area in trackingAreas { removeTrackingArea(area) }
+        if let pointerArea { removeTrackingArea(pointerArea) }
         // The pane rarely holds the key window while the pointer approaches it.
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        pointerArea = area
     }
 
     override func mouseEntered(with event: NSEvent) {
