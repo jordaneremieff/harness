@@ -3773,7 +3773,10 @@ The host supplies:
   replay; each nested tool retains its own replay policy.
 
 Native tools return model-facing `output` and declare `structuredOutputSchema`
-for their `structuredOutput` values. Ordinary tools retain Pi's
+for their `structuredOutput` values. The native Agent dispatch, observation,
+profile, `agent_intent` and `agent_collaborate` tools resolve in a script to the
+same objects as their ordinary counterparts; `agent_abort` and the deferred
+controls resolve to their JSON text. Ordinary tools retain Pi's
 `content`/`outputSchema`/`structuredContent` contract. These are separate host
 contracts, not aliases stored in `details`. A schema tool's explicitly supplied
 structured error value still resolves in a script; a failed call without such

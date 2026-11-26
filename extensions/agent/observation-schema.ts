@@ -67,6 +67,8 @@ export const JsonValueSchema: Schema<JsonValue> = {
 };
 const jsonObject = map(JsonValueSchema);
 const cursorSchema = jsonObject;
+/** The JSON object result of an Agent control without a dedicated output schema, as scripts receive it. */
+export const ControlObjectOutputSchema = jsonObject;
 
 const storageStatusId = str({ pattern: STORAGE_STATUS_ID_PATTERN });
 const storageStatusLimit = int({ minimum: 1, maximum: 50 });

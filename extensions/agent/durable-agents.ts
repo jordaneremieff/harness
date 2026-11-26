@@ -151,6 +151,7 @@ import {
 	StatusToolInputSchema,
 	structuredObservation,
 	nativeStructuredObservation,
+	ControlObjectOutputSchema,
 } from "./observation-schema.ts";
 
 // ─── Contribution contract ──────────────────────────────────────────────────
@@ -3091,7 +3092,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			structuredControl(briefTool, BriefOutputSchema),
 			structuredControl(workTool, AgentWorkOutputSchema),
 			profileTool,
-			intentTool,
+			// Scripts receive the same result object as in an ordinary session, not its JSON text.
+			structuredControl(intentTool, ControlObjectOutputSchema),
 			structuredControl(sendTool, DispatchOutputSchema),
 			structuredControl(steerTool, DispatchOutputSchema),
 			abortTool,
@@ -3106,7 +3108,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			attachTool,
 			placeTool,
 			resetTool,
-			collaborateTool,
+			structuredControl(collaborateTool, ControlObjectOutputSchema),
 		].map(exposedControl),
 	});
 }

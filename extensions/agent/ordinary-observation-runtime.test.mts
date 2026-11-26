@@ -265,12 +265,19 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		restrictions: "No external changes",
 		acceptance: "Retained peer evidence identifies the parser error",
 	};
+	await t.test("a native collaboration read resolves to its object in a program", async () => {
+		const listed = await invoke("agent_collaborate", { action: "list" });
+		assert.equal(listed.isError, false, JSON.stringify(listed));
+		const value = listed.structuredOutput as Record<string, unknown>;
+		assert.equal(typeof value, "object", "a script receives the object, not its JSON text");
+		assert.ok(Array.isArray(value.items));
+	});
 	await t.test("native reads and joins refuse a caller storage selector on a foreign thread", async () => {
 		const threadId = `${randomUUID()}/${"a".repeat(32)}`;
 		for (const action of ["read", "join"]) {
 			const result = await invoke("agent_collaborate", { action, sessionId: record.storageId, threadId });
 			assert.equal(result.isError, true);
-			assert.match(JSON.stringify(result.structuredOutput), /omit sessionId.*threadId/i);
+			assert.match(JSON.stringify(result.diagnostics), /omit sessionId.*threadId/i);
 		}
 	});
 	const invalidIdentities: { field: string; fields: JsonObject }[] = [
@@ -287,7 +294,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 				...fields,
 			});
 			assert.equal(result.isError, true);
-			const text = JSON.stringify(result.structuredOutput);
+			const text = JSON.stringify(result.diagnostics);
 			assert.ok(text.includes(`${field} requires an exact discovered identity`), text);
 			assert.match(text, /canonical lowercase UUID for a bare root/u);
 			assert.match(text, /UUID:positive nonroot conversation ID/u);
@@ -309,7 +316,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 				...fields,
 			});
 			assert.equal(result.isError, true);
-			const text = JSON.stringify(result.structuredOutput);
+			const text = JSON.stringify(result.diagnostics);
 			assert.ok(text.includes(`${field}: handle resolution failed`), text);
 			assert.equal((await peer.harness.inspect(context)).submissions.length, 0);
 			assert.equal((await readRetainedDelivery(peer.harness, context, true))?.reports.length ?? 0, 0);
@@ -323,7 +330,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 			...withoutSource,
 		});
 		assert.equal(result.isError, true);
-		assert.match(JSON.stringify(result.structuredOutput), /source is required and must be nonblank text/u);
+		assert.match(JSON.stringify(result.diagnostics), /source is required and must be nonblank text/u);
 	});
 	assert.equal(delivered.length, 0);
 	assert.equal(trustCalls, 0);
