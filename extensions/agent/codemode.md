@@ -6,18 +6,50 @@ a recipe into one `codemode` call and replace the values in the first lines.
 Find unlisted tools with `searchTools()` and check argument shapes with
 `describeTool()` before you change a recipe.
 
-Some tools return a JSON string and others an object; `agent_collaborate`
-returns a string. Each recipe parses both through `asObject`. `store` and
-`load` keep small JSON values across codemode calls; the recipes use them
-for result references and thread positions.
+The Agent tools that the recipes call resolve to objects, in an ordinary
+session and inside a Durable agent. Inside a Durable agent, `agent_abort` and
+the deferred controls resolve to their JSON text; read them with `JSON.parse`.
+`store` and `load` keep small JSON values across codemode calls; the recipes
+use them for result references and thread positions.
 
 ## Contents
 
+- How Agent tools behave in a script
 - Thread for delegated work
 - Parallel dispatch
 - Fleet sweep
 - Thread digest
 - Save a result digest to a file
+
+## How Agent tools behave in a script
+
+- **Turn and compaction controls stay outside scripts.** `agent_yield` and
+  `agent_compact` are model-only. A nested call cannot end the turn, because
+  codemode resolves it to its result. Return from the script, then call
+  `agent_yield` directly in the last tool batch.
+- **A failed call rejects.** The rejection carries the tool's error text, such
+  as an unknown identity or a schema violation. Use `Promise.allSettled` for a
+  batch, so that one refusal does not discard the receipts of calls that
+  succeeded. Some refusals resolve instead: `agent_status` can return
+  `format: "refused"`, an `agent_brief` preview returns `problems`, and a
+  result read returns `status: "unavailable"` with a `reason`.
+- **A receipt is admission.** A dispatch resolves when the host admits the
+  input. The answer arrives later as an event of your session, never inside
+  the script.
+- **An ended script leaves admitted work running.** A timeout or a thrown error
+  cancels the calls still waiting, not the work that a host admitted. A lost
+  receipt is not a failed dispatch: find the agent with `agent_list` and its
+  open requests with `agent_status` before you send the task again. Never
+  repeat `agent_abort`.
+- **Parallel inputs have no order.** Calls in one `Promise.all` reach one
+  recipient in any order. Send in sequence when the order matters.
+- **Continue pages from what the page returns, with a cap.** An `agent_inspect`
+  history, branch or activity cursor keeps the view and filters of its read:
+  pass `sessionId` and `cursor`. A search continuation repeats `view: "search"`
+  and its query. `agent_list` and `agent_status` continue with the fields of
+  `coverage.next`, and `agent_collaborate` with the fields of `next`. A page
+  without rows is not the end while a continuation remains. Stop at a fixed
+  number of pages and report that the cap stopped the loop.
 
 ## Thread for delegated work
 
@@ -27,7 +59,6 @@ thread storage, which holds threads and runs no agent work. Create the thread,
 then give its ID to the agents that share the work, in one call.
 
 ```js
-const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
 const frame = {
   title: "<short outcome title>",
   purpose: "<shared purpose and use path>",
@@ -38,28 +69,24 @@ const frame = {
 };
 const task = "<task message; {{THREAD_ID}} marks where the thread ID goes>";
 
-const thread = asObject(await tools.agent_collaborate({ ...frame, action: "create" }));
-const threadId = thread.threadId ?? thread.id;
-if (!threadId) return { stop: "create receipt names no thread", thread };
+const { threadId } = await tools.agent_collaborate({ ...frame, action: "create" });
+const { sessionId } = await tools.agent_spawn({ name: "<label>", preset: "worker" });
+const sent = await tools.agent_send({ sessionId, message: task.split("{{THREAD_ID}}").join(threadId) });
 
-const receipt = asObject(await tools.agent_spawn({ name: "<label>", preset: "worker" }));
-const agent = receipt.result?.sessionId ?? receipt.sessionId ?? receipt.identity;
-if (!agent) return { stop: "spawn receipt names no identity", threadId, receipt };
-
-const sent = asObject(await tools.agent_send({ sessionId: agent, message: task.split("{{THREAD_ID}}").join(threadId), checkInMinutes: 30 }));
-
-const refs = [...(load("refs") ?? []), sent.result];
-store("refs", refs);
-return { agent, threadId, ref: sent.result };
+store("refs", [...(load("refs") ?? []), sent.result]);
+return { agent: sessionId, threadId, ref: sent.result };
 ```
 
 Notes:
 
+- A spawn without a prompt creates an idle agent and returns its `sessionId`.
+  The send returns the result reference of the task.
 - Other sessions find the thread with `agent_collaborate` `list`, or through
   the Active thread hints of related sessions.
 - The agent joins the thread itself as the first act of its task.
-- Choose the preset and check-in interval using current delegation preferences
-  and the public tool definition. The values in the examples are illustrative.
+- Choose the preset and a check-in interval using current delegation
+  preferences and the public tool definition. The values in the examples are
+  illustrative.
 
 ## Parallel dispatch
 
@@ -67,7 +94,6 @@ When you delegate independent tasks together, put the common brief fields in
 one object. Keep the exact result reference from each dispatch.
 
 ```js
-const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
 const shared = {
   purpose: "Decide which parser cases need new examples.",
   sources: ["README.md:1 Current examples and how to run them"],
@@ -89,53 +115,66 @@ const tasks = [
   },
 ];
 
-const sent = await Promise.all(tasks.map(async (task) => {
-  const receipt = asObject(await tools.agent_brief({ ...shared, ...task }));
-  return { name: task.name, ref: receipt.result ?? null, receipt: receipt.result ? undefined : receipt };
-}));
+const settled = await Promise.allSettled(tasks.map((task) => tools.agent_brief({ ...shared, ...task })));
+const sent = settled.map((outcome, index) =>
+  outcome.status === "fulfilled"
+    ? { name: tasks[index].name, ref: outcome.value.result }
+    : { name: tasks[index].name, refused: String(outcome.reason).slice(0, 300) },
+);
 
-const refs = [...(load("refs") ?? []), ...sent.filter((s) => s.ref).map((s) => s.ref)];
-store("refs", refs);
-return sent.map((s) => (s.ref ? { name: s.name, ref: s.ref } : { name: s.name, failed: s.receipt }));
+store("refs", [...(load("refs") ?? []), ...sent.filter((s) => s.ref).map((s) => s.ref)]);
+return sent;
 ```
 
 Point to source material in `sources` rather than copying it into each brief.
-A receipt does not settle the task.
+A refused brief, for example one that names a missing source path, does not
+discard the references of the briefs that the hosts admitted. Repair and send
+only the refused task. A receipt does not settle the task.
 
 ## Fleet sweep
 
-Return only the state that supervision needs for each owned agent: name,
-busy state, model, current tools, inbox size, and failures. Status lists
-open submissions only, so the sweep also reads each stored result reference
-for settled failures.
+Return only the state that supervision needs for each dispatched agent: name,
+busy state, model, queue and open work, and the requests that are still out
+or failed. No status read lists the agents that a session created: the compact
+native read omits created-agent detail. The sweep uses the result references
+that the dispatch recipes stored.
 
 ```js
-const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
-// No status read lists the agents that a session created: the compact native
-// read omits created-agent detail. The sweep uses the result references that
-// the dispatch recipes stored.
-const ids = [...new Set((load("refs") ?? []).map((r) => r.sessionId))];
+const refs = load("refs") ?? [];
+const ids = [...new Set(refs.map((ref) => ref.sessionId))];
 
-const agents = await Promise.all(ids.map(async (sessionId) => {
-  try {
-    const c = asObject(await tools.agent_status({ sessionId })).conversation ?? {};
-    const m = c.agent?.model;
-    return {
-      sessionId, name: c.name, busy: c.busy, model: m ? `${m.provider}/${m.modelId}` : undefined,
-      tools: (c.live?.tools ?? []).map((t) => t.name), inbox: c.inbox?.items?.length ?? 0,
-    };
-  } catch (error) {
-    return { sessionId, unavailable: String(error).slice(0, 200) };
-  }
-}));
+const statuses = await Promise.allSettled(ids.map((sessionId) => tools.agent_status({ sessionId })));
+const agents = statuses.map((outcome, index) => {
+  const sessionId = ids[index];
+  if (outcome.status === "rejected") return { sessionId, unavailable: String(outcome.reason).slice(0, 200) };
+  if (outcome.value.format === "refused") return { sessionId, refused: outcome.value.reason };
+  const c = outcome.value.conversation;
+  return {
+    sessionId, name: c.name, busy: c.busy, availability: c.availability,
+    model: c.model ? `${c.model.provider}/${c.model.modelId}` : null,
+    inbox: c.queue.inbox, submissions: c.queue.submissions, unplaced: c.unplaced, openWork: c.openWorkCount,
+  };
+});
 
-const results = await Promise.all((load("refs") ?? []).map(async (ref) => {
-  const r = asObject(await tools.agent_inspect({ sessionId: ref.sessionId, view: "result", submissionId: ref.submissionId }));
-  return { ...ref, status: r.status, reason: r.reason, error: r.providerBlock?.error?.slice(0, 200) };
-}));
+const reads = await Promise.allSettled(refs.map((ref) =>
+  tools.agent_inspect({ sessionId: ref.sessionId, view: "result", submissionId: ref.submissionId }),
+));
+const results = reads.map((outcome, index) => {
+  const ref = refs[index];
+  if (outcome.status === "rejected") return { ...ref, error: String(outcome.reason).slice(0, 200) };
+  const r = outcome.value;
+  return { ...ref, status: r.status, reason: r.reason, providerError: r.providerBlock?.error.slice(0, 200) };
+});
 
-return { agents, failures: results.filter((r) => r.status === "unanswered" || r.reason) };
+return {
+  agents,
+  out: results.filter((r) => r.status === "queued" || r.status === "placed"),
+  failures: results.filter((r) => r.error || r.reason || r.status === "unanswered" || r.status === "unavailable"),
+};
 ```
+
+`agent_status` with `detail: true` adds live tools, tasks and submissions for
+one agent; read it only for an agent that the sweep shows in trouble.
 
 ## Thread digest
 
@@ -145,7 +184,6 @@ past events that the digest returns, so a later digest continues at the
 first unread event. The first run starts at the first event.
 
 ```js
-const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
 const threadId = "<thread id>";
 const pages = 3; // forward pages per digest
 const shown = 600; // characters of an ordinary message before a cut
@@ -161,7 +199,7 @@ let used = 0;
 let full = false;
 const events = [];
 for (let read = 0; read < pages && call && !full; read++) {
-  page = asObject(await tools.agent_collaborate(call));
+  page = await tools.agent_collaborate(call);
   frame = page.thread ?? frame;
   for (const e of page.events) {
     const text = String(e.message);
@@ -221,31 +259,34 @@ owner's context; the owner can show or publish the file with the tools of
 its session.
 
 ```js
-const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
 const sessionId = "<agent session>";
 const submissionId = 0; // the submissionId of the result reference
 const finalReport = false; // true for the retained final report of declared work
 const path = "<output path>";
 
+let call = { sessionId, view: "result", submissionId, ...(finalReport ? { finalReport } : {}) };
 let content = "";
-let offset = 0;
 for (let page = 0; page < 600; page++) {
-  const result = asObject(await tools.agent_inspect({ sessionId, view: "result", submissionId, ...(finalReport ? { finalReport } : {}), ...(offset ? { offset } : {}) }));
-  const part = finalReport ? result.finalReport : result;
-  const text = finalReport ? part?.text : part.answer;
-  if ((!finalReport && result.status !== "done") || typeof text !== "string") throw new Error("The requested result is not available.");
+  const result = await tools.agent_inspect(call);
+  if (!finalReport && result.status !== "done") throw new Error(`The answer is not available: ${result.status} ${result.reason ?? ""}`);
+  const text = finalReport ? result.finalReport?.text : result.answer;
+  if (typeof text !== "string") throw new Error("The requested result has no retained text.");
   content += text;
-  if (part.nextOffset == null) {
+  const continuation = finalReport ? result.finalReportContinuation : result.answerContinuation;
+  if (!continuation) {
     let bytes = 0;
     for (const char of content) {
       const n = char.codePointAt(0);
       bytes += n <= 0x7f ? 1 : n <= 0x7ff ? 2 : n <= 0xffff ? 3 : 4;
     }
     await tools.write({ path, content });
-    return { path, bytes };
+    return { path, bytes, pages: page + 1 };
   }
-  if (!Number.isSafeInteger(part.nextOffset) || part.nextOffset <= offset) throw new Error("The result cursor did not advance.");
-  offset = part.nextOffset;
+  const { tool, ...next } = continuation;
+  call = next;
 }
 throw new Error("The result exceeds the page limit; no digest was written.");
 ```
+
+Each page names the exact call for the next page in `answerContinuation`, or in
+`finalReportContinuation` for a final report; the loop follows it unchanged.
