@@ -50,6 +50,8 @@ final class WorkspaceConfirmation: NSView {
 
     override func cancelOperation(_ sender: Any?) { resolve(nil) }
 
+    private let inset: CGFloat = 18
+    private var titleHeight: CGFloat { WorkspaceStyle.settings.interfaceSize + 10 }
     private var buttonHeight: CGFloat { max(27, WorkspaceStyle.settings.interfaceSize + 13) }
 
     private func buttonWidths() -> [CGFloat] {
@@ -59,10 +61,17 @@ final class WorkspaceConfirmation: NSView {
 
     func fitting(in pane: NSSize) -> NSSize {
         let w = min(570, max(0, pane.width - 16))
-        let rows: CGFloat = buttonWidths().reduce(0, +) + CGFloat(buttons.count - 1) * 6 <= w - 36 ? 1 : CGFloat(buttons.count)
-        let line = max(15, WorkspaceStyle.settings.interfaceSize + 4)
-        let body = detail.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: max(1, w - 36), height: line * 4)).height ?? line
-        return NSSize(width: w, height: 59 + min(line * 4, body) + rows * (buttonHeight + 4))
+        let contentWidth = max(1, w - 2 * inset)
+        let rows: CGFloat = buttonWidths().reduce(0, +) + CGFloat(buttons.count - 1) * 6 <= contentWidth ? 1 : CGFloat(buttons.count)
+        let font = WorkspaceStyle.interfaceFont()
+        let line = ceil(font.ascender - font.descender + font.leading)
+        let textHeight = (detail.stringValue as NSString).boundingRect(
+            with: NSSize(width: max(1, contentWidth - 4), height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        ).height
+        let body = min(line * 4, max(line, ceil(textHeight))) + 4
+        let controls = rows * buttonHeight + (rows - 1) * 4
+        return NSSize(width: w, height: 2 * inset + titleHeight + 5 + body + 8 + controls)
     }
 
     override func layout() {
@@ -72,9 +81,7 @@ final class WorkspaceConfirmation: NSView {
         heading.textColor = theme.text
         detail.font = WorkspaceStyle.interfaceFont(0)
         detail.textColor = theme.secondaryText
-        let inset: CGFloat = 18
         let width = max(0, bounds.width - inset * 2)
-        let titleHeight = WorkspaceStyle.settings.interfaceSize + 10
         heading.frame = NSRect(x: inset, y: inset, width: width, height: titleHeight)
         let widths = buttonWidths()
         let singleRow = widths.reduce(0, +) + CGFloat(buttons.count - 1) * 6 <= width

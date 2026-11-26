@@ -460,7 +460,10 @@ struct WorkspaceScreenTests {
         #expect(api.text.hasPrefix("// local"))
         screen.fileAction(.remove("new.swift"))
         try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
-        #expect(self.children(screen.view, NSTextField.self).contains { $0.stringValue.contains("unsaved drafts: new.swift") })
+        let list = try #require(self.children(screen.view, NSTextField.self).first { $0.stringValue.contains("unsaved drafts: new.swift") })
+        screen.view.layoutSubtreeIfNeeded()
+        let font = try #require(list.font)
+        #expect(list.bounds.height >= 2 * ceil(font.ascender - font.descender))
         #expect(api.trashed == nil)
         try click(screen.view, label: "Move to Trash")
         try await eventually { api.trashed == "new.swift" }
