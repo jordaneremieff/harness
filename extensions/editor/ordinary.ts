@@ -109,9 +109,13 @@ export function registerOrdinary(pi: ExtensionAPI): void {
 		description: "Open a folder or file in Editor and connect this session",
 		async handler(args, ctx) {
 			if (ctx.mode !== "tui") throw new Error("Open the editor from interactive Pi. Agents use the editor tool.");
-			const room = await getBinding(ctx).room;
-			const message = await room.command(args);
-			ctx.ui.notify(message, "info");
+			ctx.ui.setStatus("editor", "Opening Editor…");
+			try {
+				const room = await getBinding(ctx).room;
+				ctx.ui.notify(await room.command(args), "info");
+			} finally {
+				ctx.ui.setStatus("editor", undefined);
+			}
 		},
 	});
 	pi.registerTool({

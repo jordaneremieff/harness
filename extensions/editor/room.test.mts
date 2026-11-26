@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { EditorRoom } from "./room.ts";
 import type { Invitation, Participant } from "./participants.ts";
 
-test("a browser hands a folder thread to one participant, which edits its shared draft and publishes a linked tab", async (t) => {
+test("a native pane hands a folder thread to one participant, which edits its shared draft and publishes a linked tab", async (t) => {
 	const base = await realpath(await mkdtemp(join(tmpdir(), "editor-room-")));
 	const root = join(base, "project"),
 		other = join(base, "other"),
@@ -14,7 +14,16 @@ test("a browser hands a folder thread to one participant, which edits its shared
 	await Promise.all([mkdir(root), mkdir(other), mkdir(state, { mode: 0o700 })]);
 	await writeFile(join(root, "sample.ts"), "export const count = 1;\n");
 	const messages: Invitation[] = [];
-	let opened: URL | undefined;
+	let api: URL | undefined;
+	let token: string;
+	async function pane(body: Record<string, unknown>) {
+		assert.ok(api);
+		return fetch(api, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	}
 	const a: Participant = { id: "ordinary:a", label: "Writer", kind: "ordinary" };
 	const b: Participant = { id: "durable:b:2", label: "Reviewer", kind: "durable" };
 	const author = new EditorRoom(
@@ -24,8 +33,17 @@ test("a browser hands a folder thread to one participant, which edits its shared
 		async () => {
 			throw Error("Wrong recipient");
 		},
-		async (url) => {
-			opened = new URL(url);
+		async () => async (folder, path) => {
+			assert.equal(folder, root);
+			assert.equal((await stat(path)).mode & 0o777, 0o600);
+			const ticket = JSON.parse(await readFile(path, "utf8"));
+			assert.equal(ticket.file, "sample.ts");
+			assert.equal(ticket.root, root);
+			await rm(path);
+			api = new URL(`http://127.0.0.1:${ticket.port}/api`);
+			token = ticket.token;
+			assert.equal((await pane({ op: "ready" })).status, 200);
+			return { blockId: "native-test" };
 		},
 	);
 	const reader = new EditorRoom(state, other, b, async (req) => {
@@ -35,40 +53,29 @@ test("a browser hands a folder thread to one participant, which edits its shared
 		await Promise.all([author.close(), reader.close()]);
 		await rm(base, { recursive: true, force: true });
 	});
-	await author.command("sample.ts");
-	assert.ok(opened);
-	const url = opened as URL;
-	const api = new URL("/api", url.origin);
-	const fragment = new URLSearchParams(url.hash.slice(1));
-	assert.equal(fragment.get("file"), "sample.ts");
-	async function web(body: Record<string, unknown>) {
-		return fetch(api, {
-			method: "POST",
-			headers: { Authorization: `Bearer ${fragment.get("k")}`, "Content-Type": "application/json", Origin: url.origin },
-			body: JSON.stringify(body),
-		});
-	}
+	assert.equal(await author.command("sample.ts"), `Opened Editor for ${root}.`);
+	assert.ok(api);
 	assert.equal((await fetch(api, { method: "POST" })).status, 403);
-	assert.deepEqual((await (await web({ op: "members" })).json()).members, [a]);
+	assert.deepEqual((await (await pane({ op: "members" })).json()).members, [a]);
 	await reader.tool({ op: "join", root });
 	assert.deepEqual(
-		new Set((await (await web({ op: "members" })).json()).members.map((m: Participant) => m.id)),
+		new Set((await (await pane({ op: "members" })).json()).members.map((m: Participant) => m.id)),
 		new Set([a.id, b.id]),
 	);
-	const file = await (await web({ op: "read", doc: "sample.ts" })).json();
+	const file = await (await pane({ op: "read", doc: "sample.ts" })).json();
 	const changed = await (
-		await web({ op: "patch", doc: file.doc, rev: file.rev, start: 21, end: 22, text: "2" })
+		await pane({ op: "patch", doc: file.doc, rev: file.rev, start: 21, end: 22, text: "2" })
 	).json();
 	assert.equal(changed.rev, file.rev + 1);
-	const note = await (await web({ op: "note", target: { kind: "folder", key: "" }, text: "Map this folder" })).json();
-	assert.equal((await web({ op: "send", id: note.id, to: b.id, message: "Map this folder" })).status, 200);
+	const note = await (await pane({ op: "note", target: { kind: "folder", key: "" }, text: "Map this folder" })).json();
+	assert.equal((await pane({ op: "send", id: note.id, to: b.id, message: "Map this folder" })).status, 200);
 	assert.equal(messages.length, 1);
 	assert.equal(messages[0].thread, note.id);
 	assert.deepEqual(messages[0].target, { kind: "folder", key: "" });
 	const read = await reader.tool({ op: "read", doc: file.doc, root });
 	assert.match(String(read.text), /= 2;/);
 	await reader.tool({ op: "edit", doc: file.doc, rev: read.rev, find: "2;", replace: "3;", root });
-	assert.equal((await web({ op: "save", doc: file.doc, rev: changed.rev })).status, 409);
+	assert.equal((await pane({ op: "save", doc: file.doc, rev: changed.rev })).status, 409);
 	assert.match(await readFile(join(root, file.doc), "utf8"), /= 1;/);
 	const map = await reader.tool({
 		op: "compose",
@@ -77,14 +84,77 @@ test("a browser hands a folder thread to one participant, which edits its shared
 		blocks: [{ kind: "location", text: "Count", doc: file.doc, line: 1 }],
 	});
 	await reader.tool({ op: "reply", root, id: note.id, text: "See the Code map tab." });
-	const shared = await (await web({ op: "state" })).json();
+	const shared = await (await pane({ op: "state" })).json();
 	assert.equal(shared.views[0].id, map.id);
-	const final = await (await web({ op: "read", doc: file.doc })).json();
+	const final = await (await pane({ op: "read", doc: file.doc })).json();
 	assert.match(final.text, /= 3;/);
-	assert.equal((await web({ op: "save", doc: file.doc, rev: final.rev })).status, 200);
+	assert.equal((await pane({ op: "save", doc: file.doc, rev: final.rev })).status, 200);
 	assert.match(await readFile(join(root, file.doc), "utf8"), /= 3;/);
 	await reader.close();
-	assert.deepEqual((await (await web({ op: "members" })).json()).members, [a]);
+	assert.deepEqual((await (await pane({ op: "members" })).json()).members, [a]);
+});
+
+test("a loaded app keeps its exact split while the tab is hidden and reports a real startup failure", async (t) => {
+	const base = await realpath(await mkdtemp(join(tmpdir(), "editor-hidden-")));
+	const root = join(base, "project"),
+		state = join(base, "state");
+	await Promise.all([mkdir(root), mkdir(state, { mode: 0o700 })]);
+	let next = "loaded";
+	let call: ((body: Record<string, string>) => Promise<Response>) | undefined;
+	const room = new EditorRoom(
+		state,
+		root,
+		{ id: "ordinary:a", kind: "ordinary", label: "Pi" },
+		async () => {},
+		async () => async (_folder, path) => {
+			const t = JSON.parse(await readFile(path, "utf8"));
+			call = (body) =>
+				fetch(`http://127.0.0.1:${t.port}/api`, {
+					method: "POST",
+					headers: { Authorization: `Bearer ${t.token}`, "Content-Type": "application/json" },
+					body: JSON.stringify(body),
+				});
+			await call(next === "loaded" ? { op: next } : { op: "closed", error: "Editor needs Accessibility permission." });
+			return { blockId: "exact" };
+		},
+	);
+	t.after(async () => {
+		await room.close();
+		await rm(base, { recursive: true, force: true });
+	});
+	assert.match(await room.command(""), /loaded.*Show that Rex tab/);
+	assert.ok(call);
+	assert.equal((await call({ op: "ready" })).status, 200);
+	assert.equal((await call({ op: "state" })).status, 200);
+	next = "closed";
+	await assert.rejects(room.command(""), /needs Accessibility permission/);
+});
+
+test("a split that never starts its app loses its grant and its listening port", async (t) => {
+	const base = await realpath(await mkdtemp(join(tmpdir(), "editor-unopened-")));
+	const root = join(base, "root"),
+		state = join(base, "state");
+	await Promise.all([mkdir(root), mkdir(state, { mode: 0o700 })]);
+	let request: string | undefined, port: number | undefined;
+	const room = new EditorRoom(
+		state,
+		root,
+		{ id: "ordinary:a", kind: "ordinary", label: "Pi" },
+		async () => {},
+		async () => async (_root, path) => {
+			request = path;
+			port = JSON.parse(await readFile(path, "utf8")).port;
+			throw Error("Unconfirmed split");
+		},
+	);
+	t.after(async () => {
+		await room.close();
+		await rm(base, { recursive: true, force: true });
+	});
+	await assert.rejects(room.command(""), /Unconfirmed split/);
+	assert.ok(request && port);
+	await assert.rejects(stat(request), { code: "ENOENT" });
+	await assert.rejects(fetch(`http://127.0.0.1:${port}/api`));
 });
 
 test("an agent builds an untitled draft and pages it without splitting a character", async (t) => {

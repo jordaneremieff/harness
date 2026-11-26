@@ -156,6 +156,11 @@ The Markdown command's Read action requests a half-width split on the left for i
 reader and a pinned open-request path. Request consumption separately establishes acceptance.
 Browse-only selection and publication do not invoke the adapter.
 
+The interactive `/editor` command opens Editor.app to the right of the invoking Pi pane. Its
+private request identifies the local folder and optional file. The app reports workspace load
+and visible panel placement separately. A loaded workspace stays attached when its tab is hidden. Joining an Editor
+workspace through the agent tool neither starts an app nor creates a split.
+
 The composer extension's `/composer` command opens Composer.app with a private launch file in
 a split below Pi labelled `Composer`. An authenticated request establishes app acceptance.
 Once visible, the composer asks Pi to resize the split through its confirmed receipt. Before

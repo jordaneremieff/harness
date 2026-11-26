@@ -37,7 +37,7 @@ function fixture(t: TestContext) {
 	return { base, root, agentDir, open };
 }
 
-function call(store: Workspace, op: string, input = {}, author = "Browser") {
+function call(store: Workspace, op: string, input = {}, author = "You") {
 	return store.run({ op, ...input }, author);
 }
 
@@ -46,34 +46,34 @@ function outputs(value: unknown) {
 	return value.map((row) => ({ ...row }));
 }
 
-test("browser splices and guarded agent edits share a revision without implicit file writes", (t) => {
+test("human splices and guarded agent edits share a revision without implicit file writes", (t) => {
 	const { root, open } = fixture(t);
 	const file = join(root, "source.txt");
 	writeFileSync(file, "start 👋 aaa\n");
-	const browser = open();
+	const pane = open();
 	const agent = open();
-	const initial = call(browser, "state");
+	const initial = call(pane, "state");
 	assert.deepEqual(initial.docs, []);
-	const view = call(browser, "read", { doc: "source.txt" });
+	const view = call(pane, "read", { doc: "source.txt" });
 	const doc = view.doc;
 	assert.equal(view.dirty, false);
 	assert.equal(call(agent, "read", { doc }).rev, view.rev);
-	const seq = call(browser, "state").seq;
+	const seq = call(pane, "state").seq;
 	assert.deepEqual(call(agent, "state", { since: seq }), { seq, unchanged: true });
-	assert.throws(() => call(browser, "patch", { doc, rev: view.rev, start: 7, end: 8, text: "" }), /UTF-16/);
+	assert.throws(() => call(pane, "patch", { doc, rev: view.rev, start: 7, end: 8, text: "" }), /UTF-16/);
 	assert.throws(() => call(agent, "edit", { doc, rev: view.rev, find: "aa", replace: "b" }), /exactly once/);
-	const { id } = call(browser, "note", { doc, rev: view.rev, start: 6, end: 8, text: "Greeting" });
+	const { id } = call(pane, "note", { doc, rev: view.rev, start: 6, end: 8, text: "Greeting" });
 	const edit = call(agent, "edit", { doc, rev: view.rev, find: "aaa", replace: "other" }, "Agent");
-	assert.throws(() => call(browser, "patch", { doc, rev: view.rev, start: 6, end: 8, text: "🏡" }), /revision changed/);
-	assert.throws(() => call(browser, "save", { doc, rev: view.rev }), /revision changed/);
-	assert.throws(() => call(browser, "note", { doc, rev: view.rev, start: 0, end: 0, text: "Old" }), /revision changed/);
-	const next = call(browser, "patch", { doc, rev: edit.rev, start: 6, end: 8, text: "🏡" });
+	assert.throws(() => call(pane, "patch", { doc, rev: view.rev, start: 6, end: 8, text: "🏡" }), /revision changed/);
+	assert.throws(() => call(pane, "save", { doc, rev: view.rev }), /revision changed/);
+	assert.throws(() => call(pane, "note", { doc, rev: view.rev, start: 0, end: 0, text: "Old" }), /revision changed/);
+	const next = call(pane, "patch", { doc, rev: edit.rev, start: 6, end: 8, text: "🏡" });
 	assert.equal(next.rev, 3);
 	assert.equal(readFileSync(file, "utf8"), "start 👋 aaa\n");
 	assert.deepEqual(call(agent, "read", { doc, ifRev: next.rev }), { doc, rev: next.rev, dirty: true, unchanged: true });
 	assert.equal(call(agent, "read", { doc }).text, "start 🏡 other\n");
 	call(agent, "reply", { id, text: "Replaced; the original anchor remains" }, "Agent");
-	browser.close();
+	pane.close();
 	agent.close();
 	const reopened = open();
 	const header = outputs(call(reopened, "state").threads)[0];
@@ -83,7 +83,7 @@ test("browser splices and guarded agent edits share a revision without implicit 
 	const thread = call(reopened, "thread", { id });
 	assert.equal(thread.quote, "👋");
 	assert.deepEqual(outputs(thread.messages), [
-		{ author: "Browser", text: "Greeting" },
+		{ author: "You", text: "Greeting" },
 		{ author: "Agent", text: "Replaced; the original anchor remains" },
 	]);
 	assert.equal(call(reopened, "read", { doc }).text, "start 🏡 other\n");
