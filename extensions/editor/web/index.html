@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Editor</title>
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./view.css">
+  <script type="module" src="./app.ts"></script>
+</head>
+<body>
+  <header class="top">
+    <button id="toggle-files" class="icon" title="Toggle files" aria-label="Toggle files" aria-expanded="true">☰</button>
+    <span class="brand">Editor</span>
+    <span id="root" class="root">Local workspace</span>
+    <button id="quick-open" class="quick">Open file <kbd>⌘P</kbd></button>
+    <button id="toggle-threads" class="threads-toggle" aria-expanded="false">Threads <span id="thread-count"></span></button>
+    <button id="settings" class="icon" aria-label="Settings" title="Settings" aria-expanded="false">⚙</button>
+  </header>
+  <main id="layout">
+    <aside id="files" aria-label="Workspace navigation">
+      <div class="rail-head"><strong>Workspace</strong><button id="refresh-files" class="icon" title="Refresh folders" aria-label="Refresh folders">↻</button><button id="new" class="icon" title="New document" aria-label="New document">＋</button></div>
+      <nav class="rail-modes" aria-label="Workspace views"><button data-view="files" aria-pressed="true">Files</button><button data-view="search" aria-pressed="false">Search</button><button data-view="git" aria-pressed="false">Git</button></nav>
+      <section id="files-view" class="rail-content"><div id="tree"></div><div id="draft-list"></div><div id="view-list"></div></section>
+      <section id="search-view" class="rail-content" hidden>
+        <form id="search-form"><label class="sr" for="search-input">Search workspace</label><input id="search-input" type="search" autocomplete="off" placeholder="Search workspace"><select id="search-kind" aria-label="Search kind"><option value="paths">Paths</option><option value="text">Text</option></select></form>
+        <div id="search-results" aria-live="polite"></div>
+      </section>
+      <section id="git-view" class="rail-content" hidden><div id="git-list" aria-live="polite"></div></section>
+    </aside>
+    <section class="work" aria-label="Editor workspace">
+      <div id="tabs" aria-label="Open files"></div>
+      <div class="document-bar">
+        <span id="document-path">No file open</span>
+        <div class="actions"><button id="find" title="Find in file (⌘F)">Find</button><button id="save-as" title="Save as a new file (⌘⇧S)">Save As</button><button id="save" class="accent" title="Save to disk (⌘S)">Save</button></div>
+      </div>
+      <form id="find-form" hidden><input id="find-input" type="search" autocomplete="off" placeholder="Find in file" aria-label="Find in file"><span id="find-result" aria-live="polite"></span><button id="find-prev" type="button" aria-label="Previous match">↑</button><button type="submit" aria-label="Next match">↓</button><button id="find-close" class="icon" type="button" aria-label="Close Find">×</button></form>
+      <div id="conflict" role="status" hidden><span id="conflict-text"></span><button id="recover">Keep as Scratch</button><button id="reload">Open Shared Version</button><button id="retry">Retry</button></div>
+      <div id="work-body">
+        <section id="agent-view" aria-label="Agent view" hidden></section>
+        <div id="welcome"><p>WORKSPACE</p><h1>Open a file to start.</h1><div><button id="welcome-open" class="accent">Open file</button><button id="welcome-new">New scratch</button></div></div>
+        <div id="editor" hidden>
+          <div id="line-numbers" aria-hidden="true"></div>
+          <div id="paper">
+            <div id="ink" aria-hidden="true"></div>
+            <textarea id="source" aria-label="Document text" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off"></textarea>
+          </div>
+        </div>
+        <section id="diff" hidden aria-label="Git diff"><div class="diff-head"><strong id="diff-title"></strong><button id="edit-view">Back to editor</button></div><pre id="diff-content"></pre></section>
+      </div>
+    </section>
+    <aside id="desk" aria-label="Shared threads" hidden>
+      <div class="desk-head"><div><h2>Threads</h2><p id="desk-location">This workspace</p></div><button id="desk-scope" title="Switch between file and workspace threads">All files</button></div>
+      <div id="desk-compose" hidden>
+        <div class="selection"><span id="anchor-label"></span><button id="cancel-note" class="icon" type="button" aria-label="Cancel new thread">×</button></div>
+        <blockquote id="anchor-quote" hidden></blockquote>
+        <form id="new-thread-form">
+          <textarea id="note-text" placeholder="Write a note or task…" aria-label="Thread message" required></textarea>
+          <div class="compose-actions"><select id="new-target" aria-label="Thread recipient"><option value="">No handoff</option></select><button id="post-note" type="submit" class="accent">Post note</button></div>
+          <p id="new-target-hint" class="target-hint"></p>
+        </form>
+      </div>
+      <div id="desk-action"><button id="add-note" class="accent" title="New thread at selection (⌘⇧Enter)">＋ Thread at selection</button></div>
+      <div id="thread-entries"></div>
+      <div id="thread-detail" hidden>
+        <button id="back-to-threads" type="button">← Threads</button>
+        <div id="thread-anchor"></div>
+        <ol id="messages"></ol>
+        <form id="reply-form">
+          <textarea id="reply-text" placeholder="Reply or give the agent a task…" aria-label="Reply" required></textarea>
+          <div class="compose-actions"><select id="reply-target" aria-label="Reply recipient"><option value="">No handoff</option></select><button id="post-reply" type="submit" class="accent">Post reply</button></div>
+          <p id="reply-target-hint" class="target-hint"></p>
+        </form>
+      </div>
+    </aside>
+  </main>
+  <footer class="status-bar"><span id="connection" role="status">Connecting</span><span id="notice" role="status"></span><span id="language"></span><span id="position"></span></footer>
+  <div id="context-menu" class="popup" aria-label="Actions for this target" hidden>
+    <div id="context-label"></div><button id="context-note">New note</button><button id="context-engage">Engage a session</button>
+  </div>
+  <div id="settings-menu" class="popup" aria-label="Editor settings" hidden>
+    <strong>Editor settings</strong><label id="setting-lines"><input id="show-lines" type="checkbox" checked> Line numbers</label>
+  </div>
+  <dialog id="path-dialog"><form id="path-form">
+    <div class="dialog-head"><h2 id="path-title"></h2><button class="icon" id="cancel-path" type="button" aria-label="Close">×</button></div>
+    <label for="path-input">Path in this folder</label><input id="path-input" autocomplete="off" spellcheck="false" placeholder="src/example.ts"><p id="path-hint"></p>
+    <div class="dialog-actions"><button id="dialog-scratch" type="button">New scratch</button><button id="confirm-path" class="accent" type="submit"></button></div>
+  </form></dialog>
+</body>
+</html>

@@ -1,0 +1,84 @@
+.editor-composed {
+  height: 100%;
+  min-width: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.editor-composed-page {
+  max-width: 78ch;
+  margin-inline: auto;
+  padding: clamp(16px, 4vw, 38px);
+  color: var(--ink, inherit);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.editor-composed-header {
+  border-bottom: 1px solid var(--line, #777);
+  padding-bottom: 14px;
+  margin-bottom: 18px;
+  overflow-wrap: anywhere;
+}
+
+.editor-composed-header h1 {
+  margin: 0;
+  font-size: clamp(20px, 3vw, 30px);
+  line-height: 1.18;
+  letter-spacing: -0.025em;
+}
+
+.editor-composed-header p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted, inherit);
+}
+
+.editor-composed-text {
+  margin: 15px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.editor-composed-code {
+  margin: 15px 0;
+  padding: 10px 13px;
+  overflow: auto;
+  border: 1px solid var(--line, #777);
+  border-radius: 6px;
+  background: var(--nav, transparent);
+  font: var(--editor-font, 13px/1.5 monospace);
+  tab-size: 4;
+}
+
+.editor-composed-code code { font: inherit; }
+
+.editor-composed-location {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  margin: 5px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line, #777);
+  border-radius: 6px;
+  background: var(--nav, transparent);
+  text-align: start;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.editor-composed-location:focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: -2px;
+}
+
+.editor-composed-label {
+  color: var(--accent, inherit);
+  font-weight: 650;
+}
+
+.editor-composed-path {
+  color: var(--muted, inherit);
+  font: var(--editor-font, 13px/1.5 monospace);
+  unicode-bidi: plaintext;
+}

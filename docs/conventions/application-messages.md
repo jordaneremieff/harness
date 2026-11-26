@@ -9,8 +9,10 @@ reads them from Pi as every application writes them. No extension imports
 another, and no application depends on another extension to send or to
 receive a reply.
 
-The Markdown reader writes these messages for its Ask requests.
-The agent extension displays them.
+The Markdown reader sends Ask requests that expect a final reply. Editor sends a
+selected ordinary session a request about a workspace thread. The session posts
+its reply to that thread, so Editor marks the application message `reply: "none"`.
+The agent extension displays both kinds of message.
 
 ## Message
 

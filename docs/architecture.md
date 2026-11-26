@@ -280,8 +280,8 @@ documented surface:
 - [Emission grammar](conventions/emissions.md): the shared form of tool
   cards, message cards and notifications that every extension draws.
 - [Application messages](conventions/application-messages.md): the message
-  format that applications such as the Markdown reader place in
-  the conversation themselves, and how each follows its own replies.
+  format that the Markdown reader and Editor place in ordinary Pi
+  conversations, and how each handles a reply.
 - [Operator views](conventions/operator-panels.md): the view shape and
   interaction rules that each extension implements for its own views, and the
   owner views served in the attached terminal.
