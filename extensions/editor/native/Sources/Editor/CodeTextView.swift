@@ -16,7 +16,7 @@ final class CodeScrollView: NSScrollView {
 @MainActor
 final class CodeTextView: NSTextView {
     var noteTarget: ((NSRange) -> NSMenuItem?)?
-    private let syntax = CodeSyntax()
+    let syntax = CodeSyntax()
 
     override func draw(_ dirtyRect: NSRect) {
         prepareVisibleText()

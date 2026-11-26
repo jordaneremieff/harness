@@ -519,27 +519,59 @@ final class WorkspaceScreen {
 
     // MARK: Transient tabs
 
+    /// The files of the open tabs of every group, in tab order.
+    var openDocuments: [String] {
+        groups.flatMap(\.keys).compactMap { $0.hasPrefix("doc:") ? String($0.dropFirst(4)) : nil }
+    }
+
     /// The tab that a preview put on show, and whether it was open before the preview.
-    private var transient: (key: String, wasOpen: Bool, previous: String?)?
+    private var transient: (key: String, wasOpen: Bool)?
+    /// The tab on show before the first preview of a series.
+    private var previewReturn: String?
+    private var previewChain: Task<Void, Never>?
+    private var previewRequest = 0
 
     /// Shows a file without moving the keyboard, as Go to Anything does while a person moves
     /// through its list. The next preview replaces it unless `endTransient(commit:)` keeps it.
+    /// Requests apply in order; a preview that a later one supersedes is skipped.
     func showTransient(_ doc: String, line: Int?) {
-        let key = fileKey(doc)
-        let previous = transient?.previous ?? selected
-        if let transient, transient.key != key, !transient.wasOpen { act { try await $0.closeTab(transient.key) } }
-        let wasOpen = groupIndex(of: key) != nil && (transient?.key != key || transient?.wasOpen == true)
-        transient = (key, wasOpen, previous)
-        act { try await $0.open(doc, line: line, focus: false) }
+        previewRequest += 1
+        let request = previewRequest
+        if transient == nil && previewChain == nil { previewReturn = selected }
+        enqueuePreview { screen in
+            guard request == screen.previewRequest else { return }
+            let key = screen.fileKey(doc)
+            if let current = screen.transient, current.key != key, !current.wasOpen { try await screen.closeTab(current.key) }
+            let wasOpen = screen.transient?.key == key ? screen.transient?.wasOpen == true : screen.groupIndex(of: key) != nil
+            screen.transient = (key, wasOpen)
+            try await screen.open(doc, line: line, focus: false)
+        }
     }
 
     /// Keeps the previewed file open, or closes it and returns to the tab that was on show.
     func endTransient(commit: Bool) {
-        guard let current = transient else { return }
-        transient = nil
-        if commit { act { try await $0.open(String(current.key.dropFirst(4))) }; return }
-        if !current.wasOpen { act { try await $0.closeTab(current.key) } }
-        if let previous = current.previous { act { try await $0.select(previous) } }
+        enqueuePreview { screen in
+            defer { screen.previewReturn = nil }
+            guard let current = screen.transient else { return }
+            screen.transient = nil
+            if commit { try await screen.open(String(current.key.dropFirst(4))); return }
+            if !current.wasOpen { try await screen.closeTab(current.key) }
+            if let previous = screen.previewReturn, screen.groupIndex(of: previous) != nil { try await screen.select(previous) }
+        }
+    }
+
+    private func enqueuePreview(_ step: @escaping @MainActor (WorkspaceScreen) async throws -> Void) {
+        let previous = previewChain
+        let next = Task { [weak self] in
+            await previous?.value
+            guard let self, !self.stopped else { return }
+            do { try await step(self) } catch { if !Task.isCancelled { self.showProblem(error, editor: self.currentEditor) } }
+        }
+        previewChain = next
+        Task { [weak self] in
+            await next.value
+            if let self, self.previewChain == next { self.previewChain = nil }
+        }
     }
 
     private func clearPath() { pathRequest = nil; chrome.hidePath(); currentEditor?.focus() }

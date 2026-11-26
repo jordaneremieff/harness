@@ -67,13 +67,17 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         // Assigning the text leaves the insertion point at its end, outside the first screen.
         textView.setSelectedRange(NSRange(location: 0, length: 0))
         setWrap(false)
+        textView.syntax.colours = { role in WorkspaceStyle.theme.syntax("\(role)") }
         textView.setSyntax(for: doc)
         textView.delegate = self
         textView.noteTarget = { [weak self] range in self?.noteItem(range) }
     }
 
-    /// The language of the file, such as `markdown`, for per-language settings.
-    var languageID: String? { nil }
+    /// The language of the file, such as `markdown`, for per-language settings; nil for plain text.
+    var languageID: String? {
+        let id = textView.syntax.engine.language.id
+        return id == "plain" ? nil : id
+    }
 
     /// The 1-based line and column (in characters) of the insertion point.
     var caretPosition: (line: Int, column: Int) {

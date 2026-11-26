@@ -44,6 +44,32 @@ struct WorkspaceScreenTests {
         #expect(WorkspaceLayout.fitsBeside(pane: 480))
     }
 
+    @Test func previewsReplaceEachOtherAndReturnOrStay() async throws {
+        _ = NSApplication.shared
+        let suite = "EditorTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let screen = WorkspaceScreen(api: WorkspaceFixture(), root: "/project", defaults: defaults)
+        let window = window(screen, width: 900)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "a.swift")
+        let view = screen.view
+        // Quick moves through a list: only the last preview stays on show, and escape returns.
+        screen.showTransient("b.swift", line: nil)
+        screen.showTransient("sample.swift", line: 2)
+        screen.endTransient(commit: false)
+        try await eventually { self.tabs(view) == [["a.swift"]] && screen.currentEditor?.doc == "a.swift" }
+        // A kept preview stays open and on show.
+        screen.showTransient("b.swift", line: nil)
+        screen.endTransient(commit: true)
+        try await eventually { self.tabs(view) == [["a.swift", "b.swift"]] && screen.currentEditor?.doc == "b.swift" }
+        #expect(screen.openDocuments == ["a.swift", "b.swift"])
+        // A preview of a tab that was already open leaves it open.
+        screen.showTransient("a.swift", line: nil)
+        screen.endTransient(commit: false)
+        try await eventually { self.tabs(view) == [["a.swift", "b.swift"]] && screen.currentEditor?.doc == "b.swift" }
+    }
+
     @Test func draggedSidebarWidthSurvivesNarrowPanesHidingAndRelaunch() async throws {
         _ = NSApplication.shared
         let suite = "EditorTests.\(UUID().uuidString)"
