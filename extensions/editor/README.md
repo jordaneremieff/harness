@@ -13,6 +13,12 @@ A participant can read the unsaved draft, edit an exact passage, annotate a diff
 - Choose **Local Git** from workspace actions for the branch, changed files and file diffs. Git reads disk, not unsaved drafts. Editor does not stage, commit or contact a remote.
 - Text files must be valid UTF-8 and no larger than 2 MiB. Editor retains a file's mode and UTF-8 BOM. The draft uses LF; Save uses the first newline convention found in the original file. Symbolic links and version-control internals are not editable.
 
+## Layout
+
+- Drag the line between the sidebar and the source to change the sidebar's width. The line lights up under the pointer. Double-click it to fit the width to the longest listed name.
+- Editor keeps the width you chose for later panes on this Mac, as a preference of the Editor app. A narrow pane limits the width so that the source stays usable; the chosen width returns when the pane has room again.
+- A pane narrower than 480 points shows the sidebar or the source, not both.
+
 ## Shared drafts and threads
 
 The same canonical folder and Pi agent directory identify a workspace. Sessions and tabs share draft revisions, discussion threads and composed views. Other folders get separate workspaces. Text anchors retain the quote and revision they refer to; old text never becomes a note about whatever now occupies its offsets. Non-text notes identify the selected object directly.

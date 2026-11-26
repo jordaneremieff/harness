@@ -25,6 +25,87 @@ struct WorkspaceScreenTests {
         return window
     }
 
+    private func pointer(_ type: NSEvent.EventType, x: CGFloat, y: CGFloat = 200, in window: NSWindow, clicks: Int = 1) throws -> NSEvent {
+        try #require(NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y), modifierFlags: [], timestamp: 0,
+                                        windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: clicks, pressure: 1))
+    }
+    private func resize(_ window: NSWindow, _ screen: WorkspaceScreen, width: CGFloat) {
+        window.setContentSize(NSSize(width: width, height: 520))
+        screen.view.layoutSubtreeIfNeeded()
+    }
+
+    @Test func sidebarWidthKeepsAUsableStageAndReturnsToTheChosenWidth() {
+        #expect(WorkspaceLayout.sidebar(chosen: nil, pane: 900) == 288)
+        #expect(WorkspaceLayout.sidebar(chosen: 438, pane: 900) == 438)
+        #expect(WorkspaceLayout.sidebar(chosen: 438, pane: 600) == 320)
+        #expect(WorkspaceLayout.sidebar(chosen: 120, pane: 900) == 200)
+        #expect(WorkspaceLayout.sidebar(chosen: 2000, pane: 900) == 620)
+        #expect(!WorkspaceLayout.fitsBeside(pane: 479))
+        #expect(WorkspaceLayout.fitsBeside(pane: 480))
+    }
+
+    @Test func draggedSidebarWidthSurvivesNarrowPanesHidingAndRelaunch() async throws {
+        _ = NSApplication.shared
+        let suite = "EditorTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let api = WorkspaceFixture()
+        let screen = WorkspaceScreen(api: api, root: "/project", defaults: defaults)
+        let window = window(screen, width: 900)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: nil)
+        try await screen.open("sample.swift")
+        let view = screen.view
+        view.layoutSubtreeIfNeeded()
+        let edge = try #require(children(view, WorkspaceDivider.self).first)
+        let source = try #require(children(view, CodeTextView.self).first)
+        #expect(edge.position == 288)
+        #expect(window.makeFirstResponder(source))
+        source.setSelectedRange(NSRange(location: 4, length: 2))
+
+        edge.mouseDown(with: try pointer(.leftMouseDown, x: 290, in: window))
+        edge.mouseDragged(with: try pointer(.leftMouseDragged, x: 422, in: window))
+        #expect(edge.position == 420)
+        #expect(source.enclosingScrollView?.frame.width == 475)
+        edge.mouseDragged(with: try pointer(.leftMouseDragged, x: 2000, in: window))
+        #expect(edge.position == 620)
+        edge.mouseDragged(with: try pointer(.leftMouseDragged, x: -50, in: window))
+        #expect(edge.position == 200)
+        edge.mouseDragged(with: try pointer(.leftMouseDragged, x: 422, in: window))
+        edge.mouseUp(with: try pointer(.leftMouseUp, x: 422, in: window))
+        #expect(edge.position == 420)
+        #expect(window.firstResponder === source)
+        #expect(source.selectedRange() == NSRange(location: 4, length: 2))
+
+        resize(window, screen, width: 600)
+        #expect(edge.position == 320)
+        resize(window, screen, width: 440)
+        #expect(edge.isHidden)
+        #expect(source.isHiddenOrHasHiddenAncestor)
+        resize(window, screen, width: 900)
+        #expect(edge.position == 420)
+        #expect(!source.isHiddenOrHasHiddenAncestor)
+
+        try click(view, label: "Project files (cmd+O)")
+        #expect(edge.isHidden)
+        #expect(source.enclosingScrollView?.frame.width == 900)
+        try click(view, label: "Project files (cmd+O)")
+        #expect(edge.position == 420)
+
+        let next = WorkspaceScreen(api: WorkspaceFixture(), root: "/project", defaults: defaults)
+        let nextWindow = self.window(next, width: 900)
+        defer { next.stop(); nextWindow.orderOut(nil) }
+        try await next.start(file: nil)
+        next.view.layoutSubtreeIfNeeded()
+        let nextEdge = try #require(children(next.view, WorkspaceDivider.self).first)
+        #expect(nextEdge.position == 420)
+
+        // A double-click fits the sidebar to its longest name, within the limits.
+        nextEdge.mouseDown(with: try pointer(.leftMouseDown, x: 421, in: nextWindow, clicks: 2))
+        #expect(nextEdge.position == 200)
+        #expect(defaults.double(forKey: "sidebarWidth") == 200)
+    }
+
     @Test func textNoteReceivesReplyAndDraftWithoutOpeningTheComposedTab() async throws {
         _ = NSApplication.shared
         let api = WorkspaceFixture()

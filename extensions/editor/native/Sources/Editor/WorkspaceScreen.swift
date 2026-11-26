@@ -29,10 +29,11 @@ final class WorkspaceScreen {
     private var monitor: Task<Void, Never>?
     private var tasks: [UUID: Task<Void, Never>] = [:]
 
-    init(api: any EditorAPI, root: String) {
+    /// `defaults` keeps the layout a person chose for this pane between launches.
+    init(api: any EditorAPI, root: String, defaults: UserDefaults = .standard) {
         self.api = api
         self.root = root
-        chrome = WorkspaceChrome(root: root)
+        chrome = WorkspaceChrome(root: root, defaults: defaults)
         navigator = ProjectNavigator(api: api)
         collaboration = Collaboration(api: api)
         let start = WorkspaceLanding(folder: URL(fileURLWithPath: root).lastPathComponent)
@@ -46,6 +47,10 @@ final class WorkspaceScreen {
         chrome.onMenu = { [weak self] in self?.workspaceMenu() ?? NSMenu() }
         chrome.onCancelPath = { [weak self] in self?.clearPath() }
         chrome.onPath = { [weak self] path in self?.submit(path) }
+        chrome.onFitSidebar = { [weak self] in
+            guard let self, panel != nil, panel != .notes else { return nil }
+            return navigator.fittingWidth
+        }
         navigator.onOpen = { [weak self] path, line in self?.act { try await $0.open(path, line: line) } }
         navigator.onNote = { [weak self] in self?.note($0, $1) }
         navigator.onExpand = { [weak self] expanded in

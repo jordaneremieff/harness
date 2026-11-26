@@ -23,6 +23,8 @@ private final class NavigatorCell: NSTableCellView {
     let name = NSTextField(labelWithString: "")
     let detail = NSTextField(labelWithString: "")
     let icon = NSImageView()
+    static let textInset: CGFloat = 28
+    static let trailingInset: CGFloat = 4
     override init(frame: NSRect) {
         super.init(frame: frame)
         name.font = .systemFont(ofSize: 12)
@@ -37,8 +39,9 @@ private final class NavigatorCell: NSTableCellView {
         let h = bounds.height, w = bounds.width
         icon.frame = NSRect(x: 2, y: (h-18)/2, width: 18, height: 18)
         let multi = !detail.stringValue.isEmpty
-        name.frame = NSRect(x: 28, y: multi ? h-18 : (h-17)/2, width: max(0,w-32), height: 17)
-        detail.frame = NSRect(x: 28, y: 1, width: max(0,w-32), height: multi ? 15 : 0)
+        let textWidth = max(0, w - Self.textInset - Self.trailingInset)
+        name.frame = NSRect(x: Self.textInset, y: multi ? h-18 : (h-17)/2, width: textWidth, height: 17)
+        detail.frame = NSRect(x: Self.textInset, y: 1, width: textWidth, height: multi ? 15 : 0)
     }
 }
 
@@ -77,6 +80,14 @@ final class ProjectNavigator: NSObject, NSTableViewDataSource, NSTableViewDelega
     private var task: Task<Void, Never>?
     private var generation = 0
     var view: NSView { canvas }
+    /// The narrowest width that shows every listed name in full. A diff has no such width.
+    var fittingWidth: CGFloat? {
+        guard mode != .diff, !rows.isEmpty else { return nil }
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12)]
+        let widest = rows.prefix(400).reduce(CGFloat(0)) { max($0, ($1.title as NSString).size(withAttributes: attributes).width) }
+        let scroller = list.frame.width - list.contentSize.width
+        return ceil(widest) + NavigatorCell.textInset + NavigatorCell.trailingInset + scroller + 6
+    }
     var onOpen: ((String, Int?) -> Void)?
     var onNote: ((String, String) -> Void)?
     var onError: ((String) -> Void)?
@@ -95,6 +106,8 @@ final class ProjectNavigator: NSObject, NSTableViewDataSource, NSTableViewDelega
         table.addTableColumn(column); table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle; column.minWidth = 30
         table.delegate = self; table.dataSource = self; table.target = self; table.action = #selector(clicked)
         table.setAccessibilityLabel("Project results")
+        // The region behind the navigator paints one surface for its heading and its list.
+        table.backgroundColor = .clear; list.drawsBackground = false
         list.hasVerticalScroller = true; list.autohidesScrollers = true; list.documentView = table
         patch.font = .monospacedSystemFont(ofSize: 12, weight: .regular); patch.isEditable = false; patch.isSelectable = true
         patch.isRichText = false; patch.textContainerInset = .init(width: 8,height: 6)

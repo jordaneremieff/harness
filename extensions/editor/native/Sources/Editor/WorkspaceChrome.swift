@@ -59,6 +59,13 @@ final class WorkspaceChrome: NSView {
     var onNote: ((String, String) -> Void)?
     var onPath: ((String) -> Void)?
     var onCancelPath: (() -> Void)?
+    /// Returns the sidebar width that shows its content in full, when the content has one.
+    var onFitSidebar: (() -> CGFloat?)?
+    private static let sidebarKey = "sidebarWidth"
+    private let defaults: UserDefaults
+    private let sidebarEdge = WorkspaceDivider(label: "Sidebar width")
+    /// The width a person gave the sidebar. The layout limits it while the pane is narrow.
+    private var chosenSidebar: CGFloat?
     private let bar = WorkspaceRegion()
     private let tabStrip = NSScrollView()
     private let tabRow = WorkspaceRegion()
@@ -91,13 +98,18 @@ final class WorkspaceChrome: NSView {
     private var showPath = false
     private var showMessage = false
     var expandedPanel = false { didSet { needsLayout = true } }
-    var showsSideBySide: Bool { bounds.width >= 760 && !expandedPanel }
+    var showsSideBySide: Bool { WorkspaceLayout.fitsBeside(pane: bounds.width) && !expandedPanel }
+    var sidebarWidth: CGFloat { side.isHidden ? 0 : sidebarEdge.isHidden ? side.frame.width : sidebarEdge.position }
     var hasPathText: Bool { showPath && !pathField.stringValue.isEmpty }
     override var isFlipped: Bool { true }
 
-    init(root: String) {
+    init(root: String, defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         folder = NSTextField(labelWithString: URL(fileURLWithPath: root).lastPathComponent)
         super.init(frame: NSRect(x: 0, y: 0, width: 640, height: 480))
+        if let stored = defaults.object(forKey: Self.sidebarKey) as? Double, stored.isFinite, (1...10_000).contains(stored) {
+            chosenSidebar = CGFloat(stored)
+        }
         folder.font = .systemFont(ofSize: 13, weight: .semibold)
         folder.lineBreakMode = .byTruncatingMiddle
         folder.toolTip = root
@@ -113,8 +125,7 @@ final class WorkspaceChrome: NSView {
         pathField.setAccessibilityLabel("Project-relative file path")
         pathField.target = self
         pathField.action = #selector(submitPath)
-        tabStrip.drawsBackground = true
-        tabStrip.backgroundColor = .windowBackgroundColor
+        tabStrip.drawsBackground = false
         tabStrip.horizontalScrollElasticity = .allowed
         tabStrip.hasHorizontalScroller = true
         tabStrip.autohidesScrollers = true
@@ -124,7 +135,17 @@ final class WorkspaceChrome: NSView {
         bar.colour = .windowBackgroundColor
         foot.colour = .windowBackgroundColor
         banner.colour = .controlBackgroundColor
-        for v in [bar, tabStrip, stage, side, pathRow, banner, foot] { addSubview(v) }
+        // The stage shows through pages without a background of their own, and beside the source.
+        stage.colour = .textBackgroundColor
+        for v in [bar, tabStrip, stage, side, sidebarEdge, pathRow, banner, foot] { addSubview(v) }
+        sidebarEdge.onDrag = { [weak self] position in self?.resizeSidebar(to: position) }
+        sidebarEdge.onEnd = { [weak self] in self?.keepSidebar() }
+        sidebarEdge.onFit = { [weak self] in self?.fitSidebar() }
+        sidebarEdge.onStep = { [weak self] distance in
+            guard let self else { return }
+            resizeSidebar(to: sidebarWidth + distance)
+            keepSidebar()
+        }
         for v in [files, folder, search, add, save, notes, more] { bar.addSubview(v) }
         for v in [pathField, pathSubmit, pathCancel] { pathRow.addSubview(v) }
         for v in [message, hideMessage, messageAction] { banner.addSubview(v) }
@@ -151,6 +172,26 @@ final class WorkspaceChrome: NSView {
         return menu
     }
     override func menu(for event: NSEvent) -> NSMenu? { noteMenu("pane", "workspace") }
+
+    private func resizeSidebar(to position: CGFloat) {
+        let width = min(max(WorkspaceLayout.minimumSidebar, position.rounded()), WorkspaceLayout.maximumSidebar(pane: bounds.width))
+        guard width != chosenSidebar else { return }
+        chosenSidebar = width
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+    }
+    private func keepSidebar() {
+        if let chosenSidebar { defaults.set(Double(chosenSidebar), forKey: Self.sidebarKey) }
+        else { defaults.removeObject(forKey: Self.sidebarKey) }
+    }
+    /// Fits the sidebar to its content, or returns it to the standard width.
+    private func fitSidebar() {
+        chosenSidebar = onFitSidebar?().map { max(WorkspaceLayout.minimumSidebar, $0.rounded(.up)) }
+        keepSidebar()
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let mods = event.modifierFlags.intersection([.command, .shift, .control, .option])
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
@@ -287,12 +328,19 @@ final class WorkspaceChrome: NSView {
             top += bh
         }
         let height = max(0,h - top - footHeight)
-        let sideWidth: CGFloat = accessory == nil ? 0 : showsSideBySide ? min(320,max(252,w * 0.32)) : w
+        let beside = accessory != nil && showsSideBySide
+        let sideWidth: CGFloat = accessory == nil ? 0 : beside ? WorkspaceLayout.sidebar(chosen: chosenSidebar, pane: w) : w
         side.isHidden = accessory == nil
-        side.frame = NSRect(x: 0, y: top, width: sideWidth, height: height)
-        stage.isHidden = accessory != nil && !showsSideBySide
-        let inset = stage.isHidden ? 0 : sideWidth
+        // The sidebar width runs to the line; the edge takes its reach from both regions.
+        side.frame = NSRect(x: 0, y: top, width: beside ? sideWidth - WorkspaceDivider.reachBefore : sideWidth, height: height)
+        stage.isHidden = accessory != nil && !beside
+        let inset = beside ? sideWidth + 1 + WorkspaceDivider.reachAfter : 0
         stage.frame = NSRect(x: inset, y: top, width: max(0,w - inset), height: height)
+        sidebarEdge.isHidden = !beside
+        sidebarEdge.frame = NSRect(x: sideWidth - WorkspaceDivider.reachBefore, y: top, width: WorkspaceDivider.thickness, height: height)
+        sidebarEdge.surfaces = (side.colour, stage.colour)
+        sidebarEdge.canShrink = sideWidth > WorkspaceLayout.minimumSidebar
+        sidebarEdge.canGrow = sideWidth < WorkspaceLayout.maximumSidebar(pane: w)
         currentPage?.frame = stage.bounds
         accessory?.frame = side.bounds
         foot.frame = NSRect(x: 0,y: h - footHeight,width: w,height: footHeight)
