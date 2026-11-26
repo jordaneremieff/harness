@@ -72,6 +72,7 @@ for (const method of [
 	"collaboration-list",
 	"collaboration-read",
 	"collaboration-mutate",
+	"collaboration-message-parts",
 	"models",
 ]) {
 	operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
@@ -122,6 +123,10 @@ operations["recovery-state"] = { ...operations["recovery-state"], response: "rec
 operations.changes = { request: "changes/2.0.0", response: "changes/2.0.0" };
 operations["collaboration-read"] = { request: "collaboration-read/1.1.0", response: "collaboration-read/2.0.0" };
 operations["collaboration-mutate"] = { ...operations["collaboration-mutate"], request: "collaboration-mutate/2.0.0" };
+operations["collaboration-message-parts"] = {
+	...operations["collaboration-message-parts"],
+	response: operations["collaboration-mutate"].response,
+};
 
 /** Release identifies source; operation identities, not release ordering, authorize calls. */
 export const HOST_CONTRACT: RuntimeContract = Object.freeze({

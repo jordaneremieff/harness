@@ -127,6 +127,7 @@ const THREAD_STORAGE_OPERATIONS: ReadonlySet<string> = new Set([
 	"collaboration-list",
 	"collaboration-read",
 	"collaboration-mutate",
+	"collaboration-message-parts",
 	"inspect",
 	"status",
 	"list",

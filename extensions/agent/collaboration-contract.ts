@@ -5,6 +5,16 @@ import { textPrefix } from "./text-prefix.ts";
 export const MAX_COLLABORATION_THREADS = 256;
 export const MAX_COLLABORATION_MEMBERS = 64;
 export const MAX_COLLABORATION_PAGE_BYTES = 48 * 1024;
+export const MAX_COLLABORATION_EVENT_MESSAGE_UNITS = 8_000;
+export const MAX_COLLABORATION_MESSAGE_UNITS = 24_000;
+export type CollaborationMutationMethod = "collaboration-mutate" | "collaboration-message-parts";
+export function collaborationMutationMethod(input: Readonly<Record<string, unknown>>): CollaborationMutationMethod {
+	return (input.action === "post" || input.action === "close") &&
+		typeof input.message === "string" &&
+		input.message.length > MAX_COLLABORATION_EVENT_MESSAGE_UNITS
+		? "collaboration-message-parts"
+		: "collaboration-mutate";
+}
 export const COLLABORATION_THREAD_ID = /^([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\/([a-f0-9]{32})$/u;
 const textSchema = (maxLength: number) => str({ minLength: 1, maxLength });
 const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({
@@ -30,7 +40,7 @@ const participation = opt(
 const message = str({
 	minLength: 1,
 	description:
-		"Post and close require message; leave accepts it optionally. At most 8,000 UTF-16 units. Split longer content into consecutive posts chained with replyTo, or write it to a file under the working directory and post its path.",
+		"Post and close require nonblank text, up to 24,000 UTF-16 units in one call. The thread links longer text across events and returns the final sequence. Leave accepts an optional message up to 8,000 units. For larger text, write a file under the working directory and post a summary with its path.",
 });
 const threadId = textSchema(128);
 const limit = opt(int({ minimum: 1, maximum: 20 }));
@@ -244,7 +254,8 @@ function validateActionText(input: Record<string, unknown>): void {
 		] as const)
 			collaborationText(input, key, max);
 	}
-	if (input.action === "post" || input.action === "close") collaborationText(input, "message", 8000);
+	if (input.action === "post" || input.action === "close")
+		collaborationText(input, "message", MAX_COLLABORATION_MESSAGE_UNITS);
 	if (input.source !== undefined || (input.action === "post" && input.kind === "carried-authority"))
 		collaborationText(input, "source", 2000);
 }
@@ -350,7 +361,7 @@ export function collaborationText(input: Record<string, unknown>, key: string, m
 			);
 		if (key === "message")
 			throw new Error(
-				`message is ${(input[key] as string).length} UTF-16 units; the limit is ${max}. Split it into consecutive posts of at most ${max} units, each with replyTo set to the sequence the previous post returned. For one long document, write it to a file under the working directory (not a system temporary directory, which can be blocked) and post a short summary with the file's path`,
+				`message is ${value.length} UTF-16 units; the limit is ${max}. Write long content to a file under the working directory and post a short summary with its path, or use consecutive posts linked with replyTo. For leave or close, post the details before the final action.`,
 			);
 		throw new Error(
 			`${key} exceeds the maximum length of ${max} characters${key === "title" ? "; shorten title to at most 160 characters and repeat the call" : ""}`,
@@ -365,9 +376,13 @@ export function collaborationText(input: Record<string, unknown>, key: string, m
 
 /** Pi's pre-handler validation omits schema descriptions, so these caps own their remedy. */
 export function validateCollaborationTextLimits(input: Record<string, unknown>): void {
+	const messageLimit =
+		input.action === "post" || input.action === "close"
+			? MAX_COLLABORATION_MESSAGE_UNITS
+			: MAX_COLLABORATION_EVENT_MESSAGE_UNITS;
 	for (const [key, max] of [
 		["participation", 256],
-		["message", 8000],
+		["message", messageLimit],
 	] as const) {
 		if (typeof input[key] === "string" && input[key].length > max) collaborationText(input, key, max);
 	}

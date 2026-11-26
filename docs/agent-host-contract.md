@@ -584,6 +584,7 @@ Overrides and remaining members:
 | task-submit | task-submit/1.1.0 | task-submit/1.4.0 | absent |
 | collaboration-read | collaboration-read/1.1.0 | collaboration-read/2.0.0 | absent |
 | collaboration-mutate | collaboration-mutate/2.0.0 | collaboration-mutate/1.0.0 | absent |
+| collaboration-message-parts | collaboration-message-parts/1.0.0 | collaboration-mutate/1.0.0 | absent |
 
 Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema, not a hash of a response instance. The current schema-derived identities are:
 
@@ -890,7 +891,9 @@ These are retained/read projections, not proof of operation completion outside t
 
 A collaboration thread is a shared frame (purpose, authority, restrictions, acceptance, integrator), a member list, and an append-only exchange of numbered events. Each thread lives in the storage that created it, and its identity is `<storageId>/<32 lowercase hexadecimal characters>`. A storage-scoped list or read serves only that storage: there is no cross-storage native index. The client selects the storage by its canonical identity. Cold reads use a private snapshot without starting a host. Cross-storage discovery uses catalog hints, then a consumer selects each storage for a full list or read.
 
-`collaboration-list` and `collaboration-read` are read-only, retry-safe, and have no `durable` identity (see [Current operation identities](#current-operation-identities)). Neither takes `sessionId` or `conversationId`; the connection selects the storage. They never start a model or write state. `collaboration-mutate` is not described here. The read request identity covers the `after` and `knownFrameRevision` members, and the read response identity covers `atUtc`, the emptied create message with `frameOmitted`, and the forward page. A client and a host that disagree on a `collaboration-read` or `collaboration-mutate` identity refuse the operation through the operation-identity check. `collaboration-list` keeps the default identity. Text fields are returned as stored, with two exceptions: a list summary shortens `purpose` to 160 characters, and a read omits the frame text of a `create` event.
+`collaboration-list` and `collaboration-read` are read-only, retry-safe, and have no `durable` identity (see [Current operation identities](#current-operation-identities)). Neither takes `sessionId` or `conversationId`; the connection selects the storage. They never start a model or write state. The read request identity covers the `after` and `knownFrameRevision` members, and the read response identity covers `atUtc`, the emptied create message with `frameOmitted`, and the forward page. A client and a host that disagree on an operation identity refuse that operation through the operation-identity check. `collaboration-list` keeps the default identity. Text fields are returned as stored, with two exceptions: a list summary shortens `purpose` to 160 characters, and a read omits the frame text of a `create` event.
+
+`collaboration-mutate` keeps its 8,000 UTF-16-unit input and single-event contract. For `post` or `close` with a `message` from 8,001 through 24,000 UTF-16 units, the client uses `collaboration-message-parts` instead. That operation uses the same mutation envelope and receipt, but accepts only these long messages. It stores linked ordinary events and one set of notice intents in an atomic commit. The receipt sequence identifies the final part. Both operations are retry-safe and share the caller-qualified request ID namespace. A host without the segmented operation refuses only that operation; compatible reads and short mutations still work. Clients do not retry a segmented mutation through the short operation.
 
 ### Catalog thread discovery
 
@@ -1369,7 +1372,7 @@ The current retry-safe method set is exactly:
 
 ```text
 profile-read profile-list profile-update task-submit resolve-agent
-collaboration-list collaboration-read collaboration-mutate passive-submit
+collaboration-list collaboration-read collaboration-mutate collaboration-message-parts passive-submit
 submit report acknowledge inspect status list receipts dashboard snapshot
 observe-open observe-frame observe-close timer-list models
 ```

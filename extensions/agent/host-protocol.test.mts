@@ -77,6 +77,7 @@ it("classifies retry-safe methods and immediate receipt reads", () => {
 		"profile-read",
 		"profile-list",
 		"profile-update",
+		"collaboration-message-parts",
 		"task-submit",
 		"resolve-agent",
 		"submit",

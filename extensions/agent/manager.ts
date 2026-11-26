@@ -129,7 +129,11 @@ import {
 	operationContractMismatch,
 	type RuntimeContract,
 } from "./version-contract.ts";
-import { collaborationStorage, validateCollaborationAction } from "./collaboration-contract.ts";
+import {
+	collaborationMutationMethod,
+	collaborationStorage,
+	validateCollaborationAction,
+} from "./collaboration-contract.ts";
 import { blankPrompt } from "./creation-prompt.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 
@@ -1653,7 +1657,7 @@ export class AgentManager {
 	): Promise<unknown> {
 		if (method === "status" || method === "inspect")
 			return this.observePrimary(sessionId, method === "status" ? { view: "status" } : input);
-		if (method === "collaboration-mutate")
+		if (method === "collaboration-mutate" || method === "collaboration-message-parts")
 			throw new Error(
 				"Threads of an ordinary primary live in that primary's own thread storage; repeat agent_collaborate create without sessionId to create the thread in your own thread storage",
 			);
@@ -2236,7 +2240,7 @@ export class AgentManager {
 		if (!sessionId) throw new Error("This action requires threadId");
 		if (action === "list" || action === "read") return this.observeCollaboration(input, action, sessionId, caller);
 		return this.control(
-			"collaboration-mutate",
+			collaborationMutationMethod(input),
 			{
 				...input,
 				sessionId,

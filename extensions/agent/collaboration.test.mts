@@ -462,49 +462,190 @@ it("retains a shared frame and deduplicates the same mutation without any model 
 	assert.equal(page.thread.integrator, actor);
 });
 
-it("delivers actionable length errors after Pi argument validation without relaxing stored caps", async (t) => {
+it("delivers measured length errors after Pi argument validation", async (t) => {
 	const f = await fixture(t);
-	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
-	for (const [key, limit, action] of [
-		["participation", 256, "join"],
-		["message", 8000, "post"],
+	const { threadId } = await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("create", "create", frame),
+		context,
+	);
+	for (const [key, limit, action, method, refusal] of [
+		[
+			"participation",
+			256,
+			"join",
+			"collaboration-mutate",
+			/participation exceeds 256 UTF-16 units; use a short declaration/u,
+		],
+		[
+			"message",
+			24_000,
+			"post",
+			"collaboration-message-parts",
+			/message is 24001 UTF-16 units; the limit is 24000\. Write long content to a file under the working directory/u,
+		],
+		["message", 8_000, "leave", "collaboration-mutate", /message is 8001 UTF-16 units; the limit is 8000/u],
 	] as const) {
 		const full = "🧭".repeat(limit / 2);
-		const args = { action, threadId: created.threadId, [key]: `${full}x` };
-		const expected =
-			key === "participation"
-				? `${key} exceeds ${limit} UTF-16 units; use a short declaration, then post the details with action: post`
-				: `${key} is ${limit + 1} UTF-16 units; the limit is ${limit}. Split it into consecutive posts of at most ${limit} units, each with replyTo set to the sequence the previous post returned. For one long document, write it to a file under the working directory (not a system temporary directory, which can be blocked) and post a short summary with the file's path`;
+		const args = { action, threadId, [key]: `${full}x` };
 		const checked = validateToolArguments(
 			{ name: "agent_collaborate", description: "Thread", parameters: CollaborationParams },
 			{ type: "toolCall", id: "length-check", name: "agent_collaborate", arguments: args },
 		);
 		assert.deepEqual(checked, args, "Pi lets the bounded handler own the actionable length error");
-		await assert.rejects(
-			mutateCollaboration(f.host.harness, f.storageId, mutation(action, `oversized-${key}`, checked), context),
-			{
-				message: expected,
-			},
-		);
-		for (const call of [
-			() =>
-				mutateCollaboration(
-					f.host.harness,
-					f.storageId,
-					mutation(action, `unused-${key}`, { threadId: created.threadId, [key]: "x".repeat(limit + 1) }),
-					context,
-				),
-			() => readCollaboration(f.host.harness, { threadId: created.threadId, [key]: "x".repeat(limit + 1) }, context),
-			() => listCollaboration(f.host.harness, { [key]: "x".repeat(limit + 1) }, context),
-		])
-			await assert.rejects(call(), { message: expected });
-		await mutateCollaboration(
-			f.host.harness,
-			f.storageId,
-			mutation(action, `boundary-${key}`, { ...args, [key]: full }),
+		assert.throws(() => validateCollaborationAction(checked), refusal);
+		await assert.rejects(f.host.request(method, mutation(action, `oversized-${action}`, checked), context), refusal);
+		await f.host.request(method, mutation(action, `boundary-${action}`, { ...args, [key]: full }), context);
+	}
+});
+
+async function readLinkedParts(
+	session: Session,
+	threadId: string,
+	after: number,
+	last: number,
+	expected: { closed: boolean; source?: string; replyTo?: number },
+): Promise<CollaborationEvent[]> {
+	const retained: CollaborationEvent[] = [];
+	for (let sequence = after + 1; sequence <= last; sequence++) {
+		const page = await readCollaboration(session, { threadId, after: sequence - 1, limit: 1 }, context);
+		assert.equal(page.closed, expected.closed);
+		assert.equal(page.next?.after ?? null, sequence === last ? null : sequence);
+		const [{ atUtc: _atUtc, ...event }] = page.events;
+		assert.equal(event.sequence, sequence);
+		assert.equal(event.sender, actor);
+		assert.equal(event.origin, "model");
+		assert.equal(event.source, expected.source ?? "");
+		assert.equal(event.replyTo, sequence === after + 1 ? (expected.replyTo ?? null) : sequence - 1);
+		assert.deepEqual(event.notify, sequence === last ? [peer] : []);
+		assert.ok(event.message.length <= 8_000 && event.message.trim() !== "");
+		assert.doesNotMatch(event.message, /[\uD800-\uDFFF]/u);
+		assert.ok(Buffer.byteLength(JSON.stringify(event)) <= 20 * 1024);
+		retained.push(event);
+	}
+	return retained;
+}
+
+it("commits long posts, sourced messages and closes as linked ordinary events with one notice per recipient", async (t) => {
+	const f = await fixture(t);
+	const { threadId } = await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("create", "create", frame),
+		context,
+	);
+	const passive = randomUUID();
+	for (const member of [peer, passive])
+		await f.host.request(
+			"collaboration-mutate",
+			mutation("join", `join-${member}`, { threadId, senderIdentity: member }),
 			context,
 		);
+	const staged: string[][] = [];
+	f.host.setNoticeRouteStaging((recipients) => staged.push([...recipients].sort()));
+	const post = `${"x".repeat(7999)}🧭${"z".repeat(1821)}`;
+	const authority = '漢"\\\t'.repeat(4_000);
+	const close = `${"a".repeat(7_999)}b${" ".repeat(6_000)}`;
+	assert.equal(post.length, 9822);
+	let after = 3;
+	for (const [action, message, fields, kinds] of [
+		["post", post, { replyTo: 1 }, ["contribution", "contribution"]],
+		[
+			"post",
+			authority,
+			{ kind: "carried-authority", source: "漢".repeat(2_000) },
+			["carried-authority", "carried-authority", "carried-authority"],
+		],
+		["close", close, { source: "Closure record" }, ["contribution", "close"]],
+	] as const) {
+		const input = mutation(action, `long-${after}`, { threadId, message, notify: [peer], ...fields });
+		const receipt = (await f.host.request("collaboration-message-parts", input, context)) as { sequence: number };
+		assert.deepEqual(receipt, { threadId, sequence: after + kinds.length, deduped: false });
+		assert.deepEqual(await f.host.request("collaboration-message-parts", input, context), {
+			...receipt,
+			deduped: true,
+		});
+		await assert.rejects(
+			f.host.request("collaboration-message-parts", { ...input, message: `${message}!` }, context),
+			/different content/u,
+		);
+		const retained = await readLinkedParts(f.host.harness, threadId, after, receipt.sequence, {
+			...fields,
+			closed: action === "close",
+		});
+		assert.deepEqual(
+			retained.map((part) => part.kind),
+			kinds,
+		);
+		assert.equal(retained.map((part) => part.message).join(""), message);
+		const last = await readCollaboration(f.host.harness, { threadId, before: receipt.sequence + 1, limit: 1 }, context);
+		assert.equal(last.events[0].sequence, receipt.sequence);
+		assert.equal(last.nextBefore, receipt.sequence);
+		const delivery = await readRetainedDelivery(f.host.harness, context, true);
+		const notices = delivery?.reports.filter((report) => (report.threadEvent ?? 0) > after) ?? [];
+		assert.deepEqual(
+			notices.map((report) => [report.ownerId, report.steer, report.threadEvent]).sort(),
+			[
+				[peer, true, receipt.sequence],
+				[passive, false, receipt.sequence],
+			].sort(),
+		);
+		for (const notice of notices)
+			assert.ok(notice.message.includes(`This message spans events ${after + 1} through ${receipt.sequence}.`));
+		after = receipt.sequence;
 	}
+	assert.deepEqual(
+		staged,
+		Array.from({ length: 3 }, () => [peer, passive].sort()),
+	);
+	await f.reopen();
+	const page = await readCollaboration(f.host.harness, { threadId, limit: 1 }, context);
+	assert.equal(page.thread.closed, true);
+	assert.equal(page.events[0].sequence, after);
+	assert.equal(page.events[0].kind, "close");
+});
+
+it("rejects wrong mutation routes and unsplittable close text before any event or notice is retained", async (t) => {
+	const f = await fixture(t);
+	const { threadId } = await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("create", "create", frame),
+		context,
+	);
+	const stages: Array<readonly string[]> = [];
+	f.host.setNoticeRouteStaging((recipients) => stages.push(recipients));
+	const input = mutation("close", "close", { threadId, message: `x${" ".repeat(9_000)}`, notify: [peer] });
+	await assert.rejects(
+		f.host.request("collaboration-mutate", input, context),
+		/message is 9001 UTF-16 units; the limit is 8000/u,
+	);
+	await assert.rejects(
+		f.host.request("collaboration-message-parts", { ...input, message: "short" }, context),
+		/only post or close/u,
+	);
+	await assert.rejects(
+		f.host.request("collaboration-message-parts", { ...input, action: "leave" }, context),
+		/only post or close/u,
+	);
+	await assert.rejects(
+		f.host.request("collaboration-message-parts", input, context),
+		/does not fit into nonblank thread events.*file/u,
+	);
+	const page = await readCollaboration(f.host.harness, { threadId }, context);
+	assert.equal(page.thread.closed, false);
+	assert.equal(page.thread.sequence, 1);
+	assert.equal(page.pending, 0);
+	assert.deepEqual(stages, []);
+	assert.deepEqual(
+		await f.host.request("collaboration-message-parts", { ...input, message: "c".repeat(9_000) }, context),
+		{
+			threadId,
+			sequence: 3,
+			deduped: false,
+		},
+	);
 });
 
 it("names recovery calls for participation, titles, and integrators", async (t) => {

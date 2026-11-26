@@ -271,6 +271,7 @@ it("scopes handle reuse and thread discovery to choices made for the task", () =
 	assert.match(spawn, /never reapplies creation defaults on reuse/u);
 	const thread = agentControlGuidanceLines(["agent_collaborate"]).join("\n");
 	assert.match(thread, /If a shared thread would help the task/u);
+	assert.match(thread, /Use one post or close for a message up to 24,000 UTF-16 units/u);
 	assert.match(thread, /Name notify recipients only when their attention matters/u);
 	assert.match(thread, /brief a new agent before you name it in notify/u);
 });

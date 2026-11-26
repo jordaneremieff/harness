@@ -4130,6 +4130,46 @@ it("creates an ordinary primary's thread in its own thread storage without an ag
 	assert.equal(page.coverage.catalog.storages, 1, "agent views count the agent and omit the thread storage");
 });
 
+it("routes only long posts and closes to the segmented mutation operation", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root));
+	t.after(() => manager.close());
+	const storage = randomUUID();
+	const threadId = `${storage}/${"0".repeat(32)}`;
+	const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
+	manager.control = async (method, input) => {
+		calls.push({ method, input });
+		return {};
+	};
+	const caller = { id: randomUUID(), cwd: root };
+	const short = "x".repeat(8_000);
+	const long = `${short}x`;
+	for (const [action, message, method] of [
+		["post", short, "collaboration-mutate"],
+		["post", long, "collaboration-message-parts"],
+		["close", long, "collaboration-message-parts"],
+	] as const) {
+		await manager.collaborate({ action, threadId, message, requestId: "request" }, caller);
+		assert.deepEqual(calls.at(-1), {
+			method,
+			input: {
+				action,
+				threadId,
+				message,
+				requestId: "request",
+				sessionId: storage,
+				senderIdentity: caller.id,
+				origin: "model",
+			},
+		});
+	}
+	await assert.rejects(
+		manager.collaborate({ action: "post", threadId, message: long.repeat(3) }, caller),
+		/24003 UTF-16 units/u,
+	);
+	assert.equal(calls.length, 3);
+});
+
 it("addresses the thread storage that the first create made when the catalog path crosses a symbolic link", async (t) => {
 	const real = fixtureRoot(t);
 	const root = join(real, "sessions-link");

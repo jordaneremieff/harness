@@ -322,6 +322,7 @@ const HOST_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set([
 	"collaboration-list",
 	"collaboration-read",
 	"collaboration-mutate",
+	"collaboration-message-parts",
 	"passive-submit",
 	"submit",
 	"report",

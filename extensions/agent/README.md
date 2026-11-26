@@ -115,7 +115,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. A query puts an exact retained handle first, with or without `@`, then observes other catalogue candidates; `coverage.next` holds the exact continuation call. Reads start no host. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected read returns compact state with an exact full-detail call; `detail: true` with one explicit `sessionId` returns the full selected status and cannot be combined with `view`, `storageId`, `cursor`, or `limit`. The full status of a selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan; `storageId`, `cursor`, and `limit` apply to that view only, and a refusal of one of them elsewhere names the view and tells the caller to omit the field. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. The result view returns the answer in pages with separate continuations for answer text and for recipient references; see [result pages](#result-pages). |
-| `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 UTF-16 units and post details separately. If a `message` exceeds 8,000 UTF-16 units, split it into consecutive posts chained with `replyTo`, or write it to a file under the working directory and post its path. Handler length errors include the remedy because Pi's pre-handler schema errors omit field descriptions. |
+| `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 UTF-16 units and post details separately. Use one post or close for a `message` up to 24,000 UTF-16 units. The thread links text above 8,000 units across consecutive events and returns the final sequence. Leave keeps its 8,000-unit limit. For larger text, write a file under the working directory and post a summary with its path. |
 
 ### Briefs
 
@@ -2923,7 +2923,9 @@ conclusion of a close, each followed by `Source: <source>` when the event names
 one, or the labelled `Purpose`, `Operator direction (as carried)`, `Source`,
 `Restrictions` and `Acceptance` fields of a created or revised frame instead of
 its stored JSON. A join or leave without a statement has no text. A notified
-recipient's copy keeps the whole text. A passive recipient's copy keeps at most
+recipient's copy keeps the whole event text for a one-event mutation. For a
+multi-event message it names the event range and shows the first part. A
+passive recipient's copy keeps at most
 280 UTF-16 code units, cut at a word boundary where one exists and ended with
 `…`, so the passive model text stays free of message text while a person still
 sees what was said. One page of conversation snapshot views has a 96 KiB
@@ -2979,7 +2981,19 @@ Source: `thread-notice-request.ts` (`threadNoticeRequestHooks`),
 `thread-notice-projection.ts`, and `durable-delivery.ts`
 (`boundedReportText`).
 
-The event, mutation receipt, and notice intents commit together. Retries reuse
+A post or close above 8,000 UTF-16 units uses `collaboration-message-parts`.
+The host splits its text without loss into nonblank events of at most 8,000
+units and 20 KiB serialized each. The first part keeps the requested `replyTo`,
+if any. Each later part links to the preceding sequence. Parts preserve the
+sender, origin and source. A long close stores the earlier parts as
+contributions and the final part as the only close event. One mutation receipt
+names the final sequence. The final event carries the explicit recipients,
+and each recipient gets one notice for the range. Read the parts in sequence
+order for the exact text. If the text cannot be split into nonblank events,
+use a file and post a summary with its path. Messages at or below 8,000 units
+still use the original mutation operation and its event byte limit.
+
+The events, mutation receipt, and notice intents commit together. Retries reuse
 caller-qualified mutation IDs and recipient-qualified native request IDs;
 changed content under the same mutation key refuses. A direct notice goes only
 to its named recipient. An unavailable recipient leaves a visible pending

@@ -124,6 +124,45 @@ it("a Durable agent's controls and routes never reach a thread storage", { timeo
 	assert.equal(status.pendingMessageCount ?? 0, 0, "no refused route left an input behind");
 });
 
+it("routes a native long post to its owning storage through the existing control binding", {
+	timeout: 60000,
+}, async (t) => {
+	let runtime: Awaited<ReturnType<typeof createDurableRuntime>> | undefined;
+	t.after(() => runtime?.close());
+	const fixture = runtimeFixture(t);
+	runtime = await createDurableRuntime({ ...fixture.metadata, model }, { modelRuntime: await createTestRuntime() });
+	const dispatch = resolveAgentControlDispatch();
+	const caller = { senderIdentity: fixture.metadata.storageId, origin: "model" };
+	const { threadId } = (await dispatch("collaboration-mutate", {
+		...caller,
+		requestId: randomUUID(),
+		action: "create",
+		title: "Review",
+		purpose: "Test",
+		authority: "Task",
+		source: "Test",
+		restrictions: "Local",
+		acceptance: "Verified",
+	})) as { threadId: string };
+	const message = "x".repeat(9_822);
+	assert.deepEqual(
+		await dispatch("collaboration-mutate", { ...caller, requestId: randomUUID(), action: "post", threadId, message }),
+		{
+			threadId,
+			sequence: 3,
+			deduped: false,
+		},
+	);
+	const { events } = (await runtime.request("collaboration-read", { threadId, after: 1 }, randomUUID())) as {
+		events: Array<{ replyTo: number | null; message: string }>;
+	};
+	assert.deepEqual(
+		events.map((event) => event.replyTo),
+		[null, 2],
+	);
+	assert.equal(events.map((event) => event.message).join(""), message);
+});
+
 it("a thread storage's host serves threads and observation and admits no agent work or input", {
 	timeout: 60000,
 }, async (t) => {

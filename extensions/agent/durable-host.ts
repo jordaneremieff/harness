@@ -821,7 +821,15 @@ export class DurableHost {
 			case "collaboration-read":
 				return readCollaboration(this.harness, params ?? {}, requestContext);
 			case "collaboration-mutate":
-				return mutateCollaboration(this.harness, this.storageId, params ?? {}, requestContext, this.noticeRouteStaging);
+			case "collaboration-message-parts":
+				return mutateCollaboration(
+					this.harness,
+					this.storageId,
+					params ?? {},
+					requestContext,
+					this.noticeRouteStaging,
+					method,
+				);
 			case "passive-submit":
 				return this.passiveSubmitRequest(params, requestContext);
 			case "profile-read": {

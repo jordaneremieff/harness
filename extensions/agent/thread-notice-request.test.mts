@@ -218,7 +218,7 @@ it("sends three passive thread events as one frozen range after the continuity n
 	);
 	assert.ok(
 		range.endsWith(
-			`Read: agent_collaborate(${JSON.stringify({ action: "read", threadId: peer.threadId, before: 5, limit: 1 })}); follow nextBefore through event 2.`,
+			`Read: agent_collaborate(${JSON.stringify({ action: "read", threadId: peer.threadId, before: 5, limit: 1 })}); follow nextBefore through event 2. Check replyTo for earlier linked message parts.`,
 		),
 		range,
 	);

@@ -297,6 +297,31 @@ it("refuses only thread read and mutation for a peer without forward reads and p
 	assert.equal(contractRefusal("collaboration-list", peer), undefined);
 });
 
+it("isolates a missing segmented message operation from all earlier thread operations", () => {
+	const old = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations } };
+	delete old.operations["collaboration-message-parts"];
+	assert.deepEqual(HOST_CONTRACT.operations["collaboration-message-parts"], {
+		request: "collaboration-message-parts/1.0.0",
+		response: "collaboration-mutate/1.0.0",
+	});
+	for (const method of ["collaboration-mutate", "collaboration-read", "collaboration-list"]) {
+		assert.equal(contractRefusal(method, old), undefined);
+		assert.equal(operationContractMismatch(method, HOST_CONTRACT.operations[method], old), undefined);
+	}
+	assert.match(
+		contractRefusal("collaboration-message-parts", old)?.message ?? "",
+		/does not advertise collaboration-message-parts/u,
+	);
+	assert.match(
+		operationContractMismatch(
+			"collaboration-message-parts",
+			HOST_CONTRACT.operations["collaboration-message-parts"],
+			old,
+		) ?? "",
+		/no current contract/u,
+	);
+});
+
 it("accepts unchanged operations despite added operations and different source releases", () => {
 	const peer: RuntimeContract = {
 		...HOST_CONTRACT,

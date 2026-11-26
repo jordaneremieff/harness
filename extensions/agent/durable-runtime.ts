@@ -29,7 +29,11 @@ function controlRequestId(params: Readonly<Record<string, unknown>>): string {
 	return typeof params.requestId === "string" ? params.requestId : randomUUID();
 }
 import type { Context } from "@earendil-works/chord/context";
-import { collaborationStorage } from "./collaboration-contract.ts";
+import {
+	collaborationMutationMethod,
+	collaborationStorage,
+	type CollaborationMutationMethod,
+} from "./collaboration-contract.ts";
 import { projectCollaboration } from "./collaboration.ts";
 import { awaitWithContext, BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { lstatSync } from "node:fs";
@@ -114,6 +118,7 @@ const ADMITTING_METHODS: ReadonlySet<string> = new Set([
 	"reset",
 	"timer-schedule",
 	"collaboration-mutate",
+	"collaboration-message-parts",
 	"passive-submit",
 ]);
 const FOREIGN_OBSERVATION_METHODS: ReadonlySet<string> = new Set([
@@ -457,7 +462,7 @@ export function modelChoices(services: Pick<DurableServices, "services">): Stati
 /** Constructed only after the process claims the storage writer. */
 /** A message to an ordinary primary; a question must fit the report body that the recipient reads. */
 function assertPrimaryMessage(method: string, params: Record<string, unknown>): void {
-	if (method === "collaboration-mutate")
+	if (method === "collaboration-mutate" || method === "collaboration-message-parts")
 		throw new Error(
 			"Threads of an ordinary primary live in that primary's own thread storage; repeat agent_collaborate create without sessionId to create the thread in your own storage",
 		);
@@ -1184,15 +1189,13 @@ export async function createDurableRuntime(
 		}
 	};
 	const dispatchResolved = async (
-		method: Parameters<AgentControlDispatch>[0],
+		method: Parameters<AgentControlDispatch>[0] | CollaborationMutationMethod,
 		params: Record<string, unknown>,
 		context: Context = BACKGROUND_CONTEXT,
 	): Promise<unknown> => {
 		if (typeof params.replyTo === "string") refuseThreadStorageRecipient("replyTo", params.replyTo);
 		if (method === "report")
 			return request("report", { ...params, ownerId: params.sessionId }, controlRequestId(params));
-		if (method === "collaboration-mutate" && typeof params.threadId === "string")
-			params.sessionId = collaborationStorage(params.threadId);
 		const sessionId = typeof params.sessionId === "string" ? params.sessionId : metadata.storageId;
 		if (storageIdOf(sessionId) !== metadata.storageId) return dispatchForeign(method, params, sessionId, context);
 		if (method !== "abort" && method !== "release")
@@ -1217,6 +1220,10 @@ export async function createDurableRuntime(
 		if (method === "collaboration-list" || method === "collaboration-read")
 			return collaborationObservation(method, input);
 		const params = await resolveSelectors(input, method === "collaboration-mutate");
+		if (method === "collaboration-mutate") {
+			if (typeof params.threadId === "string") params.sessionId = collaborationStorage(params.threadId);
+			return dispatchResolved(collaborationMutationMethod(params), params, context);
+		}
 		return dispatchResolved(method, params, context);
 	};
 	const restoreDispatch = publishAgentControlDispatch(dispatch);

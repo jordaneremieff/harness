@@ -12,8 +12,11 @@ import {
 	COLLABORATION_THREAD_ID,
 	CollaborationReadError,
 	MAX_COLLABORATION_MEMBERS,
+	MAX_COLLABORATION_EVENT_MESSAGE_UNITS,
+	MAX_COLLABORATION_MESSAGE_UNITS,
 	MAX_COLLABORATION_PAGE_BYTES,
 	MAX_COLLABORATION_THREADS,
+	collaborationMutationMethod,
 	collaborationStorage,
 	collaborationSummary,
 	collaborationText as text,
@@ -24,6 +27,7 @@ import {
 	type CollaborationForwardPage,
 	type CollaborationFrame,
 	type CollaborationList,
+	type CollaborationMutationMethod,
 	type CollaborationPage,
 	type CollaborationProjection,
 	type CollaborationSummary,
@@ -37,6 +41,7 @@ import { threadNoticeDisplayText } from "./thread-notice-display.ts";
 const MAX_THREADS = MAX_COLLABORATION_THREADS;
 const MAX_MEMBERS = MAX_COLLABORATION_MEMBERS;
 const MAX_PAGE_BYTES = MAX_COLLABORATION_PAGE_BYTES;
+const MAX_EVENT_BYTES = 20 * 1024;
 const ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}(?::[1-9][0-9]*)?$/u;
 const THREAD_ID = COLLABORATION_THREAD_ID;
 
@@ -111,14 +116,27 @@ function recipients(input: Record<string, unknown>, actor: string): string[] {
 export type NoticeRouteStaging = (recipients: readonly string[]) => void;
 
 /** Thread events and notification intents share the source storage's atomic commit. */
-async function appendEvent(
+async function appendEvents(
 	tx: Tx,
 	thread: CollaborationThread,
-	event: CollaborationEvent,
+	events: [CollaborationEvent, ...CollaborationEvent[]],
 	stage?: NoticeRouteStaging,
 ): Promise<void> {
-	const stored = await tx.doc(CollaborationEvents, `${thread.id}:${event.sequence}`, null);
-	stored.event = event;
+	const [first] = events;
+	const event = events.at(-1) ?? first;
+	if (!Number.isSafeInteger(event.sequence + 1)) throw new Error("This thread reached its event sequence bound");
+	thread.sequence = event.sequence;
+	thread.updatedAt = event.at;
+	byteBound(thread, 24 * 1024, "Thread frame and participants");
+	for (const part of events) byteBound(part, MAX_EVENT_BYTES, "Thread event");
+	for (const part of events) {
+		const stored = await tx.doc(CollaborationEvents, `${thread.id}:${part.sequence}`, null);
+		stored.event = part;
+	}
+	const displayEvent =
+		first === event
+			? event
+			: { ...event, message: `Events ${first.sequence} through ${event.sequence}.\n\n${first.message}` };
 	const audience = [...new Set([...thread.members.map((member) => member.identity), ...event.notify])].filter(
 		(recipient) => recipient !== event.sender,
 	);
@@ -129,7 +147,7 @@ async function appendEvent(
 	for (const recipient of audience) {
 		const passive = !event.notify.includes(recipient);
 		const requestId = `thread:${thread.id}:${event.sequence}:${recipient}`;
-		const message = threadNoticeText(event, passive);
+		const message = threadNoticeText(event, passive, first);
 		const report: DeliveryReport = {
 			sourceId: `report:${requestId}`,
 			requestId,
@@ -147,7 +165,7 @@ async function appendEvent(
 			threadEvent: event.sequence,
 			threadFrameRevision: event.revision,
 			threadEventKind: event.kind,
-			operatorMessage: threadNoticeDisplayText(event, passive),
+			operatorMessage: threadNoticeDisplayText(displayEvent, passive),
 		};
 		await storeDeliveryRow(tx, "report", report, true);
 	}
@@ -227,7 +245,7 @@ function postContent(input: Record<string, unknown>): { kind: string; message: s
 		throw new Error("Post kind must be contribution or carried-authority");
 	return {
 		kind,
-		message: text(input, "message", 8000),
+		message: text(input, "message", MAX_COLLABORATION_MESSAGE_UNITS),
 		source: text(input, "source", 2000, kind !== "carried-authority"),
 	};
 }
@@ -247,14 +265,18 @@ function applyThreadAction(
 			return { kind: action, message: joinThread(thread, input, actor, now), source };
 		case "leave":
 			thread.members = thread.members.filter((item) => item.identity !== actor);
-			return { kind: action, message: text(input, "message", 8000, true) || "Left the thread.", source };
+			return {
+				kind: action,
+				message: text(input, "message", MAX_COLLABORATION_EVENT_MESSAGE_UNITS, true) || "Left the thread.",
+				source,
+			};
 		case "post":
 			return postContent(input);
 		case "revise":
 			return { kind: action, message: reviseThread(thread, input, actor, origin), source };
 		case "close":
 			thread.closed = true;
-			return { kind: action, message: text(input, "message", 8000), source };
+			return { kind: action, message: text(input, "message", MAX_COLLABORATION_MESSAGE_UNITS), source };
 		default:
 			throw new Error("Unknown collaboration mutation");
 	}
@@ -289,6 +311,66 @@ function replyReference(input: Record<string, unknown>, sequence: number): numbe
 	return replyTo;
 }
 
+/** Split at Unicode code point boundaries and preserve every input unit. */
+function eventMessageParts(message: string, byteBudget: number): [string, ...string[]] {
+	const points = [...message];
+	const units = [0];
+	const bytes = [0];
+	for (const point of points) {
+		units.push(units[units.length - 1] + point.length);
+		bytes.push(bytes[bytes.length - 1] + Buffer.byteLength(JSON.stringify(point)) - 2);
+	}
+
+	// Work backward so each cut leaves a suffix that also fits into nonblank events.
+	// The farthest viable end only moves left as the start moves left.
+	const next = new Uint32Array(points.length);
+	let end = points.length;
+	let firstText = points.length;
+	for (let start = points.length - 1; start >= 0; start--) {
+		if (points[start].trim() !== "") firstText = start;
+		while (
+			end > start &&
+			(units[end] - units[start] > MAX_COLLABORATION_EVENT_MESSAGE_UNITS ||
+				bytes[end] - bytes[start] > byteBudget ||
+				(end !== points.length && next[end] === 0))
+		)
+			end--;
+		if (firstText < end) next[start] = end;
+	}
+	if (!next[0])
+		throw new Error(
+			"The message does not fit into nonblank thread events. Write it to a file under the working directory and post a summary with its path.",
+		);
+	const parts: [string, ...string[]] = [message.slice(0, units[next[0]])];
+	for (let start = next[0]; start < points.length; start = next[start])
+		parts.push(message.slice(units[start], units[next[start]]));
+	return parts;
+}
+
+function segmentMessage(event: CollaborationEvent): [CollaborationEvent, ...CollaborationEvent[]] {
+	// Reserve space for the largest part envelope, including source and final recipients.
+	const continuationKind = event.kind === "close" ? "contribution" : event.kind;
+	const bytes = Buffer.byteLength(
+		JSON.stringify({
+			...event,
+			kind: continuationKind,
+			message: "",
+			sequence: Number.MAX_SAFE_INTEGER,
+			replyTo: Number.MAX_SAFE_INTEGER,
+		}),
+	);
+	const [first, ...rest] = eventMessageParts(event.message, MAX_EVENT_BYTES - bytes);
+	const part = (message: string, index: number): CollaborationEvent => ({
+		...event,
+		message,
+		kind: index === rest.length ? event.kind : continuationKind,
+		sequence: event.sequence + index,
+		replyTo: index === 0 ? event.replyTo : event.sequence + index - 1,
+		notify: index === rest.length ? event.notify : [],
+	});
+	return [part(first, 0), ...rest.map((message, index) => part(message, index + 1))];
+}
+
 /** Mutations use the actual caller identity supplied by the tool or operator adapter. */
 export async function mutateCollaboration(
 	harness: Harness,
@@ -296,7 +378,15 @@ export async function mutateCollaboration(
 	input: Record<string, unknown>,
 	context: Context,
 	stage?: NoticeRouteStaging,
+	method: CollaborationMutationMethod = "collaboration-mutate",
 ): Promise<{ threadId: string; sequence: number; deduped: boolean }> {
+	if (method !== collaborationMutationMethod(input)) {
+		if (method === "collaboration-mutate") text(input, "message", MAX_COLLABORATION_EVENT_MESSAGE_UNITS);
+		throw new CollaborationReadError(
+			"invalid_request",
+			`The segmented operation accepts only post or close with message above ${MAX_COLLABORATION_EVENT_MESSAGE_UNITS} UTF-16 units`,
+		);
+	}
 	validateCollaborationTextLimits(input);
 	const actor = collaborationIdentity(input.senderIdentity, "senderIdentity");
 	recipients(input, actor);
@@ -340,12 +430,10 @@ export async function mutateCollaboration(
 		}
 		const content = applyThreadAction(thread, input, action, actor, origin, now);
 		const replyTo = replyReference(input, thread.sequence);
-		thread.sequence += 1;
-		thread.updatedAt = now;
 		const event: CollaborationEvent = {
 			...content,
 			threadId: id,
-			sequence: thread.sequence,
+			sequence: thread.sequence + 1,
 			at: now,
 			sender: actor,
 			origin,
@@ -353,13 +441,13 @@ export async function mutateCollaboration(
 			revision: thread.revision,
 			notify: recipients(input, actor),
 		};
-		byteBound(thread, 24 * 1024, "Thread frame and participants");
-		byteBound(event, 20 * 1024, "Thread event");
-		await appendEvent(tx, thread, event, stage);
+		const events: [CollaborationEvent, ...CollaborationEvent[]] =
+			method === "collaboration-message-parts" ? segmentMessage(event) : [event];
+		await appendEvents(tx, thread, events, stage);
 		receipt.digest = digest;
 		receipt.threadId = id;
-		receipt.sequence = event.sequence;
-		return { threadId: id, sequence: event.sequence, deduped: false };
+		receipt.sequence = thread.sequence;
+		return { threadId: id, sequence: thread.sequence, deduped: false };
 	}, context);
 }
 
@@ -517,7 +605,8 @@ function validEventContent(event: Record<string, unknown>): boolean {
 		!["create", "join", "leave", "contribution", "carried-authority", "revise", "close"].includes(event.kind)
 	)
 		return false;
-	const messageMaximum = event.kind === "create" || event.kind === "revise" ? 20 * 1024 : 8000;
+	const messageMaximum =
+		event.kind === "create" || event.kind === "revise" ? MAX_EVENT_BYTES : MAX_COLLABORATION_EVENT_MESSAGE_UNITS;
 	return (
 		validText(event.message, messageMaximum) &&
 		validText(event.source, 2000, !["create", "revise", "carried-authority"].includes(event.kind))
@@ -538,7 +627,7 @@ function readEvent(snapshot: unknown, thread: CollaborationThread, sequence: num
 		!validEventAudience(event)
 	)
 		throw new CollaborationReadError("source_unreadable", `Thread event ${sequence} is malformed`);
-	readBytes(event, 20 * 1024, "Thread event");
+	readBytes(event, MAX_EVENT_BYTES, "Thread event");
 	return event as CollaborationEvent;
 }
 
