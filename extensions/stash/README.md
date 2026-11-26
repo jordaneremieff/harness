@@ -1066,10 +1066,10 @@ mode behavior.
 
 The key row at the bottom lists each control as its key and its short label. A
 click on a control runs the same action as its key. The keys of this view are
-`enter` for pick up or reopen, `a` for a note, `o` to close an active stash,
-`c` to copy the resume command, `h` for help, and `r` to refresh. `/`
-focuses the search field. `x` opens the list of every other action, such as
-release and rotate; while a text field has focus, `ctrl+n` opens it. Escape
+`enter` for pick up or reopen, `a` for a note, `l` to release an active stash,
+`o` to close it with an outcome, `c` to copy the resume command, `h` for help,
+and `r` to refresh. `/` focuses the search field. `x` opens More for actions
+such as rotate; while a text field has focus, `ctrl+n` opens it. Escape
 closes More, then leaves the search field or the detail, then cancels a form,
 then goes back from a nested view, then closes the browser. PageUp and PageDown
 read the detail beside the list, and the expand key gives the view most of the

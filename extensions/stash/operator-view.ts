@@ -117,7 +117,7 @@ const helpText = [
 	"A browser over stashed handovers. Select one on the left and read it on the right. /stash new <hint> creates another.",
 	"",
 	"What the keys do",
-	"Enter picks up the selected stash: it activates the stash and delivers its handover to the bound conversation. On a closed stash, Enter reopens it. Right moves to the detail; at narrow widths it opens the detail as its own view. a picks up with a note that goes ahead of the handover. o closes an active stash with an outcome. c copies the resume command. r reads the list and the selected record again. x lists every other action (release and rotate). / filters the newest stashes or, in Search archive, searches full bodies.",
+	"Enter picks up the selected stash: it activates the stash and delivers its handover to the bound conversation. On a closed stash, Enter reopens it. Right moves to the detail; at narrow widths it opens the detail as its own view. a picks up with a note that goes ahead of the handover. On an active stash, l opens the release confirmation and o closes with an outcome. c copies the resume command. r reads the list and the selected record again. x lists the remaining actions, including rotate. / filters the newest stashes or, in Search archive, searches full bodies.",
 	"",
 	"Closing",
 	"Escape closes the browser. Closing discards nothing. No lifecycle state changes unless you choose an action, and cancelling a note picks nothing up.",
@@ -479,6 +479,17 @@ class StashView implements View {
 		const id = entry.meta.id;
 		const state = entry.meta.state;
 		const actions: Action[] = [];
+		if (state === "active")
+			actions.push({
+				id: "release",
+				label: "Release…",
+				key: "l",
+				short: "release",
+				primary: true,
+				disabled: blocked,
+				description: "Return it to open",
+				run: () => this.push((next) => this.confirmForm(next, entry, "release")),
+			});
 		if (state === "open" || state === "active") {
 			actions.push({
 				id: "pickup",
@@ -501,7 +512,7 @@ class StashView implements View {
 				run: () => this.push((next) => this.noteForm(next, entry)),
 			});
 		}
-		if (state === "active") {
+		if (state === "active")
 			actions.push({
 				id: "close",
 				label: "Close with outcome…",
@@ -511,14 +522,6 @@ class StashView implements View {
 				disabled: blocked,
 				run: () => this.push((next) => this.closeForm(next, entry)),
 			});
-			actions.push({
-				id: "release",
-				label: "Release…",
-				disabled: blocked,
-				description: "Return it to open",
-				run: () => this.push((next) => this.confirmForm(next, entry, "release")),
-			});
-		}
 		if (state === "closed")
 			actions.push({
 				id: "reopen",

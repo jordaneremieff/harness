@@ -456,10 +456,10 @@ describe("ordinary stash browser", () => {
 				"enter pick up",
 				"a note",
 				"o close stash",
+				"l release",
 				"c copy",
 				"h help",
 				"r refresh",
-				"x more",
 				"esc close",
 			])
 				assert.ok(row.includes(control), `${control} in: ${row}`);
@@ -479,9 +479,18 @@ describe("ordinary stash browser", () => {
 		assert.ok(closed.ok && /^state: "closed"$/m.test(closed.content) && closed.content.includes("Shipped the fix."));
 		const release = context(async (frame) => {
 			await choose(frame, releasing.record);
-			act(frame, "Release…");
-			act(frame, "Release");
+			clickFooter(frame, "l release", 80);
+			await until(frame, /Release \S+ back to open/);
+			frame.handleInput("\u001b");
+			assert.equal(frame.viewTitle, "Stashes");
+			const active = await readStash(dir, releasing.record.id);
+			assert.ok(active.ok && /^state: "active"$/m.test(active.content));
+			frame.handleInput("l");
+			await until(frame, /Release \S+ back to open/);
+			frame.handleInput("\r");
 			await until(frame, /Released stash/);
+			await until(frame, /open · stashed/);
+			assert.ok(!footer(frame).includes("l release"));
 		});
 		await command.handler("", release.ctx);
 		const released = await readStash(dir, releasing.record.id);
