@@ -31,6 +31,8 @@ enum WorkspaceDrop: Equatable {
 final class WorkspaceTabView: NSButton {
     static let minimumWidth: CGFloat = 76
     static let maximumWidth: CGFloat = 220
+    /// The least width of a tab in a crowded strip, where a shorter name would not read.
+    static let crowdedWidth: CGFloat = 120
     private static let dragDistance: CGFloat = 4
 
     private(set) var item: WorkspaceTab
@@ -194,7 +196,9 @@ final class WorkspaceTabStrip: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         scroll.drawsBackground = false
-        scroll.hasHorizontalScroller = false
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
         scroll.hasVerticalScroller = false
         scroll.horizontalScrollElasticity = .allowed
         scroll.verticalScrollElasticity = .none
@@ -264,8 +268,8 @@ final class WorkspaceTabStrip: NSView {
     private func arrange(animated: Bool = false) {
         let placed = tabs.filter { $0.item.key != lifted }
         let room = max(0, bounds.width - (opening?.width ?? 0))
-        // Tabs share a crowded strip evenly before the row starts to scroll.
-        let share = placed.isEmpty ? 0 : max(WorkspaceTabView.minimumWidth, (room / CGFloat(placed.count)).rounded(.down))
+        // Tabs share a crowded strip evenly while their names still read. After that the row scrolls.
+        let share = placed.isEmpty ? 0 : max(WorkspaceTabView.crowdedWidth, (room / CGFloat(placed.count)).rounded(.down))
         resting = placed.map { min($0.fittingWidth, share) }
         var x: CGFloat = 0
         var frames: [NSRect] = []
