@@ -151,6 +151,16 @@ struct CodeEditorTests {
         #expect(historical.status?.contains("Select it again") == true)
     }
 
+    @Test func theContextMenuOpensFindWithoutAShortcut() throws {
+        let fixture = try Fixture(text: "one\n")
+        let event = try #require(NSEvent.mouseEvent(with: .rightMouseDown, location: NSPoint(x: 400, y: 100), modifierFlags: [],
+                                                    timestamp: 0, windowNumber: fixture.window.windowNumber, context: nil,
+                                                    eventNumber: 0, clickCount: 1, pressure: 1))
+        let find = try #require(fixture.textView.menu(for: event)?.items.first { $0.title == "Find…" })
+        #expect(NSApp.sendAction(try #require(find.action), to: find.target, from: find))
+        #expect(fixture.scroll.isFindBarVisible)
+    }
+
     @Test func emptyDraftFillsViewportAndOffersNativeFind() throws {
         let fixture = try Fixture(text: "")
         #expect(fixture.textView.frame.width >= fixture.scroll.contentView.bounds.width)

@@ -58,11 +58,16 @@ final class CodeTextView: NSTextView {
         let selection = selectedRange()
         let point = convert(event.locationInWindow, from: nil)
         let range = noteRange(at: point, selection: selection)
-        let menu = super.menu(for: event)
-        guard let range, let note = noteTarget?(range) else { return menu }
+        let result = super.menu(for: event) ?? NSMenu()
+        // Find has no other control in the pane, and the pane's application shows no menu bar.
+        let find = NSMenuItem(title: "Find…", action: #selector(performTextFinderAction(_:)), keyEquivalent: "")
+        find.tag = NSTextFinder.Action.showFindInterface.rawValue
+        find.target = self
+        result.insertItem(find, at: 0)
+        result.insertItem(.separator(), at: 1)
+        guard let range, let note = noteTarget?(range) else { return result }
         // The default menu can select a word at the click. The note is always tied to the
         // selection that existed before the context click, or to the clicked grapheme.
-        let result = menu ?? NSMenu()
         result.insertItem(note, at: 0)
         result.insertItem(.separator(), at: 1)
         return result

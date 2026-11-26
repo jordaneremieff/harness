@@ -10,7 +10,7 @@ A participant can read the unsaved draft, edit an exact passage, annotate a diff
 
 - The four buttons on the left of the toolbar each show a panel in the sidebar: project files (`cmd+O`), project search (`cmd+P`) for paths or text, local Git, and conversations (`cmd+option+T`). The button of the panel on show hides the sidebar.
 - The project files panel shows the folder as a tree. A folder opens under its own row, and Editor reads it at that moment. A folder with more entries than one page ends with a **More files…** row. The refresh control reads the tree again and keeps the open folders open. Search and large listings mark partial results.
-- Find (`cmd+F`, or **Find in this file…** in workspace actions) searches the open file.
+- Find (`cmd+F`, **Find…** in the menu of the source, or **Find in this file…** in workspace actions) searches the open file.
 - Press `cmd+N` for an untitled scratch or `cmd+shift+N` for a new file. Scratch drafts live with the folder. Save As (`cmd+shift+S`) requires an unused path in an existing directory. An existing file’s Save As leaves the original intact.
 - The local Git panel shows the branch, changed files and file diffs. Git reads disk, not unsaved drafts. Editor does not stage, commit or contact a remote.
 - The status line confirms a save, a posted note or an accepted request for a few seconds. A problem or a conflict appears above the stage and stays until you dismiss it.
