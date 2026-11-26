@@ -765,32 +765,19 @@ test("filename prefix and H1 type disagreements are flagged", () => {
 	}
 });
 
-function armoryFixtureRoot(content: string): string {
+function trollFixtureRoot(content: string): string {
 	const root = pillarFixtureRoot();
-	mkdirSync(join(root, "skills", "troll", "references"), { recursive: true });
-	writeFileSync(join(root, "skills", "troll", "references", "pillar-armory.md"), content);
+	mkdirSync(join(root, "extensions", "troll"), { recursive: true });
+	writeFileSync(join(root, "extensions", "troll", "doctrine.md"), content);
 	return root;
 }
 
-test("armory corpus paths resolve against the skill directory", () => {
-	const root = armoryFixtureRoot(
-		[
-			"# Pillar armory",
-			"",
-			"All corpus paths resolve relative to the skill directory skills/troll/.",
-			"",
-			"| Failure mode | Governing pillar |",
-			"|---|---|",
-			"| Offers a menu sharing an unstated premise | ../../pillars/heuristic-framed-menu.md |",
-			"",
-			"Corpus check: ../../pillars/README.md",
-			"",
-		].join("\n"),
-	);
+test("troll pillar entries name existing corpus entries", () => {
+	const root = trollFixtureRoot("| Offers a menu sharing an unstated premise | `heuristic-framed-menu` |\n");
 	try {
 		const result = auditPillars(root);
 		assert.deepEqual(
-			result.violations.filter((v) => v.includes("pillar-armory")),
+			result.violations.filter((v) => v.includes("extensions/troll")),
 			[],
 			result.violations.join("\n"),
 		);
@@ -799,39 +786,14 @@ test("armory corpus paths resolve against the skill directory", () => {
 	}
 });
 
-test("armory mapping to a missing pillar is flagged", () => {
-	const root = armoryFixtureRoot("| Premise menu | ../../pillars/heuristic-absent.md |\n");
+test("a troll pillar entry missing from the corpus is flagged", () => {
+	const root = trollFixtureRoot("| Premise menu | `heuristic-absent` |\n");
 	try {
 		const result = auditPillars(root);
 		assert.ok(
 			result.violations.some((v) =>
-				v.includes("pillar-armory.md: corpus path ../../pillars/heuristic-absent.md does not resolve"),
+				v.includes("extensions/troll/doctrine.md: pillar entry heuristic-absent does not exist"),
 			),
-			result.violations.join("\n"),
-		);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test("armory paths that do not resolve from the skill directory are flagged", () => {
-	const root = armoryFixtureRoot(
-		[
-			"| Premise menu | ../../../pillars/heuristic-framed-menu.md |",
-			"| Premise menu | ../pillars/heuristic-framed-menu.md |",
-			"",
-		].join("\n"),
-	);
-	try {
-		const result = auditPillars(root);
-		const armoryViolations = result.violations.filter((v) => v.includes("pillar-armory"));
-		assert.equal(armoryViolations.length, 2, result.violations.join("\n"));
-		assert.ok(
-			armoryViolations.some((v) => v.includes("corpus path ../../../pillars/heuristic-framed-menu.md")),
-			result.violations.join("\n"),
-		);
-		assert.ok(
-			armoryViolations.some((v) => v.includes("corpus path ../pillars/heuristic-framed-menu.md")),
 			result.violations.join("\n"),
 		);
 	} finally {

@@ -1,7 +1,7 @@
 # Terminal pane presentation
 
 This package-level contract lets a local operator action start its own fixed program in a new
-terminal split beside the invoking conversation. The terminal integration owns target validation
+terminal split beside the invoking conversation, or in a floating pane over its tab. The terminal integration owns target validation
 and creation. The consumer owns its program, arguments and application acceptance. Neither side
 imports the other extension. This is a fixed subprocess interface, not a tool bus or general API
 bridge. It creates no ownership store, service or background watcher.
@@ -106,6 +106,43 @@ never reuses, types into, closes or cleans up existing panes. The new program ow
 lifetime; normal completion closes the pane under Rex's exit policy, while a quick failure stays
 available for inspection. Later resource changes need the exact receipt and their own authority.
 
+## Float over the invoking tab
+
+Invoke `node <package>/extensions/rex/terminal-pane.ts float` with one UTF-8 JSON record on
+stdin, at most 16384 bytes:
+
+```ts
+{
+  version: 1;
+  origin: TerminalOrigin | null;
+  argv: string[];
+  cwd: string;
+  bounds: [x: number, y: number, width: number, height: number];
+  square?: true;
+  label?: string;
+}
+```
+
+`origin`, `cwd` and `label` follow the split request. `argv` holds 1 to 64 strings, each at most
+8192 UTF-8 bytes, with no NUL; its first string is an absolute executable path. `bounds` places
+the pane as fractions of the tab that holds the anchor: `x` and `y` are its top-left corner, and
+`width` and `height` are at least 0.1. The rectangle stays inside the tab.
+
+The adapter makes the identity checks of a split, then one `session.new_layer` call for the
+window that holds the anchor at that time. With `square`, the adapter replaces the height with the
+one that makes the pane square on screen: it takes the tab's shape from the anchor terminal's pixel
+size and its place in the tab, and keeps the height inside the tab and at least 0.1. Without a
+reported terminal size, the given height applies. The new floating layer does not take focus. Its
+program runs through the account's login shell with its interactive startup files, so the
+program finds the commands and environment of the operator's own terminals; Rex passes the
+arguments to the program unchanged, without shell interpolation. Normal completion closes the
+pane under Rex's exit policy. A post-create read checks that the new block is in the anchor's
+tab.
+
+The result has the split result's shape and outcomes. A `created` result carries
+`{ server, hostId, instanceId, anchorId, blockId, layerId }` with exact IDs. One creation attempt
+is the maximum; the deadlines, output bounds and uncertain-effect rules of a split apply.
+
 ## Resize a confirmed split
 
 Invoke `node <package>/extensions/rex/terminal-pane.ts resize` with one bounded JSON record:
@@ -160,6 +197,9 @@ The interactive `/editor` command opens Editor.app to the right of the invoking 
 private request identifies the local folder and optional file. The app reports workspace load
 and visible panel placement separately. A loaded workspace stays attached when its tab is hidden. Joining an Editor
 workspace through the agent tool neither starts an app nor creates a split.
+
+The troll extension's `/troll` command opens a Pi session in a floating pane over the invoking
+Pi pane's tab. Pi's own startup establishes acceptance.
 
 The composer extension's `/composer` command opens Composer.app with a private launch file in
 a split below Pi labelled `Composer`. An authenticated request establishes app acceptance.

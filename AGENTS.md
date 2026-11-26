@@ -16,11 +16,12 @@
 - Report to the operator only in adapted ASD-STE100 Simplified Technical English (STE).
   Apply STE to every operator-facing chat message: status updates, summaries, error
   reports, findings, questions, and recommendations. The register governs chat
-  messages only. Repository prose, documentation, and skill deliverables stay
-  outside it. Skill deliverables include the troll skill's redirect artifact and
-  its chat confirmation, which are verdict-last natural prose by design. Code,
-  commands, paths, file contents, and commit messages stay in their normal form
-  unless the operator asks for STE there.
+  messages only. Repository prose, documentation, skill deliverables, and troll
+  deliverables stay outside it. Troll deliverables are the messages that the troll
+  extension writes in the operator's voice and its reports in the troll pane, which
+  are verdict-last natural prose by design. Code, commands, paths, file contents,
+  and commit messages stay in their normal form unless the operator asks for STE
+  there.
 
   Select chat content for the reader's current task. Lead with the actual result,
   state, or needed decision. Explain what it means for the reader when that is

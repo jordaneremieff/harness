@@ -150,8 +150,9 @@ The manifest activates extensions, skills, and the prompt templates in
 `prompts/`. Other tracked package content has explicit consumers:
 
 - `pillars/` is the doctrine corpus served by the
-  [Pillars extension](../extensions/pillars/README.md) and read by package-relative
-  path through the [Troll skill's armory](../skills/troll/references/pillar-armory.md).
+  [Pillars extension](../extensions/pillars/README.md). The
+  [Troll extension](../extensions/troll/README.md)'s instructions name its entries by
+  identifier.
 - `config/` holds the source for machine-independent global Pi rules under
   `config/pi/agent/AGENTS.md`. Machines deploy it through the explicit setup
   above; no package manifest entry activates it.

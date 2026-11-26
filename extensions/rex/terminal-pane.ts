@@ -58,7 +58,36 @@ export interface PaneResult {
 	detail: string;
 	receipt?: PaneReceipt;
 }
+/** A rectangle as [x, y, width, height] fractions of the anchor's tab. */
+export type FloatBounds = [number, number, number, number];
+/** With `square`, the adapter replaces the height with the one that makes the pane square on screen. */
+export interface FloatRequest {
+	version: 1;
+	origin: TerminalOrigin | null;
+	argv: string[];
+	cwd: string;
+	bounds: FloatBounds;
+	square?: true;
+	label?: string;
+}
+/** The floating pane that `float` created over the tab that held the anchor. */
+export interface FloatReceipt {
+	server: string;
+	hostId: string;
+	instanceId: string;
+	anchorId: string;
+	blockId: string;
+	layerId: string;
+}
+export interface FloatResult {
+	version: 1;
+	outcome: "created" | "stale" | "unavailable" | "uncertain";
+	detail: string;
+	receipt?: FloatReceipt;
+}
 const LIMIT = 16384;
+const FLOAT_ARGUMENT_BYTES = 8192;
+const FLOAT_MIN_SIZE = 0.1;
 const DEFAULT_PLACEMENT: PanePlacement = { side: "right", share: 0.5 };
 const DEFAULT_LABEL = "Reader";
 const validText = (value: unknown, max: number): value is string =>
@@ -85,6 +114,17 @@ function parseLabel(value: unknown): string {
 		throw new Error("Pane label requires 1 to 32 printable Unicode characters.");
 	return value;
 }
+function parseArgv(value: unknown, maxBytes: number): string[] {
+	if (
+		!Array.isArray(value) ||
+		value.length < 1 ||
+		value.length > 64 ||
+		!value.every((arg) => validText(arg, maxBytes)) ||
+		!isAbsolute(value[0])
+	)
+		throw new Error("Pane argv requires an absolute program and bounded, NUL-free arguments.");
+	return value;
+}
 export function parsePaneRequest(input: string): PaneRequest {
 	if (Buffer.byteLength(input) > LIMIT) throw new Error("Pane request exceeds 16384 bytes.");
 	const value = JSON.parse(input) as Partial<PaneRequest>;
@@ -97,14 +137,7 @@ export function parsePaneRequest(input: string): PaneRequest {
 		!("origin" in value)
 	)
 		throw new Error("Invalid pane request.");
-	if (
-		!Array.isArray(value.argv) ||
-		value.argv.length < 1 ||
-		value.argv.length > 64 ||
-		!value.argv.every((arg) => validText(arg, 4096)) ||
-		!isAbsolute(value.argv[0])
-	)
-		throw new Error("Pane argv requires an absolute program and bounded, NUL-free arguments.");
+	value.argv = parseArgv(value.argv, 4096);
 	if (!validText(value.cwd, 4096) || !isAbsolute(value.cwd)) throw new Error("Pane cwd must be an absolute path.");
 	const placement = value.placement === undefined ? undefined : parsePlacement(value.placement);
 	const label = value.label === undefined ? undefined : parseLabel(value.label);
@@ -115,6 +148,49 @@ export function parsePaneRequest(input: string): PaneRequest {
 		argv: value.argv,
 		cwd: value.cwd,
 		...(placement ? { placement } : {}),
+		...(label !== undefined ? { label } : {}),
+	};
+}
+
+function parseBounds(value: unknown): FloatBounds {
+	if (
+		!Array.isArray(value) ||
+		value.length !== 4 ||
+		!value.every((part) => typeof part === "number" && Number.isFinite(part) && part >= 0 && part <= 1)
+	)
+		throw new Error("Float bounds require [x, y, width, height] as fractions of the tab.");
+	const [x, y, width, height] = value as FloatBounds;
+	if (width < FLOAT_MIN_SIZE || height < FLOAT_MIN_SIZE || x + width > 1 || y + height > 1)
+		throw new Error("Float bounds need a width and height of at least 0.1 inside the tab.");
+	return [x, y, width, height];
+}
+export function parseFloatRequest(input: string): FloatRequest {
+	if (Buffer.byteLength(input) > LIMIT) throw new Error("Pane request exceeds 16384 bytes.");
+	const value = JSON.parse(input) as Partial<FloatRequest>;
+	if (
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Object.keys(value).some(
+			(key) => !["version", "origin", "argv", "cwd", "bounds", "square", "label"].includes(key),
+		) ||
+		value.version !== 1 ||
+		!("origin" in value) ||
+		(value.square !== undefined && value.square !== true)
+	)
+		throw new Error("Invalid float request.");
+	const argv = parseArgv(value.argv, FLOAT_ARGUMENT_BYTES);
+	if (!validText(value.cwd, 4096) || !isAbsolute(value.cwd)) throw new Error("Pane cwd must be an absolute path.");
+	const bounds = parseBounds(value.bounds);
+	const label = value.label === undefined ? undefined : parseLabel(value.label);
+	const origin = value.origin === null ? null : parseOrigin(JSON.stringify(value.origin));
+	return {
+		version: 1,
+		origin,
+		argv,
+		cwd: value.cwd,
+		bounds,
+		...(value.square ? { square: true as const } : {}),
 		...(label !== undefined ? { label } : {}),
 	};
 }
@@ -161,6 +237,47 @@ local anchorWindow = placement(after, a.blockId)
 local paneWindow = placement(after, receipt.blockId)
 if not anchorWindow or anchorWindow ~= paneWindow then return {outcome="uncertain", receipt=receipt, detail="Rex created a block but same-tab placement is unconfirmed. Do not retry automatically."} end
 return {outcome="created", receipt=receipt, detail="Rex created a split beside the invoking terminal. Visibility and program acceptance are not verified."}
+`;
+// The floating layer joins the window that holds the anchor now. Its program runs through the account's login
+// shell with the interactive startup files, so it finds the commands and environment of the operator's terminals.
+const floatScript = `${identityScript}
+local before = rex.call("session.view", {session_id=session})
+local window = placement(before, a.blockId)
+if not window then return {outcome="stale", detail="The invoking terminal block is gone or detached."} end
+-- A square pane takes its height from the tab's shape on screen: the anchor terminal's pixel size over its share of the tab.
+local function rectOf(node, id)
+  if not node then return nil end
+  if node.block_id == id then return node.rect end
+  if node.split then return rectOf(node.split.before, id) or rectOf(node.split.after, id) end
+end
+local function squareHeight()
+  local rect
+  for _, w in ipairs(before.windows or {}) do
+    if w.window_id == window then
+      for _, l in ipairs(w.layers or {}) do rect = rect or rectOf(l.layout, a.blockId) end
+    end
+  end
+  local size = rex.call("block.method", {session_id=session, block_id=a.blockId, method="size"})
+  if not rect or not size or not (rect[3] > 0 and rect[4] > 0) then return nil end
+  local width = (size.columns or 0) * (size.cell_width_px or 0) / rect[3]
+  local height = (size.rows or 0) * (size.cell_height_px or 0) / rect[4]
+  if not (width > 0 and height > 0) then return nil end
+  return math.max(0.1, math.min(a.bounds[3] * width / height, 1 - a.bounds[2]))
+end
+local bounds = a.bounds
+if a.square then
+  local height = squareHeight()
+  if height then bounds = {a.bounds[1], a.bounds[2], a.bounds[3], height} end
+end
+local created = rex.call("session.new_layer", {session_id=session, window_id=window, bounds=bounds, focus=false,
+  layout={block={flavor="com.superlogical.terminal.shell", label=a.label, options={command=a.argv, cwd=a.cwd, interactive=true, exit={on_completion=true}}}}})
+if not created or type(created.layer_id) ~= "string" or type(created.block_ids) ~= "table" or #created.block_ids ~= 1 or type(created.block_ids[1]) ~= "string" then
+  return {outcome="uncertain", detail="Rex did not confirm floating pane creation. Do not retry automatically."}
+end
+local receipt = {server=a.server, hostId=a.hostId, instanceId=a.instanceId, anchorId=a.blockId, blockId=created.block_ids[1], layerId=created.layer_id}
+local after = rex.call("session.view", {session_id=session})
+if placement(after, receipt.blockId) ~= window then return {outcome="uncertain", receipt=receipt, detail="Rex created a floating pane but its tab is unconfirmed. Do not retry automatically."} end
+return {outcome="created", receipt=receipt, detail="Rex created a floating pane over the invoking terminal's tab. Visibility and program acceptance are not verified."}
 `;
 const resizeScript = `${identityScript}
 if not shared() then
@@ -210,7 +327,14 @@ const runChild: Runner = (executable, args, options) =>
 			},
 		);
 	});
-const result = (outcome: PaneResult["outcome"], detail: string): PaneResult => ({ version: 1, outcome, detail });
+const result = (
+	outcome: PaneResult["outcome"],
+	detail: string,
+): { version: 1; outcome: PaneResult["outcome"]; detail: string } => ({
+	version: 1,
+	outcome,
+	detail,
+});
 const uuid = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
 const receiptFields = ["server", "hostId", "instanceId", "anchorId", "blockId", "direction", "before"];
 function readReceipt(value: unknown): PaneReceipt | undefined {
@@ -345,6 +469,70 @@ export async function splitPane(
 		return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically.");
 	return readResult(child.stdout, exact, direction, before);
 }
+export async function floatPane(
+	request: FloatRequest,
+	env: Readonly<NodeJS.ProcessEnv> = process.env,
+	run: Runner = runChild,
+): Promise<FloatResult> {
+	request = parseFloatRequest(JSON.stringify(request));
+	const exact = request.origin?.exact;
+	if (!exact) return result("unavailable", "No verified invoking terminal is available. No pane was created.");
+	if (!matchesOrigin(env, exact.server, exact.blockId))
+		return result("stale", "The inherited terminal differs from the captured origin. No pane was created.");
+	let child: RunResult;
+	try {
+		child = await runRex(run, exact.server, exact.blockId, floatScript, {
+			...exact,
+			argv: request.argv,
+			cwd: request.cwd,
+			bounds: request.bounds,
+			square: request.square === true,
+			label: request.label ?? DEFAULT_LABEL,
+		});
+	} catch {
+		return result("uncertain", "Rex floating pane creation is unconfirmed. Do not retry automatically.");
+	}
+	if (child.failure === "missing")
+		return result("unavailable", "The trusted Rex program is missing. No pane was created.");
+	if (blockGone(child, exact.blockId))
+		return result("stale", "The invoking terminal block no longer exists. No pane was created.");
+	if (child.failure || child.code !== 0 || Buffer.byteLength(child.stdout) > 32768)
+		return result("uncertain", "Rex floating pane creation is unconfirmed. Do not retry automatically.");
+	return readFloatResult(child.stdout, exact);
+}
+const floatReceiptFields = ["server", "hostId", "instanceId", "anchorId", "blockId", "layerId"];
+function readFloatResult(stdout: string, exact: NonNullable<TerminalOrigin["exact"]>): FloatResult {
+	try {
+		const value = JSON.parse(stdout) as FloatResult;
+		if (
+			!["created", "stale", "unavailable", "uncertain"].includes(value.outcome) ||
+			!validText(value.detail, 256) ||
+			!value.detail.length ||
+			/[\p{Cc}\p{Cf}]/u.test(value.detail)
+		)
+			throw new Error("Invalid result.");
+		const r = value.receipt as Partial<FloatReceipt> | undefined;
+		const receipt =
+			r &&
+			typeof r === "object" &&
+			!Object.keys(r).some((key) => !floatReceiptFields.includes(key)) &&
+			r.server === exact.server &&
+			r.hostId === exact.hostId &&
+			r.instanceId === exact.instanceId &&
+			r.anchorId === exact.blockId &&
+			typeof r.blockId === "string" &&
+			new RegExp(`^block:${uuid}$`).test(r.blockId) &&
+			r.blockId !== exact.blockId &&
+			typeof r.layerId === "string" &&
+			new RegExp(`^layer:${uuid}$`).test(r.layerId)
+				? (r as FloatReceipt)
+				: undefined;
+		if (value.outcome === "created" && !receipt) throw new Error("Missing receipt.");
+		return { version: 1, outcome: value.outcome, detail: value.detail, ...(receipt ? { receipt } : {}) };
+	} catch {
+		return result("uncertain", "Rex returned an invalid creation result. Do not retry automatically.");
+	}
+}
 function readResult(
 	stdout: string,
 	exact: NonNullable<TerminalOrigin["exact"]>,
@@ -447,13 +635,14 @@ export async function focusPane(
 }
 const operations = {
 	split: (input: string) => splitPane(parsePaneRequest(input)),
+	float: (input: string) => floatPane(parseFloatRequest(input)),
 	resize: (input: string) => resizePane(parseResizeRequest(input)),
 	focus: (input: string) => focusPane(parseFocusRequest(input)),
 };
 async function main(): Promise<void> {
 	const operation = process.argv[2];
-	if (process.argv.length !== 3 || (operation !== "split" && operation !== "resize" && operation !== "focus"))
-		throw new Error("Use terminal-pane.ts split, resize or focus with one JSON request on stdin.");
+	if (process.argv.length !== 3 || !Object.hasOwn(operations, operation ?? ""))
+		throw new Error("Use terminal-pane.ts split, float, resize or focus with one JSON request on stdin.");
 	const chunks: Buffer[] = [];
 	let size = 0;
 	for await (const chunk of process.stdin) {
@@ -462,7 +651,7 @@ async function main(): Promise<void> {
 		chunks.push(Buffer.from(chunk));
 	}
 	const input = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-	process.stdout.write(`${JSON.stringify(await operations[operation](input))}\n`);
+	process.stdout.write(`${JSON.stringify(await operations[operation as keyof typeof operations](input))}\n`);
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	void main().catch((error) => {

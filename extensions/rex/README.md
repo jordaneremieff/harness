@@ -154,7 +154,14 @@ The fixed `terminal-pane.ts focus` operation accepts that receipt and gives Rex 
 receipt's anchor block. It acts only while the session shows the receipt window and never
 switches windows. The adapter makes one attempt and never retries an unconfirmed focus change.
 
-Composer uses the adapter to open below Pi, resize its confirmed split, and focus Pi's pane before it hands Pi the keyboard. Markdown uses it for explicit Read actions. It supplies only its configured
+The fixed `terminal-pane.ts float` operation opens the program in a new floating layer of the
+tab that holds the anchor, at `bounds` given as `[x, y, width, height]` fractions of that tab,
+without taking focus. With `square`, the height follows the width and the tab's shape on screen. The program runs through the account's login shell with its interactive
+startup files, so it finds the commands and environment of the operator's own terminals; its
+arguments reach it unchanged. The receipt names the new block and layer. The same single-attempt
+and uncertain-effect rules apply.
+
+Troll uses the float operation for its session pane. Composer uses the adapter to open below Pi, resize its confirmed split, and focus Pi's pane before it hands Pi the keyboard. Markdown uses it for explicit Read actions. It supplies only its configured
 native reader and a pinned open request; document text never supplies a terminal program.
 The split's program receives the [pane stacking feed](#pane-stacking-feed) under the same
 conditions as a pane that `rex_terminal` creates.

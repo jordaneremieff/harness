@@ -11,7 +11,7 @@
 //      (AGENTS.md: "Do not hardcode counts ... in durable documentation");
 //   4. pillar corpus contract: strict frontmatter on every entry, README as
 //      a verbatim-quote inventory, GOVERNANCE.md present with required
-//      sections, armory targets resolving, and no retired governance file
+//      sections, troll pillar entries resolving, and no retired governance file
 //      returning;
 //   5. every tracked *.test.mts file is matched by at least one glob in the
 //      `test` script of package.json, so a slice that owns a new top-level
@@ -973,15 +973,15 @@ function auditPillarGovernance(pillarsDir: string, violations: string[]): void {
 	}
 }
 
-function auditArmoryPaths(root: string, violations: string[]): void {
-	// The skill contract resolves corpus paths against the skill directory, not this reference's directory.
-	const label = "skills/troll/references/pillar-armory.md";
-	const armoryPath = join(root, label);
-	if (!existsSync(armoryPath)) return;
-	const armory = decodeFatalUtf8(readFileSync(armoryPath));
-	for (const match of armory.matchAll(/(?:\.\.\/)+pillars\/[A-Za-z0-9-]+\.md/g)) {
-		if (!existsSync(resolve(root, "skills/troll", match[0]))) {
-			violations.push(`${label}: corpus path ${match[0]} does not resolve from the skill directory`);
+function auditTrollEntries(root: string, violations: string[]): void {
+	// The troll's instructions name corpus entries by the identifiers that the pillars tool accepts.
+	const label = "extensions/troll/doctrine.md";
+	const doctrinePath = join(root, label);
+	if (!existsSync(doctrinePath)) return;
+	const doctrine = decodeFatalUtf8(readFileSync(doctrinePath));
+	for (const match of doctrine.matchAll(/`((?:principle|pattern|heuristic)-[a-z0-9-]+)`/g)) {
+		if (!existsSync(join(root, "pillars", `${match[1]}.md`))) {
+			violations.push(`${label}: pillar entry ${match[1]} does not exist`);
 		}
 	}
 }
@@ -1041,11 +1041,11 @@ export function auditPillars(root: string): { violations: string[]; readmeProjec
 	const inventoryMismatch = auditPillarInventory(rows, filesByKey, violations);
 
 	auditPillarGovernance(pillarsDir, violations);
-	auditArmoryPaths(root, violations);
+	auditTrollEntries(root, violations);
 
 	// Build the paste-ready projection only from fully valid metadata.
 	const metaInvalid = violations.some((violation) =>
-		/^(pillars\/(principle|pattern|heuristic)-|duplicate \(|skills\/troll\/references\/pillar-armory)/.test(violation),
+		/^(pillars\/(principle|pattern|heuristic)-|duplicate \(|extensions\/troll\/doctrine\.md)/.test(violation),
 	);
 	const readmeDiverged = entries.length !== rows.length || inventoryMismatch;
 	const readmeProjection = !metaInvalid && readmeDiverged ? projectPillarInventory(entries, rows) : "";

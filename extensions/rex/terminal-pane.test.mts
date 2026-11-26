@@ -3,12 +3,15 @@ import { test } from "node:test";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
+	floatPane,
 	focusPane,
+	parseFloatRequest,
 	parseFocusRequest,
 	parsePaneRequest,
 	parseResizeRequest,
 	resizePane,
 	splitPane,
+	type FloatRequest,
 	type PaneFocusRequest,
 	type PaneRequest,
 	type PaneResizeRequest,
@@ -401,4 +404,115 @@ test("a gone anchor block is stale for split, resize and focus, without retry", 
 		"uncertain",
 		"another failure after dispatch stays uncertain",
 	);
+});
+
+const floatRequest = (): FloatRequest => ({
+	version: 1,
+	origin,
+	argv: ["/opt/pi/bin/pi", "--troll", "session-1", "--", `a "quoted" $(false) instruction ${"x".repeat(5000)}`],
+	cwd: "/work/project",
+	bounds: [0.01, 0.016, 0.32, 0.52],
+	label: "Troll",
+});
+const floatReceipt = {
+	server: exact.server,
+	hostId: exact.hostId,
+	instanceId: exact.instanceId,
+	anchorId: exact.blockId,
+	blockId: "block:77777777-7777-7777-7777-777777777777",
+	layerId: "layer:88888888-8888-8888-8888-888888888888",
+};
+
+test("float creates one floating layer in the anchor's tab and runs the program through the account shell", async () => {
+	let calls = 0;
+	const run: Runner = async (executable, args, options) => {
+		calls++;
+		assert.equal(executable, trustedRexExecutable());
+		assert.ok(args.includes(`--server=${exact.server}`));
+		assert.equal(args[args.indexOf("--block") + 1], exact.blockId);
+		const payload = JSON.parse(args[args.indexOf("--args") + 1]);
+		assert.deepEqual(payload.argv, floatRequest().argv, "the program's arguments stay literal and unwrapped");
+		assert.deepEqual(payload.bounds, floatRequest().bounds);
+		assert.equal(payload.square, false);
+		assert.equal(payload.label, "Troll");
+		const script = args[args.indexOf("-e") + 1];
+		assert.match(script, /s\.host_id ~= a\.hostId/u);
+		assert.match(script, /session\.new_layer", \{session_id=session, window_id=window, bounds=bounds, focus=false/u);
+		assert.match(script, /if a\.square then/u);
+		assert.match(script, /method="size"/u);
+		assert.match(script, /command=a\.argv, cwd=a\.cwd, interactive=true/u);
+		assert.doesNotMatch(script, /shell="none"/u);
+		assert.match(script, /placement\(after, receipt\.blockId\) ~= window/u);
+		assert.equal(
+			Object.keys(options.env).some((key) => key.startsWith("REX_")),
+			false,
+		);
+		return {
+			code: 0,
+			stderr: "",
+			stdout: JSON.stringify({ outcome: "created", detail: "Created.", receipt: floatReceipt }),
+		};
+	};
+	assert.deepEqual(await floatPane(floatRequest(), env, run), {
+		version: 1,
+		outcome: "created",
+		detail: "Created.",
+		receipt: floatReceipt,
+	});
+	assert.equal(calls, 1);
+});
+
+test("float refuses bounds outside the tab, oversized arguments and unknown fields", () => {
+	for (const bounds of [
+		[0, 0, 1],
+		[0, 0, 0.05, 0.5],
+		[0.5, 0, 0.6, 0.5],
+		[0, 0.6, 0.5, 0.5],
+		[-0.1, 0, 0.5, 0.5],
+		[0, 0, Number.NaN, 0.5],
+		"0,0,1,1",
+	]) {
+		assert.throws(() => parseFloatRequest(JSON.stringify({ ...floatRequest(), bounds })), /Float bounds/u);
+	}
+	assert.throws(() => parseFloatRequest(JSON.stringify({ ...floatRequest(), argv: ["pi"] })), /absolute program/u);
+	assert.throws(
+		() => parseFloatRequest(JSON.stringify({ ...floatRequest(), argv: ["/bin/pi", "x".repeat(8193)] })),
+		/bounded/u,
+	);
+	assert.throws(() => parseFloatRequest(JSON.stringify({ ...floatRequest(), placement: {} })), /Invalid float/u);
+	assert.throws(() => parseFloatRequest(JSON.stringify({ ...floatRequest(), square: false })), /Invalid float/u);
+	assert.equal(parseFloatRequest(JSON.stringify({ ...floatRequest(), square: true })).square, true);
+	assert.equal(Object.hasOwn(parseFloatRequest(JSON.stringify(floatRequest())), "square"), false);
+	assert.deepEqual(parseFloatRequest(JSON.stringify({ ...floatRequest(), bounds: [0, 0, 1, 1] })).bounds, [0, 0, 1, 1]);
+});
+
+test("float never creates without the captured origin and keeps uncertain results explicit", async () => {
+	let calls = 0;
+	const never: Runner = async () => {
+		calls++;
+		throw new Error("not called");
+	};
+	assert.equal((await floatPane({ ...floatRequest(), origin: null }, env, never)).outcome, "unavailable");
+	assert.equal((await floatPane(floatRequest(), { ...env, REX_BLOCK: "other" }, never)).outcome, "stale");
+	assert.equal(calls, 0);
+	for (const receipt of [
+		undefined,
+		{ ...floatReceipt, anchorId: "block:99999999-9999-9999-9999-999999999999" },
+		{ ...floatReceipt, layerId: "layer:short" },
+		{ ...floatReceipt, extra: true },
+	]) {
+		const run: Runner = async () => ({
+			code: 0,
+			stderr: "",
+			stdout: JSON.stringify({ outcome: "created", detail: "Created.", receipt }),
+		});
+		assert.equal((await floatPane(floatRequest(), env, run)).outcome, "uncertain");
+	}
+	const gone: Runner = async () => ({
+		code: 3,
+		failure: "failed",
+		stdout: "",
+		stderr: `Error: block target "${exact.blockId}" not found\n`,
+	});
+	assert.equal((await floatPane(floatRequest(), env, gone)).outcome, "stale");
 });
