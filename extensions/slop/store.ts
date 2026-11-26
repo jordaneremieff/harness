@@ -382,21 +382,25 @@ export function importEntries(root: string, ids?: string[], starter = starterDir
 	});
 }
 
-export function promptCues(entries: CatalogEntry[]): Map<string, string> {
-	const cues = new Map<string, string>();
-	let size = promptIntroduction.length;
-	for (const entry of [...entries].sort(orderEntries)) {
-		if (!entry.prompt || entry.disabled) continue;
-		const line = `${entry.title}: ${firstSentence(entry.repair)}`;
-		if (size + line.length + 1 > 1500) continue;
-		cues.set(entry.id, line);
+const promptIntroduction = "Each line names a habit to avoid and its repair.";
+
+export function selectPrompt(entries: CatalogEntry[], budget: number) {
+	const eligible = entries.filter((entry) => entry.prompt && !entry.disabled).sort(orderEntries);
+	const lines = eligible.map((entry) => [entry.id, `${entry.title}: ${firstSentence(entry.repair)}`] as const);
+	const notice = (omitted: number) =>
+		`${omitted} of ${eligible.length} eligible slop repairs omitted by slop.promptBudget (${budget} UTF-16 units). Use slop to find entries marked "prompt omitted", then read the entry by ID.`;
+	const filled = lines.reduce((size, [, line]) => size + line.length + 1, promptIntroduction.length);
+	// Reserve the longest possible notice only if all eligible repairs cannot fit.
+	let size = promptIntroduction.length + (filled > budget ? notice(eligible.length).length + 1 : 0);
+	const included = new Map<string, string>();
+	for (const [id, line] of lines) {
+		if (size + line.length + 1 > budget) continue;
+		included.set(id, line);
 		size += line.length + 1;
 	}
-	return cues;
-}
-
-const promptIntroduction = "Each line names a habit to avoid and its repair.";
-export function promptSection(entries: CatalogEntry[]): string | undefined {
-	const cues = promptCues(entries);
-	return cues.size ? [promptIntroduction, ...cues.values()].join("\n") : undefined;
+	const omitted = eligible.length - included.size;
+	const omission = omitted ? notice(omitted) : undefined;
+	const parts = included.size ? [promptIntroduction, ...included.values()] : [];
+	if (omission) parts.push(omission);
+	return { included, omitted, notice: omission, text: parts.length ? parts.join("\n") : undefined };
 }

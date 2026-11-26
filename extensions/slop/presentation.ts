@@ -61,12 +61,10 @@ function check(args: Record<string, unknown>): Target {
 	const facts = entries.length ? [`entries ${entries.join(", ")}`] : [];
 	const more: (() => string)[] = [];
 	if ([args.path, args.diff, args.text].filter((input) => input !== undefined).length !== 1) return { facts };
+	const kind = member(proseKinds, args.kind);
+	if (kind) facts.unshift(kind);
 	const text = args.text;
-	if (typeof text === "string") {
-		const kind = member(proseKinds, args.kind);
-		if (kind) facts.unshift(kind);
-		return { subject: "check text", facts, more: [() => `text: ${size(text)}`] };
-	}
+	if (typeof text === "string") return { subject: "check text", facts, more: [() => `text: ${size(text)}`] };
 	const file = path(args.path);
 	if (file) return { subject: `check ${file}`, facts };
 	if (!args.diff || typeof args.diff !== "object" || Array.isArray(args.diff)) return { facts };
@@ -201,7 +199,7 @@ function checkOutcome(details: Record<string, unknown>) {
 	const findings = nonnegative(details.findingCount);
 	const skipped = nonnegative(details.skippedCount);
 	if (findings === undefined || skipped === undefined) return undefined;
-	const outcome = `${findings ? count(findings, "slop detector finding") : "No slop findings"}.`;
+	const outcome = `${findings ? count(findings, "slop detector finding") : "No slop detector findings"}.`;
 	const limits: string[] = [];
 	if (skipped) limits.push(`${count(skipped, "input")} skipped`);
 	if (details.reportLimited === true) limits.push("8 KiB report limit reached");

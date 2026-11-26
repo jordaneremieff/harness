@@ -1,15 +1,15 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { statSync } from "node:fs";
-import { readRegular } from "./files.ts";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { fileKind, type ScopedLine, segment } from "./detect.ts";
+import { fileKind, type ProseKind, type ScopedLine, segment } from "./detect.ts";
+import { readRegular } from "./files.ts";
 
 const execFile = promisify(execFileCallback);
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const inputLimit = 8 * 1024 * 1024;
 export type Collected = { lines: ScopedLine[]; skipped: string[] };
-export type DiffRequest = { staged?: true; range?: string; paths?: string[] };
+type DiffRequest = { staged?: true; range?: string; paths?: string[]; kind?: ProseKind };
 
 function decode(bytes: Buffer): string | undefined {
 	try {
@@ -20,19 +20,22 @@ function decode(bytes: Buffer): string | undefined {
 	}
 }
 
-export function fileInput(cwd: string, path: string): Collected {
-	if (isAbsolute(path)) throw new Error("File paths must be relative to the working directory.");
+export function fileInput(cwd: string, path: string, kind?: ProseKind): Collected {
 	const full = resolve(cwd, path);
-	if (!fileKind(path)) {
+	const name = relative(cwd, full) || ".";
+	const inferred = fileKind(name);
+	if (kind !== undefined && inferred !== undefined && inferred !== "document")
+		throw new Error("Omit kind for recognised code files; their extension selects code and comment checks.");
+	if (!kind && !inferred) {
 		if (!statSync(full).isFile()) throw new Error(`${path}: not a regular file`);
-		return { lines: [], skipped: [`${path}: unsupported file kind`] };
+		return { lines: [], skipped: [`${name}: unsupported file kind`] };
 	}
 	const bytes = readRegular(full, inputLimit);
 	if (!bytes) throw new Error(`${path}: file does not exist`);
 	const text = decode(bytes);
 	return text === undefined
-		? { lines: [], skipped: [`${path}: not UTF-8 text`] }
-		: { lines: segment({ kind: "file", path, text }), skipped: [] };
+		? { lines: [], skipped: [`${name}: not UTF-8 text`] }
+		: { lines: segment({ kind: kind ?? "file", path: name, text }), skipped: [] };
 }
 
 async function git(cwd: string, args: string[], signal?: AbortSignal): Promise<Buffer> {
@@ -113,7 +116,7 @@ function parseFilePatch(patch: Buffer, path: string): Collected {
 }
 
 type Change = { path: string; previous?: string };
-function changedFiles(output: Buffer): Change[] {
+function changedFiles(output: Buffer, documentsOnly: boolean): Change[] {
 	const fields = output.toString().split("\0");
 	const files: Change[] = [];
 	for (let i = 0; i + 1 < fields.length; ) {
@@ -121,7 +124,8 @@ function changedFiles(output: Buffer): Change[] {
 		const rename = status[0] === "R";
 		const previous = rename ? fields[i++] : undefined;
 		const path = fields[i++];
-		if (fileKind(path)) files.push({ path, previous });
+		const kind = fileKind(path);
+		if (documentsOnly ? kind === "document" : kind !== undefined) files.push({ path, previous });
 	}
 	return files;
 }
@@ -155,11 +159,18 @@ async function fileDiff(root: string, comparison: string[], file: Change, signal
 	}
 }
 
-async function diffFiles(cwd: string, comparison: string[], paths: string[], signal?: AbortSignal): Promise<Collected> {
+async function diffFiles(
+	cwd: string,
+	comparison: string[],
+	paths: string[],
+	documentsOnly: boolean,
+	signal?: AbortSignal,
+): Promise<Collected> {
 	const root = (await git(cwd, ["rev-parse", "--show-toplevel"], signal)).toString().replace(/\n$/, "");
 	const list = await git(
 		cwd,
 		[
+			"--literal-pathspecs",
 			"diff",
 			"--no-ext-diff",
 			"--no-textconv",
@@ -174,7 +185,7 @@ async function diffFiles(cwd: string, comparison: string[], paths: string[], sig
 		],
 		signal,
 	);
-	const files = changedFiles(list);
+	const files = changedFiles(list, documentsOnly);
 	const result: Collected = { lines: [], skipped: [] };
 	for (let i = 0; i < files.length; i += 8) {
 		const batch = await Promise.all(files.slice(i, i + 8).map((file) => fileDiff(root, comparison, file, signal)));
@@ -196,30 +207,47 @@ async function head(cwd: string, signal?: AbortSignal): Promise<string> {
 	}
 }
 
-export async function diffInput(cwd: string, request: DiffRequest, signal?: AbortSignal): Promise<Collected> {
-	let revision = ["HEAD"];
-	const staged = request.staged ? ["--cached"] : [];
-	if (request.range !== undefined) {
-		const match = /^([^\s]+?)\.\.([^\s.][^\s]*)$/.exec(request.range);
-		if (!match || match[1].includes("..") || match[2].includes("..")) throw new Error("Use a two-endpoint range A..B.");
-		revision = await Promise.all(
-			match
-				.slice(1)
-				.map(async (ref) =>
-					(await git(cwd, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], signal)).toString().trim(),
-				),
+function validateDiff({ staged, range, paths = [], kind }: DiffRequest) {
+	if (staged && range !== undefined) throw new Error("Choose staged or range, not both.");
+	if (kind === "reply") throw new Error('A diff accepts kind "document" or "commit", not "reply".');
+	if (kind === "commit" && (range === undefined || paths.length))
+		throw new Error('Use kind "commit" with a range and without paths.');
+	if (paths.some((path) => !path || isAbsolute(path) || path.startsWith(":") || path.split(sep).includes("..")))
+		throw new Error(
+			"Diff paths must be relative to the working directory, without parent components or Git pathspec magic.",
 		);
-	} else revision = [await head(cwd, signal)];
-	const result = await diffFiles(cwd, [...staged, ...revision], request.paths ?? [], signal);
-	if (request.range !== undefined) {
-		const log = await git(cwd, ["log", "-z", "--format=%H%x00%B", `${revision[0]}..${revision[1]}`, "--"], signal);
-		const records = log.toString().split("\0");
-		for (let i = 0; i + 1 < records.length; i += 2) {
-			const hash = records[i];
-			// The report needs the commit identity, not a path a path-scoped detector can match.
-			for (const line of segment({ kind: "commit", text: records[i + 1] }))
-				result.lines.push({ ...line, commit: hash });
-		}
+}
+
+async function resolveRange(cwd: string, range: string, signal?: AbortSignal) {
+	const match = /^([^\s]+?)\.\.([^\s.][^\s]*)$/.exec(range);
+	if (!match || match[1].includes("..") || match[2].includes("..")) throw new Error("Use a two-endpoint range A..B.");
+	return Promise.all(
+		match
+			.slice(1)
+			.map(async (ref) =>
+				(await git(cwd, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], signal)).toString().trim(),
+			),
+	);
+}
+
+async function appendCommitLines(cwd: string, range: string, lines: ScopedLine[], signal?: AbortSignal) {
+	const log = await git(cwd, ["log", "-z", "--format=%H%x00%B", range, "--"], signal);
+	const records = log.toString().split("\0");
+	for (let i = 0; i + 1 < records.length; i += 2) {
+		const commit = records[i];
+		for (const line of segment({ kind: "commit", text: records[i + 1] })) lines.push({ ...line, commit });
 	}
+}
+
+export async function diffInput(cwd: string, request: DiffRequest, signal?: AbortSignal): Promise<Collected> {
+	validateDiff(request);
+	const { staged, range, paths = [], kind } = request;
+	const revisions = range === undefined ? [await head(cwd, signal)] : await resolveRange(cwd, range, signal);
+	const result: Collected =
+		kind === "commit"
+			? { lines: [], skipped: [] }
+			: await diffFiles(cwd, [...(staged ? ["--cached"] : []), ...revisions], paths, kind === "document", signal);
+	if (range !== undefined && kind !== "document")
+		await appendCommitLines(cwd, revisions.join(".."), result.lines, signal);
 	return result;
 }

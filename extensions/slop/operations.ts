@@ -7,8 +7,7 @@ import {
 	compareStarter,
 	type Identity,
 	importEntries,
-	promptCues,
-	promptSection,
+	selectPrompt,
 	readCatalog,
 	readLexicon,
 	removeEntry,
@@ -21,7 +20,7 @@ import { domains } from "./vocabulary.ts";
 export const VIEW_DESCRIPTION =
 	"Read this machine's slop catalog: habits in prose, code and interfaces that read as generated, each with its repair. List or filter entries, read one, or compare the bundled starter set with the catalog.";
 export const CHECK_DESCRIPTION =
-	"Run the slop catalog's detectors on text, one file or a Git diff: uncommitted, staged, or a range with its commit messages. Run it on the staged diff before each commit, and on documents and messages written for someone else. Do not run it on ordinary chat replies. Repair the move a finding names, not its token.";
+	"Run deterministic detectors on exactly one of text, a file or a Git diff. Run it on the staged diff before each commit, and on documents and messages written for someone else. Do not run it on ordinary chat replies. No findings means no detector exceeded its allowance on the checked input. Use slop to read and apply relevant judgment-only entries yourself.";
 export const RECORD_DESCRIPTION =
 	"Change this machine's slop catalog: save a new entry or update one, remove, disable or enable an entry, or import entries from the bundled starter set. The operator asks for these changes in chat.";
 
@@ -40,7 +39,7 @@ export function catalogSection(options: ReadOptions): string | undefined {
 	const { values } = readSettings(options);
 	if (values.prompt === "off") return undefined;
 	try {
-		return promptSection(readCatalog(values.dir));
+		return selectPrompt(readCatalog(values.dir), values.promptBudget).text;
 	} catch {
 		return undefined;
 	} // A store error must not prevent a turn; catalog and check calls report it.
@@ -90,7 +89,7 @@ export function inspectStarter(comparison: ReturnType<typeof compareStarter>, id
 export function inspectCatalog(options: ReadOptions, args: ViewArgs): CatalogReceipt {
 	if ((args.entry !== undefined || args.starter) && (args.scope !== undefined || args.query !== undefined))
 		throw new Error("Use scope and query only to filter the catalog inventory.");
-	const { dir, prompt } = readSettings(options).values;
+	const { dir, prompt, promptBudget } = readSettings(options).values;
 	const entries = readCatalog(dir);
 	if (args.entry !== undefined && !args.starter) {
 		const entry = entries.find((item) => item.id === args.entry);
@@ -102,7 +101,7 @@ export function inspectCatalog(options: ReadOptions, args: ViewArgs): CatalogRec
 	}
 	const comparison = compareStarter(dir, entries);
 	if (args.starter) return inspectStarter(comparison, args.entry);
-	const cues = prompt === "on" ? promptCues(entries) : new Map<string, string>();
+	const selection = prompt === "on" ? selectPrompt(entries, promptBudget) : undefined;
 	const selected = entries.filter(
 		(entry) =>
 			(args.scope === undefined || entry.applies.includes(args.scope)) &&
@@ -112,9 +111,10 @@ export function inspectCatalog(options: ReadOptions, args: ViewArgs): CatalogRec
 	const lines = domains.flatMap((domain) => {
 		const group = selected.filter((entry) => entry.domain === domain);
 		if (!group.length) return [];
-		return [`${domain}:`, ...group.map((entry) => catalogRow(entry, cues.has(entry.id), rows))];
+		return [`${domain}:`, ...group.map((entry) => catalogRow(entry, selection?.included, rows))];
 	});
 	if (!lines.length) lines.push("No matching slop entries.");
+	if (selection?.notice) lines.unshift(selection.notice);
 	const fresh = comparison.filter(({ status }) => status === "new").length;
 	const updated = comparison.filter(({ status }) => status === "updated").length;
 	if (fresh || updated)
@@ -123,26 +123,27 @@ export function inspectCatalog(options: ReadOptions, args: ViewArgs): CatalogRec
 		kind: "catalog",
 		count: selected.length,
 		rows,
-		hasGuidance: Boolean(fresh || updated),
+		hasGuidance: Boolean(fresh || updated || selection?.notice),
 		fresh,
 		updated,
 	};
 	return { content: textBlock(lines.join("\n")), details: { summary: `${selected.length} slop entries`, list } };
 }
 
-function catalogRow(entry: CatalogEntry, prompt: boolean, preview: string[]): string {
+function catalogRow(entry: CatalogEntry, included: ReadonlyMap<string, string> | undefined, preview: string[]): string {
 	const title = `- ${entry.id} · ${entry.title}`;
-	const origin = `${entry.origin} · ${stateLabel(entry)}${prompt ? " · prompt" : ""}`;
+	const prompt = included && entry.prompt && !entry.disabled;
+	const origin = `${entry.origin} · ${stateLabel(entry)}${prompt ? (included.has(entry.id) ? " · prompt" : " · prompt omitted") : ""}`;
 	const recognition = firstSentence(entry.recognition);
 	const detectors = entry.detectors.length;
-	if (preview.length < catalogPreviewRows) {
-		const detectorFact = detectors ? ` · ${detectors} ${detectors === 1 ? "detector" : "detectors"}` : "";
-		preview.push(`${title} · ${entry.domain} · ${origin}${detectorFact} · ${recognition}`);
-	}
-	return `${title} · ${origin} · ${detectors} detector(s) · ${recognition}`;
+	const coverage = detectors ? `${detectors} ${detectors === 1 ? "detector" : "detectors"}` : "judgment only";
+	if (preview.length < catalogPreviewRows)
+		preview.push(`${title} · ${entry.domain} · ${origin} · ${coverage} · ${recognition}`);
+	return `${title} · ${origin} · ${coverage} · ${recognition}`;
 }
 
-const closing = "Repair the underlying move: a synonym or punctuation swap keeps the tell.";
+const closing =
+	"Detector results do not assess judgment-only entries. Use slop to read those entries. Repair the move, not its token.";
 const maxReportBytes = 8192;
 function* reportFindings(findings: Finding[]) {
 	let previous = "";
@@ -162,7 +163,7 @@ function* reportSkipped(skipped: string[]) {
 	for (const item of skipped) yield `- ${JSON.stringify(item)}`;
 }
 function formatReport(findings: Finding[], skipped: string[]) {
-	const lines = [findings.length ? `${findings.length} slop detector finding(s):` : "No slop findings."];
+	const lines = [findings.length ? `${findings.length} slop detector finding(s):` : "No slop detector findings."];
 	let bytes = Buffer.byteLength(lines[0]);
 	let truncated = false;
 	for (const section of [reportFindings(findings), reportSkipped(skipped)]) {
@@ -215,17 +216,15 @@ export function runCheck(options: ReadOptions, input: Collected, ids?: string[])
 export async function check(options: ReadOptions, cwd: string, args: CheckArgs, signal?: AbortSignal) {
 	if ([args.text, args.path, args.diff].filter((value) => value !== undefined).length !== 1)
 		throw new Error("Choose exactly one of text, path or diff.");
-	if (args.kind !== undefined && args.text === undefined) throw new Error("kind applies only to text.");
-	const { text, path, diff, entries } = args;
+	signal?.throwIfAborted();
+	const { text, path, diff, kind, entries } = args;
 	let input: Collected;
 	if (text !== undefined) {
 		if (Buffer.byteLength(text) > 8 * 1024 * 1024) throw new Error("Text exceeds 8 MiB.");
-		input = { lines: segment({ kind: args.kind ?? "reply", text }), skipped: [] };
-	} else if (path !== undefined) input = fileInput(cwd, path);
-	else if (diff !== undefined) {
-		if (diff.staged && diff.range !== undefined) throw new Error("Choose staged or range, not both.");
-		input = await diffInput(cwd, diff, signal);
-	} else throw new Error("No input.");
+		input = { lines: segment({ kind: kind ?? "reply", text }), skipped: [] };
+	} else if (path !== undefined) input = fileInput(cwd, path, kind);
+	else if (diff !== undefined) input = await diffInput(cwd, { ...diff, kind }, signal);
+	else throw new Error("No input.");
 	signal?.throwIfAborted();
 	return runCheck(options, input, entries);
 }

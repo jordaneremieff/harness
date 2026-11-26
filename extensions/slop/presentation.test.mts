@@ -243,18 +243,21 @@ test("a catalog list without structured rows shows its summary but keeps the bod
 	}
 });
 
-test("catalog inventory keeps starter guidance and zero counts out of the preview", (t) => {
+test("catalog inventory shows judgment-only entries but keeps starter guidance out of the preview", (t) => {
 	binding(t, "ctrl+o");
 	const { options } = catalogFixture(t);
 	const result = inspectCatalog(options, {});
 	const modelText = result.content[0].text;
 	assert.match(modelText, /^Starter set: [1-9]\d* new, 0 updated\. Read with slop \{"starter":true\}\./u);
-	assert.match(modelText, /field-note · Field note · starter · active · 0 detector\(s\)/u);
+	assert.match(modelText, /field-note · Field note · starter · active · judgment only/u);
 	const card = tool("slop", {});
 	card.updateResult({ ...result, isError: false });
 	const compact = rendered(card, 180).join("\n");
 	assert.match(compact, /1 slop entry; [1-9]\d* new starter entr/u);
-	assert.match(compact, /field-note · Field note · prose · starter · active · The title replaces the result\./u);
+	assert.match(
+		compact,
+		/field-note · Field note · prose · starter · active · judgment only · The title replaces the result\./u,
+	);
 	assert.doesNotMatch(compact, /Read with slop|detector|0 updated|more lines/u);
 	assert.match(compact, /\.\.\. \(ctrl\+o to expand\)/u);
 	card.setExpanded(true);
@@ -296,7 +299,7 @@ test("a complete compact catalog page does not offer expansion for cosmetic diff
 	assert.deepEqual(rendered(card, 180).filter(Boolean), [
 		"slop list catalog",
 		"1 slop entry.",
-		"- field-note · Field note · prose · starter · active · The title replaces the result.",
+		"- field-note · Field note · prose · starter · active · judgment only · The title replaces the result.",
 	]);
 });
 

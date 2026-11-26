@@ -4,8 +4,22 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import type { Context } from "@earendil-works/chord/context";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import { InMemoryCredentialStore, InMemoryModelsStore, type TranscriptContext } from "@earendil-works/pi-ai";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import { getCurrentSystemMessage } from "@earendil-works/pi-ai/utils/transcript";
+import {
+	createAgentSession,
+	DefaultResourceLoader,
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+	type ExtensionContext,
+	ModelRuntime,
+	SessionManager,
+	SettingsManager,
+	type Theme,
+} from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { parseEntry } from "./catalog.ts";
@@ -59,11 +73,13 @@ function scopedEnv(t: TestContext, root: string, dir: string) {
 		PI_CODING_AGENT_DIR: root,
 		PI_SLOP_DIR: dir,
 		PI_SLOP_PROMPT: "on",
+		PI_SLOP_PROMPT_BUDGET: undefined,
 		PI_SLOP_LEXICON: "",
 		PI_HARNESS_FILE: join(root, "harness.json"),
 	})) {
 		const old = process.env[key];
-		process.env[key] = value;
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
 		t.after(() => {
 			if (old === undefined) delete process.env[key];
 			else process.env[key] = old;
@@ -213,6 +229,111 @@ test("native Pi installs the same tools, example-backed check and prompt section
 	assert.doesNotMatch((await section.render({} as durable.PromptInput, context)) ?? "", /Field note:/);
 	for (const close of closures) close();
 	assert.equal(events.count("harness:settings:request"), 0);
+});
+
+test("ordinary and Durable model requests reflect prompt budget changes on the next turn", {
+	timeout: 20_000,
+}, async (t) => {
+	const { root, dir } = settingsDirectory(t);
+	scopedEnv(t, root, dir);
+	writeFileSync(
+		join(dir, "catalog", "long-note.md"),
+		fixture
+			.split("## Detectors")[0]
+			.replace("field-note", "long-note")
+			.replaceAll("Field note", "Long note")
+			.replace("State the result first.", `Check ${"each cited source and ".repeat(20)}the result.`),
+	);
+	const faux = fauxProvider({ tokensPerSecond: 0 });
+	const model = faux.getModel();
+	const modelRuntime = await ModelRuntime.create({
+		credentials: new InMemoryCredentialStore(),
+		modelsStore: new InMemoryModelsStore(),
+		modelsPath: null,
+		refreshOnCreate: false,
+	});
+	modelRuntime.registerNativeProvider(faux.provider);
+	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
+	const resourceLoader = new DefaultResourceLoader({
+		cwd: root,
+		agentDir: root,
+		settingsManager,
+		noExtensions: true,
+		noSkills: true,
+		noThemes: true,
+		noPromptTemplates: true,
+		noContextFiles: true,
+		extensionFactories: [slopExtension],
+	});
+	await resourceLoader.reload();
+	const { session } = await createAgentSession({
+		cwd: root,
+		agentDir: root,
+		model,
+		modelRuntime,
+		resourceLoader,
+		settingsManager,
+		sessionManager: SessionManager.inMemory(root),
+	});
+	t.after(() => session.dispose());
+	await session.bindExtensions({ mode: "json" });
+	const models = createModels();
+	models.setProvider(faux.provider);
+	const registry = durable.createRegistry();
+	const closures: Array<() => void> = [];
+	registry.install(
+		slopContribution("/fixture/index.ts", bus(), () => {}).create({
+			durable,
+			agentDir: root,
+			cwd: root,
+			storageId: "store",
+			onClose: (close) => closures.push(close),
+		}),
+	);
+	const harness = await durable.Harness.open(new durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+	t.after(async () => {
+		await harness.close(BACKGROUND_CONTEXT);
+		for (const close of closures) close();
+	});
+	const conversation = await harness.root(BACKGROUND_CONTEXT, {
+		agent: { model: { provider: model.provider, modelId: model.id } },
+	});
+	const capture = async (send: () => Promise<unknown>) => {
+		let slop: string | null | undefined;
+		faux.setResponses([
+			(request: TranscriptContext) => {
+				slop = getCurrentSystemMessage(request.messages)?.sections?.slop;
+				return fauxAssistantMessage("Captured.");
+			},
+		]);
+		await send();
+		assert.equal(faux.getPendingResponseCount(), 0);
+		return slop;
+	};
+	const ordinary = () => capture(() => session.prompt("Review the draft."));
+	const native = () =>
+		capture(async () => {
+			const submission = await conversation.submit({ type: "input", content: "Review the draft." }, BACKGROUND_CONTEXT);
+			await submission.wait(BACKGROUND_CONTEXT);
+		});
+	for (const promptBudget of [256, 1500]) {
+		writeFileSync(join(root, "harness.json"), JSON.stringify({ version: 1, slop: { dir, promptBudget } }));
+		const prompts = [await ordinary(), await native()];
+		assert.equal(prompts[0], prompts[1]);
+		const prompt = prompts[0];
+		assert.ok(prompt);
+		assert.match(prompt, /Field note: State the result first/);
+		if (promptBudget === 256) {
+			assert.match(prompt, /1 of 2 eligible slop repairs omitted.*prompt omitted/);
+			assert.doesNotMatch(prompt, /Long note:/);
+		} else {
+			assert.match(prompt, /Long note: Check/);
+			assert.doesNotMatch(prompt, /omitted/);
+		}
+	}
+	process.env.PI_SLOP_PROMPT = "off";
+	assert.equal(await ordinary(), undefined);
+	assert.equal(await native(), undefined);
 });
 
 test("Durable Pi submits the slop check as a steer with the invocation's request id", async () => {

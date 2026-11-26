@@ -19,15 +19,19 @@ private machine catalog. The catalog is thereafter independent: edits, removals,
 and disablement survive package updates. An empty catalog does not seed again.
 
 An entry without a `prompt` field defaults to `true`. Starter entries set it
-explicitly. A system prompt section includes short repairs from active entries
-marked `prompt: true`, within 1,500 characters. It considers entries with a
-Record section newest first, then the other entries in ID order.
+explicitly. Both Pi routes consider short repairs from active entries marked
+`prompt: true`. Recorded entries take priority, newest first, then other entries
+in ID order. Each complete repair must fit inside `slop.promptBudget`. If any
+repairs do not fit, the prompt counts them and tells the agent where to find
+them. The catalog marks those rows `prompt omitted`; use `slop` with `scope`
+or `query` to narrow the list, then read the entry by ID. This works even when
+no repair fits.
 
 ## Browse and compare
 
 In the ordinary terminal, use **Enter** or **Right** to read, **/** to search,
 **s** to change scope, and **e** in the detail to change an entry's state.
-Rows mark entries set to reach the prompt and entries that are off.
+Rows mark entries eligible for the prompt and entries that are off.
 `/slop check [hint]` directs the agent to review recent replies and changed work.
 The hint is optional and the command passes it through as text. For a Durable
 conversation, select `slop` in the dashboard command form and enter `check`
@@ -60,31 +64,50 @@ arguments omitted from the call, expand the error to read its full diagnostic.
 ```json
 {"diff":{"staged":true}}
 {"diff":{"range":"main..HEAD","paths":["src"]}}
+{"diff":{"range":"main..HEAD"},"kind":"commit"}
 {"text":"A draft intended for someone else.","kind":"document"}
+{"path":"/path/to/draft","kind":"document"}
 {"path":"src/example.ts","entries":["history-comments"]}
 ```
 
-A diff with `{}` compares tracked worktree and index changes against `HEAD`.
-A staged check compares the index against `HEAD`. A range compares the two
-endpoint trees and also checks commit messages in the range, even when paths
-narrow the diff. Only added lines in a diff count. An unchanged line supplies
-context for Markdown and comments but cannot itself produce a finding.
+Supply exactly one of `text`, `path`, or `diff`. Omit `entries` to use all active
+detectors, or supply a list of catalog IDs to restrict the check.
 
-The result names the detector, its count and allowance, examples of the
-matches, and the entry's repair. `ok` means there are no findings. Look for a
-skip notice before treating it as evidence of coverage. The check shows up to
-20 locations per detector, within an 8 KiB text report. It does not judge
-entries without detectors. Read those entries when reviewing the work.
+- `text` is inline prose. `kind` selects `reply` (default), `document`, or `commit`.
+- `path` names one file. Use an absolute path or a path relative to the working
+  directory. An explicit absolute path can name an external draft that Pi
+  has permission to read. The name normally selects the scanner. Use `kind`
+  to label a prose file explicitly, including a draft without a recognised
+  extension. Omit `kind` for recognised code, so code and comment detectors
+  still run. File locations are reported relative to the working directory.
+- `diff: {}` compares tracked worktree and index changes with `HEAD`.
+  `staged: true` compares the index with `HEAD`. `range: "A..B"` compares the
+  endpoint trees and checks commit messages in the range. Use either `staged`
+  or `range`, not both. `paths` restricts changed files, not commit messages.
+  It takes literal file or directory names relative to the working directory,
+  without absolute paths, parent components or Git pathspec magic. Omit `kind`
+  for all supported file types and range commit messages. Use `kind: "document"`
+  for changed document lines only, or `kind: "commit"` with a range and no
+  `paths` for commit messages only. An unchanged line supplies lexical context
+  but cannot produce a finding.
 
-Markdown prose checks leave out fences, inline code, URLs, link destinations,
-HTML comments, blockquotes, and leading frontmatter. Files use their extension
-to select a C-family, hash, or markup comment scanner where applicable. These
-are lexical scans, not complete language or Markdown parsers. Only `.md`,
-`.markdown`, `.mdx`, and `.txt` count as documents. Checks ignore other file
-types in diffs and report them as skipped when requested directly.
-Git processes one bounded patch per file. It skips files whose new text exceeds
-8 MiB or whose patch exceeds 16 MiB, and continues with the other files.
-Checks also skip binary files and files with unsupported encodings.
+The result names each detector that exceeded its allowance, examples of the
+matches, and the entry's repair. `ok` means no detector finding, not that the
+work passed a prose review. Check `skippedCount` for input gaps. The report shows
+up to 20 locations per detector within 8 KiB. To review habits without detectors,
+list the relevant scope with `slop`, look for `judgment only`, and read and apply
+those entries yourself. The extension does not classify or publish the work.
+
+Prose scans leave out fences, inline code, URLs, link destinations, HTML
+comments, blockquotes, and leading frontmatter. Files use their name to select a
+C-family, hash, or markup comment scanner where applicable. These are lexical
+scans, not complete language or Markdown parsers. Only `.md`, `.markdown`, `.mdx`,
+and `.txt` are inferred as documents. Diffs ignore unsupported file types.
+A file check skips an unsupported type unless you specify its prose kind.
+Inline text and single files have an 8 MiB limit. File scans read only regular
+files and skip binary files and unsupported encodings. Git also skips any file
+whose new text exceeds 8 MiB or whose patch exceeds 16 MiB and continues with
+the other files.
 
 ## Change the machine catalog
 
@@ -115,8 +138,8 @@ Every detector must match at least one Slop example before allowance, and no
 Better example may match any detector. A Slop example without a match is valid:
 read it as a variant that needs judgment. The save result names such examples.
 An example supplies a kind but not a path, so these tests ignore path globs.
-Runtime checks still enforce path globs and never apply them to plain text or
-commit messages.
+Runtime checks still enforce path globs and never apply them to inline text or
+commit messages from a range.
 
 Detectors match without regard to case by default. Set `caseSensitive: true`
 for case-sensitive matching. A `pattern` runs per scoped line with JavaScript
@@ -140,6 +163,7 @@ from the agent directory. Changes apply at the next use.
 |---|---|---|---|---|---|---|
 | dir | `PI_SLOP_DIR` | path | &lt;agentDir&gt;/slop | next use | none | Private store for the machine catalog and its state. |
 | prompt | `PI_SLOP_PROMPT` | enum | "on" | next use | on, off | Include active catalog cues in the system prompt. Off leaves the tools, command and CLI available. |
+| promptBudget | `PI_SLOP_PROMPT_BUDGET` | integer | 1500 | next use | min 256; max 16000 | Maximum UTF-16 code units for slop prompt content, including the omission notice. |
 | lexicon | `PI_SLOP_LEXICON` | path | unset | next use | none | File of permitted UTF-8 matches for detectors that use the lexicon. |
 <!-- harness:settings:end -->
 

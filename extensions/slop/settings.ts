@@ -21,6 +21,15 @@ export const settings = {
 			description: "Include active catalog cues in the system prompt. Off leaves the tools, command and CLI available.",
 			apply: "use",
 		},
+		promptBudget: {
+			type: "integer",
+			env: "PI_SLOP_PROMPT_BUDGET",
+			default: 1500,
+			min: 256,
+			max: 16000,
+			description: "Maximum UTF-16 code units for slop prompt content, including the omission notice.",
+			apply: "use",
+		},
 		lexicon: {
 			type: "path",
 			env: "PI_SLOP_LEXICON",
@@ -31,7 +40,7 @@ export const settings = {
 } as const;
 
 export type ReadOptions = { agentDir: string; env?: Readonly<Record<string, string | undefined>> };
-type Values = { dir: string; prompt: "on" | "off"; lexicon?: string };
+type Values = { dir: string; prompt: "on" | "off"; promptBudget: number; lexicon?: string };
 type Origin = "file" | "env" | "default";
 const messages = {
 	document: "Configuration document is invalid or unavailable.",
@@ -102,7 +111,7 @@ function fieldRecord(
 	let status: "invalid" | "unset" | "valid" = values[key] === undefined ? "unset" : "valid";
 	if (origin !== "default") {
 		const raw = origin === "env" ? options.env[field.env] : section[key];
-		if (applyValue(key, raw, options.agentDir, values)) status = "valid";
+		if (applyValue(key, raw, origin, options.agentDir, values)) status = "valid";
 		else {
 			status = "invalid";
 			add(name, origin, "invalid");
@@ -122,10 +131,18 @@ function fieldRecord(
 		...(value === undefined ? {} : { value }),
 	};
 }
-function applyValue(key: keyof Values, raw: unknown, agentDir: string, values: Values) {
+function applyValue(key: keyof Values, raw: unknown, origin: Origin, agentDir: string, values: Values) {
 	if (key === "prompt") {
 		if (raw !== "on" && raw !== "off") return false;
 		values.prompt = raw;
+	} else if (key === "promptBudget") {
+		const { min, max } = settings.fields.promptBudget;
+		const value =
+			origin === "env" && typeof raw === "string" && /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(raw)
+				? Number(raw)
+				: raw;
+		if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) return false;
+		values.promptBudget = value;
 	} else {
 		const value = validPath(agentDir, raw);
 		if (value === undefined) return false;
@@ -152,7 +169,11 @@ export function readSettings({ agentDir, env = process.env }: ReadOptions) {
 		const suffix = validText(key) ? key.slice(0, 64).replace(/[\ud800-\udbff]$/, "") : "<invalid-key>";
 		add(`slop.${suffix}`, "file", "unknown");
 	}
-	const values: Values = { dir: defaultDir, prompt: settings.fields.prompt.default };
+	const values: Values = {
+		dir: defaultDir,
+		prompt: settings.fields.prompt.default,
+		promptBudget: settings.fields.promptBudget.default,
+	};
 	const records = (Object.keys(settings.fields) as (keyof Values)[]).map((key) =>
 		fieldRecord(key, options, section, values, add),
 	);

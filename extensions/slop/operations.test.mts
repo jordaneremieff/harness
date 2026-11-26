@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -12,7 +21,7 @@ import { readSettings } from "./settings.ts";
 import {
 	compareStarter,
 	importEntries,
-	promptSection,
+	selectPrompt,
 	type SaveFields,
 	readCatalog,
 	removeEntry,
@@ -165,6 +174,49 @@ test("catalog filtering, disabled state and prompt follow the machine catalog", 
 	await assert.rejects(check(options, cwd, { text: "x", diff: {} }), /exactly one/);
 });
 
+test("single file accepts absolute paths and explicit prose kinds without overriding code scanning", async (t) => {
+	const { dir, root, cwd, options, identity } = fixture(t);
+	saveEntry(dir, entry, identity);
+	const local = join(cwd, "draft.md");
+	const external = join(root, "commit message");
+	const code = join(cwd, "file.ts");
+	writeFileSync(local, "release diary\n");
+	writeFileSync(external, "release diary\n");
+	writeFileSync(code, "// release diary\n");
+	const entries = [entry.id];
+	const document = await check(options, cwd, { path: local, kind: "document", entries });
+	assert.equal(document.details.findingCount, 1);
+	assert.deepEqual(document, await check(options, cwd, { path: "draft.md", entries }));
+	assert.equal((await check(options, cwd, { path: local, kind: "reply", entries })).details.findingCount, 0);
+	const commit = await check(options, cwd, { path: external, kind: "commit", entries });
+	assert.equal(commit.details.findingCount, 1);
+	assert.equal((await check(options, cwd, { path: external, entries })).details.skippedCount, 1);
+	assert.equal((await check(options, cwd, { path: code, entries })).details.findingCount, 1);
+	await assert.rejects(check(options, cwd, { path: code, kind: "document", entries }), /Omit kind.*code/);
+	await assert.rejects(check(options, cwd, { path: local, text: "release diary" }), /exactly one/);
+});
+
+test("absolute and external file paths keep the regular-file, size and UTF-8 protections", async (t) => {
+	const { root, cwd, options } = fixture(t);
+	const directory = join(root, "folder.md");
+	const fifo = join(root, "pipe.md");
+	const missing = join(root, "missing.md");
+	const large = join(root, "large.md");
+	const binary = join(root, "binary.md");
+	mkdirSync(directory);
+	execFileSync("mkfifo", [fifo], { timeout: 6000 });
+	writeFileSync(large, Buffer.alloc(8 * 1024 * 1024 + 1));
+	writeFileSync(binary, Buffer.from([0, 127, 255]));
+	const link = join(cwd, "link.md");
+	symlinkSync(fifo, link);
+	for (const path of [directory, fifo, link]) await assert.rejects(check(options, cwd, { path }), /not a regular file/);
+	await assert.rejects(check(options, cwd, { path: missing }), /file does not exist/);
+	await assert.rejects(check(options, cwd, { path: large }), /exceeds 8388608 bytes/);
+	const skipped = await check(options, cwd, { path: binary, kind: "document" });
+	assert.equal(skipped.details.skippedCount, 1);
+	assert.match(skipped.content[0].text, /not UTF-8 text/);
+});
+
 test("a line too long to check in bounded time is skipped and reported", async (t) => {
 	const { dir, options, cwd, identity } = fixture(t);
 	saveEntry(dir, entry, identity);
@@ -201,7 +253,12 @@ test("settings keep a rejected environment value above the file and resolve rela
 		JSON.stringify({ version: 1, slop: { dir: "custom", prompt: "off", lexicon: "terms.txt", other: 1 } }),
 	);
 	const read = readSettings({ ...options, env: { PI_HARNESS_FILE: "custom.json", PI_SLOP_DIR: "" } });
-	assert.deepEqual(read.values, { dir: join(root, "slop"), prompt: "off", lexicon: join(root, "terms.txt") });
+	assert.deepEqual(read.values, {
+		dir: join(root, "slop"),
+		prompt: "off",
+		promptBudget: 1500,
+		lexicon: join(root, "terms.txt"),
+	});
 	assert.equal(read.source.status, "loaded");
 	assert.deepEqual(
 		read.diagnostics.map(({ field, source, code }) => [field, source, code]),
@@ -350,6 +407,41 @@ test("real Git checks only added lines of the selected version and includes comm
 	assert.match(found.content[0].text, /commit [0-9a-f]{12}/);
 });
 
+test("diff kinds select document lines or range commit messages without reclassifying code", async (t) => {
+	const { cwd, dir, options, identity } = fixture(t);
+	saveEntry(dir, entry, identity);
+	git(cwd, "init", "-q");
+	git(cwd, "commit", "--allow-empty", "-qm", "Baseline");
+	const base = git(cwd, "rev-parse", "HEAD");
+	writeFileSync(join(cwd, "draft.md"), "release diary\n");
+	writeFileSync(join(cwd, "file.ts"), "// release diary\n");
+	writeFileSync(join(cwd, "draft[1].md"), "All clean.\n");
+	writeFileSync(join(cwd, "draft1.md"), "release diary\n");
+	git(cwd, "add", ".");
+	const entries = [entry.id];
+	const documents = await check(options, cwd, { diff: { staged: true }, kind: "document", entries });
+	assert.match(documents.content[0].text, /2 matches/);
+	assert.match(documents.content[0].text, /draft\.md/);
+	assert.doesNotMatch(documents.content[0].text, /file\.ts/);
+	const literal = await check(options, cwd, { diff: { staged: true, paths: ["draft[1].md"] }, entries });
+	assert.equal(literal.details.findingCount, 0);
+	git(cwd, "commit", "-qm", "release diary");
+	const range = `${base}..HEAD`;
+	const commit = await check(options, cwd, { diff: { range }, kind: "commit", entries });
+	assert.match(commit.content[0].text, /1 match,.*\n.*commit [0-9a-f]{12}/);
+	assert.doesNotMatch(commit.content[0].text, /draft\.md|file\.ts/);
+	const doc = await check(options, cwd, { diff: { range, paths: ["draft.md"] }, kind: "document", entries });
+	assert.match(doc.content[0].text, /1 match,.*\n.*draft\.md/);
+	assert.doesNotMatch(doc.content[0].text, /commit [0-9a-f]{12}/);
+	await assert.rejects(check(options, cwd, { diff: {}, kind: "commit" }), /with a range and without paths/);
+	await assert.rejects(check(options, cwd, { diff: { range, paths: ["draft.md"] }, kind: "commit" }), /without paths/);
+	await assert.rejects(check(options, cwd, { diff: {}, kind: "reply" }), /not "reply"/);
+	await assert.rejects(check(options, cwd, { diff: { range, staged: true } }), /not both/);
+	await assert.rejects(check(options, cwd, { diff: { range: "--help..HEAD" } }), /git rev-parse/);
+	for (const path of [join(cwd, "draft.md"), "../draft.md", ":(glob)*.md"])
+		await assert.rejects(check(options, cwd, { diff: { paths: [path] } }), /Diff paths must be relative/);
+});
+
 test("staged CLI signals findings in a repository without HEAD, and distinguishes clean checks and errors", (t) => {
 	const { cwd, dir, root, identity } = fixture(t);
 	saveEntry(dir, entry, identity);
@@ -372,7 +464,7 @@ test("staged CLI signals findings in a repository without HEAD, and distinguishe
 		});
 	assert.throws(() => run("--staged"), { status: 1, stdout: /file\.ts.*release diary/ });
 	writeFileSync(join(cwd, "msg"), "Describe the constraint\n");
-	assert.match(run("--commit-file", "msg"), /No slop findings/);
+	assert.match(run("--commit-file", "msg"), /No slop detector findings/);
 	assert.throws(() => run("--staged", "--commit-file", "msg"), { status: 2 });
 });
 
@@ -422,9 +514,38 @@ test("prompt puts recent records before starter entries in id order and stays wi
 		{ ...saved, id: "older", title: "Older save", record: { items: [], updated: "2000-01-01T00:00:00.000Z" } },
 		saved,
 	];
-	const prompt = promptSection(scoped);
+	const { text: prompt, included, omitted } = selectPrompt(scoped, 1500);
 	assert.ok(prompt);
 	assert.ok(prompt.length <= 1500);
 	assert.match(prompt, /^Each line names a habit to avoid and its repair\.\nRelease diary:.*\nOlder save:.*\nHabit 1:/);
 	assert.doesNotMatch(prompt, /Habit 30/);
+	assert.match(prompt, new RegExp(`${omitted} of ${scoped.length} eligible slop repairs omitted.*prompt omitted`));
+	assert.equal(omitted + included.size, scoped.length);
+	const all = selectPrompt(scoped, 4000);
+	assert.equal(all.omitted, 0);
+	assert.match(all.text ?? "", /Habit 30:/);
+	assert.doesNotMatch(all.text ?? "", /omitted/);
+});
+
+test("prompt reports omissions even if no entire repair fits, and catalog exposes the skipped guidance", async (t) => {
+	const { dir, cwd, root, options, identity } = fixture(t);
+	const repair = "🧭".repeat(300);
+	saveEntry(dir, { ...entry, detectors: [], examples: [], repair }, identity);
+	const settings = (promptBudget: number) =>
+		writeFileSync(join(root, "harness.json"), JSON.stringify({ version: 1, slop: { promptBudget } }));
+	settings(256);
+	const prompt = catalogSection(options);
+	assert.ok(prompt && prompt.length <= 256);
+	assert.match(prompt, /1 of 1 eligible slop repairs omitted.*prompt omitted/);
+	assert.doesNotMatch(prompt, /Release diary:/);
+	const inventory = inspectCatalog(options, { scope: "document" }).content[0].text;
+	assert.match(inventory, /1 of 1 eligible slop repairs omitted/);
+	assert.match(inventory, /release-diary.*prompt omitted.*judgment only/);
+	assert.match(inspectCatalog(options, { entry: entry.id }).content[0].text, /## Repair/);
+	const checked = await check(options, cwd, { text: "release diary", kind: "document", entries: [entry.id] });
+	assert.equal(checked.details.ok, true);
+	assert.match(checked.content[0].text, /No slop detector findings.*\n.*judgment-only entries.*Use slop/);
+	settings(1100);
+	assert.match(catalogSection(options) ?? "", /Release diary:/);
+	assert.doesNotMatch(inspectCatalog(options, { scope: "document" }).content[0].text, /omitted/);
 });
