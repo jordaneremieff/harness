@@ -89,20 +89,48 @@ final class SyntaxEngine: NSObject {
     func symbols() -> [CodeSymbol] {
         if let symbolCache { return symbolCache }
         guard language.id != "plain", let source = storage?.mutableString else { return [] }
+        let result = Self.symbols(in: source, language: language) { line, offset, state in
+            let result = scan(line, at: offset, in: source, initial: state, emit: true)
+            checkpoints.record(line.end, result.0)
+            return result
+        }
+        symbolCache = result
+        return result
+    }
+
+    /// Takes an immutable snapshot so that a symbol list never scans a large live buffer on the UI thread.
+    func symbolSnapshot() -> Task<[CodeSymbol], Never> {
+        if let symbolCache { return Task { symbolCache } }
+        guard language.id != "plain", let source = storage?.string else { return Task { [] } }
+        let language = language
+        return Task.detached(priority: .userInitiated) {
+            let text = source as NSString
+            let profile = SyntaxLexicon.profile(language.id)
+            return Self.symbols(in: text, language: language) { line, offset, state in
+                if language.id == "markdown" {
+                    let next = state.markdown == .text && line.end < text.length ? Self.line(from: line.end, in: text).text : nil
+                    return SyntaxMarkdown.scan(line.text, offset: offset, nextLine: next, state: state, emit: true)
+                }
+                var lexer = SyntaxLexer(line.text, offset: offset, profile: profile, state: state, emit: true)
+                return lexer.run()
+            }
+        }
+    }
+
+    nonisolated private static func symbols(in source: NSString, language: SyntaxLanguage,
+                                            scan: (Line, Int, SyntaxState) -> (SyntaxState, [SyntaxToken])) -> [CodeSymbol] {
         var collector = SyntaxSymbolCollector()
         var state = SyntaxState()
         var offset = 0
         var number = 1
-        while offset < source.length {
+        while offset < source.length && !Task.isCancelled {
             let line = Self.line(from: offset, in: source)
-            let (next, tokens) = scan(line, at: offset, in: source, initial: state, emit: true)
+            let (next, tokens) = scan(line, offset, state)
             collector.consume(line.text, tokens: tokens, offset: offset, number: number, language: language)
-            checkpoints.record(line.end, next)
             state = next
             offset = line.end
             number += 1
         }
-        symbolCache = collector.symbols
         return collector.symbols
     }
 
@@ -222,7 +250,7 @@ final class SyntaxEngine: NSObject {
         let end: Int
     }
 
-    private static func line(from offset: Int, in source: NSString) -> Line {
+    nonisolated private static func line(from offset: Int, in source: NSString) -> Line {
         var end = offset
         var bodyEnd = offset
         source.getLineStart(nil, end: &end, contentsEnd: &bodyEnd, for: NSRange(location: offset, length: 0))

@@ -3,10 +3,15 @@ import AppKit
 extension WorkspaceScreen {
     func registerPanelCommands() {
         let quick = QuickNavigation()
+        let find = FindPanelState()
+        let project = PanelProjectSearch()
+        onPanelEditorChange = { [weak find] in find?.activeEditorChanged($0) }
         let editing: @MainActor () -> Bool = { [weak self] in self?.currentEditor != nil }
-        if var command = registry.command("view.search"), command.shortcut?.label == "cmd+P" {
-            command.shortcut = nil
-            registry.register(command)
+        for (id, replaced) in [("view.search", "cmd+P"), ("view.searchContents", "cmd+shift+F")] {
+            if var command = registry.command(id), command.shortcut?.label == replaced {
+                command.shortcut = nil
+                registry.register(command)
+            }
         }
         func add(_ id: String, _ title: String, _ category: String, keys: String,
                  enabled: @escaping @MainActor () -> Bool = { true }, _ body: @escaping @MainActor (WorkspaceScreen) -> Void) {
@@ -18,6 +23,16 @@ extension WorkspaceScreen {
         add("go.line", "Go to Line…", "Go", keys: "control+G", enabled: editing) { quick.show(in: $0, mode: .line) }
         add("go.symbol", "Go to Symbol…", "Go", keys: "cmd+R", enabled: editing) { quick.show(in: $0, mode: .symbols) }
         add("view.commandPalette", "Show Command Palette…", "View", keys: "cmd+shift+P") { $0.showCommandPalette() }
+        add("find.find", "Find…", "Find", keys: "cmd+F", enabled: editing) { find.show(in: $0, replace: false) }
+        add("find.replace", "Replace…", "Find", keys: "cmd+option+F", enabled: editing) { find.show(in: $0, replace: true) }
+        add("find.next", "Find Next", "Find", keys: "cmd+G", enabled: editing) { find.move(in: $0, backwards: false) }
+        add("find.previous", "Find Previous", "Find", keys: "cmd+shift+G", enabled: editing) { find.move(in: $0, backwards: true) }
+        add("find.useSelection", "Use Selection for Find", "Find", keys: "cmd+E", enabled: editing) { find.useSelection(in: $0, replace: false) }
+        add("find.useSelectionForReplace", "Use Selection for Replace", "Find", keys: "cmd+shift+E", enabled: editing) { find.useSelection(in: $0, replace: true) }
+        add("find.project", "Find in Files…", "Find", keys: "cmd+shift+F") { project.show(in: $0) }
+        add("find.nextResult", "Next Result", "Find", keys: "F4", enabled: { project.hasResults }) { project.move(in: $0, backwards: false) }
+        add("find.previousResult", "Previous Result", "Find", keys: "shift+F4", enabled: { project.hasResults }) { project.move(in: $0, backwards: true) }
+        add("view.settings", "Settings…", "View", keys: "cmd+,") { $0.showSettingsPanel() }
         Task { [weak self] in if let self { quick.fetch(in: self) } }
     }
 

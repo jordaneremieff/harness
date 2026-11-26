@@ -25,6 +25,7 @@ extension WorkspaceScreen {
     func showPathPrompt(action: String, start: String = "", run: @escaping @MainActor (String) async throws -> Void) {
         let panel = QuickPanel(title: action, placeholder: "Folder/name", assistance: "Use a project-relative path.",
                                keyboardHelp: "tab  Complete folder    return  Confirm    esc  Cancel")
+        panel.field.setAccessibilityLabel("Project-relative file path")
         let prompt = PathPrompt(screen: self, panel: panel, run: run)
         prompt.bind()
         chrome.presentOverlay(panel, placement: .top) { pane in

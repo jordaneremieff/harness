@@ -80,7 +80,7 @@ struct SyntaxLanguage: Sendable {
 
     static let plain = SyntaxLanguage("plain", "Plain Text", pairs: [], quotes: [])
 
-    private static let languages = [
+    static let languages = [
         plain, SyntaxLanguage("markdown", "Markdown", nil, markupBlock, quotes: [backtick]),
         SyntaxLanguage("typescript", "TypeScript", "//", slashBlock, quotes: quotes + [backtick], extraWord: "$"),
         SyntaxLanguage("tsx", "TypeScript JSX", "//", slashBlock, quotes: quotes + [backtick], extraWord: "$"),

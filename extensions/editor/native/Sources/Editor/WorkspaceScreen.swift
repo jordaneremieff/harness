@@ -39,6 +39,8 @@ final class WorkspaceScreen {
     private var panel: Panel? = .files
     private var buffers: [String: CodeEditor] = [:]
     private(set) var recentDocuments: [String] = []
+    var onPanelEditorChange: ((CodeEditor?) -> Void)?
+    private weak var panelEditor: CodeEditor?
     private var compositions: [String: CompositionPage] = [:]
     private var viewHeaders: [Fields] = []
     private var documents: [Fields] = []
@@ -267,6 +269,7 @@ final class WorkspaceScreen {
             if currentEditor === editor && (editor.conflicted || editor.diskConflict) { conflictMessage(editor) }
         }
         editor.onNote = { [weak self] anchor in self?.compose(anchor) }
+        editor.textView.onFind = { [weak self] in self?.registry.run("find.find") }
         return editor
     }
 
@@ -368,6 +371,20 @@ final class WorkspaceScreen {
         collaboration.update(state: state)
         refresh()
     }
+    func flushOpenProjectDrafts() async throws {
+        for editor in Array(buffers.values) where !editor.doc.hasPrefix("scratch:") && editor.hasPending {
+            try await editor.flush()
+            if editor.hasPending {
+                throw EditorIssue(code: "pending", message: "Finish the active edit before replacing project text.")
+            }
+        }
+    }
+
+    func refreshProjectDrafts(_ documents: [String]) async throws {
+        for doc in documents { try await buffers[doc]?.refresh() }
+        try await loadState()
+    }
+
     func synchronise() async throws {
         try await loadState()
         for key in groups.compactMap(\.selected) {
@@ -441,6 +458,11 @@ final class WorkspaceScreen {
         } else if let id = viewID(for: selected), let h = viewHeaders.first(where: { $0["id"] as? String == id }) {
             chrome.setStatus(h["title"] as? String ?? "Composed tab","Composed  ·  r\(h["rev"] as? Int ?? 1)",canSave: false)
         } else { chrome.setStatus(root,"Workspace",canSave: false) }
+        let editor = currentEditor
+        if editor !== panelEditor {
+            panelEditor = editor
+            onPanelEditorChange?(editor)
+        }
     }
     private func present(reveal: String? = nil) {
         chrome.expandedPanel = expandedNavigator && panel != nil && panel != .notes
@@ -471,17 +493,17 @@ final class WorkspaceScreen {
         panel = .notes; present()
         collaboration.compose(anchor: anchor)
     }
+    func revealEditorForFind() {
+        if panel != nil && !chrome.showsSideBySide { panel = nil; present() }
+    }
+
     func command(_ name: String) {
         switch name {
         case "files": toggle(.files)
         case "search": showNavigator(.search)
         case "searchContents": selectionRequest += 1; panel = .search; present(); navigator.showSearch(contents: true)
         case "git": showNavigator(.git)
-        case "find":
-            guard let editor = currentEditor else { return }
-            // A sidebar that covers the source would hide what Find shows.
-            if !chrome.showsSideBySide { panel = nil; present() }
-            editor.find()
+        case "find": registry.run("find.find")
         case "wrap":
             preferences.set("wordWrap", .flag(!preferences.base.wordWrap))
         case "notes": toggle(.notes)
@@ -706,7 +728,6 @@ final class WorkspaceScreen {
         add("view.sidebar", "Toggle Side Bar", "View", keys: "cmd+K cmd+B", on: { [weak self] in self?.panel != nil }) { screen in
             if let panel = screen.panel { screen.toggle(panel) } else { screen.showNavigator(.files) }
         }
-        add("find.find", "Find…", "Find", keys: "cmd+F", enabled: editing) { $0.command("find") }
         add("go.nextTab", "Next Tab", "Go", keys: "cmd+shift+]") { $0.command("next") }
         add("go.previousTab", "Previous Tab", "Go", keys: "cmd+shift+[") { $0.command("previous") }
         add("go.nextTabArrow", "Next Tab", "Go", keys: "cmd+option+right") { $0.command("next") }

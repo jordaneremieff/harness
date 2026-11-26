@@ -56,6 +56,16 @@ struct QuickPanelTests {
         #expect(items[1].detail == "cmd+K cmd+B")
     }
 
+    @Test @MainActor func symbolSnapshotMatchesTheSourceSyntaxIndex() async {
+        let storage = NSTextStorage(string: "Overview\n========\n\n## Details\n")
+        let engine = SyntaxEngine(path: "README.md", storage: storage)
+        let snapshot = engine.symbolSnapshot()
+        let expected = engine.symbols()
+        #expect(expected.map(\.name) == ["Overview", "Details"])
+        storage.mutableString.append("\n## Later\n")
+        #expect(await snapshot.value == expected)
+    }
+
     @Test func pathsRequireNamesInsideTheProject() {
         #expect(PathChoice("Source/Ed").folder == "Source")
         #expect(PathChoice("Source/Ed").name == "Ed")

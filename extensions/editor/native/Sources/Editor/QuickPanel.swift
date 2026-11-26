@@ -116,6 +116,8 @@ final class QuickPanel: QuickSurface, NSTableViewDelegate, NSTableViewDataSource
         field.setAccessibilityLabel(title)
         field.toolTip = assistance
         field.delegate = self
+        field.target = self
+        field.action = #selector(submitField)
         field.isBordered = false
         field.isBezeled = false
         field.drawsBackground = false
@@ -261,6 +263,8 @@ final class QuickPanel: QuickSurface, NSTableViewDelegate, NSTableViewDataSource
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
     }
+
+    @objc private func submitField() { if ready { onAccept?(item) } }
 
     @objc private func clickRow() {
         guard ready, table.clickedRow == table.selectedRow, let item, item.enabled else { return }

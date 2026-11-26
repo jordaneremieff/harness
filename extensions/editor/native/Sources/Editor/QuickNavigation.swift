@@ -138,7 +138,9 @@ final class QuickNavigationSession {
     private var work: Task<[QuickItem.Hit], Never>?
     private var destinations: [String: NSRange] = [:]
     private var lineToCommit: Int?
-    private var symbols: (editor: ObjectIdentifier, revision: UInt64, rows: [QuickItem], locations: [String: NSRange])?
+    private var lineOffsets: (editor: ObjectIdentifier, revision: UInt64, task: Task<[Int], Never>)?
+    private var symbols: (editor: ObjectIdentifier, revision: UInt64, scan: Task<[CodeSymbol], Never>, list: Task<QuickSymbolList, Never>)?
+    private var textSnapshot: (editor: ObjectIdentifier, revision: UInt64, text: String)?
     var items: [QuickItem] = []
     var fileMessage: String?
     var onFilesChanged: (() -> Void)?
@@ -234,36 +236,65 @@ final class QuickNavigationSession {
                 panel.show([], status: input.isEmpty ? editor.doc : "Enter a positive line number")
                 return
             }
-            lineToCommit = line
-            editor.go(line: line)
-            panel.show([], status: "Line \(line) · \(editor.doc)")
+            let engine = editor.textView.syntax.engine
+            if let storage = editor.textView.textStorage { engine.attach(to: storage) }
+            let key = ObjectIdentifier(editor)
+            if lineOffsets?.editor != key || lineOffsets?.revision != engine.revision {
+                lineOffsets?.task.cancel()
+                let source = String(editor.findText)
+                lineOffsets = (key, engine.revision, Task.detached(priority: .userInitiated) { Self.offsets(in: source) })
+            }
+            guard let index = lineOffsets?.task else { return }
+            let generation = request
+            panel.busy("Locating line…")
+            filter = Task { [weak self, weak panel, weak editor] in
+                let starts = await index.value
+                guard !Task.isCancelled, let self, let editor, request == generation, !starts.isEmpty else { return }
+                let clamped = min(line, starts.count)
+                let target = NSRange(location: starts[clamped - 1], length: 0)
+                lineToCommit = clamped
+                editor.textView.setSelectedRange(target)
+                editor.textView.scrollRangeToVisible(target)
+                panel?.show([], status: "Line \(clamped) · \(editor.doc)")
+            }
         case .symbol(let query):
             let engine = editor.textView.syntax.engine
             if let storage = editor.textView.textStorage { engine.attach(to: storage) }
             let key = ObjectIdentifier(editor)
             if symbols?.editor != key || symbols?.revision != engine.revision {
-                var ranges: [String: NSRange] = [:]
-                let rows = engine.symbols().map { symbol in
-                    let id = String(symbol.range.location)
-                    ranges[id] = symbol.range
-                    return QuickItem(id, title: symbol.name, detail: ":\(symbol.line)", icon: Self.icon(symbol.kind))
-                }
-                symbols = (key, engine.revision, rows, ranges)
+                symbols?.scan.cancel(); symbols?.list.cancel()
+                let task = engine.symbolSnapshot()
+                symbols = (key, engine.revision, task, Task.detached(priority: .userInitiated) { QuickSymbolList(await task.value) })
             }
             guard let symbols else { return }
-            destinations = symbols.locations
+            let generation = request
             previewEditor = editor
-            find(symbols.rows, by: query, message: symbols.rows.isEmpty ? "No symbols in this file" : nil)
+            panel.busy("Finding symbols…")
+            filter = Task { [weak self, weak editor] in
+                let list = await symbols.list.value
+                guard !Task.isCancelled, let self, let editor, request == generation else { return }
+                if editor.textView.syntax.engine.revision != symbols.revision { update(); return }
+                destinations = list.locations
+                find(list.items, by: query, message: list.items.isEmpty ? "No symbols in this file" : nil)
+            }
         case .text(let query):
             guard !query.isEmpty else { panel.show([], status: "Enter text to find in \(editor.doc)"); return }
             panel.busy()
-            let source = String(editor.findText)
+            let engine = editor.textView.syntax.engine
+            if let storage = editor.textView.textStorage { engine.attach(to: storage) }
+            let key = ObjectIdentifier(editor)
+            if textSnapshot?.editor != key || textSnapshot?.revision != engine.revision {
+                textSnapshot = (key, engine.revision, String(editor.findText))
+            }
+            guard let snapshot = textSnapshot else { return }
+            let source = snapshot.text
             let generation = request
             previewEditor = editor
             let worker = Task.detached(priority: .userInitiated) { QuickTextMatches.search(query, in: source) }
-            filter = Task { [weak self, weak panel] in
+            filter = Task { [weak self, weak panel, weak editor] in
                 let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
-                guard !Task.isCancelled, let self, request == generation else { return }
+                guard !Task.isCancelled, let self, let editor, request == generation else { return }
+                if editor.textView.syntax.engine.revision != snapshot.revision { update(); return }
                 destinations = result.locations
                 panel?.show(result.hits, status: result.limited ? "First \(result.hits.count) matches" : nil)
             }
@@ -319,12 +350,37 @@ final class QuickNavigationSession {
 
     private func finish(commit: Bool, detached: Bool) {
         guard !finished, let screen else { return }
-        finished = true; filter?.cancel(); work?.cancel()
+        finished = true; filter?.cancel(); work?.cancel(); lineOffsets?.task.cancel()
+        symbols?.scan.cancel(); symbols?.list.cancel()
         for position in positions.values where !commit || position.editor !== (previewEditor ?? origin?.editor) { position.restore() }
         if !detached, let panel { screen.chrome.dismissOverlay(panel) }
         if hasTransient { screen.endTransient(commit: commit, focus: !detached) }
         else if !detached, screen.chrome.window?.isKeyWindow == true { screen.currentEditor?.focus() }
         onFinish?()
+    }
+
+    nonisolated private static func offsets(in text: String) -> [Int] {
+        var lines = [0]
+        for (index, unit) in text.utf16.enumerated() where unit == 10 {
+            if Task.isCancelled { return [] }
+            lines.append(index + 1)
+        }
+        return lines
+    }
+
+}
+
+private struct QuickSymbolList: Sendable {
+    var items: [QuickItem] = []
+    var locations: [String: NSRange] = [:]
+
+    init(_ symbols: [CodeSymbol]) {
+        for symbol in symbols {
+            if Task.isCancelled { return }
+            let id = String(symbol.range.location)
+            locations[id] = symbol.range
+            items.append(QuickItem(id, title: symbol.name, detail: ":\(symbol.line)", icon: Self.icon(symbol.kind)))
+        }
     }
 
     private static func icon(_ kind: CodeSymbol.Kind) -> String {

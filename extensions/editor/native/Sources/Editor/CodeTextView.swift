@@ -89,6 +89,7 @@ final class CodeClipView: NSClipView {
 @MainActor
 final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @preconcurrency NSTextStorageDelegate {
     var noteTarget: ((NSRange) -> NSMenuItem?)?
+    var onFind: (() -> Void)?
     let syntax = CodeSyntax()
     var sourceSettings = EditorSettings()
     var sourceTheme = WorkspaceStyle.theme
@@ -340,12 +341,16 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
         }
     }
 
+    override func performTextFinderAction(_ sender: Any?) {
+        if let onFind, (sender as? NSMenuItem)?.tag == NSTextFinder.Action.showFindInterface.rawValue { onFind() }
+        else { super.performTextFinderAction(sender) }
+    }
+
     override func menu(for event: NSEvent) -> NSMenu? {
         let selection = selectedRange()
         let point = convert(event.locationInWindow, from: nil)
         let range = noteRange(at: point, selection: selection)
         let result = super.menu(for: event) ?? NSMenu()
-        // Find has no other control in the pane, and the pane's application shows no menu bar.
         let find = NSMenuItem(title: "Find…", action: #selector(performTextFinderAction(_:)), keyEquivalent: "")
         find.tag = NSTextFinder.Action.showFindInterface.rawValue
         find.target = self

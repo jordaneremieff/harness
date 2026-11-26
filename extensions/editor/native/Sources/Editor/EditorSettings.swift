@@ -154,7 +154,7 @@ struct EditorSettings: Equatable, Sendable {
 
     static let specsByKey: [String: SettingSpec] = Dictionary(uniqueKeysWithValues: specs.map { ($0.key, $0) })
 
-    /// Values that differ from the defaults.
+    /// Non-default base values, or the explicitly chosen values of a language.
     private(set) var values: [String: SettingValue] = [:]
 
     init(values: [String: SettingValue] = [:]) {
@@ -165,10 +165,10 @@ struct EditorSettings: Equatable, Sendable {
         values[key] ?? Self.specsByKey[key]?.initial ?? .flag(false)
     }
 
-    /// Sets a value; the default value, or nil, removes the override.
-    mutating func set(_ key: String, _ value: SettingValue?) {
+    /// Nil removes the value. A language can explicitly choose the factory default instead of inheriting the base.
+    mutating func set(_ key: String, _ value: SettingValue?, keepDefault: Bool = false) {
         guard let spec = Self.specsByKey[key] else { return }
-        values[key] = value == spec.initial ? nil : value
+        values[key] = !keepDefault && value == spec.initial ? nil : value
     }
 
     func flag(_ key: String) -> Bool { if case .flag(let value) = value(key) { value } else { false } }
@@ -252,16 +252,26 @@ final class SettingsStore {
         return merged
     }
 
-    /// Changes one setting and writes the file. Nil returns the setting to its default.
+    /// Changes one setting and writes the file. Nil restores the default or the inherited base value.
     func set(_ key: String, _ value: SettingValue?, language: String? = nil) {
-        guard let spec = EditorSettings.specsByKey[key], language == nil || spec.perLanguage else { return }
-        if let language {
-            var overrides = languages[language] ?? EditorSettings()
-            overrides.set(key, value)
-            languages[language] = overrides.values.isEmpty ? nil : overrides
-        } else {
-            base.set(key, value)
+        set([(key, value, language)])
+    }
+
+    /// Applies a set of choices with one file write and one appearance update.
+    func set(_ changes: [(key: String, value: SettingValue?, language: String?)]) {
+        let before = (base, languages)
+        for (key, value, language) in changes {
+            guard let spec = EditorSettings.specsByKey[key], language == nil || spec.perLanguage,
+                  value == nil || value.flatMap({ spec.accept($0.json) }) != nil else { continue }
+            if let language {
+                var overrides = languages[language] ?? EditorSettings()
+                overrides.set(key, value, keepDefault: true)
+                languages[language] = overrides.values.isEmpty ? nil : overrides
+            } else {
+                base.set(key, value)
+            }
         }
+        guard before.0 != base || before.1 != languages else { return }
         write()
         onChange?()
     }
@@ -321,7 +331,7 @@ final class SettingsStore {
                     problems.append("\(language.map { "languages.\($0)." } ?? "")\(key): expected \(spec.expectation); the default applies.")
                     continue
                 }
-                result.set(key, value)
+                result.set(key, value, keepDefault: language != nil)
             }
             return result
         }
