@@ -301,7 +301,8 @@ struct WorkspaceScreenTests {
         let source = try #require(children(view, CodeTextView.self).first)
         let sourceFrame = source.convert(source.bounds, to: view)
         let firstLines = Int(sourceFrame.minY * scale)..<Int((sourceFrame.minY + 55) * scale)
-        let glyphs = Int(15 * scale)..<Int(85 * scale)
+        let origin = source.convert(source.textContainerOrigin, to: view)
+        let glyphs = Int(origin.x * scale)..<Int(min(view.bounds.maxX, origin.x + 70) * scale)
         let showsKeyword = firstLines.contains { y in glyphs.contains { x in
             guard let c = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
             return c.redComponent > c.greenComponent + 0.15 && c.blueComponent > c.greenComponent + 0.15

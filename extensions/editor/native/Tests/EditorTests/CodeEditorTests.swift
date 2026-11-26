@@ -172,6 +172,128 @@ struct CodeEditorTests {
         #expect(fixture.textView.textContainer?.widthTracksTextView == true)
     }
 
+    @Test func editsEverySelectionAndUndoesEachBatchOnce() throws {
+        let fixture = try Fixture(text: "a😀\nb😀\n")
+        let view = fixture.textView
+        let caret: (Int) -> NSRange = { NSRange(location: $0, length: 0) }
+        let insertion = NSRange(location: NSNotFound, length: 0)
+        view.select([caret(1), caret(5)])
+        view.insertText("x", replacementRange: insertion)
+        #expect(view.string == "ax😀\nbx😀\n")
+        #expect(fixture.editor.findSelections == [caret(2), caret(7)])
+        view.doCommand(by: NSSelectorFromString("deleteBackward:"))
+        #expect(view.string == "a😀\nb😀\n")
+        view.undoManager?.undo()
+        #expect(view.string == "ax😀\nbx😀\n")
+        view.undoManager?.undo()
+        #expect(view.string == "a😀\nb😀\n")
+        let board = NSPasteboard(name: NSPasteboard.Name(rawValue: UUID().uuidString))
+        defer { board.releaseGlobally() }
+        board.setString("left\r\nright", forType: .string)
+        view.select([caret(1), caret(5)])
+        view.paste(from: board, reindent: false)
+        #expect(view.string == "aleft😀\nbright😀\n")
+        view.undoManager?.undo()
+        #expect(view.string == "a😀\nb😀\n")
+        #expect(fixture.editor.hasPending)
+    }
+
+    @Test func usesLanguageForCommentsAndAutomaticIndentation() throws {
+        let fixture = try Fixture(text: "let one = 1\nlet two = 2\n")
+        let view = fixture.textView
+        view.select([NSRange(location: 0, length: 0), NSRange(location: 12, length: 0)])
+        view.run(.lineComment)
+        #expect(view.string == "// let one = 1\n// let two = 2\n")
+        view.run(.lineComment)
+        #expect(view.string == "let one = 1\nlet two = 2\n")
+        fixture.editor.chooseLanguage("python")
+        view.run(.lineComment)
+        #expect(view.string == "# let one = 1\n# let two = 2\n")
+        fixture.editor.chooseLanguage(nil)
+        #expect(fixture.editor.languageName == "Swift")
+
+        let brace = try Fixture(text: "if ready ")
+        brace.editor.go(line: 1)
+        brace.textView.select([NSRange(location: 9, length: 0)])
+        brace.textView.insertText("{", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(brace.textView.string == "if ready {}")
+        brace.textView.doCommand(by: NSSelectorFromString("deleteBackward:"))
+        #expect(brace.textView.string == "if ready ")
+        brace.textView.insertText("{", replacementRange: NSRange(location: NSNotFound, length: 0))
+        brace.textView.doCommand(by: NSSelectorFromString("insertNewline:"))
+        #expect(brace.textView.string == "if ready {\n    \n}")
+        #expect(brace.editor.caretPosition == (line: 2, column: 5))
+    }
+
+    @Test func foldsOnlyLayoutAndCaretMovesAcrossTheFold() throws {
+        let fixture = try Fixture(text: "func show() {\n    let visible = true\n    print(visible)\n}\nnext()\n")
+        let view = fixture.textView
+        let original = view.string
+        let second = view.lineRange(1).location
+        let before = try #require(view.caretRect(at: view.lineRange(3).location)).minY
+        view.select([NSRange(location: second, length: 0)])
+        view.toggleFold(line: 0)
+        #expect(view.isFolded(line: 0))
+        #expect(view.isHidden(line: 1))
+        #expect(view.string == original)
+        #expect(view.selectedRange().location < second)
+        let after = try #require(view.caretRect(at: view.lineRange(3).location)).minY
+        #expect(after < before)
+        view.doCommand(by: NSSelectorFromString("moveRight:"))
+        #expect(fixture.editor.caretPosition.line == 4)
+        view.doCommand(by: NSSelectorFromString("moveLeft:"))
+        #expect(fixture.editor.caretPosition.line == 1)
+        fixture.editor.go(line: 2)
+        #expect(!view.isFolded(line: 0))
+        #expect(view.selectedRange().location == second)
+    }
+
+    @Test func detectsAndConvertsIndentation() throws {
+        let fixture = try Fixture(text: "a\n  b\n    c\n  d\n")
+        fixture.editor.apply(settings: EditorSettings(), theme: WorkspaceStyle.theme)
+        #expect(fixture.editor.indentation.spaces && fixture.editor.indentation.width == 2)
+        fixture.editor.convertIndentation(spaces: false)
+        #expect(!fixture.editor.indentation.spaces)
+        #expect(fixture.textView.string == "a\n\tb\n\t\tc\n\td\n")
+        let tabs = try Fixture(text: "a\n\tb\n\t\tc\n")
+        tabs.editor.apply(settings: EditorSettings(), theme: WorkspaceStyle.theme)
+        #expect(!tabs.editor.indentation.spaces && tabs.editor.indentation.width == 4)
+    }
+
+    @Test func findSelectsSeveralRangesAndSaveCleanupIsUndoable() async throws {
+        let fixture = try Fixture(text: "one  \none\t")
+        fixture.editor.apply(settings: EditorSettings(values: ["trimTrailingWhitespaceOnSave": .flag(true),
+            "ensureNewlineAtEndOnSave": .flag(true)]), theme: WorkspaceStyle.theme)
+        let hits = [NSRange(location: 0, length: 3), NSRange(location: 6, length: 3)]
+        fixture.editor.markFound(hits, current: hits[0])
+        fixture.editor.selectFound(hits, reveal: hits[0])
+        #expect(fixture.editor.findSelections == hits)
+        #expect(fixture.textView.mapFindLines == [0, 1])
+        try await fixture.editor.save(path: nil)
+        #expect(fixture.textView.string == "one\none\n")
+        fixture.textView.undoManager?.undo()
+        #expect(fixture.textView.string == "one  \none\t")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func changeMarksFollowTheDraftAndSupportNavigation() async throws {
+        let fixture = try Fixture(text: "one\nnew\nthree\n")
+        let stream = AsyncStream<[CodeChangeMark]> { continuation in
+            fixture.editor.onChangeMarks = { [weak editor = fixture.editor] in
+                if let editor { continuation.yield(editor.changeMarks) }
+            }
+        }
+        defer { fixture.editor.stop() }
+        var updates = stream.makeAsyncIterator()
+        fixture.editor.setBaseText("one\nold\nthree\n")
+        #expect(await updates.next() == [CodeChangeMark(line: 1, kind: .modified)])
+        fixture.editor.run(.nextChange)
+        #expect(fixture.editor.caretPosition.line == 2)
+        fixture.insert("extra\n", at: fixture.textView.lineRange(2).location)
+        #expect(await updates.next() == [CodeChangeMark(line: 1, kind: .modified), CodeChangeMark(line: 2, kind: .added)])
+        fixture.editor.run(.nextChange)
+        #expect(fixture.editor.caretPosition.line == 3)
+    }
+
     @Test func highlightedViewportEditsAndScrollsNearTheFileLimit() throws {
         let sample = "let value: String = \"hello 👩🏽‍🚀\" // sample text for viewport measurement\n"
         let bytes = 2_000_000 / sample.utf8.count * sample.utf8.count
@@ -179,6 +301,10 @@ struct CodeEditorTests {
         let clock = ContinuousClock()
         let start = clock.now
         let fixture = try Fixture(text: source)
+        fixture.editor.apply(settings: EditorSettings(values: ["rulers": .columns([88, 120]),
+            "whitespace": .text("all"), "animations": .flag(false)]), theme: WorkspaceStyle.theme)
+        fixture.editor.setBaseText(source + "// base\n")
+        fixture.editor.onSelectionChange = { [weak editor = fixture.editor] in _ = editor?.caretPosition }
         let opened = start.duration(to: clock.now)
         let manager = try #require(fixture.textView.layoutManager)
         let colour = manager.temporaryAttribute(.foregroundColor, atCharacterIndex: 0, effectiveRange: nil) as? NSColor

@@ -14,6 +14,12 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
     private var stopped = false
     private var busy = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var gitBase: String?
+    private var decorationTimer: Timer?
+    private var decorationTask: Task<Void, Never>?
+    private var decorationRevision = 0
+    private var chosenIndentation: (spaces: Bool, width: Int)?
+    private var detectedIndentation: (spaces: Bool, width: Int)?
 
     var view: NSView { scroll }
     private(set) var doc: String
@@ -29,7 +35,9 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
     /// Runs after the selection or the insertion point moves.
     var onSelectionChange: (() -> Void)?
     /// The indentation that typing uses in this file: spaces or tabs, and the width of one level.
-    private(set) var indentation = (spaces: true, width: 4)
+    var indentation: (spaces: Bool, width: Int) { textView.indentation }
+    private(set) var changeMarks: [CodeChangeMark] = []
+    var onChangeMarks: (() -> Void)?
 
     init(api: any EditorAPI, record: Fields) {
         self.api = api
@@ -45,6 +53,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         scroll.autohidesScrollers = true
         scroll.drawsBackground = true
         scroll.backgroundColor = .textBackgroundColor
+        scroll.contentView = CodeClipView()
         scroll.documentView = textView
         textView.isRichText = false
         textView.isVerticallyResizable = true
@@ -69,8 +78,12 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         setWrap(false)
         textView.syntax.colours = { role in WorkspaceStyle.theme.syntax("\(role)") }
         textView.setSyntax(for: doc)
+        textView.attachSource()
         textView.delegate = self
+        textView.selectionChanged = { [weak self] in self?.onSelectionChange?() }
         textView.noteTarget = { [weak self] range in self?.noteItem(range) }
+        scroll.bindSourceMargins(to: textView)
+        scheduleDecorations(immediate: true)
     }
 
     /// The language of the file, such as `markdown`, for per-language settings; nil for plain text.
@@ -79,39 +92,103 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         return id == "plain" ? nil : id
     }
 
-    /// The 1-based line and column (in characters) of the insertion point.
+    var languageName: String { textView.syntax.engine.language.displayName }
+    var selectionCount: Int { textView.selections.count }
+    var selectedCharacterCount: Int {
+        textView.sourceSelections.reduce(0) { $0 + findText.substring(with: $1).count }
+    }
+
+    /// The 1-based line and display column of the primary insertion point.
     var caretPosition: (line: Int, column: Int) {
-        let source = findText
-        let caret = min(textView.selectedRange().location, source.length)
-        var line = 1
-        var start = 0
-        var offset = 0
-        while offset < caret {
-            let found = source.range(of: "\n", options: .literal, range: NSRange(location: offset, length: caret - offset))
-            guard found.location != NSNotFound else { break }
-            line += 1
-            start = NSMaxRange(found)
-            offset = start
-        }
-        return (line, (source.substring(with: NSRange(location: start, length: caret - start)) as String).count + 1)
+        let caret = min(textView.selections.last?.head ?? 0, findText.length)
+        return (textView.line(at: caret) + 1, textView.displayColumn(at: caret) + 1)
+    }
+
+    func chooseLanguage(_ id: String?) {
+        textView.syntax.engine.chooseLanguage(id)
+        textView.invalidateSyntax()
+        scheduleDecorations(immediate: true)
+        onSelectionChange?()
+    }
+
+    func chooseIndentation(spaces: Bool, width: Int) {
+        chosenIndentation = (spaces, min(16, max(1, width)))
+        applyIndentation()
+        scheduleDecorations(immediate: true)
+        onSelectionChange?()
+    }
+
+    func convertIndentation(spaces: Bool) {
+        let changes = textView.indentationEdits(spaces: spaces)
+        if changes.isEmpty || textView.edit(changes, reveal: false) { chooseIndentation(spaces: spaces, width: indentation.width) }
+    }
+
+    func relocate(to path: String) {
+        doc = path
+        title = (path as NSString).lastPathComponent
+        textView.setSyntax(for: path)
+        setBaseText(nil)
+        onSelectionChange?()
+        onChange?()
     }
 
     /// The text of the file in the last Git commit, for change marks; nil when it has none.
-    func setBaseText(_ text: String?) {}
+    func setBaseText(_ text: String?) {
+        guard gitBase != text else { return }
+        gitBase = text
+        publishChangeMarks([])
+        scheduleDecorations(immediate: true)
+    }
 
-    func textViewDidChangeSelection(_ notification: Notification) { onSelectionChange?() }
+    func moveToChange(direction: Int) {
+        let line = caretPosition.line - 1
+        let target = direction > 0 ? changeMarks.first { $0.line > line } ?? changeMarks.first
+            : changeMarks.last { $0.line < line } ?? changeMarks.last
+        if let target { go(line: target.line + 1) }
+    }
+
+    func textViewDidChangeSelection(_ notification: Notification) {
+        if !textView.settingSelections { onSelectionChange?() }
+    }
 
     /// Applies the font, colours and view settings of this file's language.
     func apply(settings: EditorSettings, theme: EditorTheme) {
+        let previous = textView.sourceSettings
+        textView.sourceSettings = settings
+        textView.sourceTheme = theme
         let font = settings.sourceFont
         if textView.font != font { textView.font = font }
+        textView.spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
         scroll.backgroundColor = theme.editor
         textView.backgroundColor = theme.editor
-        textView.textColor = theme.text
+        if textView.textColor != theme.text { textView.textColor = theme.text }
         textView.insertionPointColor = theme.caret
         textView.selectedTextAttributes = [.backgroundColor: theme.selection]
+        applyIndentation()
+        textView.typingAttributes[.font] = font
+        textView.typingAttributes[.foregroundColor] = theme.text
+        if textView.layoutSpacing != settings.lineSpacing {
+            textView.layoutSpacing = settings.lineSpacing
+            let all = NSRange(location: 0, length: findText.length)
+            if all.length > 0 { textView.layoutManager?.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil) }
+        }
+        setWrap(settings.wordWrap)
+        scroll.tile()
+        textView.updateCaretTimer()
+        textView.invalidateAdornment()
+        textView.invalidateSyntax()
+        if previous.minimap != settings.minimap || previous.tabSize != settings.tabSize { scheduleDecorations(immediate: true) }
+    }
+
+    private func applyIndentation() {
+        let settings = textView.sourceSettings
+        let defaults = (spaces: settings.indentWithSpaces, width: settings.tabSize)
+        if settings.detectIndentation, detectedIndentation == nil {
+            detectedIndentation = textView.detectedIndentation(fallback: defaults)
+        }
+        textView.indentation = chosenIndentation ?? (settings.detectIndentation ? detectedIndentation : nil) ?? defaults
         let style = NSMutableParagraphStyle()
-        style.defaultTabInterval = CGFloat(settings.tabSize) * (" " as NSString).size(withAttributes: [.font: font]).width
+        style.defaultTabInterval = CGFloat(indentation.width) * textView.spaceWidth
         style.tabStops = []
         if textView.defaultParagraphStyle != style {
             textView.defaultParagraphStyle = style
@@ -120,11 +197,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
                 storage.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: storage.length))
             }
         }
-        indentation = (settings.indentWithSpaces, settings.tabSize)
-        textView.typingAttributes[.font] = font
-        textView.typingAttributes[.foregroundColor] = theme.text
-        setWrap(settings.wordWrap)
-        textView.invalidateSyntax()
+        textView.invalidateAdornment()
     }
 
     func focus() { textView.window?.makeFirstResponder(textView) }
@@ -154,18 +227,59 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
     }
 
     func go(line: Int) {
-        guard line > 0, let source = textView.textStorage?.mutableString else { return }
-        let length = source.length
-        var offset = 0
-        var remaining = line - 1
-        while remaining > 0 && offset < length {
-            let newline = source.range(of: "\n", options: .literal, range: NSRange(location: offset, length: length - offset))
-            offset = newline.location == NSNotFound ? length : NSMaxRange(newline)
-            remaining -= 1
-        }
+        guard line > 0 else { return }
+        let offset = line > textView.lineCount ? findText.length : textView.lineRange(line - 1).location
         let range = NSRange(location: offset, length: 0)
-        textView.setSelectedRange(range)
-        textView.scrollRangeToVisible(range)
+        textView.unfold(intersecting: range)
+        textView.select([range], reveal: range)
+    }
+
+    private func publishChangeMarks(_ marks: [CodeChangeMark]) {
+        guard changeMarks != marks else { return }
+        changeMarks = marks
+        let entries = Dictionary(marks.map { ($0.line, $0.kind) }, uniquingKeysWith: { first, _ in first })
+        scroll.setChanges(entries)
+        onChangeMarks?()
+    }
+
+    private func scheduleDecorations(immediate: Bool = false) {
+        decorationRevision += 1
+        decorationTask?.cancel()
+        decorationTask = nil
+        if immediate || stopped || (gitBase == nil && !textView.sourceSettings.minimap) {
+            decorationTimer?.invalidate()
+            decorationTimer = nil
+        }
+        guard !stopped, gitBase != nil || textView.sourceSettings.minimap else { return }
+        if immediate { refreshDecorations(); return }
+        if let decorationTimer { decorationTimer.fireDate = Date(timeIntervalSinceNow: 0.16); return }
+        let timer = Timer(timeInterval: 0.16, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshDecorations() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        decorationTimer = timer
+    }
+
+    private func refreshDecorations() {
+        decorationTimer = nil
+        let generation = decorationRevision
+        let snapshot = textView.string
+        let base = gitBase
+        let drawMap = textView.sourceSettings.minimap
+        let language = textView.syntax.engine.language.id
+        let tabWidth = indentation.width
+        decorationTask = Task { [weak self] in
+            let compute = Task.detached(priority: .utility) {
+                let marks = base.map { CodeChangeDiff.between(base: $0, current: snapshot) } ?? []
+                let map = drawMap ? CodeMapRow.overview(snapshot, language: language, tabWidth: tabWidth) : []
+                return (marks, map)
+            }
+            let (marks, map) = await withTaskCancellationHandler(operation: { await compute.value }, onCancel: { compute.cancel() })
+            guard !Task.isCancelled, let self, decorationRevision == generation else { return }
+            publishChangeMarks(marks)
+            scroll.minimap.rows = map
+            scroll.minimap.needsDisplay = true
+        }
     }
 
     func undoManager(for view: NSTextView) -> UndoManager? { undoHistory }
@@ -176,6 +290,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         pending = true
         editGeneration += 1
         textView.invalidateSyntax()
+        scheduleDecorations()
         if firstPendingEdit { onChange?() }
         scheduleFlush()
     }
@@ -184,9 +299,15 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         stopped = true
         debounce?.cancel()
         debounce = nil
+        decorationTimer?.invalidate()
+        decorationTimer = nil
+        decorationTask?.cancel()
+        decorationTask = nil
         onStatus = nil
         onChange = nil
         onNote = nil
+        onChangeMarks = nil
+        onSelectionChange = nil
     }
 
     func flush() async throws {
@@ -195,8 +316,18 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
 
     func save(path: String?) async throws {
         try await exclusively {
+            try requireCommittedInput()
+            if conflicted { throw Self.draftChangedIssue }
+            if diskConflict && path == nil {
+                try await flushDraft()
+                throw Self.diskChangedIssue
+            }
+            let settings = textView.sourceSettings
+            let cleanup = textView.cleanupEdits(trim: settings.trimTrailingWhitespaceOnSave, newline: settings.ensureNewlineAtEndOnSave)
+            if !cleanup.isEmpty && !textView.edit(cleanup, reveal: false) {
+                throw EditorIssue(code: "edit", message: "The source refused the save cleanup.")
+            }
             try await flushDraft()
-            if diskConflict && path == nil { throw Self.diskChangedIssue }
             var fields: Fields = ["doc": doc, "rev": revision]
             fields["path"] = path
             let result: Fields
@@ -222,7 +353,11 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
             guard record.text.utf8.elementsEqual(sharedText.utf8) else { throw Self.invalidResponse }
             let changedFile = doc != record.doc
             adoptMetadata(record)
-            if changedFile { textView.setSyntax(for: doc) }
+            if changedFile {
+                textView.setSyntax(for: doc)
+                setBaseText(nil)
+                scheduleDecorations(immediate: true)
+            }
             onChange?()
         }
     }
@@ -401,8 +536,11 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         if replaced {
             let selection = textView.selectedRange()
             let origin = scroll.contentView.bounds.origin
+            textView.setFolds([])
             textView.string = record.text
             textView.invalidateSyntax()
+            detectedIndentation = nil
+            applyIndentation()
             let source = record.text as NSString
             let start = Self.scalarBoundary(min(selection.location, source.length), source)
             let end = Self.scalarBoundary(min(NSMaxRange(selection), source.length), source)
@@ -413,7 +551,8 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
             editGeneration += 1
         }
         adoptMetadata(record)
-        if changedFile { textView.setSyntax(for: doc) }
+        if changedFile { textView.setSyntax(for: doc); setBaseText(nil) }
+        if replaced || changedFile { scheduleDecorations(immediate: true) }
         pending = false
         conflicted = false
         onChange?()

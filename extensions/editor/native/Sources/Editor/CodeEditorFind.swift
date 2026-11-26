@@ -22,32 +22,25 @@ protocol FindTarget: AnyObject {
 extension CodeEditor: FindTarget {
     var findText: NSString { textView.textStorage?.mutableString ?? "" }
 
-    var findSelections: [NSRange] { textView.selectedRanges.map(\.rangeValue) }
+    var findSelections: [NSRange] { textView.sourceSelections }
 
     func selectFound(_ ranges: [NSRange], reveal: NSRange?) {
-        guard !ranges.isEmpty else { return }
-        textView.selectedRanges = ranges.map { NSValue(range: $0) }
-        if let reveal { textView.scrollRangeToVisible(reveal); textView.showFindIndicator(for: reveal) }
+        textView.select(ranges, reveal: reveal)
     }
 
     func markFound(_ ranges: [NSRange], current: NSRange?) {
-        guard let layout = textView.layoutManager, let length = textView.textStorage?.length else { return }
-        layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: length))
-        let theme = WorkspaceStyle.theme
-        for range in ranges where NSMaxRange(range) <= length {
-            layout.addTemporaryAttribute(.backgroundColor, value: range == current ? theme.findCurrent : theme.findMatch, forCharacterRange: range)
-        }
+        let length = findText.length
+        textView.foundRanges = ranges.filter { $0.location >= 0 && $0.location <= length && $0.length > 0 && $0.length <= length - $0.location }
+            .sorted { $0.location < $1.location }
+        textView.foundCurrent = current
+        let stride = max(1, textView.lineCount / 600)
+        textView.mapFindLines = Set(textView.foundRanges.map { textView.line(at: $0.location) / stride * stride }).sorted()
+        textView.invalidateAdornment()
     }
 
     @discardableResult
     func replaceFound(_ ranges: [NSRange], with replacements: [String]) -> Bool {
-        guard ranges.count == replacements.count, !ranges.isEmpty, let storage = textView.textStorage else { return false }
-        let order = ranges.indices.sorted { ranges[$0].location > ranges[$1].location }
-        guard textView.shouldChangeText(inRanges: ranges.map { NSValue(range: $0) }, replacementStrings: replacements) else { return false }
-        storage.beginEditing()
-        for index in order { storage.replaceCharacters(in: ranges[index], with: CodeTextView.unixNewlines(replacements[index])) }
-        storage.endEditing()
-        textView.didChangeText()
-        return true
+        guard ranges.count == replacements.count else { return false }
+        return textView.edit(zip(ranges, replacements).map { TextEdit(range: $0, replacement: $1) }, reveal: false)
     }
 }

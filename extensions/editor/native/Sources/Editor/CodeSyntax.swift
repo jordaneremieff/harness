@@ -8,19 +8,27 @@ final class CodeSyntax {
     }
 
     private var styled = NSRange(location: 0, length: 0)
+    private var styledParts: [NSRange] = []
     private var styledRevision: UInt64?
 
     func invalidate() { styledRevision = nil }
     func setFile(_ doc: String) { engine.setFile(doc) }
 
-    func highlight(rect: NSRect, in container: NSTextContainer, layout: NSLayoutManager, source: NSString) {
+    func highlight(rect: NSRect, in container: NSTextContainer, layout: NSLayoutManager, source: NSString,
+                   visibleParts: (NSRange) -> [NSRange]) {
         guard let storage = layout.textStorage else { return }
         engine.attach(to: storage)
         let document = NSRange(location: 0, length: source.length)
-        let previous = NSIntersectionRange(styled, document)
+        func clear() {
+            for part in styledParts {
+                let previous = NSIntersectionRange(part, document)
+                if previous.length > 0 { layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: previous) }
+            }
+        }
         guard engine.language.id != "plain", !rect.isEmpty, document.length > 0 else {
-            if previous.length > 0 { layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: previous) }
+            clear()
             styled = NSRange(location: 0, length: 0)
+            styledParts = []
             styledRevision = nil
             return
         }
@@ -33,15 +41,20 @@ final class CodeSyntax {
         let nearby = NSIntersectionRange(layout.characterRange(forGlyphRange: nearbyGlyphs, actualGlyphRange: nil), document)
         guard nearby.length > 0 else { return }
         let range = source.lineRange(for: nearby)
-        if previous.length > 0 { layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: previous) }
-        layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
-
-        for token in engine.tokens(in: range) {
-            guard let colour = colours(token.role) else { continue }
-            layout.addTemporaryAttribute(.foregroundColor, value: colour, forCharacterRange: token.range)
-        }
+        clear()
         styled = range
-        styledRevision = engine.revision
+        styledParts = visibleParts(range)
+        var complete = true
+        for part in styledParts {
+            layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: part)
+            guard let tokens = engine.viewTokens(in: part) else { complete = false; continue }
+            for token in tokens {
+                guard let colour = colours(token.role) else { continue }
+                let text = NSIntersectionRange(token.range, part)
+                if text.length > 0 { layout.addTemporaryAttribute(.foregroundColor, value: colour, forCharacterRange: text) }
+            }
+        }
+        styledRevision = complete ? engine.revision : nil
     }
 
     nonisolated private static func defaultColour(_ role: SyntaxRole) -> NSColor? {

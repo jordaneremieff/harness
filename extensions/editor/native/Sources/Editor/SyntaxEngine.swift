@@ -10,6 +10,10 @@ final class SyntaxEngine: NSObject {
     private var symbolCache: [CodeSymbol]?
     private var tokenCache: (range: NSRange, tokens: [SyntaxToken])?
     private var recentLines: [LineKey: LexedLine] = [:]
+    private var languageOverride: SyntaxLanguage?
+    private var warmScheduled = false
+    private var repaintThrough: Int?
+    var onViewportSyntax: (() -> Void)?
     private(set) var revision: UInt64 = 0
     private(set) var visitedLineCount = 0
 
@@ -30,6 +34,15 @@ final class SyntaxEngine: NSObject {
         reset(language: detectedLanguage())
     }
 
+    func chooseLanguage(_ id: String?) {
+        if let id {
+            guard let explicit = SyntaxLanguage.named(id) else { return }
+            languageOverride = explicit
+        } else { languageOverride = nil }
+        let language = detectedLanguage()
+        if language.id != self.language.id { reset(language: language) }
+    }
+
     func attach(to storage: NSTextStorage) {
         guard self.storage !== storage else { return }
         if let previous = self.storage {
@@ -39,6 +52,20 @@ final class SyntaxEngine: NSObject {
         reset(language: detectedLanguage())
         NotificationCenter.default.addObserver(self, selector: #selector(didEdit(_:)),
                                                name: NSTextStorage.didProcessEditingNotification, object: storage)
+    }
+
+    func viewTokens(in range: NSRange) -> [SyntaxToken]? {
+        if range.location - checkpoints.end.offset > 4_096 {
+            repaintThrough = max(repaintThrough ?? 0, range.location)
+            scheduleWarmup()
+            return nil
+        }
+        return tokens(in: range)
+    }
+
+    func roleForView(at offset: Int) -> SyntaxRole {
+        guard offset - checkpoints.end.offset <= 4_096 else { return .plain }
+        return role(at: offset)
     }
 
     func role(at offset: Int) -> SyntaxRole {
@@ -102,6 +129,33 @@ final class SyntaxEngine: NSObject {
         }
         tokenCache = (query, result)
         return result
+    }
+
+    private func scheduleWarmup() {
+        guard !warmScheduled, language.id != "plain", let source = storage?.mutableString,
+              checkpoints.end.offset < source.length else { return }
+        warmScheduled = true
+        DispatchQueue.main.async { [weak self] in self?.warmStep() }
+    }
+
+    private func warmStep() {
+        warmScheduled = false
+        guard language.id != "plain", let source = storage?.mutableString else { return }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .milliseconds(2))
+        var remaining = 192
+        while checkpoints.end.offset < source.length, remaining > 0, clock.now < deadline {
+            let mark = checkpoints.end
+            let line = Self.line(from: mark.offset, in: source)
+            guard line.end > mark.offset else { break }
+            checkpoints.record(line.end, scan(line, at: mark.offset, in: source, initial: mark.state, emit: false).0)
+            remaining -= 1
+        }
+        if let repaintThrough, checkpoints.end.offset >= repaintThrough {
+            self.repaintThrough = nil
+            onViewportSyntax?()
+        }
+        if remaining < 192 { scheduleWarmup() }
     }
 
     private func extend(to offset: Int, in source: NSString) {
@@ -182,9 +236,12 @@ final class SyntaxEngine: NSObject {
         tokenCache = nil
         recentLines.removeAll()
         revision &+= 1
+        repaintThrough = nil
+        scheduleWarmup()
     }
 
     private func detectedLanguage() -> SyntaxLanguage {
+        if let languageOverride { return languageOverride }
         guard pathLanguage.id == "plain", let source = storage?.mutableString, source.length >= 2,
               source.character(at: 0) == 35, source.character(at: 1) == 33 else { return pathLanguage }
         // A shebang interpreter must precede any arguments; a long first line
@@ -213,5 +270,6 @@ final class SyntaxEngine: NSObject {
         symbolCache = nil
         tokenCache = nil
         revision &+= 1
+        scheduleWarmup()
     }
 }
