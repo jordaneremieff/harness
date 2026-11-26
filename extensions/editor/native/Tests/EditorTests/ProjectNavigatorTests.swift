@@ -25,7 +25,7 @@ struct ProjectNavigatorTests {
         while !shown(), clock.now < until { await Task.yield() }
         try #require(shown())
     }
-    @Test func directoryPagesSearchAndGitUseTheSelectedProjectPath() async throws {
+    @Test func foldersOpenInPlaceAndSearchAndGitUseTheSelectedProjectPath() async throws {
         _ = NSApplication.shared
         let api = NavigatorFixture(), nav = ProjectNavigator(api:api)
         let window = NSWindow(contentRect:.init(x:0,y:0,width:340,height:470),styleMask:.borderless,backing:.buffered,defer:false)
@@ -36,12 +36,15 @@ struct ProjectNavigatorTests {
         try await nav.start(); nav.view.layoutSubtreeIfNeeded()
         let table = try #require(descendant(nav.view,NSTableView.self))
         try await awaitRow("Sources",in:table)
-        let more = try #require(descendant(nav.view,NSButton.self,where:{ $0.title == "More files…" }))
-        more.performClick(nil)
+        try await awaitRow("More files…",index:1,in:table)
+        try keyOpen(table,row:1)
         try await awaitRow("z.txt",index:1,in:table)
+        // A folder opens under its own row; the rows around it stay.
         try keyOpen(table,row:0)
-        try await awaitRow("main.swift",in:table)
-        try keyOpen(table,row:0)
+        try await awaitRow("main.swift",index:1,in:table)
+        try await awaitRow("z.txt",index:2,in:table)
+        #expect(nav.fittingWidth.map { $0 > 60 } == true)
+        try keyOpen(table,row:1)
         #expect(opened?.0 == "Sources/main.swift")
         #expect(opened?.1 == nil)
         nav.showSearch(contents:true)

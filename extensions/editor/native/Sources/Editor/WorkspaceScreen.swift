@@ -18,7 +18,7 @@ final class WorkspaceScreen {
     var view: NSView { chrome }
     private let navigator: ProjectNavigator
     private let collaboration: Collaboration
-    private let welcome: NSView
+    private let welcome: WorkspaceLanding
     private var panel: Panel? = .files
     private var buffers: [String: CodeEditor] = [:]
     private var compositions: [String: CompositionPage] = [:]
@@ -46,10 +46,9 @@ final class WorkspaceScreen {
         chrome = WorkspaceChrome(root: root, defaults: defaults)
         navigator = ProjectNavigator(api: api)
         collaboration = Collaboration(api: api)
-        let start = WorkspaceLanding(folder: URL(fileURLWithPath: root).lastPathComponent)
-        welcome = start
-        start.open.run = { [weak self] in self?.showNavigator(.files) }
-        start.new.run = { [weak self] in self?.command("scratch") }
+        welcome = WorkspaceLanding(folder: URL(fileURLWithPath: root).lastPathComponent)
+        welcome.files.run = { [weak self] in self?.showNavigator(.files) }
+        welcome.new.run = { [weak self] in self?.command("scratch") }
         chrome.onCommand = { [weak self] in self?.command($0) }
         chrome.onSidebar = { [weak self] name in
             guard let self, let panel = Panel(rawValue: name) else { return }
@@ -380,6 +379,7 @@ final class WorkspaceScreen {
     }
     private func present(reveal: String? = nil) {
         chrome.expandedPanel = expandedNavigator && panel != nil && panel != .notes
+        welcome.listsFiles = panel == .files
         refresh(reveal: reveal)
         chrome.setSidebar(panel == nil ? nil : panel == .notes ? collaboration.view : navigator.view, named: panel?.rawValue)
     }
@@ -600,25 +600,33 @@ final class WorkspaceScreen {
     }
 }
 
+/// The page of a stage without a selected tab.
 @MainActor
 private final class WorkspaceLanding: NSView {
-    let open = WorkspaceButton("Open file",symbol: "folder")
+    let files = WorkspaceButton("Project files",symbol: "folder")
     let new = WorkspaceButton("New scratch",symbol: "square.and.pencil")
+    /// The sidebar already lists the project files, so the page needs no control for them.
+    var listsFiles = false { didSet { if listsFiles != oldValue { needsLayout = true } } }
     private let heading: NSTextField
-    private let caption = NSTextField(labelWithString: "Choose a file or start a scratch draft.")
+    private let caption = NSTextField(labelWithString: "")
     init(folder: String) {
         heading = NSTextField(labelWithString: folder)
         super.init(frame: .zero)
         heading.alignment = .center; heading.font = .systemFont(ofSize: 19,weight:.semibold); heading.lineBreakMode = .byTruncatingMiddle
-        caption.alignment = .center; caption.textColor = .secondaryLabelColor
-        for v in [heading, caption, open, new] { addSubview(v) }
+        caption.alignment = .center; caption.textColor = .secondaryLabelColor; caption.lineBreakMode = .byTruncatingTail
+        for v in [heading, caption, files, new] { addSubview(v) }
     }
     required init?(coder: NSCoder) { nil }
     override func layout() {
         super.layout(); let w = bounds.width, y = bounds.midY
+        caption.stringValue = listsFiles ? "Choose a file in the sidebar, or start a scratch draft." : "Choose a project file or start a scratch draft."
+        files.isHidden = listsFiles
         heading.frame = NSRect(x: 8,y: y+18,width: max(0,w-16),height: 30)
         caption.frame = NSRect(x: 8,y:y-7,width:max(0,w-16),height:20)
-        open.frame = NSRect(x:w/2-104,y:y-48,width:100,height:30)
-        new.frame = NSRect(x:w/2,y:y-48,width:108,height:30)
+        if listsFiles { new.frame = NSRect(x:w/2-58,y:y-48,width:116,height:30) }
+        else {
+            files.frame = NSRect(x:w/2-120,y:y-48,width:116,height:30)
+            new.frame = NSRect(x:w/2+4,y:y-48,width:116,height:30)
+        }
     }
 }
