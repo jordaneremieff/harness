@@ -98,6 +98,11 @@ struct CodeEditorTests {
         #expect(fixture.api.records["source.swift"]?["diskChanged"] as? Bool == true)
     }
 
+    @Test func anOpenedDraftStartsWithTheInsertionPointAtItsFirstCharacter() throws {
+        let fixture = try Fixture(text: "one\ntwo\n")
+        #expect(fixture.textView.selectedRange() == NSRange(location: 0, length: 0))
+    }
+
     @Test func nativeInsertionNormalisesPastedLineEndings() async throws {
         let fixture = try Fixture(text: "A\n")
         fixture.insert("x\r\ny\rz", at: 1)

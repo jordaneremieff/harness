@@ -60,6 +60,8 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         textView.setAccessibilityLabel("Source editor")
         textView.layoutManager?.allowsNonContiguousLayout = true
         textView.string = sharedText
+        // Assigning the text leaves the insertion point at its end, outside the first screen.
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
         setWrap(false)
         textView.setSyntax(for: doc)
         textView.delegate = self
