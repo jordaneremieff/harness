@@ -58,6 +58,19 @@ export interface DashboardHealth {
 	autoRetry?: DashboardAutoRetry;
 }
 
+/**
+ * One item of running work that the agent's host reports through live activity, such as a background
+ * command. `source` is the registered contribution name that reported it; `startedAt` is in Unix
+ * milliseconds. Only currently connected, observed work is represented, so absence does not prove that
+ * nothing runs.
+ */
+export interface AgentActivity {
+	readonly source: string;
+	readonly id: string;
+	readonly label: string;
+	readonly startedAt: number;
+}
+
 /** One durable conversation summary for the dashboard roster. */
 export interface AgentConversationSummary {
 	/** Dashboard identity: the storage ID for the root conversation, otherwise `${storageId}:${conversationId}`. */
@@ -114,6 +127,11 @@ export interface AgentConversationSummary {
 	openWorkOldest?: number;
 	/** Epoch milliseconds when the unplaced-input and open-work ages were observed. */
 	ageObservedAt?: number;
+	/**
+	 * Running work the agent's host reports through live activity, joined by the manager for the session
+	 * that reads the roster; absent when none is observed.
+	 */
+	activity?: readonly AgentActivity[];
 }
 
 /**

@@ -53,6 +53,7 @@ function clickLabel(f: Fixture, label: string): void {
 /** An owner view whose label is all it shows. */
 const destination = (label: string): OwnerView => ({
 	key: label.toLocaleLowerCase(),
+	contribution: label.toLocaleLowerCase(),
 	label,
 	open: () => ({ title: label, render: (width) => [label.padEnd(width)], handleInput: () => true }),
 });
@@ -189,6 +190,7 @@ it("New, leave, select B, then onCreated keeps B and its draft and retains the c
 it("several owner views open as a list, and Open shows the chosen one alone with Escape back to the list", async () => {
 	const body = (label: string): OwnerView => ({
 		key: label.toLocaleLowerCase(),
+		contribution: label.toLocaleLowerCase(),
 		label,
 		open: () => ({ title: label, render: (width) => [`${label} body`.padEnd(width)], handleInput: () => true }),
 	});
@@ -226,6 +228,7 @@ it("several owner views open as a list, and Open shows the chosen one alone with
 it("one owner view opens alone under its own title, and Escape returns to the agent", async () => {
 	const stash: OwnerView = {
 		key: "stash",
+		contribution: "stash",
 		label: "Stash",
 		open: () => ({ title: "Stashes", render: (width) => ["Stash body".padEnd(width)], handleInput: () => true }),
 	};

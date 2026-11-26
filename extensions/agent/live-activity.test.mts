@@ -108,6 +108,40 @@ it("replaces the scope only on changes and withdraws obsolete writer generations
 	);
 });
 
+it("lists one owner's items with their conversations and tells a reader of each change", () => {
+	let changes = 0;
+	const projection = new PrimaryLiveActivity(
+		() => undefined,
+		() => {
+			changes++;
+			throw new Error("a failing reader");
+		},
+	);
+	const link = {};
+	const view = withLiveActivity(base, [unitSource], 1);
+	projection.replace(base.storageId, link, "primary", "writer", view);
+	projection.replace(base.storageId, link, "primary", "writer", structuredClone(view));
+	assert.equal(changes, 1, "an unchanged publication changes nothing, and a failing reader stops nothing");
+	assert.deepEqual(projection.items("primary"), [
+		{
+			storageId: "storage",
+			conversationId: 1,
+			source: "fixture.activity",
+			id: "item",
+			label: "Command",
+			startedAt: 100,
+		},
+	]);
+	assert.deepEqual(projection.items("other"), [], "another owner reads nothing");
+	projection.withdraw(base.storageId, link);
+	assert.equal(changes, 2);
+	assert.deepEqual(projection.items("primary"), []);
+	projection.replace(base.storageId, link, "primary", "writer", view);
+	projection.forgetOwner("primary");
+	projection.clear();
+	assert.equal(changes, 4, "forgetting an owner changes the items; clearing nothing does not");
+});
+
 it("uses an existing writer feed to reach only the admitted creating primary", { timeout: 20000 }, async (t) => {
 	const fixture = runtimeFixture(t);
 	const extension = join(fixture.agentDir, "synthetic-activity.ts");
@@ -260,6 +294,27 @@ export default function (pi) {
 			],
 		});
 		assert.equal((catalog.read(metadata.storageId).view as HostChanges["view"])?.liveActivity, undefined);
+		const listed = async (ownerId: string) =>
+			(await manager.dashboardPage({ ownerId, activity: true })).rows.find((item) => item.id === metadata.storageId)
+				?.activity;
+		assert.equal(
+			(await manager.dashboardPage({ ownerId: fixture.ownerId })).rows.find((item) => item.id === metadata.storageId)
+				?.activity,
+			undefined,
+			"a roster read that does not ask for running work carries none",
+		);
+		assert.deepEqual(
+			await listed(fixture.ownerId),
+			[{ source: "fixture.activity", id: "job-one", label: "Live command", startedAt: 100 }],
+			"the work view's roster carries the running work for the creating session",
+		);
+		assert.equal(await listed(unrelated), undefined, "another session's roster carries none");
+		const overview = JSON.stringify(
+			await manager.status(undefined, undefined, { id: fixture.ownerId, cwd: fixture.cwd }),
+		);
+		assert.doesNotMatch(overview, /Live command/u, "the status overview stays without the projection");
+		let rosterChanges = 0;
+		const unsubscribeRoster = manager.subscribeRoster(() => rosterChanges++);
 		const ownerEvidence = connected.ownerEvidence;
 		assert.ok(ownerEvidence?.kind === "verified");
 		assert.equal((ownerEvidence.view as HostChanges["view"])?.liveActivity, undefined);
@@ -268,6 +323,9 @@ export default function (pi) {
 		await connected.request("configure", { name: "Agent after activity" });
 		await events.waitForCount(2);
 		assert.deepEqual(events[1], { ...events[0], items: [] });
+		assert.ok(rosterChanges > 0, "an open work view hears that the running work ended");
+		assert.equal(await listed(fixture.ownerId), undefined);
+		unsubscribeRoster();
 		await foreignFrames.waitFor((frames) => frames.some(({ view }) => view?.rows[0]?.name === "Agent after activity"));
 		await command(connected, "start");
 		await connected.request("configure", { name: "Agent active again" });

@@ -117,7 +117,7 @@ it("a control click opens its form beside the conversation, the inspector wheel 
 	}
 });
 
-it("the More menu wheel reaches Details and opens it only when chosen", async () => {
+it("the More menu wheel reaches Agent controls, whose list opens Details only when chosen", async () => {
 	const f = fixture(140, 24, source([row("one", { state: "idle" })]));
 	const lines = () => visible(f.ui.render(140));
 	try {
@@ -132,10 +132,20 @@ it("the More menu wheel reaches Details and opens it only when chosen", async ()
 		assert.equal(f.ui.handleMouse(event(2, menu + 1, 140, 24, { type: "wheel", wheelDelta: 100 }))?.handled, true);
 		assert.match(lines().join("\n"), /›\s+ctrl\+t\s+Hide thinking/, "the wheel moves the menu selection only");
 		assert.equal(f.ui.focus.inspector, undefined);
-		for (let step = 0; step < 30 && !/›\s+Details/.test(lines().join("\n")); step++) f.ui.handleInput("\x1b[A");
-		assert.match(lines().join("\n"), /›\s+Details/);
+		for (let step = 0; step < 30 && !/›\s+a\s+Agent controls/.test(lines().join("\n")); step++)
+			f.ui.handleInput("\x1b[A");
+		assert.match(lines().join("\n"), /›\s+a\s+Agent controls/);
+		assert.doesNotMatch(lines().join("\n"), /Details/, "More no longer lists the seldom-used controls");
+		f.ui.handleInput("\r");
+		assert.equal(f.ui.focus.inspector, "Agent controls");
+		for (let step = 0; step < 30 && !/● Details/.test(lines().join("\n")); step++) f.ui.handleInput("\x1b[B");
+		assert.match(lines().join("\n"), /● Details/);
+		assert.equal(f.ui.focus.inspector, "Agent controls", "choosing alone opens nothing");
 		f.ui.handleInput("\r");
 		assert.equal(f.ui.focus.inspector, "Details");
+		assert.match(lines().join("\n"), /Agent controls › Details/u, "the trail names the way back");
+		f.ui.handleInput("\x1b");
+		assert.equal(f.ui.focus.inspector, "Agent controls", "Escape returns to the list");
 		assert.deepEqual(f.calls, []);
 	} finally {
 		f.ui.dispose();

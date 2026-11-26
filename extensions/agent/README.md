@@ -775,8 +775,10 @@ The view has a top rule, the list, and the selected agent's pane:
 - **Top rule.** The Agents and Threads titles at the left of a rule, the one
   shown bold in the accent colour; a click on another opens it. On the Agents
   tab the session's delegated figures sit at the rule's right end when they
-  fit. An Efforts title joins them only while Efforts is open; More (`b`)
-  opens it.
+  fit. While agents of this session run background work, a third title names
+  that work with its count, `Jobs 2` for background jobs (see
+  [Running work](#running-work)). An Efforts title joins them only while
+  Efforts is open; More (`b`) opens it.
 - **List.** A Find field (`/ Find`), with Related and All (ordinary Pi only) at
   its right end; then the agents in three sections:
   **Working** (working or starting), **Recent** (active in the last 24 hours)
@@ -802,7 +804,11 @@ The view has a top rule, the list, and the selected agent's pane:
   with the start of its argument, `Responding`, or `Starting`. An agent with an
   error reason takes a third row with that reason, in the error colour for a
   current fault and the warning colour otherwise. Only agents at work and
-  agents with an error colour their glyph. The list widens to fit the longest
+  agents with an error colour their glyph. Under these rows, each command or
+  other work that the agent's host runs in the background takes a row: a
+  yellow dot, its label and how long it has run (`<1m`, `4m`, `1h 5m`). A
+  third item or more turns the second of these rows into `+N more running`.
+  The list widens to fit the longest
   model row with its cost, within the limits under [Layout and
   resizing](#layout-and-resizing). The list's last row counts the
   agents above and below the window (`↓ N more`, `↑ N more`, or `↑ A · ↓ B
@@ -812,9 +818,37 @@ The view has a top rule, the list, and the selected agent's pane:
   the pane at full height. Narrower views stack a strip above the pane when they
   have at least 20 rows; shorter ones show the list alone while it has focus and
   the pane alone once you read a conversation.
-- **Pane.** The selected agent's header with its facts row, then its
-  conversation. The message field opens below the conversation while you
-  write.
+- **Pane.** The selected agent's header with its facts row and a row for
+  each item of its running work, then its conversation. The message field
+  opens below the conversation while you write.
+
+### Running work
+
+A Durable contribution can report work it runs now, such as the jobs
+extension's background commands, through
+[live activity](../../docs/conventions/durable-contributions.md#live-activity).
+In ordinary Pi the manager joins the items that its existing host links
+report for the current session onto that session's roster rows, and an open
+view reads the list again when they change. No connection, poll or host
+operation is added for it. Only connected, observed work shows: a host that is
+not linked, or that does not report live activity, shows none, and a short
+command can start and end between two reports. The attached terminal shows no
+running work.
+
+While items run, the top rule carries a title named after the reporting
+contribution, `Jobs` for the jobs extension (`Activity` when several report),
+with the number of items. A click on it, or its first letter as a key (`j`),
+lists only the agents that run something, with the first of them selected
+when the selected agent runs nothing; a click on Agents or Escape over the
+list lists every agent again and keeps the selection. While that list is
+open, the title stays without a count after the last item ends, and the
+selected agent stays listed until the selection moves.
+
+In the pane, each item's row names when it started (`started 4m ago`, or the
+exact time after `i`); at most three rows show, the third as a count when more
+run. A click on an item opens that contribution's owner view of the agent
+alone, such as its jobs with their finished history, when the host advertises
+one; otherwise the list of the agent's owner views opens.
 
 The list starts in **Related** for the current session when it holds related
 work; with none, it shows All, so the view never opens on an empty list. After
@@ -865,7 +899,7 @@ row's own hints claim stays with the view; an action with the same key lists in
 More without one. A footer key with no terminal encoding shows
 `The <key> key has no clickable form here.` instead of acting quietly. Escape
 over the list clears the error filter first,
-then Find, and keeps the chosen agent.
+then leaves the Jobs list, then clears Find, and keeps the chosen agent.
 
 Selection reads passively: it never starts a host and never moves a draft
 between agents. Sending a message starts a stopped host through the normal
@@ -896,21 +930,30 @@ space on the field's borders.
 The key row holds what the operator needs to read and talk to agents: over the
 list `↑↓ select · enter message · / find · t threads · z expand · x more ·
 esc close` (`enter read` while the list shows alone, and `z` only below the
-transcript), with **Stop** (`s`) while the selected agent works and
-**Reconnect** (`r`) when it needs attention; over the conversation `↑↓ scroll ·
+transcript), with `j jobs` while agents of the session run jobs (see
+[Running work](#running-work)), **Stop** (`s`) while the selected agent works
+and **Reconnect** (`r`) when it needs attention; over the conversation `↑↓ scroll ·
 end latest · enter message`; in the message field `enter send`, the newline keys
 and `esc done`. `z` works wherever no text field or form has focus, on the
 Agents, Threads and Efforts tabs.
 
 **x more** (`ctrl+n` while a text field has focus) lists every other action
-with its key: the delivery effect (`f`), Work (`w`), Configure (`c`), Tasks
-(`k`), Owner views (`o`), Fork,
-Rewind, Compact, Reset context, Schedule message, Scheduled messages, Run
-command, Profile, Details, Stop and release host, host extras such as the
-terminal's Recover input (`u`), New conversation (`n`), Related or All (`v`),
-Efforts (`b`), the error filter (`e`), Hide list (`l`), exact times (`i`), Help
-(`?`), Expand view or Shrink view (`z`, below the transcript), Expand all
-(Ctrl+O) and Show or Hide thinking (Ctrl+T).
+that applies now, with its key: the delivery effect (`f`) while the agent
+works, host extras such as the terminal's Recover input (`u`), Work (`w`)
+while the agent owes a final report, Configure (`c`) while it does not work,
+Tasks (`k`) while a task is blocked, Owner views (`o`), Agent controls (`a`),
+New conversation (`n`), Related or All (`v`), Efforts (`b`), the error filter
+(`e`), Hide list (`l`), exact times (`i`), Help (`?`), Expand view or Shrink
+view (`z`, below the transcript), Expand all (Ctrl+O) and Show or Hide thinking
+(Ctrl+T).
+
+**Agent controls** (`a`) lists the controls the operator seldom needs: Work
+and Tasks while they are not on More by themselves, Fork, Rewind, Compact,
+Reset context, Schedule message, Scheduled messages, Run command, Profile,
+Details, and Stop and release host. Up and Down choose; Open shows the chosen
+one alone, nested above the list, so Escape returns to the list. Choosing sends
+nothing. `/agent fork <identity>` and the other `/agent` actions with a form
+still open that form directly.
 
 Each action except the delivery effect opens a staged form or reader in the
 inspector: beside the

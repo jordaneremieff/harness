@@ -473,7 +473,8 @@ const jobsCommand: DurableCommand = {
 	async run({ args, origin, data, conversation, context }) {
 		if (origin !== "operator") throw new Error("Only an operator view can request this Jobs snapshot.");
 		if (args.trim() !== "") throw new Error("Jobs accepts no text arguments.");
-		if (data === undefined) return "Select the agent and open Owner views → Jobs to inspect its background commands.";
+		if (data === undefined)
+			return "In /agent, click a command under the agent, or open Owner views → Jobs, to inspect its background commands.";
 		const { cursor } = readPanelRequest(data);
 		const snapshot = await conversation.commit(async (tx): Promise<PanelSnapshot> => {
 			const query = { conversationId: conversation.id, kind: JOB_TASK_NAME, background: true } as const;

@@ -296,8 +296,11 @@ message above carries the outcome.
 
 #### Jobs in the Agent work view
 
-From ordinary `/agent` or the attached Agent terminal, select a live agent and
-open **Owner views → Jobs** (`o` opens Owner views). The view reads that
+In ordinary `/agent`, a command that a connected agent of the session runs
+shows under that agent, and the **Jobs** tab (`j`) lists only the agents that
+run one. A click on the command opens this view for that agent. From ordinary
+`/agent` or the attached Agent terminal, **Owner views → Jobs** (`o` opens
+Owner views) opens it too, also when no command runs. The view reads that
 conversation's native background jobs. It does not show ordinary `/jobs`
 records, read command output, run commands, or cancel work.
 
@@ -429,8 +432,8 @@ reads the job records and starts nothing.
   processes of the session are not kept, and the view says that too.
 
 Agent rows are read-only. The parent does not read their logs, receive their
-completions, or count them for `jobs_yield`. Open `/agent`, select the agent,
-then choose **Owner views** (`o`) and **Jobs** for its retained job records.
+completions, or count them for `jobs_yield`. Open `/agent` and choose **Jobs**,
+then click the agent's command for its retained job records.
 Neither the footer nor `/jobs` opens a connection to find agents. A short job
 can finish between updates without appearing. Disconnected hosts, hosts without
 the live activity capability, and updates without room for job details contribute

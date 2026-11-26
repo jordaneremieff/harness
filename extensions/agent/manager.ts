@@ -115,11 +115,13 @@ import { HostError, hostPaths, hostRequestVersionError, type HostMetadata } from
 import { observeClaim, type ClaimObservation } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type {
+	AgentActivity,
 	AgentConversationPage,
 	AgentConversationSummary,
 	AgentPriorityPage,
 	AgentPrioritySummary,
 } from "./dashboard-types.ts";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import type { ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
 
@@ -744,11 +746,17 @@ export class AgentManager {
 		this.delivered = new BoundedMap(options.deliveredLimit ?? DEFAULT_DELIVERED_LIMIT);
 		this.failures = new BoundedMap(options.failureLimit ?? DEFAULT_FAILURE_LIMIT);
 		if (options.observeLiveActivity) {
-			this.liveActivity = new PrimaryLiveActivity((ownerId) => {
-				const primary = this.primaries.get(ownerId);
-				if (!primary || this.reloadedSignals.has(primary.signal)) return undefined;
-				return primary.liveActivity;
-			});
+			this.liveActivity = new PrimaryLiveActivity(
+				(ownerId) => {
+					const primary = this.primaries.get(ownerId);
+					if (!primary || this.reloadedSignals.has(primary.signal)) return undefined;
+					return primary.liveActivity;
+				},
+				// An open work view lists running work under its agents, so it reads the roster again.
+				() => {
+					if (!this.shuttingDown) this.rosterChanged();
+				},
+			);
 		}
 	}
 
@@ -2048,8 +2056,31 @@ export class AgentManager {
 		};
 	}
 
-	async dashboardPage(input: { cursor?: string; ownerId?: string } = {}): Promise<AgentPriorityPage> {
-		return this.priorityPage(input, {});
+	/**
+	 * One roster page. With `activity`, each row of the reading session's agents also carries the running work
+	 * its linked host reports through live activity; the work view asks for it, status overviews do not.
+	 */
+	async dashboardPage(
+		input: { cursor?: string; ownerId?: string; activity?: boolean } = {},
+	): Promise<AgentPriorityPage> {
+		const page = await this.priorityPage(input, {});
+		if (!input.activity || input.ownerId === undefined) return page;
+		const items = this.liveActivity?.items(input.ownerId) ?? [];
+		if (items.length === 0) return page;
+		// The identity module resolves the Durable runtime, which the ordinary entry does not load at startup.
+		const { canonicalIdentity } = await import("./native-identity.ts");
+		const byRow = new Map<string, AgentActivity[]>();
+		for (const { storageId, conversationId, source, id, label, startedAt } of items) {
+			const row = canonicalIdentity(storageId, conversationId as ConversationId);
+			byRow.set(row, [...(byRow.get(row) ?? []), { source, id, label, startedAt }]);
+		}
+		return {
+			...page,
+			rows: page.rows.map((row) => {
+				const activity = byRow.get(row.id);
+				return activity === undefined ? row : { ...row, activity };
+			}),
+		};
 	}
 
 	/** Agent views omit thread storages; recovery and thread discovery still read them. */

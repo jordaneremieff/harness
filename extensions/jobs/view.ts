@@ -363,7 +363,7 @@ export class JobsView {
 			const detail = [
 				`${agentLabel(selected.agent)} · ${selected.agent.identity}`,
 				selected.command,
-				"Read-only here. For this agent’s job history, open /agent and choose Owner views (o), then Jobs.",
+				"Read-only here. For this agent’s job history, open /agent, choose Jobs and click this command.",
 			];
 			lines.push(
 				...detail

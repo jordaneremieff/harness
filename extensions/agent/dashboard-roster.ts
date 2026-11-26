@@ -297,7 +297,52 @@ export const ROSTER_ROWS = 2;
  */
 export function rosterRowCount(row: AgentConversationSummary): number {
 	const active = row.state === "working" || row.state === "starting";
-	return active || listReason(row) ? ROSTER_ROWS + 1 : ROSTER_ROWS;
+	return (active || listReason(row) ? ROSTER_ROWS + 1 : ROSTER_ROWS) + activityRowCount(row);
+}
+
+/** Running work rows under an agent. Up to two items take a row each; with more, the second row counts the rest. */
+const ACTIVITY_ROWS = 2;
+function activityRowCount(row: Pick<AgentConversationSummary, "activity">): number {
+	return Math.min(ACTIVITY_ROWS, row.activity?.length ?? 0);
+}
+
+/** How long running work has run, in whole minutes; the list repaints its times once a minute. */
+export function runningFor(startedAt: number, now = Date.now()): string {
+	const minutes = Math.floor(Math.max(0, now - startedAt) / 60000);
+	if (minutes < 1) return "<1m";
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	return hours < 24 ? `${hours}h ${minutes % 60}m` : `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+/**
+ * One row of running work shows the yellow dot of running work, the item's label and, at the right, how long
+ * it has run. The label is the reporting extension's own text, flattened to one line.
+ */
+export function activityLine(
+	item: { label: string; startedAt: number },
+	width: number,
+	theme: Theme,
+	now: number,
+	right = runningFor(item.startedAt, now),
+): string {
+	const room = Math.max(1, width - 2 - (right ? visibleWidth(right) + 2 : 0));
+	const label = theme.fg("muted", truncateToWidth(oneLine(item.label), room, "…"));
+	const head = `${theme.fg("warning", "●")} ${label}`;
+	if (!right) return head;
+	return `${head}${" ".repeat(Math.max(2, width - visibleWidth(head) - visibleWidth(right)))}${theme.fg("dim", right)}`;
+}
+
+/** The running work rows of one agent in the list; a third item or more turns the second row into a count. */
+function rosterActivityRows(row: AgentConversationSummary, width: number, theme: Theme, now: number): string[] {
+	const items = row.activity ?? [];
+	if (items.length === 0) return [];
+	const room = Math.max(1, width - 4);
+	if (items.length <= ACTIVITY_ROWS) return items.map((item) => activityLine(item, room, theme, now));
+	return [
+		activityLine(items[0], room, theme, now),
+		theme.fg("muted", truncateToWidth(`  +${items.length - 1} more running`, room, "…")),
+	];
 }
 
 /**
@@ -324,6 +369,7 @@ function rosterRow(
 	];
 	const third = compact ? undefined : rosterThirdRow(row, width, theme);
 	if (third) lines.push(`${rail}   ${third}`);
+	if (!compact) for (const line of rosterActivityRows(row, width, theme, now)) lines.push(`${rail}   ${line}`);
 	return lines.map((line) => (chosen ? highlightRow(line, width, 2, theme) : fitLine(line, width)));
 }
 

@@ -180,15 +180,46 @@ function sameItems(left: readonly DisplayItem[], right: readonly DisplayItem[]):
 	);
 }
 
+/** One observed item with its source and storage-local conversation, for a reader that lists an owner's items. */
+export interface ObservedActivity {
+	readonly storageId: string;
+	readonly conversationId: number;
+	readonly source: string;
+	readonly id: string;
+	readonly label: string;
+	readonly startedAt: number;
+}
+
 /** Sparse linked state, indexed by owner for registration and teardown without a fleet walk. */
 export class PrimaryLiveActivity {
 	private readonly byStorage = new Map<string, ObservedStorage>();
 	private readonly byOwner = new Map<string, Set<ObservedStorage>>();
 
 	private readonly emitter: (sessionId: string) => Emit | undefined;
+	private readonly changed?: () => void;
 
-	constructor(emitter: (sessionId: string) => Emit | undefined) {
+	/** `changed` hears every change of the held items, after the emitter; it must not throw into the feed. */
+	constructor(emitter: (sessionId: string) => Emit | undefined, changed?: () => void) {
 		this.emitter = emitter;
+		this.changed = changed;
+	}
+
+	/** Every item the links of one owner hold, oldest start first; empty when none is observed. */
+	items(sessionId: string): readonly ObservedActivity[] {
+		const items: ObservedActivity[] = [];
+		for (const { storageId, sources } of this.byOwner.get(sessionId) ?? [])
+			for (const { source, items: group } of sources)
+				for (const { id, conversationId, label, startedAt } of group)
+					items.push({ storageId, conversationId, source, id, label, startedAt });
+		return items.sort((left, right) => left.startedAt - right.startedAt);
+	}
+
+	private notify(): void {
+		try {
+			this.changed?.();
+		} catch {
+			/* A reader's refresh cannot stop a registration or a live feed. */
+		}
 	}
 
 	replace(storageId: string, link: object, sessionId: string, writerId: string, view?: ChangesView): void {
@@ -213,6 +244,7 @@ export class PrimaryLiveActivity {
 		this.remember(next);
 		const emit = this.emitter(sessionId);
 		if (emit !== undefined) this.sendChanges(emit, next, before?.sources ?? []);
+		this.notify();
 	}
 
 	withdraw(storageId: string, link: object): void {
@@ -221,6 +253,7 @@ export class PrimaryLiveActivity {
 		this.remove(before);
 		const emit = this.emitter(before.sessionId);
 		if (emit !== undefined) for (const { source } of before.sources) this.send(emit, before, source, []);
+		this.notify();
 	}
 
 	forOwner(sessionId: string, emit: Emit | undefined, includeItems: boolean): void {
@@ -231,12 +264,17 @@ export class PrimaryLiveActivity {
 	}
 
 	forgetOwner(sessionId: string): void {
-		for (const storage of this.byOwner.get(sessionId) ?? []) this.remove(storage);
+		const owned = this.byOwner.get(sessionId);
+		if (owned === undefined) return;
+		for (const storage of owned) this.remove(storage);
+		this.notify();
 	}
 
 	clear(): void {
+		const held = this.byStorage.size > 0;
 		this.byStorage.clear();
 		this.byOwner.clear();
+		if (held) this.notify();
 	}
 
 	private sendChanges(emit: Emit, next: ObservedStorage, before: readonly Source[]): void {

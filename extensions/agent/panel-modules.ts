@@ -25,6 +25,8 @@ export const noPanelModules: PanelModules = Object.freeze({ panels: [], diagnost
 /** One owner view the inspector can open for a captured conversation, or the reason it cannot. */
 export interface OwnerView {
 	readonly key: string;
+	/** The contribution that owns the view; live activity names its reporter the same way. */
+	readonly contribution: string;
 	readonly label: string;
 	readonly unavailable?: string;
 	open(host: ViewHost): View;
@@ -128,6 +130,7 @@ function withdrawable<T>(request: Promise<T>, signal: AbortSignal): Promise<T> {
 export function ownerViews(panels: PanelModules, targetKey: string, request: PanelRequest): OwnerView[] {
 	return panels.panels.map((panel) => ({
 		key: `${targetKey}\u0000${panel.contribution}`,
+		contribution: panel.contribution,
 		label: plainLine(panel.title),
 		...(panel.module ? {} : { unavailable: panel.unavailable ?? "module not loaded" }),
 		open: (host: ViewHost) => {

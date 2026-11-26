@@ -4,8 +4,14 @@ import type { ConversationSnapshotPage } from "./durable-observation.ts";
 import type { ConversationFrame, ObservationFrame, TasksFrame } from "./live-frames.ts";
 import { storageIdOf } from "./catalog.ts";
 
+/** A roster read; `activity` asks for the running work that linked hosts report for `ownerId`. */
+export interface AgentRosterInput {
+	cursor?: string;
+	ownerId?: string;
+	activity?: boolean;
+}
 export interface AgentObservationHost {
-	list(input?: { cursor?: string; ownerId?: string }): Promise<AgentConversationPage>;
+	list(input?: AgentRosterInput): Promise<AgentConversationPage>;
 	snapshot(id: string, params?: { before?: number }, signal?: AbortSignal): Promise<ConversationSnapshotPage>;
 	observeLive(
 		id: string,
@@ -16,7 +22,7 @@ export interface AgentObservationHost {
 	subscribeRoster(listener: () => void): () => void;
 }
 export interface AgentObservationSource {
-	list(input?: { cursor?: string; ownerId?: string }): Promise<AgentConversationPage>;
+	list(input?: AgentRosterInput): Promise<AgentConversationPage>;
 	select(id: string | undefined): void;
 	/** Reattach an unavailable selection; a pending or live attachment is unchanged. */
 	refresh(id: string): void;

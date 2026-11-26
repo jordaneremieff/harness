@@ -400,7 +400,10 @@ export function createAgentCommand(
 			await showAgentDashboard({
 				ctx,
 				state,
-				source: { ...sources, list: (input) => sources.list({ ...input, ownerId: ctx.sessionManager.getSessionId() }) },
+				source: {
+					...sources,
+					list: (input) => sources.list({ ...input, ownerId: ctx.sessionManager.getSessionId(), activity: true }),
+				},
 				operations,
 				...open,
 			});

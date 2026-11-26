@@ -252,6 +252,11 @@ Only currently connected, observed work is represented. The transport does not
 start a host or add a connection, and events do not enter retained session
 history or the model's context.
 
+The ordinary `/agent` work view shows the same items under the agents that
+report them and names a tab after the reporting contribution; see
+[Running work](../../extensions/agent/README.md#running-work). Write labels that
+read well alone, such as a command preview: the view shows them as given.
+
 ## Independent command admission
 
 An ordinary extension command starts independent background work without a model

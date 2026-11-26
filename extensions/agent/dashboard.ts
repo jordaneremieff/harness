@@ -44,6 +44,7 @@ import {
 	fitLine,
 } from "./dashboard-layout.ts";
 import {
+	activityLine,
 	currentFault,
 	dashboardRecords,
 	groupRows,
@@ -81,7 +82,7 @@ import { AgentBranchCache, type AgentBranchReader } from "./agent-git.ts";
 import type { AgentModelInfo } from "./agent-footer.ts";
 import { DashboardRelations, relationIdentity, type ReadRelationLineage } from "./dashboard-relations.ts";
 import { actionView, type ActionResult, type AgentFormHost } from "./agent-forms.ts";
-import { WorkView, type WorkSource } from "./agent-work-view.ts";
+import { readWork, WorkView, type WorkSource } from "./agent-work-view.ts";
 import { createObservationPump, type ObservationClock, type ObservationPump } from "./observation-pump.ts";
 
 export interface DashboardResult {
@@ -173,6 +174,8 @@ function helpLines(framed: boolean): string[] {
 		"The list starts with Related: this session's work. v switches between Related and All, every loaded agent.",
 		"Relations use exact creation ancestry, task targets and shared thread membership, never directory proximity.",
 		"Each agent shows its name and age, its model, and while it works what it is doing now; an error shows its reason.",
+		"A yellow dot under an agent is work its host runs in the background, such as a job, with how long it has run.",
+		"While agents of this session run background jobs, Jobs joins the top rule with their count: j or a click lists only those agents.",
 		"Selecting an agent reads its conversation without starting its host. Sending a message starts a stopped host.",
 		"",
 		"Keys",
@@ -192,8 +195,10 @@ function helpLines(framed: boolean): string[] {
 		"",
 		"Selected agent",
 		"s stops current work, f switches the next message between a correction (steer) and new work (follow-up), r reconnects a stopped host.",
-		"c configures the agent's name, model and reasoning when idle. k shows live tasks. x lists more actions.",
-		"w opens Work: each request the agent declared background work for, its dependencies and its final report.",
+		"c configures the agent's name, model and reasoning when idle. o opens its owner views, such as its jobs and stashes.",
+		"a lists the agent's other controls: Work, Tasks, fork, rewind, compact, reset, scheduled messages, commands, profile, details and release.",
+		"w opens Work while the agent owes reports: each request it declared background work for, its dependencies and its final report.",
+		"k shows live tasks while one is blocked. A click on a running job in the agent's header opens its jobs view.",
 		"Enter on a dependency reads its result; Enter on a final report reads all of it. Reading changes nothing.",
 		"Forms open beside the conversation and bind to the agent they opened for; selecting another agent closes them without sending anything.",
 		"",
@@ -376,6 +381,10 @@ export class AgentDashboard implements Component, Focusable {
 	private scopeChosen = false;
 	/** The list shows only rows with an error reason; the footer's Show all clears it. */
 	private errorsOnly = false;
+	/** True while the running-work tab lists only the agents whose hosts report running work, such as jobs. */
+	private activityOnly = false;
+	/** Running items of the loaded agents and the tab's title, which names their one source and outlasts them. */
+	private activity = { count: 0, title: "" };
 	/** Names of primary sessions from the last effort presence read; most sessions have none. */
 	private primaryNames = new Map<string, string>();
 	/** Thread titles read for the threads that conversations name by identity; undefined marks a read in flight or failed. */
@@ -735,7 +744,10 @@ export class AgentDashboard implements Component, Focusable {
 		this.rows = this.rows
 			.flatMap((row) => {
 				const current = filtered.find((item) => item.id === row.id);
-				return current ? [current] : !this.errorsOnly && row.id === this.state.selected ? [row] : [];
+				if (current) return [current];
+				// The selection stays listed, with its newest published facts when the page still has it.
+				if (this.errorsOnly || row.id !== this.state.selected) return [];
+				return [this.page?.rows.find((item) => item.id === row.id) ?? row];
 			})
 			.concat(filtered.filter((row) => !this.rows.some((item) => item.id === row.id)));
 	}
@@ -793,7 +805,8 @@ export class AgentDashboard implements Component, Focusable {
 		)
 			this.allAgents = true;
 		const scoped = this.allAgents ? filtered : filtered.filter((row) => identities.has(relationIdentity(row.id)));
-		this.reconcileOrder(this.errorsOnly ? scoped.filter(listReason) : scoped);
+		this.activity = this.activityFacts();
+		this.reconcileOrder(this.filtered(scoped));
 		this.rows = groupRows(this.rows);
 		this.chooseSelection();
 		const id = this.state.selected;
@@ -809,6 +822,12 @@ export class AgentDashboard implements Component, Focusable {
 			this.rereadIfStale(row);
 		} else if (row) this.select(row);
 		else if (!id && this.console) this.clearSelection();
+	}
+
+	/** The error filter, then the running-work tab, narrow the scoped rows. */
+	private filtered(scoped: AgentConversationSummary[]): AgentConversationSummary[] {
+		const shown = this.errorsOnly ? scoped.filter(listReason) : scoped;
+		return this.activityOnly ? shown.filter((row) => (row.activity?.length ?? 0) > 0) : shown;
 	}
 
 	private clearSelection(): void {
@@ -1357,6 +1376,10 @@ export class AgentDashboard implements Component, Focusable {
 			this.show("Select an agent first", "warning");
 			return;
 		}
+		this.openInspector("Work", (view) => this.workView(row, view));
+	}
+
+	private workView(row: AgentConversationSummary, view: ViewHost): View {
 		const id = row.id;
 		const forms = this.operations.forms(row);
 		const source: WorkSource = {
@@ -1374,7 +1397,7 @@ export class AgentDashboard implements Component, Focusable {
 			},
 			inspect: (call, signal) => forms.inspect({ ...call }, signal),
 		};
-		this.openInspector("Work", (view) => new WorkView(view, source));
+		return new WorkView(view, source);
 	}
 
 	private openTasks(): void {
@@ -1486,7 +1509,11 @@ export class AgentDashboard implements Component, Focusable {
 		this.openInspector("Help", (host) => new ReaderView("Help", host, () => text));
 	}
 
-	private async openBrowsers(): Promise<void> {
+	/**
+	 * Open the selected agent's owner views. With `contribution`, its view opens alone when the host advertises
+	 * it, such as the view of the extension whose running work the operator clicked; otherwise every view lists.
+	 */
+	private async openBrowsers(contribution?: string): Promise<void> {
 		const row = this.console?.row;
 		const panels = this.operations.panels;
 		if (!row || !panels) return this.show("Owner views are unavailable here", "warning");
@@ -1502,7 +1529,9 @@ export class AgentDashboard implements Component, Focusable {
 					"This agent's host advertises no owner views. A stored or stopped host shows none.",
 					"warning",
 				);
-			const only = views.length === 1 ? views[0] : undefined;
+			const only =
+				(contribution === undefined ? undefined : views.find((view) => view.contribution === contribution)) ??
+				(views.length === 1 ? views[0] : undefined);
 			if (only) this.openInspector(only.label, (host) => only.open(host));
 			else this.openInspector("Owner views", (host) => ownerViewChooser(views, row, host));
 		} catch (error) {
@@ -1741,6 +1770,79 @@ export class AgentDashboard implements Component, Focusable {
 		this.redraw();
 	}
 
+	/** The Agents tab lists every agent again, from the running-work tab or from another tab. */
+	private showAgents(): void {
+		if (this.activityOnly) this.leaveActivity(false);
+		this.backToWork();
+	}
+
+	/**
+	 * The running-work tab lists only the agents whose hosts report running work, such as background jobs.
+	 * A selected agent without any gives way to the first agent listed.
+	 */
+	private openActivity(): void {
+		this.returnSurface = undefined;
+		this.surface = "work";
+		this.newerIntent();
+		this.hits.clear();
+		if (!this.activityOnly) {
+			this.activityOnly = true;
+			this.rosterScroll = undefined;
+			const selected = this.page?.rows.find((row) => row.id === this.state.selected);
+			if (!selected?.activity?.length) {
+				this.pinned = undefined;
+				this.state.selected = undefined;
+			}
+			this.rows = [];
+		}
+		this.reconcile();
+		this.redraw();
+	}
+
+	/** Every agent again; the selection stays. */
+	private leaveActivity(redraw = true): void {
+		this.activityOnly = false;
+		this.rosterScroll = undefined;
+		this.rows = [];
+		this.reconcile();
+		if (redraw) this.redraw();
+	}
+
+	/** Running items over the loaded agents; the title is their one source's name, else Activity. */
+	private activityFacts(): { count: number; title: string } {
+		let count = 0;
+		const sources = new Set<string>();
+		for (const row of this.page?.rows ?? [])
+			for (const item of row.activity ?? []) {
+				count++;
+				sources.add(item.source);
+			}
+		if (!count) return { count, title: this.activity.title };
+		const [only] = sources;
+		const name = sources.size === 1 && only ? plainLine(only) : "activity";
+		return { count, title: `${name.charAt(0).toLocaleUpperCase()}${name.slice(1)}` };
+	}
+
+	/**
+	 * The running-work tab's action while agents report running work and the tab is not open. Its key is the
+	 * title's first letter, `j` for Jobs, when no other action of the view takes it.
+	 */
+	private activityAction(others: readonly Action[]): Action | undefined {
+		if (this.surface !== "work" || this.activityOnly || !this.activity.count) return undefined;
+		const title = this.activity.title;
+		const key = title.charAt(0).toLocaleLowerCase();
+		const free = /^[a-z]$/u.test(key) && !others.some((action) => action.key === key);
+		return {
+			id: "activity",
+			label: title,
+			...(free ? { key } : {}),
+			short: title.toLocaleLowerCase(),
+			primary: true,
+			description: `Only the agents that run ${title.toLocaleLowerCase()} now`,
+			run: () => this.openActivity(),
+		};
+	}
+
 	// --- actions ------------------------------------------------------------
 
 	/**
@@ -1756,10 +1858,47 @@ export class AgentDashboard implements Component, Focusable {
 				id: "browsers",
 				label: "Owner views",
 				key: "o",
-				description: "Stashes, clipboard, Markdown, policy and pillars bound to this agent",
+				description: "This agent's jobs, stashes, clipboard and its other extensions' views",
 				run: () => void this.openBrowsers(),
 			});
-		const secondary: Array<[string, string, string]> = [
+		actions.push({
+			id: "controls",
+			label: "Agent controls",
+			key: "a",
+			description: "Fork, rewind, compact, reset, schedule, run a command, profile, details, release",
+			run: () => this.openControls(),
+		});
+		return actions;
+	}
+
+	/**
+	 * Controls the operator seldom needs, behind one entry so More stays short: Work and Tasks while they
+	 * are not on More by themselves, then the forms. Each opens above the list, so Escape returns to it.
+	 */
+	private agentControls(
+		row: AgentConversationSummary,
+	): Array<{ id: string; label: string; description: string; open(host: ViewHost, forms: AgentFormHost): View }> {
+		const controls: Array<{
+			id: string;
+			label: string;
+			description: string;
+			open(host: ViewHost, forms: AgentFormHost): View;
+		}> = [];
+		if (!this.owesReports(row))
+			controls.push({
+				id: "work",
+				label: "Work",
+				description: "Requests it declared background work for, and their final reports",
+				open: (host) => this.workView(row, host),
+			});
+		if (row.attention !== "task-blocked")
+			controls.push({
+				id: "tasks",
+				label: "Tasks",
+				description: "The live tasks in this agent's storage",
+				open: (host) => this.tasksView(row, host),
+			});
+		const entries: Array<[string, string, string]> = [
 			["fork", "Fork", "An idle branch from a committed message"],
 			["rewind", "Rewind", "A corrected branch before a mistake; files stay current"],
 			["compact", "Compact", "Summarise at the next boundary while work continues"],
@@ -1771,9 +1910,54 @@ export class AgentDashboard implements Component, Focusable {
 			["status", "Details", "Full identity, path, model and host state"],
 			["release", "Stop and release host", "Stop this conversation and retire its host"],
 		];
-		for (const [id, label, description] of secondary)
-			actions.push({ id, label, description, run: () => this.openAction(id) });
-		return actions;
+		for (const [id, label, description] of entries)
+			controls.push({ id, label, description, open: (host, forms) => actionView(id, forms, host) });
+		return controls;
+	}
+
+	/** One list of the selected agent's other controls; the chosen one opens above it and Escape returns here. */
+	private openControls(): void {
+		const row = this.console?.row;
+		if (!row) {
+			this.show("Select an agent first", "warning");
+			return;
+		}
+		let frame: Inspector | undefined;
+		const forms = this.formsFor(row, () => frame !== undefined && this.inspector?.frame === frame);
+		const controls = this.agentControls(row);
+		this.openInspector(
+			"Agent controls",
+			(host) =>
+				new Form({
+					title: "Agent controls",
+					heading: `Controls of ${plainLine(agentDisplayName(row))}`,
+					fields: [
+						{
+							kind: "choice",
+							id: "control",
+							label: "Control",
+							rows: Math.min(12, controls.length),
+							choices: controls.map(({ id, label, description }) => ({ value: id, label, description })),
+						},
+					],
+					action: { label: "Open" },
+					host,
+					submit: async (values) => {
+						const chosen = controls.find((control) => control.id === values.control);
+						if (chosen) host.push((child) => chosen.open(child, forms));
+						return undefined;
+					},
+				}),
+		);
+		frame = this.inspector?.frame;
+	}
+
+	/** Declared work that still owes a final report, from the row's count or the live frame's open items. */
+	private owesReports(row: AgentConversationSummary): boolean {
+		if ((row.openWorkCount ?? 0) > 0) return true;
+		if (this.source.availability(row.id)?.state !== "live") return false;
+		const frame = this.source.frame(row.id);
+		return frame !== undefined && readWork(frame.status).items.some((item) => item.close === undefined);
 	}
 
 	/** Stop, delivery, reconnect, host actions, configure and tasks for the selected agent. */
@@ -1818,31 +2002,40 @@ export class AgentDashboard implements Component, Focusable {
 				run: () => this.openAction("attach"),
 			});
 		actions.push(...(this.operations.extraActions?.(row) ?? []));
-		actions.push({
-			id: "work",
-			label: "Work",
-			key: "w",
-			short: "work",
-			description: "Requests this agent declared background work for, their dependencies and final reports",
-			run: () => this.openWork(),
-		});
-		actions.push({
-			id: "configure",
-			label: "Configure",
-			key: "c",
-			short: "configure",
-			disabled: working ? "Stop current work first; the owner configures idle agents only" : undefined,
-			description: "Name, model and reasoning",
-			run: () => this.openAction("configure"),
-		});
-		actions.push({
-			id: "tasks",
-			label: "Tasks",
-			key: "k",
-			short: "tasks",
-			description: "The live tasks in this agent's storage",
-			run: () => this.openTasks(),
-		});
+		actions.push(...this.stateActions(row, working));
+		return actions;
+	}
+
+	/** Work, Configure and Tasks stand on More only while they apply; Agent controls lists Work and Tasks otherwise. */
+	private stateActions(row: AgentConversationSummary, working: boolean): Action[] {
+		const actions: Action[] = [];
+		if (this.owesReports(row))
+			actions.push({
+				id: "work",
+				label: "Work",
+				key: "w",
+				short: "work",
+				description: "Requests this agent still owes a final report for, with their dependencies",
+				run: () => this.openWork(),
+			});
+		if (!working)
+			actions.push({
+				id: "configure",
+				label: "Configure",
+				key: "c",
+				short: "configure",
+				description: "Name, model and reasoning",
+				run: () => this.openAction("configure"),
+			});
+		if (row.attention === "task-blocked")
+			actions.push({
+				id: "tasks",
+				label: "Tasks",
+				key: "k",
+				short: "tasks",
+				description: "The live tasks in this agent's storage, with the blocked one",
+				run: () => this.openTasks(),
+			});
 		return actions;
 	}
 
@@ -2084,7 +2277,9 @@ export class AgentDashboard implements Component, Focusable {
 	}
 
 	private allActions(): Action[] {
-		return [...this.targetActions(), ...this.viewActions()];
+		const actions = [...this.targetActions(), ...this.viewActions()];
+		const activity = this.activityAction(actions);
+		return activity ? [activity, ...actions] : actions;
 	}
 
 	/** True when a hint of the focused work region claims this key: that region owns the binding. */
@@ -2166,6 +2361,7 @@ export class AgentDashboard implements Component, Focusable {
 	/** What Escape over the list does now, for the footer; nothing in the attached terminal once nothing is left to undo. */
 	private listEscapeLabel(): string | undefined {
 		if (this.errorsOnly) return "all agents";
+		if (this.activityOnly) return "agents";
 		if (!this.state.filter && this.returnSurface) return "back";
 		if (this.state.filter) return "clear find";
 		return this.attached ? undefined : "close";
@@ -2175,6 +2371,10 @@ export class AgentDashboard implements Component, Focusable {
 	private listEscape(): void {
 		if (this.errorsOnly) {
 			this.toggleErrors();
+			return;
+		}
+		if (this.activityOnly) {
+			this.leaveActivity();
 			return;
 		}
 		const back = this.returnSurface;
@@ -2511,6 +2711,7 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** Footer priorities of the view's actions; the selected agent's actions have 1. */
 	private static readonly PRIORITY: Readonly<Record<string, number>> = {
+		activity: 1,
 		new: 1,
 		help: 1,
 		scope: 2,
@@ -2631,18 +2832,26 @@ export class AgentDashboard implements Component, Focusable {
 	private renderTabs(): { line: string; x: number } {
 		const theme = this.theme;
 		const rule = (text: string) => theme.fg("borderMuted", text);
-		const tabs: Array<{ surface: Surface; label: string; open(): void }> = [
-			{ surface: "work", label: "Agents", open: () => this.backToWork() },
+		const work = this.surface === "work";
+		const tabs: Array<{ label: string; active: boolean; open(): void }> = [
+			{ label: "Agents", active: work && !this.activityOnly, open: () => this.showAgents() },
 		];
 		if (this.operations.collaborate)
-			tabs.push({ surface: "threads", label: "Threads", open: () => void this.openThreads() });
+			tabs.push({ label: "Threads", active: this.surface === "threads", open: () => void this.openThreads() });
+		// Running work, such as background jobs, has a tab while agents report it or while the tab is open.
+		if (this.activity.count || (work && this.activityOnly))
+			tabs.push({
+				label: this.activity.count ? `${this.activity.title} ${this.activity.count}` : this.activity.title,
+				active: work && this.activityOnly,
+				open: () => this.openActivity(),
+			});
 		// Efforts stays under More: other main sessions and their published plans are not part of reading agents.
-		if (this.surface === "efforts") tabs.push({ surface: "efforts", label: "Efforts", open: () => this.openEfforts() });
+		if (this.surface === "efforts") tabs.push({ label: "Efforts", active: true, open: () => this.openEfforts() });
 		let x = 1;
 		let line = rule("─");
 		for (const tab of tabs) {
 			const text = ` ${tab.label} `;
-			const active = this.surface === tab.surface;
+			const active = tab.active;
 			line += active ? theme.bold(theme.fg("accent", text)) : theme.fg("muted", text);
 			if (!active) this.hits.add({ x, y: 0, width: visibleWidth(text), height: 1, click: () => tab.open() });
 			x += visibleWidth(text);
@@ -2850,10 +3059,8 @@ export class AgentDashboard implements Component, Focusable {
 		if (related?.pending) return "Reading related work…";
 		if (related?.failed) return "Related work is unavailable. All shows every loaded agent.";
 		const incomplete = !this.page.coverage.complete;
-		if (this.errorsOnly)
-			return incomplete
-				? "No errors in the loaded results. The agent list is incomplete."
-				: "No agent in this view has an error. Esc clears the error filter.";
+		const narrowed = this.narrowedEmpty(incomplete);
+		if (narrowed) return narrowed;
 		if (this.state.filter) {
 			const query = `“${plainLine(this.state.filter)}”`;
 			return incomplete
@@ -2862,6 +3069,17 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		if (related) return "No related agents in the loaded list. All shows every loaded agent.";
 		return incomplete ? "The agent list is incomplete." : "No agents yet. New conversation starts one.";
+	}
+
+	/** Why the error filter or the running-work tab leaves the list empty, and the way back. */
+	private narrowedEmpty(incomplete: boolean): string | undefined {
+		if (this.errorsOnly)
+			return incomplete
+				? "No errors in the loaded results. The agent list is incomplete."
+				: "No agent in this view has an error. Esc clears the error filter.";
+		if (this.activityOnly)
+			return `No agent of this session runs ${(this.activity.title || "activity").toLocaleLowerCase()} now. Esc returns to Agents.`;
+		return undefined;
 	}
 
 	/** A warning about the list's facts, when one applies, and the Load more control when the store has more agents. */
@@ -2986,8 +3204,43 @@ export class AgentDashboard implements Component, Focusable {
 		const facts = console.factsLine(Math.max(1, width - 2), this.modelInfo(console), this.branches.get(row.cwd));
 		const lines = [fitLine(first, width)];
 		if (visibleWidth(facts) > 0) lines.push(fitLine(` ${facts}`, width));
+		for (const { text, source } of this.activityLines(row, width)) {
+			if (source !== undefined)
+				this.hits.add({
+					x,
+					y: y + lines.length,
+					width,
+					height: 1,
+					click: () => void this.openBrowsers(source),
+				});
+			lines.push(fitLine(` ${text}`, width));
+		}
 		const note = this.headerNote(console, width);
 		if (note) lines.push(fitLine(note, width));
+		return lines;
+	}
+
+	/**
+	 * The selected agent's running work under its facts, one row per item with its start, at most three rows.
+	 * A click on a row opens the owner view of the extension that reports it.
+	 */
+	private activityLines(row: AgentConversationSummary, width: number): Array<{ text: string; source?: string }> {
+		const items = row.activity ?? [];
+		if (!items.length) return [];
+		const now = Date.now();
+		const shown = items.length > 3 ? items.slice(0, 2) : items;
+		const lines: Array<{ text: string; source?: string }> = shown.map((item) => ({
+			text: activityLine(
+				item,
+				Math.max(1, width - 2),
+				this.theme,
+				now,
+				`started ${dashboardTime(item.startedAt, this.state.exactTime, now)}`,
+			),
+			source: item.source,
+		}));
+		if (shown.length < items.length)
+			lines.push({ text: this.theme.fg("muted", `  +${items.length - shown.length} more running`) });
 		return lines;
 	}
 
