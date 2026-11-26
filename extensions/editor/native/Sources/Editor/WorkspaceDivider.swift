@@ -41,8 +41,10 @@ final class WorkspaceDivider: NSView {
     var position: CGFloat { frame.minX + Self.reachBefore }
     var isDragging: Bool { grab != nil }
 
+    /// The cursor names the directions the line can move in. A line with no room keeps the arrow.
     private var cursor: NSCursor {
-        .columnResize(directions: canShrink && canGrow ? .all : canGrow ? .right : .left)
+        guard canShrink || canGrow else { return .arrow }
+        return .columnResize(directions: canShrink && canGrow ? .all : canGrow ? .right : .left)
     }
 
     override func draw(_ dirtyRect: NSRect) {
