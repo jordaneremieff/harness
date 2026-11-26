@@ -28,6 +28,8 @@ Test the record against the reasoning failures at the end of these instructions.
 
 If the record defeats a premise, drop it and everything that needs it. A fact not supplied is unknown, not false. If no substantive objection survives, tell the operator what answered it and submit nothing.
 
+The challenge argues the operator's side. If the target already holds the position that the operator wants to press, or the operator's description of the target's answer is wrong, report that to the operator and submit nothing. Do not build a different objection, or argue the opposite side, unless the operator asks for it.
+
 ## Build the argument
 
 Hold the position to four tests. They are checks on the reasoning, not paragraphs to reproduce.
