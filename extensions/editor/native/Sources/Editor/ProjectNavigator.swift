@@ -132,6 +132,8 @@ final class ProjectNavigator: NSObject, NSOutlineViewDataSource, NSOutlineViewDe
     }
     var onOpen: ((String, Int?) -> Void)?
     var onNote: ((String, String) -> Void)?
+    /// Receives the folder in which the person wants a new file. The project folder is "".
+    var onNewFile: ((String) -> Void)?
     var onError: ((String) -> Void)?
     var onExpand: ((Bool) -> Void)?
 
@@ -489,6 +491,9 @@ final class ProjectNavigator: NSObject, NSOutlineViewDataSource, NSOutlineViewDe
         guard node?.kind != .more, node != nil || mode == .files else { return nil }
         let menu = NSMenu(); let path = node?.path ?? ""; let dir = node.map { $0.kind == .folder } ?? true
         menu.addItem(WorkspaceChoice(dir ? "Note on folder…" : "Note on file…") { [weak self] in self?.onNote?(dir ? "folder" : "file",path) })
+        if dir, mode == .files {
+            menu.addItem(WorkspaceChoice("New file in this folder…") { [weak self] in self?.onNewFile?(path) })
+        }
         if !dir {
             menu.addItem(WorkspaceChoice("Open file") { [weak self] in self?.onOpen?(path,node?.line) })
             menu.addItem(WorkspaceChoice("Show Git diff") { [weak self] in self?.gitScope = path; self?.loadGit(path) })

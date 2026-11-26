@@ -84,6 +84,8 @@ final class WorkspaceChrome: NSView {
     private var activeGroup = 0
     private var accessory: NSView?
     private var showPath = false
+    /// The part of a requested path that Editor supplied, which the person has not typed.
+    private var pathStart = ""
     private var showMessage = false
     private var statusText = ""
     private var notice: Task<Void, Never>?
@@ -113,7 +115,8 @@ final class WorkspaceChrome: NSView {
         let sidebar = beside ? WorkspaceLayout.sidebar(chosen: chosenSidebar, pane: bounds.width, groups: 2) + 1 + WorkspaceDivider.reachAfter : 0
         return WorkspaceLayout.fitsTwoGroups(stage: bounds.width - sidebar)
     }
-    var hasPathText: Bool { showPath && !pathField.stringValue.isEmpty }
+    /// The person typed a path that has not been submitted.
+    var hasPathText: Bool { showPath && !pathField.stringValue.isEmpty && pathField.stringValue != pathStart }
     override var isFlipped: Bool { true }
 
     init(root: String, defaults: UserDefaults = .standard) {
@@ -235,19 +238,21 @@ final class WorkspaceChrome: NSView {
         needsLayout = true
     }
     func clearMessage() { showMessage = false; messageAction.run = nil; needsLayout = true }
-    func inputPath(action: String) {
+    /// Asks for a project path. `start` is the part the person need not type, such as a folder.
+    func inputPath(action: String, start: String = "") {
         pathSubmit.title = action
         pathSubmit.setAccessibilityLabel(action)
-        if !showPath { pathField.stringValue = "" }
+        if !hasPathText { pathField.stringValue = start; pathStart = start }
         showPath = true
         needsLayout = true
         layoutSubtreeIfNeeded()
         window?.makeFirstResponder(pathField)
+        pathField.currentEditor()?.selectedRange = NSRange(location: (pathField.stringValue as NSString).length, length: 0)
     }
-    func hidePath() { showPath = false; pathField.stringValue = ""; needsLayout = true }
+    func hidePath() { showPath = false; pathField.stringValue = ""; pathStart = ""; needsLayout = true }
     @objc private func submitPath() {
         let path = pathField.stringValue
-        guard !path.isEmpty else { window?.makeFirstResponder(pathField); return }
+        guard hasPathText else { window?.makeFirstResponder(pathField); return }
         onPath?(path)
     }
     func setWrap(_ enabled: Bool) {

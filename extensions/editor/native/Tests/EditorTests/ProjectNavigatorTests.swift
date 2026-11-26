@@ -44,6 +44,13 @@ struct ProjectNavigatorTests {
         try await awaitRow("main.swift",index:1,in:table)
         try await awaitRow("z.txt",index:2,in:table)
         #expect(nav.fittingWidth.map { $0 > 60 } == true)
+        // A folder's menu starts a new file in that folder.
+        var parent: String?; nav.onNewFile = { parent = $0 }
+        let place = table.rect(ofRow:0)
+        let press = try #require(NSEvent.mouseEvent(with:.rightMouseDown,location:table.convert(NSPoint(x:place.midX,y:place.midY),to:nil),modifierFlags:[],timestamp:0,windowNumber:window.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:1))
+        let create = try #require(table.menu(for:press)?.items.first { $0.title == "New file in this folder…" })
+        #expect(NSApp.sendAction(try #require(create.action),to:create.target,from:create))
+        #expect(parent == "Sources")
         try keyOpen(table,row:1)
         #expect(opened?.0 == "Sources/main.swift")
         #expect(opened?.1 == nil)

@@ -69,6 +69,7 @@ final class WorkspaceScreen {
         }
         navigator.onOpen = { [weak self] path, line in self?.act { try await $0.open(path, line: line) } }
         navigator.onNote = { [weak self] in self?.note($0, $1) }
+        navigator.onNewFile = { [weak self] folder in self?.requestPath(.newFile, start: folder.isEmpty ? "" : folder + "/") }
         navigator.onExpand = { [weak self] expanded in
             guard let self else { return }; expandedNavigator = expanded
             if expanded { panel = .git }; present()
@@ -445,10 +446,13 @@ final class WorkspaceScreen {
             try await body(screen)
         }
     }
-    private func requestPath(_ request: PathRequest) {
+    private func requestPath(_ request: PathRequest, start: String = "") {
         if pathRequest != nil && chrome.hasPathText { chrome.setMessage("Submit or cancel the current file path first."); return }
         pathRequest = request
-        switch request { case .newFile: chrome.inputPath(action: "Create file"); case .saveAs: chrome.inputPath(action: "Save as") }
+        switch request {
+        case .newFile: chrome.inputPath(action: "Create file", start: start)
+        case .saveAs: chrome.inputPath(action: "Save as")
+        }
     }
     private func clearPath() { pathRequest = nil; chrome.hidePath(); currentEditor?.focus() }
     private func submit(_ path: String) {
