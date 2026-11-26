@@ -282,7 +282,8 @@ final class WorkspaceChrome: NSView {
     }
     /// Fits the sidebar to its content, or returns it to the standard width.
     private func fitSidebar() {
-        chosenSidebar = onFitSidebar?().map { max(WorkspaceLayout.minimumSidebar, $0.rounded(.up)) }
+        // The content ends where the reach of the edge begins.
+        chosenSidebar = onFitSidebar?().map { max(WorkspaceLayout.minimumSidebar, $0.rounded(.up) + WorkspaceDivider.reachBefore) }
         keepSidebar()
         needsLayout = true
         layoutSubtreeIfNeeded()
