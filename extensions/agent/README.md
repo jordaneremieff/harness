@@ -170,12 +170,14 @@ exposure fields carry it.
 - Direct controls are declared and callable: `agent_spawn`, `agent_brief`, `agent_send`,
   `agent_steer`, `agent_abort`, `agent_status`, `agent_intent`,
   `agent_collaborate`, `agent_inspect`, `agent_list` and `agent_profile`.
-  `agent_work` is a direct control of a native agent, and `agent_yield` is a
-  direct control of an ordinary session. Status results, result deliveries,
-  refusals and the native profile instruction name `agent_inspect`,
+  `agent_work` is a direct control of a native agent. Status results, result
+  deliveries, refusals and the native profile instruction name `agent_inspect`,
   `agent_list` and `agent_profile` as the next call, so these stay declared.
 - Model-only controls are declared while active and never callable from a
-  script: `agent_compact`.
+  script: `agent_compact`, and the ordinary session's `agent_yield`. A script
+  call of `agent_yield` could not end the turn: codemode resolves a nested
+  call to its result and drops its `terminate`, so the model would continue a
+  turn that its result describes as ended.
 - Deferred controls stay registered and callable from other tools, and are not
   declared until tool discovery loads them: `agent_attach`, `agent_place`,
   `agent_fork`, `agent_rewind`, `agent_reset`, `agent_configure` and

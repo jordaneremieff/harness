@@ -98,6 +98,10 @@ const FOLLOW_UP = { role: "custom", customType: "fixture.completion", content: "
 const PEER = { role: "custom", customType: "agent.peer", content: "The reviewer finished." };
 const text = (value: string) => ({ role: "assistant", stopReason: "stop", content: [{ type: "text", text: value }] });
 
+it("stays out of scripts, because a nested call cannot end the model's turn", () => {
+	assert.equal(fixture().tool.exposure, "model-only");
+});
+
 it("continues a print or JSON run to a text answer, because its output is its last text message", async () => {
 	const note = "The review finished; its findings are in the answer above.";
 	for (const mode of ["print", "json"]) {

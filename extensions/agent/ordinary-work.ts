@@ -227,6 +227,9 @@ export function registerOrdinaryWork(
 		promptSnippet: "End the turn while work sent to agents is still open, with one state note and no chat text",
 		parameters: OrdinaryWorkParams,
 		outputSchema: OrdinaryWorkOutputSchema,
+		// A nested call's `terminate` does not reach the model's tool batch, so a script that called the tool would
+		// continue the turn while its result reads as a yield. Only the model's own batch can end the turn.
+		exposure: "model-only",
 		async execute(_callId, input: Static<typeof OrdinaryWorkParams>, _signal, _update, ctx) {
 			if (!matchesSchema(OrdinaryWorkParams, input)) throw new Error(`${ORDINARY_YIELD_TOOL} takes a note`);
 			const details: OrdinaryWorkDetails = { note: input.note };
