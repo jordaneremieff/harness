@@ -26,19 +26,19 @@ struct QuickLocation: Equatable, Sendable {
 @MainActor
 struct QuickEditorPosition {
     weak var editor: CodeEditor?
-    let selection: [NSValue]
+    let selection: [NSRange]
     let origin: NSPoint
 
     init(_ editor: CodeEditor) {
         self.editor = editor
-        selection = editor.textView.selectedRanges
+        selection = editor.findSelections
         origin = editor.scroll.contentView.bounds.origin
     }
 
     func restore() {
         guard let editor else { return }
         let length = editor.findText.length
-        if selection.allSatisfy({ NSMaxRange($0.rangeValue) <= length }) { editor.textView.selectedRanges = selection }
+        if selection.allSatisfy({ NSMaxRange($0) <= length }) { editor.selectFound(selection, reveal: nil) }
         editor.scroll.contentView.scroll(to: origin)
         editor.scroll.reflectScrolledClipView(editor.scroll.contentView)
     }
@@ -138,7 +138,6 @@ final class QuickNavigationSession {
     private var work: Task<[QuickItem.Hit], Never>?
     private var destinations: [String: NSRange] = [:]
     private var lineToCommit: Int?
-    private var lineOffsets: (editor: ObjectIdentifier, revision: UInt64, task: Task<[Int], Never>)?
     private var symbols: (editor: ObjectIdentifier, revision: UInt64, scan: Task<[CodeSymbol], Never>, list: Task<QuickSymbolList, Never>)?
     private var textSnapshot: (editor: ObjectIdentifier, revision: UInt64, text: String)?
     var items: [QuickItem] = []
@@ -236,27 +235,10 @@ final class QuickNavigationSession {
                 panel.show([], status: input.isEmpty ? editor.doc : "Enter a positive line number")
                 return
             }
-            let engine = editor.textView.syntax.engine
-            if let storage = editor.textView.textStorage { engine.attach(to: storage) }
-            let key = ObjectIdentifier(editor)
-            if lineOffsets?.editor != key || lineOffsets?.revision != engine.revision {
-                lineOffsets?.task.cancel()
-                let source = String(editor.findText)
-                lineOffsets = (key, engine.revision, Task.detached(priority: .userInitiated) { Self.offsets(in: source) })
-            }
-            guard let index = lineOffsets?.task else { return }
-            let generation = request
-            panel.busy("Locating line…")
-            filter = Task { [weak self, weak panel, weak editor] in
-                let starts = await index.value
-                guard !Task.isCancelled, let self, let editor, request == generation, !starts.isEmpty else { return }
-                let clamped = min(line, starts.count)
-                let target = NSRange(location: starts[clamped - 1], length: 0)
-                lineToCommit = clamped
-                editor.textView.setSelectedRange(target)
-                editor.textView.scrollRangeToVisible(target)
-                panel?.show([], status: "Line \(clamped) · \(editor.doc)")
-            }
+            let clamped = min(line, editor.textView.lineCount)
+            lineToCommit = clamped
+            editor.go(line: clamped)
+            panel.show([], status: "Line \(clamped) · \(editor.doc)")
         case .symbol(let query):
             let engine = editor.textView.syntax.engine
             if let storage = editor.textView.textStorage { engine.attach(to: storage) }
@@ -310,8 +292,8 @@ final class QuickNavigationSession {
         case .line: break
         case .text, .symbol:
             guard let editor = previewEditor, let range = destinations[item.id], NSMaxRange(range) <= editor.findText.length else { return }
-            editor.textView.setSelectedRange(range)
-            editor.textView.scrollRangeToVisible(range)
+            editor.textView.unfold(intersecting: range)
+            editor.selectFound([range], reveal: range)
         }
     }
 
@@ -350,22 +332,13 @@ final class QuickNavigationSession {
 
     private func finish(commit: Bool, detached: Bool) {
         guard !finished, let screen else { return }
-        finished = true; filter?.cancel(); work?.cancel(); lineOffsets?.task.cancel()
+        finished = true; filter?.cancel(); work?.cancel()
         symbols?.scan.cancel(); symbols?.list.cancel()
         for position in positions.values where !commit || position.editor !== (previewEditor ?? origin?.editor) { position.restore() }
         if !detached, let panel { screen.chrome.dismissOverlay(panel) }
         if hasTransient { screen.endTransient(commit: commit, focus: !detached) }
         else if !detached, screen.chrome.window?.isKeyWindow == true { screen.currentEditor?.focus() }
         onFinish?()
-    }
-
-    nonisolated private static func offsets(in text: String) -> [Int] {
-        var lines = [0]
-        for (index, unit) in text.utf16.enumerated() where unit == 10 {
-            if Task.isCancelled { return [] }
-            lines.append(index + 1)
-        }
-        return lines
     }
 
 }

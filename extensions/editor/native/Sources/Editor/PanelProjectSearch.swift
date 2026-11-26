@@ -343,8 +343,8 @@ final class PanelProjectSearch {
                 try await screen.open(hit.path, focus: false)
                 guard !Task.isCancelled, let editor = screen.currentEditor, editor.doc == hit.path else { return }
                 let range = hit.selection(in: editor.findText)
-                editor.textView.setSelectedRange(range)
-                editor.textView.scrollRangeToVisible(range)
+                editor.textView.unfold(intersecting: range)
+                editor.selectFound([range], reveal: range)
                 if hadFocus, screen.chrome.window?.isKeyWindow == true { editor.focus() }
             } catch {
                 if !Task.isCancelled { screen.chrome.setMessage(error.localizedDescription) }
