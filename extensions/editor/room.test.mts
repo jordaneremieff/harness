@@ -106,6 +106,115 @@ test("a native pane hands a folder thread to one participant, which edits its sh
 	assert.deepEqual((await (await pane({ op: "members" })).json()).members, [a]);
 });
 
+test("pane file receipts report the save encoding and discard draft-only documents", async (t) => {
+	const base = await realpath(await mkdtemp(join(tmpdir(), "editor-format-")));
+	const root = join(base, "project");
+	const state = join(base, "state");
+	const doc = "line.txt";
+	const file = join(root, doc);
+	await Promise.all([mkdir(root), mkdir(state, { mode: 0o700 })]);
+	await writeFile(file, "\uFEFFline\r\n");
+	let endpoint: string;
+	let token: string;
+	const request = (op: string, fields: Record<string, unknown> = {}) =>
+		fetch(endpoint, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ op, ...fields }),
+		});
+	const pane = async (op: string, fields?: Record<string, unknown>) => {
+		const response = await request(op, fields);
+		const receipt = await response.json();
+		assert.equal(response.status, 200, JSON.stringify(receipt));
+		return receipt;
+	};
+	const room = new EditorRoom(
+		state,
+		root,
+		{ id: "ordinary:a", kind: "ordinary", label: "Pi" },
+		async () => {},
+		async () => async (_root, path) => {
+			const ticket = JSON.parse(await readFile(path, "utf8"));
+			endpoint = `http://127.0.0.1:${ticket.port}/api`;
+			token = ticket.token;
+			await pane("ready");
+			return { blockId: "format-test" };
+		},
+	);
+	t.after(async () => {
+		await room.close();
+		await rm(base, { recursive: true, force: true });
+	});
+	await room.command("");
+	const read = await pane("read", { doc });
+	assert.deepEqual(read, { doc, rev: 1, dirty: false, title: doc, text: "line\n", eol: "\r\n", bom: true });
+	const patched = await pane("patch", { doc, rev: read.rev, start: 0, end: 1, text: "L" });
+	const saved = await pane("save", { doc, rev: patched.rev });
+	assert.equal(saved.eol, "\r\n");
+	assert.equal(saved.bom, true);
+	assert.equal(await readFile(file, "utf8"), "\uFEFFLine\r\n");
+	await writeFile(file, "Line\r");
+	assert.deepEqual(await pane("read", { doc, ifRev: saved.rev }), {
+		doc,
+		rev: saved.rev,
+		dirty: false,
+		unchanged: true,
+		eol: "\r",
+		bom: false,
+	});
+	const dirty = await pane("patch", { doc, rev: saved.rev, start: 0, end: 1, text: "X" });
+	await writeFile(file, "different\n");
+	const dirtyRead = await pane("read", { doc, ifRev: dirty.rev });
+	assert.equal(dirtyRead.eol, "\r");
+	assert.equal(dirtyRead.bom, false);
+	assert.equal(dirtyRead.diskChanged, true);
+	const restored = await pane("revert", { doc, rev: dirty.rev });
+	assert.deepEqual(restored, {
+		doc,
+		title: doc,
+		rev: dirty.rev + 1,
+		dirty: false,
+		text: "different\n",
+		eol: "\n",
+		bom: false,
+	});
+	const cleanSave = await pane("save", { doc, rev: restored.rev });
+	assert.deepEqual(cleanSave, restored);
+	for (const result of [
+		await room.tool({ op: "read", doc }),
+		await room.tool({ op: "revert", doc, rev: restored.rev }),
+	]) {
+		assert.equal("eol" in result, false);
+		assert.equal("bom" in result, false);
+	}
+
+	const named = await pane("new", { path: "named.txt" });
+	assert.equal(named.eol, "\n");
+	assert.equal(named.bom, false);
+	assert.deepEqual(await pane("revert", { doc: named.doc, rev: named.rev }), { doc: named.doc, discarded: true });
+	const scratch = await pane("new");
+	assert.equal("eol" in scratch, false);
+	assert.equal("bom" in scratch, false);
+	const scratchEdit = await pane("patch", { doc: scratch.doc, rev: scratch.rev, start: 0, end: 0, text: "idea" });
+	assert.deepEqual(await pane("read", { doc: scratch.doc, ifRev: scratchEdit.rev }), {
+		doc: scratch.doc,
+		rev: scratchEdit.rev,
+		dirty: true,
+		unchanged: true,
+	});
+	const note = await pane("note", { doc: scratch.doc, rev: scratchEdit.rev, start: 0, end: 4, text: "Posted note" });
+	assert.equal((await request("revert", { doc: scratch.doc, rev: scratch.rev })).status, 409);
+	await assert.rejects(room.tool({ op: "revert", doc: scratch.doc, rev: scratchEdit.rev }), /no disk file/);
+	assert.deepEqual(await pane("revert", { doc: scratch.doc, rev: scratchEdit.rev }), {
+		doc: scratch.doc,
+		discarded: true,
+	});
+	assert.equal((await (await request("read", { doc: scratch.doc })).json()).code, "not_found");
+	const posted = await pane("thread", { id: note.id });
+	assert.deepEqual(posted.target, { kind: "tab", key: scratch.doc });
+	assert.equal(posted.quote, "idea");
+});
+
 test("a loaded app keeps its exact split while the tab is hidden and reports a real startup failure", async (t) => {
 	const base = await realpath(await mkdtemp(join(tmpdir(), "editor-hidden-")));
 	const root = join(base, "project"),

@@ -10,6 +10,7 @@ import {
 	statSync,
 	symlinkSync,
 	truncateSync,
+	unlinkSync,
 	writeFileSync,
 	rmSync,
 } from "node:fs";
@@ -126,6 +127,46 @@ test("clean disk changes become revisions and dirty disk conflicts preserve both
 	assert.equal(copy.doc, "copy.txt");
 	assert.equal(readFileSync(join(root, "copy.txt"), "utf8"), "\ufeffnew\r\nfirst\r\nend\r\n");
 	assert.equal(call(store, "read", { doc }).dirty, true);
+});
+
+test("a discarded named draft does not reuse its revision when another writer recreates it", (t) => {
+	const { root, open } = fixture(t);
+	const store = open();
+	const peer = open();
+	const first = call(store, "new", { path: "unsaved.txt" });
+	const doc = first.doc;
+	const draft = call(peer, "patch", { doc, rev: first.rev, start: 0, end: 0, text: "first draft" });
+	const discard = (rev: unknown) => store.run({ op: "revert", doc, rev }, "You", true);
+	assert.throws(() => discard(first.rev), { code: "conflict" });
+	assert.equal(call(peer, "read", { doc }).text, "first draft");
+	assert.deepEqual(discard(draft.rev), { doc, discarded: true });
+	assert.equal(existsSync(join(root, "unsaved.txt")), false);
+	assert.throws(() => call(peer, "read", { doc }), { code: "not_found" });
+	const second = call(peer, "new", { path: doc });
+	assert.throws(() => discard(draft.rev), { code: "conflict" });
+	assert.equal(call(peer, "read", { doc }).rev, second.rev);
+	assert.throws(() => call(peer, "revert", { doc, rev: second.rev }), { code: "not_found" });
+	writeFileSync(join(root, "unsaved.txt"), "now on disk\r");
+	const loaded = discard(second.rev);
+	assert.equal(loaded.text, "now on disk\n");
+	assert.equal(loaded.dirty, false);
+	assert.equal(loaded.eol, "\r");
+});
+
+test("a never-saved draft in a removed parent is discardable, but a symlink is not evidence of absence", (t) => {
+	const { root, base, open } = fixture(t);
+	const folder = join(root, "folder");
+	mkdirSync(folder);
+	const store = open();
+	const { doc, rev } = call(store, "new", { path: "folder/new.txt" });
+	rmSync(folder, { recursive: true });
+	symlinkSync(base, folder);
+	const discard = () => store.run({ op: "revert", doc, rev }, "You", true);
+	assert.throws(discard, { code: "invalid" });
+	assert.equal(call(store, "read", { doc }).rev, rev);
+	unlinkSync(folder);
+	assert.deepEqual(discard(), { doc, discarded: true });
+	assert.deepEqual(call(store, "state").docs, []);
 });
 
 test("scratch conversion preserves exact and tab anchors and only creates new paths", (t) => {

@@ -222,7 +222,7 @@ export class EditorRoom {
 		if (browseOps.has(op)) return browse(c.store.root, input, signal, c.store);
 		if (op === "replace") return projectReplace(c.store, input, signal);
 		if (!storageOps.has(op) && !paneFileOps.has(op)) throw Error("Unknown editor action.");
-		return c.store.run(input, "You");
+		return c.store.run(input, "You", true);
 	}
 	async tool(request: Data, signal?: AbortSignal): Promise<Data> {
 		signal?.throwIfAborted();

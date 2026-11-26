@@ -25,6 +25,7 @@ import {
 	type Location,
 	locate,
 	MAX_FILE_BYTES,
+	MissingParentError,
 	normalise,
 	plainText,
 	publish,
@@ -159,6 +160,10 @@ function title(doc: string): string {
 
 function describe(row: Pick<Document, "doc" | "rev" | "dirty">) {
 	return { doc: row.doc, title: title(row.doc), rev: row.rev, dirty: row.dirty === 1 };
+}
+
+function diskFormat(row: Pick<Document, "doc" | "eol" | "bom">) {
+	return SCRATCH.test(row.doc) ? {} : { eol: row.eol, bom: row.bom === 1 };
 }
 
 function revision(row: Document, expected: number): void {
@@ -376,10 +381,10 @@ export class Workspace {
 		return this.#sql("SELECT text FROM bodies WHERE doc = ?").get(doc)?.text as string;
 	}
 
-	#add(row: Document, text: string): void {
+	#add(row: Document, text: string, seq = this.#bump()): void {
 		this.#sql(
 			"INSERT INTO documents (doc, rev, dirty, base, stamp, eol, bom, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		).run(row.doc, row.rev, row.dirty, row.base, row.stamp, row.eol, row.bom, this.#bump());
+		).run(row.doc, row.rev, row.dirty, row.base, row.stamp, row.eol, row.bom, seq);
 		this.#sql("INSERT INTO bodies VALUES (?, ?)").run(row.doc, text);
 	}
 
@@ -411,7 +416,7 @@ export class Workspace {
 
 	#readResult(row: Document, ifRev: number | undefined, diskChanged = false): Record<string, unknown> {
 		const { doc, rev, dirty } = describe(row);
-		const disk = diskChanged ? { diskChanged: true } : {};
+		const disk = { ...diskFormat(row), ...(diskChanged ? { diskChanged: true } : {}) };
 		if (row.rev === ifRev) return { doc, rev, dirty, unchanged: true, ...disk };
 		return { doc, title: title(doc), rev, dirty, text: this.#body(doc), ...disk };
 	}
@@ -454,7 +459,7 @@ export class Workspace {
 		if (!row) {
 			const added: Document = { doc: target.doc, rev: 1, dirty: 0, base, stamp, eol, bom: bom ? 1 : 0 };
 			this.#add(added, text);
-			return { ...describe(added), text };
+			return { ...describe(added), ...diskFormat(added), text };
 		}
 		// An encoding-only change must not move exact text anchors.
 		if (this.#body(row.doc) !== text) {
@@ -470,8 +475,9 @@ export class Workspace {
 			this.#bump(),
 			row.doc,
 		);
-		if (row.rev === ifRev) return { doc: row.doc, rev: row.rev, dirty: false, unchanged: true };
-		return { ...describe(row), text };
+		const format = { eol, bom };
+		if (row.rev === ifRev) return { doc: row.doc, rev: row.rev, dirty: false, unchanged: true, ...format };
+		return { ...describe(row), ...format, text };
 	}
 
 	projectDrafts(limit: number): string[] {
@@ -520,12 +526,33 @@ export class Workspace {
 		});
 	}
 
-	#revert(doc: string, expected: number): Record<string, unknown> {
-		if (SCRATCH.test(doc)) throw new EditorError("A scratch draft has no disk file.", "invalid");
+	#revertTarget(doc: string, canDiscard: boolean): Location | undefined {
+		try {
+			return locate(this.root, doc);
+		} catch (error) {
+			if (canDiscard && error instanceof MissingParentError) return;
+			throw error;
+		}
+	}
+
+	#discard(row: Document) {
+		this.#dropDraft(row.doc);
+		this.#bump();
+		return { doc: row.doc, discarded: true };
+	}
+
+	#revert(doc: string, expected: number, pane: boolean): Record<string, unknown> {
+		const scratch = SCRATCH.test(doc);
+		if (scratch && !pane) throw new EditorError("A scratch draft has no disk file.", "invalid");
 		return this.#transaction(true, () => {
 			const row = this.#need(doc);
 			revision(row, expected);
-			const disk = diskProjectText(locate(this.root, doc));
+			if (scratch) return this.#discard(row);
+			const canDiscard = pane && row.base === null;
+			const target = this.#revertTarget(doc, canDiscard);
+			if (canDiscard && !target?.stat) return this.#discard(row);
+			if (!target) throw new EditorError(`File not found: ${doc}`, "not_found");
+			const disk = diskProjectText(target);
 			const changed = this.#body(doc) !== disk.text;
 			if (changed) {
 				row.rev++;
@@ -536,7 +563,7 @@ export class Workspace {
 					"UPDATE documents SET rev = ?, dirty = 0, base = ?, stamp = ?, eol = ?, bom = ?, seq = ? WHERE doc = ?",
 				).run(row.rev, disk.base, disk.stamp, disk.eol, Number(disk.bom), this.#bump(), doc);
 			}
-			return { ...describe({ ...row, dirty: 0 }), text: disk.text };
+			return { ...describe({ ...row, dirty: 0 }), text: disk.text, eol: disk.eol, bom: disk.bom };
 		});
 	}
 
@@ -545,9 +572,11 @@ export class Workspace {
 			const target = path === undefined ? undefined : locate(this.root, path);
 			const doc = target?.doc ?? `scratch:${randomUUID()}`;
 			if (target?.stat || this.#get(doc)) throw new EditorError(`File or draft already exists: ${doc}`, "conflict");
-			const row: Document = { doc, rev: 1, dirty: 1, base: null, stamp: null, eol: "\n", bom: 0 };
-			this.#add(row, "");
-			return { ...describe(row), text: "" };
+			const seq = this.#bump();
+			// Reopening a discarded name must not accept a revision from the old draft.
+			const row: Document = { doc, rev: target ? seq : 1, dirty: 1, base: null, stamp: null, eol: "\n", bom: 0 };
+			this.#add(row, "", seq);
+			return { ...describe(row), ...diskFormat(row), text: "" };
 		});
 	}
 
@@ -644,7 +673,7 @@ export class Workspace {
 			if (copy) this.#add(saved, text);
 			else this.#markSaved(doc, saved);
 			publish(this.root, target, bytes);
-			return { ...describe(saved), text };
+			return { ...describe(saved), ...diskFormat(saved), text };
 		});
 	}
 
@@ -708,6 +737,17 @@ export class Workspace {
 		}
 	}
 
+	#dropDraft(doc: string): void {
+		// Keep posted discussion without an exact revision anchor to the deleted draft.
+		this.#sql("UPDATE threads SET doc = NULL, target_kind = ?, target_key = ? WHERE doc = ?").run(
+			SCRATCH.test(doc) ? "tab" : "file",
+			doc,
+			doc,
+		);
+		this.#sql("DELETE FROM bodies WHERE doc = ?").run(doc);
+		this.#sql("DELETE FROM documents WHERE doc = ?").run(doc);
+	}
+
 	#remove(path: string) {
 		const source = sourceEntry(this.root, path);
 		checkSubtree(this.root, source);
@@ -718,12 +758,7 @@ export class Workspace {
 					kept.push(row.doc);
 					continue;
 				}
-				this.#sql("UPDATE threads SET doc = NULL, target_kind = 'file', target_key = ? WHERE doc = ?").run(
-					row.doc,
-					row.doc,
-				);
-				this.#sql("DELETE FROM bodies WHERE doc = ?").run(row.doc);
-				this.#sql("DELETE FROM documents WHERE doc = ?").run(row.doc);
+				this.#dropDraft(row.doc);
 			}
 			this.#bump();
 			trashEntry(this.root, source, this.#trash);
@@ -826,7 +861,14 @@ export class Workspace {
 		});
 	}
 
-	run(input: Record<string, unknown>, author: string): Record<string, unknown> {
+	run(input: Record<string, unknown>, author: string, pane = false): Record<string, unknown> {
+		const result = this.#run(input, author, pane);
+		if (pane || result.eol === undefined) return result;
+		const { eol: _eol, bom: _bom, ...rest } = result;
+		return rest;
+	}
+
+	#run(input: Record<string, unknown>, author: string, pane: boolean): Record<string, unknown> {
 		switch (input.op) {
 			case "state":
 				return this.#state(optionalNumber(input, "since"));
@@ -838,7 +880,7 @@ export class Workspace {
 			case "patch":
 				return this.#edit(input, input.op === "patch");
 			case "revert":
-				return this.#revert(docField(input), number(input, "rev"));
+				return this.#revert(docField(input), number(input, "rev"), pane);
 			case "rename":
 				return fileAction(() => this.#rename(field(input, "from"), field(input, "to")));
 			case "remove":

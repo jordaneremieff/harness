@@ -33,6 +33,12 @@ export class EditorError extends Error {
 	}
 }
 
+export class MissingParentError extends EditorError {
+	constructor() {
+		super("The parent must be an existing folder without symlinks.", "invalid");
+	}
+}
+
 export function isWithin(root: string, path: string): boolean {
 	const rel = relative(root, path);
 	return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
@@ -94,6 +100,13 @@ function assertEntry(stat: BigIntStats, allowDirectory: boolean): void {
 	);
 }
 
+function parentDirectory(path: string): BigIntStats {
+	const stat = statIfPresent(path);
+	if (!stat) throw new MissingParentError();
+	if (!stat.isDirectory()) throw new EditorError("The parent must be an existing folder without symlinks.", "invalid");
+	return stat;
+}
+
 export function locate(root: string, doc: string, allowDirectory = false): Location {
 	fileName(doc);
 	let parentStat = lstatSync(root, { bigint: true });
@@ -105,10 +118,7 @@ export function locate(root: string, doc: string, allowDirectory = false): Locat
 	let parent = root;
 	for (const part of parts) {
 		parent = join(parent, part);
-		const stat = statIfPresent(parent);
-		if (!stat?.isDirectory())
-			throw new EditorError("The parent must be an existing folder without symlinks.", "invalid");
-		parentStat = stat;
+		parentStat = parentDirectory(parent);
 	}
 	const canonical = realpathSync.native(parent);
 	if (!isWithin(root, canonical)) throw new EditorError("The path leaves the workspace folder.", "invalid");
