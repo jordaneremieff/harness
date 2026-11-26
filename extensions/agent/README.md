@@ -1494,7 +1494,13 @@ leaves a shortened or empty excerpt with `truncated: true` rather than an
 out-of-budget marker. Tool arrays have bounds; `omittedParts` counts excluded
 parts. `truncated` and inline markers identify shortened text, arguments, results, or
 names. Assistant text precedes visible thinking in the readable excerpt.
-History is newest first; `nextCursor` continues older entries. Activity groups
+History is newest first; `nextCursor` continues older entries. A history, branch
+or activity cursor carries the view and the filters of its read (`source`,
+`entryId`, `fromId`), so a continuation that passes only `sessionId` and
+`cursor`, as a script loop does, reads the same sequence. A different explicit
+selector is refused with the cursor's value. Search cursors keep their native
+shape: a search continuation repeats `view: "search"` and its query, and a
+search cursor under another view is refused with that instruction. Activity groups
 recent entries by turn and retains live metadata, running tools, and coverage.
 Failure rows take priority within the digest bound; they still lose rows when
 their combined size exceeds it.
@@ -3576,7 +3582,9 @@ presence observation; they do not tick during inactivity.
 Target an ordinary primary with `agent_status` and `detail: true`, or use
 `agent_inspect` with `view: "activity"` or `view: "history"`. Without
 `detail: true` the status is compact: presence facts and the exact full-detail
-call, without the retained ancestry. Both ordinary and Durable callers use the
+call, without the retained ancestry. An omitted view reads activity, or the view
+that a supplied `nextCursor` names: the cursor continues the view of the read
+that returned it, and a different explicit view is refused. Both ordinary and Durable callers use the
 same bounded reader as Related efforts. The primary publishes the public Pi
 session-file path in its existing endpoint record. Reading needs no peer socket,
 host launch, message admission or control. Primary delivery stays independent.

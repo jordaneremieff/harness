@@ -1247,6 +1247,85 @@ it("pages activity without overlapping retained turns", async (t) => {
 	}
 });
 
+it("continues the view and filters of a read when the next call passes only its cursor", async (t) => {
+	const storagePath = join(fixtureRoot(t), "carried.sqlite");
+	const answers = Array.from({ length: 4 }, (_, index) => answerMessage(`carried answer ${index}`));
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime(answers), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
+	try {
+		for (let index = 0; index < 4; index++) {
+			const submitted = await host.submit({ message: `carried turn ${index}`, requestId: `carried-${index}` });
+			assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
+		}
+	} finally {
+		await host.close();
+	}
+	const observation = await observationFor(storagePath);
+	type Page = {
+		view: string;
+		entries?: { role?: string }[];
+		turns?: unknown[];
+		nextCursor: Record<string, unknown> | null;
+	};
+	try {
+		const filtered = (await observation.request("inspect", {
+			view: "history",
+			source: "assistant",
+			limit: 1,
+		})) as Page;
+		assert.ok(filtered.nextCursor !== null);
+		assert.equal(filtered.nextCursor.view, "history");
+		assert.equal(filtered.nextCursor.source, "assistant");
+		const next = (await observation.request("inspect", { limit: 3, cursor: filtered.nextCursor })) as Page;
+		assert.equal(next.view, "history");
+		assert.ok((next.entries ?? []).length > 0, "the continuation returns older entries");
+		assert.deepEqual(
+			new Set((next.entries ?? []).map((entry) => entry.role)),
+			new Set(["assistant"]),
+			"the continuation keeps the source filter of its read",
+		);
+		await assert.rejects(
+			observation.request("inspect", { source: "user", cursor: filtered.nextCursor }),
+			/continues a history read with source "assistant"/u,
+		);
+		await assert.rejects(
+			observation.request("inspect", { view: "activity", cursor: filtered.nextCursor }),
+			/continues a history read with view "history"/u,
+		);
+
+		const unfiltered = (await observation.request("inspect", { view: "history", limit: 1 })) as Page;
+		assert.ok(unfiltered.nextCursor !== null);
+		assert.equal(unfiltered.nextCursor.source, undefined);
+		await assert.rejects(
+			observation.request("inspect", { source: "assistant", cursor: unfiltered.nextCursor }),
+			/continues a history read without source/u,
+		);
+
+		const activity = (await observation.request("inspect", { view: "activity", limit: 1 })) as Page;
+		assert.ok(activity.nextCursor !== null);
+		assert.equal(activity.nextCursor.view, "activity");
+		const older = (await observation.request("inspect", { cursor: activity.nextCursor })) as Page;
+		assert.equal(older.view, "activity", "an activity cursor does not continue as history");
+		assert.ok((older.turns ?? []).length > 0);
+
+		const search = (await observation.request("inspect", { view: "search", query: "carried", limit: 1 })) as Page;
+		assert.ok(search.nextCursor !== null);
+		assert.deepEqual(Object.keys(search.nextCursor).sort(), ["cursor", "scannedBytes", "skip"]);
+		await assert.rejects(
+			observation.request("inspect", { cursor: search.nextCursor }),
+			/continues a search\. Pass view "search" and the same query/u,
+		);
+		await assert.rejects(
+			observation.request("inspect", { cursor: { ...filtered.nextCursor, view: "search" } }),
+			/Invalid storage cursor/u,
+		);
+	} finally {
+		await observation.close();
+	}
+});
+
 it("reduces oversized activity metadata while keeping the error fields", () => {
 	const big = "世".repeat(9000);
 	const metadata = {

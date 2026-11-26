@@ -768,7 +768,9 @@ export function parseInspectParams(params: RequestParams | undefined): DurableIn
 		throw new RangeError("result offset must be a nonnegative safe integer");
 	const source = requestString(params, "source");
 	const cursor = params?.cursor;
-	if (view === "search") searchCursor(cursor);
+	// A cursor that names its view is checked against the supplied selectors when the inspection reads it.
+	const named = typeof cursor === "object" && cursor !== null && Object.hasOwn(cursor, "view");
+	if (view === "search" && !named) searchCursor(cursor);
 	else if (cursor !== undefined && (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)))
 		throw new TypeError("cursor must be an object");
 	return {
@@ -2030,13 +2032,27 @@ async function readHistoryPage(
 				? rawEntryRow(entry)
 				: { ...entryRow(entry), communication: views?.[index] ?? { state: "unresolved" } },
 		),
-		nextCursor: scanned.next ?? null,
+		nextCursor: historyCursor(scanned.next, view, params),
 		order: "newestFirst",
 		detail:
 			view === "branch"
 				? "Newest first. Redacted JSON; continue with nextCursor or exact entryId and nextOffset."
 				: "Newest first. Compact readable entries; continue with nextCursor. Truncated text and tool parts have markers. Use exact with entryId and offset 0 for full retained redacted JSON.",
 	};
+}
+
+/** The continuation of a history or branch page, with the view and filters of its read. */
+function historyCursor(
+	next: Cursor | undefined,
+	view: "history" | "branch",
+	params: DurableInspectParams,
+): Cursor | null {
+	if (next === undefined) return null;
+	const selectors: Record<string, unknown> = { view };
+	if (view === "history" && params.source !== undefined) selectors.source = params.source;
+	if (params.entryId !== undefined) selectors.entryId = params.entryId;
+	if (view === "branch" && params.fromId !== undefined) selectors.fromId = params.fromId;
+	return { ...next, ...selectors } as Cursor;
 }
 
 async function currentLeaf(conversation: Conversation, context: Context): Promise<EntryId | undefined> {
@@ -2769,7 +2785,8 @@ async function readActivity(
 		format: "compact",
 		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
 		conversationId: conversation.id,
-		nextCursor: oldestSelected === undefined || !hasOlder ? null : ({ after: oldestSelected.id } as Cursor),
+		nextCursor:
+			oldestSelected === undefined || !hasOlder ? null : ({ after: oldestSelected.id, view: "activity" } as Cursor),
 		metadata,
 		detail:
 			"Newest turns first. Compact readable entries; exact with entryId and offset 0 returns retained redacted JSON. Failure rows take priority within the digest bound; nextCursor resumes older turns and unfinished scans only, not rows dropped by the bound. Use history for those rows.",
@@ -3292,15 +3309,78 @@ async function settledResult(
 	return boundedResult({ ...page, ...optionalParam("receiptGroup", await groupFor(page)) });
 }
 
+/**
+ * The selectors that decide which entries a history, branch or activity page lists. Each page's cursor carries the
+ * ones its read used, so a continuation that passes only the cursor reads the same sequence. Search cursors keep their
+ * native shape; a search continuation repeats its view and query.
+ */
+const CARRIED_SELECTORS = ["view", "source", "entryId", "fromId"] as const;
+type CarriedSelectors = Pick<DurableInspectParams, (typeof CARRIED_SELECTORS)[number]>;
+const CARRIED_VIEWS: readonly unknown[] = ["history", "branch", "activity"];
+const ENTRY_SOURCES: readonly unknown[] = ["user", "assistant", "toolResult", "summary", "custom"];
+
+/** A search cursor carries no view; under another view it would read as a malformed storage cursor. */
+function refuseUnnamedSearchCursor(params: DurableInspectParams, fields: Record<string, unknown>): void {
+	if (params.view !== "search" && Object.hasOwn(fields, "skip") && Object.hasOwn(fields, "scannedBytes"))
+		throw new InspectionRequestError(
+			'This cursor continues a search. Pass view "search" and the same query with it to read the next page.',
+		);
+}
+
+const positiveId = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+function checkCarriedSelectors(fields: Record<string, unknown>): void {
+	if (
+		!CARRIED_VIEWS.includes(fields.view) ||
+		(fields.source !== undefined && !ENTRY_SOURCES.includes(fields.source)) ||
+		[fields.entryId, fields.fromId].some((id) => id !== undefined && !positiveId(id))
+	)
+		throw new InspectionRequestError(
+			"Invalid storage cursor. Pass the nextCursor of the previous page unchanged, or omit cursor to start at the newest entries.",
+		);
+}
+
+/** A supplied selector continues the cursor's read only when it equals the selector that the cursor carries. */
+function checkSuppliedSelector(key: string, supplied: unknown, carried: unknown, view: unknown): void {
+	if (supplied === undefined || supplied === carried) return;
+	throw new InspectionRequestError(
+		carried === undefined
+			? `This cursor continues a ${String(view)} read without ${key}. Omit ${key} to read its next page, or omit cursor to start a new read.`
+			: `This cursor continues a ${String(view)} read with ${key} ${JSON.stringify(carried)}. Omit ${key} or pass the same value to read its next page.`,
+	);
+}
+
+/** Apply the selectors that a continuation cursor carries, and pass the readers the native cursor alone. */
+function continuedInspection(params: DurableInspectParams): DurableInspectParams {
+	const cursor: unknown = params.cursor;
+	if (cursor === null || typeof cursor !== "object" || Array.isArray(cursor)) return params;
+	const fields = cursor as Record<string, unknown>;
+	if (fields.view === undefined) {
+		refuseUnnamedSearchCursor(params, fields);
+		return params;
+	}
+	checkCarriedSelectors(fields);
+	const native: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(fields))
+		if (!(CARRIED_SELECTORS as readonly string[]).includes(key)) native[key] = value;
+	const carried: Record<string, unknown> = {};
+	for (const key of CARRIED_SELECTORS) {
+		checkSuppliedSelector(key, params[key], fields[key], fields.view);
+		if (fields[key] !== undefined) carried[key] = fields[key];
+	}
+	return { ...params, ...(carried as CarriedSelectors), cursor: native as Cursor };
+}
+
 /** One bounded inspection over a conversation's committed entries, submissions, and receipts. */
 export async function readInspection(
 	harness: Harness,
 	storageId: string,
 	conversation: Conversation,
-	params: DurableInspectParams,
+	supplied: DurableInspectParams,
 	context: Context,
 	options: DurableInspectionOptions = {},
 ): Promise<unknown> {
+	const params = continuedInspection(supplied);
 	const view = params.view ?? "history";
 	if (params.requestId !== undefined && view !== "result")
 		throw new TypeError("requestId selects only the result view");

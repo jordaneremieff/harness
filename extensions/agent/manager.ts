@@ -521,6 +521,25 @@ function callerTargetRefusal(method: string): string | undefined {
 	return undefined;
 }
 
+/**
+ * The view of an ordinary primary inspection: the supplied view, else the view that its cursor names, else activity.
+ * A cursor continues the view of the read that returned it, so a different supplied view is refused. An exact cursor
+ * also overrides "history", which native hosts of earlier snapshots still fill in for an omitted view.
+ */
+function primaryInspectView(input: Record<string, unknown>): unknown {
+	const named = (input.cursor as { view?: unknown } | undefined)?.view;
+	const cursorView = ["status", "activity", "history", "exact"].includes(named as string) ? named : undefined;
+	const view =
+		cursorView === "exact" && (input.view === undefined || input.view === "history")
+			? "exact"
+			: (input.view ?? cursorView ?? "activity");
+	if (cursorView !== undefined && cursorView !== view)
+		throw new Error(
+			`This cursor continues a ${String(cursorView)} read of the ordinary session. Omit view or pass view "${String(cursorView)}" with it.`,
+		);
+	return view;
+}
+
 export class AgentManager {
 	readonly managerProtocol = MANAGER_PROTOCOL;
 	private coldObservations = createColdObservationCache();
@@ -1609,9 +1628,7 @@ export class AgentManager {
 	/** Retained ordinary evidence never connects to a peer or acquires a Durable host. */
 	async observePrimary(sessionId: string, input: Record<string, unknown> = {}): Promise<OrdinaryPrimaryObservation> {
 		const exactCursor = (input.cursor as { view?: unknown } | undefined)?.view === "exact";
-		// An exact cursor selects its view; the native tool fills an omitted view with "history".
-		const view =
-			exactCursor && (input.view === undefined || input.view === "history") ? "exact" : (input.view ?? "activity");
+		const view = primaryInspectView(input);
 		if (view === "exact" && !exactCursor)
 			throw new Error(
 				"Ordinary primary exact inspection requires the textCursor of a clipped entry, or a nextCursor from an exact page, as cursor.",

@@ -2785,7 +2785,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_inspect",
 			description:
-				"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry, not the live selected branch; pass a clipped entry's textCursor as cursor to page its complete allowed text. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId, a conversation-qualified native requestId, or the separate retained operationId. Missing results return unavailable; supplied selectors must agree. Result answerContinuation pages readable answer text; receiptGroup.next pages recipient references with receiptCursor. When the request declared work, the answer is a state note: work.finalReport.read pages its final report with finalReport true. Follow each returned call unchanged. Images, signatures, and redacted thinking stay omitted.",
+				"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry, not the live selected branch; pass a clipped entry's textCursor as cursor to page its complete allowed text. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor: a history, branch or activity cursor keeps the view and filters of its read; a search continuation repeats view and query. Branch remains raw. Result uses submissionId, a conversation-qualified native requestId, or the separate retained operationId. Missing results return unavailable; supplied selectors must agree. Result answerContinuation pages readable answer text; receiptGroup.next pages recipient references with receiptCursor. When the request declared work, the answer is a state note: work.finalReport.read pages its final report with finalReport true. Follow each returned call unchanged. Images, signatures, and redacted thinking stay omitted.",
 			parameters: InspectParams,
 			replay: "safe",
 			execute: async (args: InspectInput) => {
@@ -2793,11 +2793,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					return errorResult("receiptCursor selects only the result view");
 				if (args.finalReport !== undefined && args.view !== "result")
 					return errorResult("finalReport selects only the result view");
+				// An omitted view stays omitted: the target chooses its default, or the view that the cursor names.
 				return hostObservation(
 					"inspect",
 					{
-						view: args.view ?? "history",
 						...defined(args, [
+							"view",
 							"sessionId",
 							"limit",
 							"cursor",

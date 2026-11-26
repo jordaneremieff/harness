@@ -197,6 +197,25 @@ it("rejects native receipt continuation selectors on an ordinary primary", async
 		/does not support receiptCursor/u,
 	);
 });
+it("continues the view that an ordinary primary cursor names", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "ordinary-inspect-"));
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const cursor = { version: 1, sessionId: "ordinary", view: "history" };
+	await assert.rejects(
+		manager.observePrimary("ordinary", { view: "activity", cursor }),
+		/continues a history read of the ordinary session\. Omit view or pass view "history"/u,
+	);
+	// Without a view the cursor's view applies, so the read proceeds to the endpoint lookup.
+	await assert.rejects(manager.observePrimary("ordinary", { cursor }), /endpoint of an ordinary session/u);
+	await assert.rejects(
+		manager.observePrimary("ordinary", { view: "history", cursor }),
+		/endpoint of an ordinary session/u,
+	);
+});
 it("keeps successful report sender receipts free of recipient bodies", async (t) => {
 	const f = fixture(t);
 	t.mock.method(AgentManager.prototype, "control", async () => ({
