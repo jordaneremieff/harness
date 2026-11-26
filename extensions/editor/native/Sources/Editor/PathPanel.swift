@@ -22,7 +22,8 @@ struct PathChoice {
 }
 
 extension WorkspaceScreen {
-    func showPathPrompt(action: String, start: String = "", run: @escaping @MainActor (String) async throws -> Void) {
+    @discardableResult
+    func showPathPrompt(action: String, start: String = "", run: @escaping @MainActor (String) async throws -> Void) -> QuickPanel {
         let panel = QuickPanel(title: action, placeholder: "Folder/name", assistance: "Use a project-relative path.",
                                keyboardHelp: "tab  Complete folder    return  Confirm    esc  Cancel")
         panel.field.setAccessibilityLabel("Project-relative file path")
@@ -32,6 +33,7 @@ extension WorkspaceScreen {
             NSSize(width: min(610, max(0, pane.width - 24)), height: 282)
         }
         panel.start(start)
+        return panel
     }
 }
 

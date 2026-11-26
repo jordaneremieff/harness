@@ -2,7 +2,8 @@ import AppKit
 
 enum NavigatorFileAction: Equatable {
     case newFile(String), newFolder(String), rename(String, String), duplicate(String)
-    case move(String, String), remove(String), copyPath(String), copyRelativePath(String), reveal(String)
+    case move(String, String)
+    case moveToPath(String), remove(String), copyPath(String), copyRelativePath(String), reveal(String)
 }
 
 /// The project tree, open tabs, saved-file search and local Git views of the sidebar.
@@ -822,6 +823,7 @@ final class ProjectNavigator: NSObject, NSOutlineViewDataSource, NSOutlineViewDe
                     menu.addItem(.separator())
                     menu.addItem(WorkspaceChoice("Rename…") { [weak self] in self?.beginRename(node) })
                     action("Duplicate…", .duplicate(path))
+                    action("Move to…", .moveToPath(path))
                     action("Move to Trash…", .remove(path))
                     menu.addItem(.separator())
                     action("Copy path", .copyPath(path))

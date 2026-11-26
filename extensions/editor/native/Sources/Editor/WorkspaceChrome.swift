@@ -38,8 +38,6 @@ final class WorkspaceChrome: NSView {
     var onLanguageMenu: (() -> NSMenu)?
     var onGeometryChange: (() -> Void)?
     var onNote: ((String, String) -> Void)?
-    var onPath: ((String) -> Void)?
-    var onCancelPath: (() -> Void)?
     /// Returns the sidebar width that shows its content in full, when the content has one.
     var onFitSidebar: (() -> CGFloat?)?
 
@@ -50,7 +48,6 @@ final class WorkspaceChrome: NSView {
     private let sidebarHeader = WorkspaceRegion(line: .bottom)
     private let stage = WorkspaceRegion(.content)
     private let banner = WorkspaceRegion(line: .bottom)
-    private let pathRow = WorkspaceRegion(line: .bottom)
     private let foot = WorkspaceRegion(.bar, line: .top)
     private let overlay = WorkspaceOverlay()
     private let dropMark = WorkspaceDropMark()
@@ -77,9 +74,6 @@ final class WorkspaceChrome: NSView {
     private let more = WorkspaceButton("", symbol: "ellipsis.circle", help: "Workspace actions")
     private let hideMessage = WorkspaceButton("", symbol: "xmark", help: "Dismiss message")
     private let messageAction = WorkspaceButton("")
-    private let pathField = NSTextField()
-    private let pathSubmit = WorkspaceButton("")
-    private let pathCancel = WorkspaceButton("", symbol: "xmark", help: "Cancel path entry")
 
     /// The chosen sidebar width before the pane's current width limits it.
     var sidebarChoice: Double? { didSet { if sidebarChoice != oldValue { needsLayout = true } } }
@@ -103,9 +97,6 @@ final class WorkspaceChrome: NSView {
     private var tabViews: [String: WorkspaceTabView] = [:]
     private var activeGroup = 0
     private var accessory: NSView?
-    private var showPath = false
-    /// The part of a requested path that Editor supplied, which the person has not typed.
-    private var pathStart = ""
     private var showMessage = false
     private var statusText = ""
     private var notice: Task<Void, Never>?
@@ -136,8 +127,6 @@ final class WorkspaceChrome: NSView {
         guard groups.count == 1, !stage.isHidden else { return false }
         return WorkspaceLayout.fitsTwoGroups(stage: bounds.width - stageInset(columns: 2))
     }
-    /// The person typed a path that has not been submitted.
-    var hasPathText: Bool { showPath && !pathField.stringValue.isEmpty && pathField.stringValue != pathStart }
     override var isFlipped: Bool { true }
 
     init(root: String, defaults: UserDefaults = .standard) {
@@ -153,18 +142,13 @@ final class WorkspaceChrome: NSView {
         for label in [status, branch, position, format, details] { label.lineBreakMode = .byTruncatingTail }
         message.maximumNumberOfLines = 3
         message.lineBreakMode = .byTruncatingTail
-        pathField.placeholderString = "Path relative to the project folder"
-        pathField.setAccessibilityLabel("Project-relative file path")
-        pathField.target = self
-        pathField.action = #selector(submitPath)
         dropMark.isHidden = true
         overlay.addSubview(dropMark)
-        for view in [stage, side, sidebarEdge, pathRow, banner, foot, overlay] { addSubview(view) }
+        for view in [stage, side, sidebarEdge, banner, foot, overlay] { addSubview(view) }
         stage.clipsToBounds = true
         side.clipsToBounds = true
         side.addSubview(sidebarHeader)
         for view in panels.map(\.button) + [folder] { sidebarHeader.addSubview(view) }
-        for view in [pathField, pathSubmit, pathCancel] { pathRow.addSubview(view) }
         for view in [message, hideMessage, messageAction] { banner.addSubview(view) }
         for view in [sidebarButton, branch, status, details, position, indentation, language, format, wrap, more] { foot.addSubview(view) }
 
@@ -191,8 +175,6 @@ final class WorkspaceChrome: NSView {
         more.context = { [weak self] in self?.noteMenu("pane", "workspace") ?? NSMenu() }
         wrap.run = { [weak self] in self?.onCommand?("wrap") }
         wrap.context = { [weak self] in self?.noteMenu("setting", "line-wrap") ?? NSMenu() }
-        pathSubmit.run = { [weak self] in self?.submitPath() }
-        pathCancel.run = { [weak self] in self?.onCancelPath?() }
         hideMessage.run = { [weak self] in self?.clearMessage() }
 
         sidebarEdge.onDrag = { [weak self] position in self?.resizeSidebar(to: position) }
@@ -217,9 +199,6 @@ final class WorkspaceChrome: NSView {
         folder.textColor = theme.text
         message.font = WorkspaceStyle.interfaceFont()
         message.textColor = theme.text
-        pathField.font = WorkspaceStyle.interfaceFont()
-        pathField.backgroundColor = theme.editor
-        pathField.textColor = theme.text
         for label in [status, branch, position, format, details] {
             label.font = WorkspaceStyle.interfaceFont(-1)
             label.textColor = label === status ? theme.text : theme.secondaryText
@@ -337,23 +316,6 @@ final class WorkspaceChrome: NSView {
         needsLayout = true
     }
     func clearMessage() { showMessage = false; messageAction.run = nil; needsLayout = true }
-    /// Asks for a project path. `start` is the part the person need not type, such as a folder.
-    func inputPath(action: String, start: String = "") {
-        pathSubmit.title = action
-        pathSubmit.setAccessibilityLabel(action)
-        if !hasPathText { pathField.stringValue = start; pathStart = start }
-        showPath = true
-        needsLayout = true
-        layoutSubtreeIfNeeded()
-        window?.makeFirstResponder(pathField)
-        pathField.currentEditor()?.selectedRange = NSRange(location: (pathField.stringValue as NSString).length, length: 0)
-    }
-    func hidePath() { showPath = false; pathField.stringValue = ""; pathStart = ""; needsLayout = true }
-    @objc private func submitPath() {
-        let path = pathField.stringValue
-        guard hasPathText else { window?.makeFirstResponder(pathField); return }
-        onPath?(path)
-    }
     func setWrap(_ enabled: Bool) {
         wrap.isOn = enabled
         wrap.setAccessibilityValue(enabled ? "On" : "Off")
@@ -792,14 +754,6 @@ final class WorkspaceChrome: NSView {
         let w = bounds.width, h = bounds.height
         let footHeight = min(h, WorkspaceStyle.statusHeight)
         var top: CGFloat = 0
-        pathRow.isHidden = !showPath
-        if showPath {
-            pathRow.frame = NSRect(x: 0, y: top, width: w, height: 38)
-            pathCancel.frame = NSRect(x: w - 29, y: 6, width: 24, height: 26)
-            pathSubmit.frame = NSRect(x: w - 106, y: 6, width: 75, height: 26)
-            pathField.frame = NSRect(x: 9, y: 7, width: max(10, w - 123), height: 24)
-            top += 38
-        }
         banner.isHidden = !showMessage
         if showMessage {
             let buttonWidth: CGFloat = messageAction.isHidden ? 0 : min(120, messageAction.fittingSize.width + 14)

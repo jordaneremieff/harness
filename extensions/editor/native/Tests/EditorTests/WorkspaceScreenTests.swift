@@ -258,7 +258,7 @@ struct WorkspaceScreenTests {
         #expect(await screen.prepareToClose())
     }
 
-    @Test func newScratchSavesToANamedFileThroughTheInlinePathField() async throws {
+    @Test func newScratchSavesToANamedFileThroughThePathPanel() async throws {
         _ = NSApplication.shared
         let api = WorkspaceFixture()
         let screen = WorkspaceScreen(api: api, root: "/project")
@@ -273,12 +273,13 @@ struct WorkspaceScreenTests {
         screen.view.layoutSubtreeIfNeeded()
         let top = text.convert(text.bounds, to: screen.view).minY
         #expect(screen.registry.run("file.save"))
-        let path = try #require(children(screen.view, NSTextField.self).first { $0.accessibilityLabel() == "Project-relative file path" })
-        path.stringValue = "Notes/greeting.txt"
-        let submit = try #require(path.action)
-        #expect(NSApp.sendAction(submit, to: path.target, from: path))
+        let panel = try #require(children(screen.view, QuickPanel.self).first)
+        #expect(panel.field.accessibilityLabel() == "Project-relative file path")
+        panel.replaceInput("Notes/greeting.txt")
+        panel.onAccept?(nil)
         try await eventually { api.savedPath == "Notes/greeting.txt" && self.children(screen.view, NSButton.self).contains { $0.accessibilityLabel() == "Notes/greeting.txt" } }
         #expect(api.savedText == "A native draft")
+        try await eventually { panel.superview == nil }
         // The confirmation takes the status line; the source keeps its place.
         screen.view.layoutSubtreeIfNeeded()
         #expect(children(screen.view, NSTextField.self).contains { $0.stringValue == "Saved Notes/greeting.txt." })

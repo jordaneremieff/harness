@@ -13,7 +13,6 @@ final class WorkspaceScreen {
     private enum Panel: String { case files, search, git, notes }
     private enum PathRequest {
         case newFile, newProjectFile, saveAs(CodeEditor)
-        case custom(action: String, run: @MainActor (String) async throws -> Void)
     }
     /// The tabs on one side of the stage, in the order a person gave them. The arrangement
     /// belongs to this pane: it changes no draft, thread or other participant's view.
@@ -47,7 +46,6 @@ final class WorkspaceScreen {
     private var active = 0
     private var nextGroup = 1
     private var sequence: Int?
-    private var pathRequest: PathRequest?
     private var stopped = false
     private var selectionRequest = 0
     private var activeMutation = false
@@ -62,6 +60,7 @@ final class WorkspaceScreen {
     private var expectedGitBases: [String: UUID] = [:]
     private var diskConflictAcknowledged: Set<String> = []
     private var confirmation: WorkspaceConfirmation?
+    private weak var pathPrompt: QuickPanel?
     private var layoutReady = false
     private var layoutWrite: Task<Void, Never>?
     private var savedLayout: SessionLayout?
@@ -107,8 +106,6 @@ final class WorkspaceScreen {
         chrome.onNote = { [weak self] in self?.note($0, $1) }
         chrome.onTabMenu = { [weak self] in self?.tabMenu($0) ?? NSMenu() }
         chrome.onMenu = { [weak self] in self?.workspaceMenu() ?? NSMenu() }
-        chrome.onCancelPath = { [weak self] in self?.clearPath() }
-        chrome.onPath = { [weak self] path in self?.submit(path) }
         chrome.onFitSidebar = { [weak self] in
             guard let self, panel != nil, panel != .notes else { return nil }
             return navigator.fittingWidth
@@ -221,7 +218,9 @@ final class WorkspaceScreen {
             panel = .notes; present(); collaboration.showInbox()
             chrome.setMessage("Post or clear your unsent message before closing Editor."); return false
         }
-        if chrome.hasPathText { chrome.setMessage("Submit or cancel the file path before closing Editor."); return false }
+        if pathPrompt?.superview != nil {
+            chrome.setMessage("Submit or cancel the file path before closing Editor."); return false
+        }
         for editor in Array(buffers.values) {
             do { try await editor.flush() }
             catch {
@@ -231,7 +230,7 @@ final class WorkspaceScreen {
                 showProblem(error, editor: editor); return false
             }
         }
-        guard !activeMutation, !chrome.hasPathText, !collaboration.hasUnpostedText,
+        guard !activeMutation, pathPrompt?.superview == nil, !collaboration.hasUnpostedText,
               buffers.values.allSatisfy({ !$0.hasPending }) else {
             chrome.setMessage("The workspace changed during close. Your edits are still here.")
             return false
@@ -921,17 +920,30 @@ final class WorkspaceScreen {
         }
     }
     private func requestPath(_ request: PathRequest, start: String = "") {
-        if pathRequest != nil && chrome.hasPathText { chrome.setMessage("Submit or cancel the current file path first."); return }
-        pathRequest = request
         switch request {
-        case .newFile, .newProjectFile: chrome.inputPath(action: "Create file", start: start)
-        case .saveAs: chrome.inputPath(action: "Save as")
-        case .custom(let action, _): chrome.inputPath(action: action, start: start)
+        case .newFile, .newProjectFile:
+            let disk: Bool
+            if case .newProjectFile = request { disk = true } else { disk = false }
+            promptPath(action: "Create file", start: start) { [weak self] path in try await self?.create(path, publish: disk) }
+        case .saveAs(let editor):
+            let parent = (editor.doc as NSString).deletingLastPathComponent
+            promptPath(action: "Save as", start: parent.isEmpty ? "" : parent + "/") { [weak self, weak editor] path in
+                guard let self, let editor, buffers[editor.doc] === editor else { return }
+                try await save(editor, to: path)
+            }
         }
     }
-    /// Asks for a project path, for example for a new folder or a move, and runs `run` with it.
+
     func promptPath(action: String, start: String = "", run: @escaping @MainActor (String) async throws -> Void) {
-        requestPath(.custom(action: action, run: run), start: start)
+        guard confirmation == nil, !stopped, !disconnected else { return }
+        guard pathPrompt?.superview == nil else { chrome.notify("Submit or cancel the current path first."); return }
+        pathPrompt = showPathPrompt(action: action, start: start) { [weak self] path in
+            guard let self, !stopped, !disconnected else { throw CancellationError() }
+            guard !activeMutation else { throw EditorIssue(code: "busy", message: "Finish the current file operation first.") }
+            activeMutation = true
+            defer { activeMutation = false }
+            try await run(path)
+        }
     }
 
     // MARK: Transient tabs
@@ -1037,19 +1049,6 @@ final class WorkspaceScreen {
         scheduleLayoutWrite()
     }
 
-    private func clearPath() { pathRequest = nil; chrome.hidePath(); currentEditor?.focus() }
-    private func submit(_ path: String) {
-        guard let request = pathRequest else { return }
-        mutate { screen in
-            switch request {
-            case .newFile: try await screen.create(path)
-            case .newProjectFile: try await screen.create(path, publish: true)
-            case .saveAs(let e): try await screen.save(e, to: path)
-            case .custom(_, let run): try await run(path)
-            }
-            screen.clearPath()
-        }
-    }
     private func create(_ path: String?, publish: Bool = false) async throws {
         let token = selectionRequest
         let record = try await api.call("new", path.map { ["path":$0] } ?? [:])
@@ -1260,6 +1259,11 @@ final class WorkspaceScreen {
                 chrome.notify("Created \(path).")
             }
         case .rename(let from, let to): mutate { try await $0.renameEntry(from, to: to) }
+        case .moveToPath(let source):
+            let parent = (source as NSString).deletingLastPathComponent
+            promptPath(action: "Move to", start: parent.isEmpty ? "" : parent + "/") { [weak self] target in
+                try await self?.renameEntry(source, to: target)
+            }
         case .move(let from, let folder):
             let destination = folder.isEmpty ? (from as NSString).lastPathComponent : folder + "/" + (from as NSString).lastPathComponent
             guard destination != from else { return }
