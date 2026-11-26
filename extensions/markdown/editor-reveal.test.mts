@@ -44,6 +44,7 @@ test("New dispatches a fixed editor command beside the captured conversation wit
 			assert.match(args[0], /extensions\/rex\/terminal-pane\.ts$/u);
 			const request = JSON.parse(options.input ?? "null");
 			assert.deepEqual(request.origin, origin);
+			assert.deepEqual(request.placement, { side: "left", share: 0.5 });
 			assert.deepEqual(request.argv, [
 				join(f.app, "Contents", "MacOS", "MarkdownReader"),
 				"--editor",

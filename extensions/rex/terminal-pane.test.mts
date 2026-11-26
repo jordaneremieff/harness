@@ -198,7 +198,7 @@ test("placement and label admission preserves absent defaults and accepts the in
 		{ placement: null },
 		{ placement: [] },
 		{ placement: {} },
-		{ placement: { side: "left", share: 0.5 } },
+		{ placement: { side: "above", share: 0.5 } },
 		{ placement: { side: "right" } },
 		{ placement: { side: "right", share: "0.5" } },
 		{ placement: { side: "right", share: 0.149 } },
@@ -233,7 +233,7 @@ test("defaults and explicit placement map to Rex direction, side, ratio and labe
 				stdout: JSON.stringify({
 					outcome: "created",
 					detail: "Created.",
-					receipt: { ...receipt, direction: payload.direction },
+					receipt: { ...receipt, direction: payload.direction, before: payload.side === "before" || undefined },
 				}),
 			};
 		};
@@ -246,6 +246,10 @@ test("defaults and explicit placement map to Rex direction, side, ratio and labe
 	assert.equal(defaults.payload.direction, "horizontal");
 	assert.equal(defaults.payload.ratio, 0.5);
 	assert.equal(defaults.payload.label, "Reader");
+	const left = await observe({ placement: { side: "left", share: 0.25 } });
+	assert.equal(left.payload.direction, "horizontal");
+	assert.equal(left.payload.side, "before");
+	assert.equal(left.payload.ratio, 0.25);
 	const right = await observe({ placement: { side: "right", share: 0.25 } });
 	assert.equal(right.payload.direction, "horizontal");
 	assert.equal(right.payload.ratio, 0.75);
@@ -254,8 +258,9 @@ test("defaults and explicit placement map to Rex direction, side, ratio and labe
 	assert.equal(below.payload.direction, "vertical");
 	assert.equal(below.payload.ratio, 0.7);
 	assert.equal(below.payload.label, "Build log");
-	for (const { script } of [defaults, right, below]) {
-		assert.match(script, /direction=a\.direction, side="after", ratio=a\.ratio/u);
+	for (const { payload } of [defaults, right, below]) assert.equal(payload.side, "after");
+	for (const { script } of [defaults, left, right, below]) {
+		assert.match(script, /direction=a\.direction, side=a\.side, ratio=a\.ratio/u);
 		assert.match(script, /label=a\.label/u);
 		assert.match(script, /focus=false/u);
 	}
@@ -272,19 +277,34 @@ test("resize finds the window that holds both blocks and asks Rex to move one or
 		assert.equal(args[args.indexOf("--block") + 1], receipt.anchorId);
 		assert.equal(options.timeout, 5000);
 		assert.equal(options.maxBuffer, 32768);
-		assert.deepEqual(JSON.parse(args[args.indexOf("--args") + 1]), { ...request.receipt, ratio: 0.815 });
+		assert.deepEqual(JSON.parse(args[args.indexOf("--args") + 1]), {
+			...request.receipt,
+			beforeId: receipt.anchorId,
+			afterId: receipt.blockId,
+			ratio: 0.815,
+		});
 		const script = args[args.indexOf("-e") + 1];
 		assert.match(script, /s\.host_id ~= a\.hostId or s\.instance_id ~= a\.instanceId/u);
 		assert.match(script, /placement\(view, a\.blockId\) == window/u);
 		assert.match(
 			script,
-			/"session\.resize_pane", \{session_id=session, before_block_id=a\.anchorId, after_block_id=a\.blockId, direction=a\.direction, ratio=a\.ratio/u,
+			/"session\.resize_pane", \{session_id=session, before_block_id=a\.beforeId, after_block_id=a\.afterId, direction=a\.direction, ratio=a\.ratio/u,
 		);
 		return { code: 0, stdout: JSON.stringify({ outcome: "resized", detail: "Resized." }), stderr: "" };
 	};
 	assert.equal((await resizePane(request, env, run)).outcome, "resized");
 	assert.equal((await resizePane(request, { ...env, REX_BLOCK: "other" }, run)).outcome, "stale");
 	assert.equal(calls, 1);
+});
+
+test("resize uses a left pane as the first block and gives it the requested share", async () => {
+	const request: PaneResizeRequest = { version: 1, receipt: { ...receipt, before: true }, share: 0.35 };
+	const result = await resizePane(request, env, async (_, args) => {
+		const payload = JSON.parse(args[args.indexOf("--args") + 1]);
+		assert.deepEqual([payload.beforeId, payload.afterId, payload.ratio], [receipt.blockId, receipt.anchorId, 0.35]);
+		return { code: 0, stdout: JSON.stringify({ outcome: "resized", detail: "Resized." }), stderr: "" };
+	});
+	assert.equal(result.outcome, "resized");
 });
 
 test("resize rejects bad receipts and shares, and does not retry uncertain effects", async () => {
@@ -295,6 +315,8 @@ test("resize rejects bad receipts and shares, and does not retry uncertain effec
 		{ share: 0.901 },
 		{ share: "0.5" },
 		{ receipt: { ...receipt, direction: undefined } },
+		{ receipt: { ...receipt, before: "left" } },
+		{ receipt: { ...receipt, before: true, direction: "vertical" } },
 		{ receipt: { ...receipt, blockId: receipt.anchorId } },
 		{ receipt: { ...receipt, windowId: "window:55555555-5555-5555-5555-555555555555" } },
 		{ receipt: { ...receipt, sessionId: "session:33333333-3333-3333-3333-333333333333" } },

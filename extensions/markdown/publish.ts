@@ -233,14 +233,14 @@ const READER_MATERIAL =
 const REPORT =
 	"Give the coordinating session a complete report. If you publish a document, include its ID and title so the coordinator can show it without copying it.";
 const PLACEMENT: Record<AgentPane, string> = {
-	split: "a split on the right of your pane",
+	split: "a split on the left of your pane",
 	float: "a floating pane that stays in place",
 };
 const USE_PANE =
 	"To show what you publish, call markdown_publish with show: true; it saves and shows in one call. To show a stored document, use markdown_live show with its ID. Status navigated confirms the document, revision and pane. Status launch gives a one-use argv: run it unchanged as the program of a new pane, with no target, and close the pane when its program ends. Then call markdown_live list once to confirm the document and revision. For a pending or uncertain show, list panes; never start another pane. Respect the operator's requested placement. Do not take focus unless the operator asked to see it now.";
 const CHAT_BESIDE_PANE =
 	"When a reader pane shows your material, the chat reply is at most three sentences: the answer or the decision you need, and what the pane holds. Do not summarise or repeat the pane in chat.";
-export const NATIVE_PUBLISH_GUIDANCE = `Publish silently when a document helps the recipient. ${REPORT} Do not open or navigate a reader pane unless the operator explicitly asks you to show the material. For that request, reuse a reader pane you opened. For a new pane, use a split on the right of the inherited pane. ${USE_PANE} ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
+export const NATIVE_PUBLISH_GUIDANCE = `Publish silently when a document helps the recipient. ${REPORT} Do not open or navigate a reader pane unless the operator explicitly asks you to show the material. For that request, reuse a reader pane you opened. For a new pane, use a split on the left of the inherited pane. ${USE_PANE} ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
 export const publishGuideline = (pane: AgentPane): string =>
 	`If you work for another agent or run without an interactive conversation, publish silently and do not open or navigate a reader pane unless the operator explicitly asks you to show the material. ${REPORT} In the interactive session with the operator, show material that is hard to read in a terminal without waiting to be asked: ${READER_MATERIAL}. Choose which findings from other agents to show. Publish your synthesis or use markdown_read with the reported document ID. Reuse your reader pane across reports. For a new pane, use ${PLACEMENT[pane]}. ${USE_PANE} Say that the pane holds the material only after a navigated result or a confirming list. ${CHAT_BESIDE_PANE} A plain answer of a few sentences stays in chat without a document. ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
 const EDITORIAL_POLICY =

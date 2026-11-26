@@ -22,7 +22,7 @@ Send one UTF-8 JSON record on stdin, at most 16384 bytes:
   origin: TerminalOrigin | null;
   argv: string[];
   cwd: string;
-  placement?: { side: "right" | "below"; share: number };
+  placement?: { side: "left" | "right" | "below"; share: number };
   label?: string;
 }
 ```
@@ -33,7 +33,8 @@ absent exact origin or inherited server or block hints that differ from that ori
 chooses global focus, a default server or another tab.
 
 `placement` is optional and defaults to `{ side: "right", share: 0.5 }`. `share` is the new
-pane's share of the split space and is inclusive from 0.15 to 0.85. `side: "right"` maps to a
+pane's share of the split space and is inclusive from 0.15 to 0.85. `side: "left"` maps to a
+horizontal split before the anchor with ratio `share`; `side: "right"` maps to a
 horizontal split after the anchor with ratio `1 - share`; `side: "below"` maps to a vertical
 split after the anchor with ratio `1 - share`. `label` is optional, defaults to `Reader`, and
 contains 1 to 32 printable Unicode characters: one to 32 code points with no control, format or
@@ -56,9 +57,7 @@ names a session from an earlier one. The adapter disables autostart and checks h
 identity on the same connection as its single `session.new_split` call. It finds the verified
 terminal block in that session's window layout, then uses that full block ID as the explicit
 split anchor. The public Rex API owns splitting,
-startup and exit behaviour. The split follows `placement`: it sits right or below the anchor,
-after it in that direction, and takes the requested share, defaulting to the right and half the
-anchor's space. Its label defaults to `Reader`. The split does not take focus. Rex ends zoom in
+startup and exit behaviour. The split uses the requested side and share. Its label defaults to `Reader`. The split does not take focus. Rex ends zoom in
 that tab as part of its defined split behaviour. When the server
 is a local Unix socket and the stacking helper is available, the adapter starts the program with
 the [pane stacking](pane-stacking.md) offer in its environment, so a program that places its own
@@ -80,6 +79,7 @@ The adapter prints one JSON record and exits zero for domain results:
     server: string; hostId: string; instanceId: string;
     anchorId: string; blockId: string;
     direction: "horizontal" | "vertical";
+    before?: true; // the new block is left of the anchor
   };
 }
 ```
@@ -117,8 +117,8 @@ Invoke `node <package>/extensions/rex/terminal-pane.ts resize` with one bounded 
 Pass the receipt from a `created` result unchanged. The new pane's share is inclusive from
 0.1 to 0.9. The adapter checks the inherited anchor, server host and instance, and that one
 window of the session that holds the anchor now holds both blocks. Rex selects the innermost
-split in the receipt's direction with the anchor before the new block, then sets its ratio to
-`1 - share`. The adapter makes one
+split in the receipt's direction and block order. The ratio is `share` for a left pane and
+`1 - share` otherwise. The adapter makes one
 attempt with the split operation's deadlines and output bounds. It neither moves focus nor picks
 an alternate border.
 
@@ -152,7 +152,7 @@ unavailable; nothing changed. `uncertain` means no acknowledgement; do not retry
 
 ## Consumers
 
-The Markdown command's deliberate Read action uses the default placement with its own native
+The Markdown command's Read action requests a half-width split on the left for its native
 reader and a pinned open-request path. Request consumption separately establishes acceptance.
 Browse-only selection and publication do not invoke the adapter.
 

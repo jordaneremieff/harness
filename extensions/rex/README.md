@@ -140,11 +140,11 @@ membership and same-tab split creation. A confirmed result retains the exact pla
 An uncertain result never permits automatic retry, fallback placement or cleanup of an
 unconfirmed pane. Program acceptance and visibility remain separate from split creation.
 
-Placement defaults to the right side with an even share. A `right` placement is a horizontal
-split and a `below` placement is a vertical split, both after the anchor, with `ratio` set to
-one minus the requested share; the share is inclusive from 0.15 to 0.85. The optional label
+Placement defaults to the right side with an even share. `left` and `right` place the new pane
+beside the anchor; `below` places it underneath. The share is the new pane's fraction of the
+split, from 0.15 to 0.85 inclusive. The optional label
 holds 1 to 32 printable Unicode characters and defaults to `Reader`. Neither option changes
-focus. The receipt records the split direction.
+focus. The receipt preserves the block order for later resize requests.
 
 The fixed `terminal-pane.ts resize` operation accepts that receipt and a share from 0.1 to 0.9.
 It checks both blocks in the receipt window. Rex selects the innermost split with that ordered

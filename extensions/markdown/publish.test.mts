@@ -625,7 +625,7 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 		assert.ok(tool.outputSchema);
 		const guideline = tool.promptGuidelines?.join("\n") ?? "";
 		for (const guidance of [guideline, tool.description]) {
-			assert.match(guidance, /a split on the right of your pane/u);
+			assert.match(guidance, /a split on the left of your pane/u);
 			assert.match(guidance, /use markdown_read with the reported document ID/u);
 			assert.match(guidance, /Reuse your reader pane across reports/u);
 			assert.match(guidance, /without an interactive conversation/u);
@@ -1092,7 +1092,7 @@ test("only a conversation that receives pane closure notices is told to expect t
 	const ordinary = createPublishTool({ store, paneNotices: true });
 	assert.match(ordinary.description, /a notice identifies the departed pane/u);
 	const native = createNativePublishTool({ durable: Durable, cwd: tmpdir() }, { store });
-	assert.match(native.description ?? "", /split on the right of the inherited pane/u);
+	assert.match(native.description ?? "", /split on the left of the inherited pane/u);
 	assert.doesNotMatch(native.description ?? "", /without waiting to be asked/u);
 	for (const description of [
 		publishDescription("float"),

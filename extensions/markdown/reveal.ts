@@ -300,7 +300,13 @@ async function dispatchPaneArgv(
 				timeout: 7000,
 				maxBuffer: 32768,
 				signal,
-				input: JSON.stringify({ version: 1, origin, argv, cwd: process.cwd() }),
+				input: JSON.stringify({
+					version: 1,
+					origin,
+					argv,
+					cwd: process.cwd(),
+					placement: { side: "left", share: 0.5 },
+				}),
 			},
 		);
 		const value = JSON.parse(output.stdout) as PaneDispatch;

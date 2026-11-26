@@ -10,7 +10,7 @@ import {
 	type TerminalOrigin,
 } from "./terminal-origin.ts";
 
-export type PanePlacement = { side: "right" | "below"; share: number };
+export type PanePlacement = { side: "left" | "right" | "below"; share: number };
 export interface PaneRequest {
 	version: 1;
 	origin: TerminalOrigin | null;
@@ -50,6 +50,7 @@ export interface PaneReceipt {
 	anchorId: string;
 	blockId: string;
 	direction: Direction;
+	before?: true;
 }
 export interface PaneResult {
 	version: 1;
@@ -68,13 +69,13 @@ function parsePlacement(value: unknown): PanePlacement {
 	const placement = value as Record<string, unknown>;
 	if (
 		Object.keys(placement).some((key) => !["side", "share"].includes(key)) ||
-		(placement.side !== "right" && placement.side !== "below") ||
+		(placement.side !== "left" && placement.side !== "right" && placement.side !== "below") ||
 		typeof placement.share !== "number" ||
 		!Number.isFinite(placement.share) ||
 		placement.share < 0.15 ||
 		placement.share > 0.85
 	)
-		throw new Error("Pane placement requires side right or below and a share from 0.15 to 0.85.");
+		throw new Error("Pane placement requires side left, right or below and a share from 0.15 to 0.85.");
 	return { side: placement.side, share: placement.share };
 }
 // Printable means one to 32 Unicode code points without control, format or surrogate characters.
@@ -149,12 +150,12 @@ end
 const splitScript = `${identityScript}
 local before = rex.call("session.view", {session_id=session})
 if not placement(before, a.blockId) then return {outcome="stale", detail="The invoking terminal block is gone or detached."} end
-local created = rex.call("session.new_split", {session_id=session, anchor_id=a.blockId, direction=a.direction, side="after", ratio=a.ratio, focus=false,
+local created = rex.call("session.new_split", {session_id=session, anchor_id=a.blockId, direction=a.direction, side=a.side, ratio=a.ratio, focus=false,
   layout={block={flavor="com.superlogical.terminal.shell", label=a.label, options={shell="none", command=a.argv, cwd=a.cwd, exit={on_completion=true}}}}})
 if not created or created.anchor_id ~= a.blockId or type(created.block_ids) ~= "table" or #created.block_ids ~= 1 or type(created.block_ids[1]) ~= "string" then
   return {outcome="uncertain", detail="Rex did not confirm split creation. Do not retry automatically."}
 end
-local receipt = {server=a.server, hostId=a.hostId, instanceId=a.instanceId, anchorId=a.blockId, blockId=created.block_ids[1], direction=a.direction}
+local receipt = {server=a.server, hostId=a.hostId, instanceId=a.instanceId, anchorId=a.blockId, blockId=created.block_ids[1], direction=a.direction, before=a.side == "before" and true or nil}
 local after = rex.call("session.view", {session_id=session})
 local anchorWindow = placement(after, a.blockId)
 local paneWindow = placement(after, receipt.blockId)
@@ -166,7 +167,7 @@ if not shared() then
   return {outcome="stale", detail="The terminal blocks no longer share a window."}
 end
 -- The server selects the innermost split in the requested direction with this ordered pair.
-local resized = rex.call("session.resize_pane", {session_id=session, before_block_id=a.anchorId, after_block_id=a.blockId, direction=a.direction, ratio=a.ratio})
+local resized = rex.call("session.resize_pane", {session_id=session, before_block_id=a.beforeId, after_block_id=a.afterId, direction=a.direction, ratio=a.ratio})
 if not resized or type(resized.revision) ~= "number" then
   return {outcome="uncertain", detail="Rex did not confirm the resize. Do not retry automatically."}
 end
@@ -211,7 +212,7 @@ const runChild: Runner = (executable, args, options) =>
 	});
 const result = (outcome: PaneResult["outcome"], detail: string): PaneResult => ({ version: 1, outcome, detail });
 const uuid = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
-const receiptFields = ["server", "hostId", "instanceId", "anchorId", "blockId", "direction"];
+const receiptFields = ["server", "hostId", "instanceId", "anchorId", "blockId", "direction", "before"];
 function readReceipt(value: unknown): PaneReceipt | undefined {
 	if (
 		!value ||
@@ -231,6 +232,7 @@ function readReceipt(value: unknown): PaneReceipt | undefined {
 		!id(r.anchorId, "block:") ||
 		!id(r.blockId, "block:") ||
 		r.anchorId === r.blockId ||
+		(r.before !== undefined && (r.before !== true || r.direction !== "horizontal")) ||
 		(r.direction !== "horizontal" && r.direction !== "vertical")
 	)
 		return;
@@ -318,7 +320,8 @@ export async function splitPane(
 	const argv = withPaneStacking(request.argv, paneStackingCommand(exact.server, env));
 	const placement = request.placement ?? DEFAULT_PLACEMENT;
 	const direction = placement.side === "below" ? "vertical" : "horizontal";
-	const ratio = 1 - placement.share;
+	const before = placement.side === "left";
+	const ratio = before ? placement.share : 1 - placement.share;
 	const label = request.label ?? DEFAULT_LABEL;
 	let child: RunResult;
 	try {
@@ -327,6 +330,7 @@ export async function splitPane(
 			argv,
 			cwd: request.cwd,
 			direction,
+			side: before ? "before" : "after",
 			ratio,
 			label,
 		});
@@ -339,9 +343,14 @@ export async function splitPane(
 		return result("stale", "The invoking terminal block no longer exists. No pane was created.");
 	if (child.failure || child.code !== 0 || Buffer.byteLength(child.stdout) > 32768)
 		return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically.");
-	return readResult(child.stdout, exact, direction);
+	return readResult(child.stdout, exact, direction, before);
 }
-function readResult(stdout: string, exact: NonNullable<TerminalOrigin["exact"]>, direction: Direction): PaneResult {
+function readResult(
+	stdout: string,
+	exact: NonNullable<TerminalOrigin["exact"]>,
+	direction: Direction,
+	before: boolean,
+): PaneResult {
 	try {
 		const value = JSON.parse(stdout) as PaneResult;
 		if (
@@ -357,7 +366,8 @@ function readResult(stdout: string, exact: NonNullable<TerminalOrigin["exact"]>,
 			r.hostId === exact.hostId &&
 			r.instanceId === exact.instanceId &&
 			r.anchorId === exact.blockId &&
-			r.direction === direction
+			r.direction === direction &&
+			Boolean(r.before) === before
 				? r
 				: undefined;
 		if (value.outcome === "created" && !receipt) throw new Error("Missing receipt.");
@@ -380,7 +390,12 @@ export async function resizePane(
 	if (!matchesOrigin(env, receipt.server, receipt.anchorId))
 		return response("stale", "The inherited terminal differs from the receipt anchor.");
 	try {
-		const child = await runRex(run, receipt.server, receipt.anchorId, resizeScript, { ...receipt, ratio: 1 - share });
+		const child = await runRex(run, receipt.server, receipt.anchorId, resizeScript, {
+			...receipt,
+			beforeId: receipt.before ? receipt.blockId : receipt.anchorId,
+			afterId: receipt.before ? receipt.anchorId : receipt.blockId,
+			ratio: receipt.before ? share : 1 - share,
+		});
 		if (child.failure === "missing") return response("unavailable", "The trusted Rex program is missing.");
 		if (blockGone(child, receipt.anchorId)) return response("stale", "The receipt anchor no longer exists.");
 		if (!child.failure && child.code === 0 && Buffer.byteLength(child.stdout) <= 32768) {

@@ -129,6 +129,7 @@ test("default reveal dispatches one literal pinned request through the terminal-
 				const payload = JSON.parse(options.input ?? "null");
 				assert.deepEqual(payload.origin, paneOrigin);
 				assert.equal(payload.version, 1);
+				assert.deepEqual(payload.placement, { side: "left", share: 0.5 });
 				requestPath = payload.argv[2];
 				assert.deepEqual(payload.argv, [join(f.app, "Contents", "MacOS", "MarkdownReader"), "--pane", requestPath]);
 				const envelope = JSON.parse(await readFile(requestPath, "utf8"));
