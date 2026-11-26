@@ -12,6 +12,7 @@ A participant can read the unsaved draft, edit an exact passage, annotate a diff
 - Find (`cmd+F`, or **Find in this file…** in workspace actions) searches the open file.
 - Press `cmd+N` for an untitled scratch or `cmd+shift+N` for a new file. Scratch drafts live with the folder. Save As (`cmd+shift+S`) requires an unused path in an existing directory. An existing file’s Save As leaves the original intact.
 - The local Git panel shows the branch, changed files and file diffs. Git reads disk, not unsaved drafts. Editor does not stage, commit or contact a remote.
+- The status line confirms a save, a posted note or an accepted request for a few seconds. A problem or a conflict appears above the stage and stays until you dismiss it.
 - Text files must be valid UTF-8 and no larger than 2 MiB. Editor retains a file's mode and UTF-8 BOM. The draft uses LF; Save uses the first newline convention found in the original file. Symbolic links and version-control internals are not editable.
 
 ## Layout

@@ -85,6 +85,8 @@ final class WorkspaceChrome: NSView {
     private var accessory: NSView?
     private var showPath = false
     private var showMessage = false
+    private var statusText = ""
+    private var notice: Task<Void, Never>?
 
     private struct TabDrag {
         let key: String
@@ -195,10 +197,28 @@ final class WorkspaceChrome: NSView {
     // MARK: Status, messages and the path row
 
     func setStatus(_ text: String, _ detail: String, canSave: Bool) {
-        if status.stringValue != text { status.stringValue = text; status.toolTip = text }
+        statusText = text
+        if notice == nil { showStatus() }
         if details.stringValue != detail { details.stringValue = detail; needsLayout = true }
         save.isEnabled = canSave
     }
+    private func showStatus() {
+        if status.stringValue != statusText { status.stringValue = statusText }
+        status.toolTip = statusText
+    }
+    /// Reports a finished action in the status line for a few seconds. The page does not move.
+    func notify(_ text: String) {
+        notice?.cancel()
+        status.stringValue = text
+        status.toolTip = text
+        notice = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(4, Double(text.count) / 14)))
+            guard !Task.isCancelled, let self else { return }
+            notice = nil
+            showStatus()
+        }
+    }
+    /// Shows a problem or a choice above the body until the person dismisses it.
     func setMessage(_ text: String, action: String? = nil, run: (() -> Void)? = nil) {
         message.stringValue = text
         message.toolTip = text

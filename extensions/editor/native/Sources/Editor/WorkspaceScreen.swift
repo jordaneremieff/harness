@@ -78,7 +78,7 @@ final class WorkspaceScreen {
         collaboration.onOpen = navigator.onOpen
         collaboration.onError = navigator.onError
         collaboration.onStatus = { [weak self] text in
-            self?.chrome.setMessage(text)
+            self?.chrome.notify(text)
             self?.act { try await $0.loadState() }
         }
         chrome.setWrap(wraps)
@@ -476,7 +476,7 @@ final class WorkspaceScreen {
                 if groups[index].selected == old { groups[index].selected = new }
             }
         }
-        chrome.setMessage("Saved \(editor.doc).")
+        chrome.notify("Saved \(editor.doc).")
         refresh()
         if panel == .files { navigator.showFiles() }
     }

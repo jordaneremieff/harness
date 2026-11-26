@@ -233,6 +233,8 @@ struct WorkspaceScreenTests {
         try await eventually { self.children(screen.view, CodeTextView.self).first != nil }
         let text = try #require(children(screen.view, CodeTextView.self).first)
         text.insertText("A native draft",replacementRange: NSRange(location:0,length:0))
+        screen.view.layoutSubtreeIfNeeded()
+        let top = text.convert(text.bounds, to: screen.view).minY
         try click(screen.view, label: "Save file (cmd+S)")
         let path = try #require(children(screen.view, NSTextField.self).first { $0.accessibilityLabel() == "Project-relative file path" })
         path.stringValue = "Notes/greeting.txt"
@@ -240,6 +242,10 @@ struct WorkspaceScreenTests {
         #expect(NSApp.sendAction(submit, to: path.target, from: path))
         try await eventually { api.savedPath == "Notes/greeting.txt" && self.children(screen.view, NSButton.self).contains { $0.accessibilityLabel() == "Notes/greeting.txt" } }
         #expect(api.savedText == "A native draft")
+        // The confirmation takes the status line; the source keeps its place.
+        screen.view.layoutSubtreeIfNeeded()
+        #expect(children(screen.view, NSTextField.self).contains { $0.stringValue == "Saved Notes/greeting.txt." })
+        #expect(text.convert(text.bounds, to: screen.view).minY == top)
         #expect(await screen.prepareToClose())
     }
 
