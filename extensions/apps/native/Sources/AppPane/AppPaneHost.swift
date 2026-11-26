@@ -27,12 +27,18 @@ final class AppPaneHost {
     private var entry: AppEntry?
     private var window: DockedWindow?
     private var lock: WindowLock?
-    private var browserWindow: String?
+    private var ownedBrowser: (application: NSRunningApplication, scripting: BrowserScripting, id: String)?
+    private var browserOriginalBounds: BrowserEvents.WindowBounds?
+    private var browserWindow: String? { ownedBrowser?.id }
+    private var creatingBrowser = false
+    private var browserInput = BrowserPaneInput()
+    private var tabPending = false
     private var shownTitle = ""
     private var message: String?
     private var timer: Timer?
     private var termination: NSObjectProtocol?
-    private var ending = false
+    private var exitStatus: Int32?
+    private var ending: Bool { exitStatus != nil }
     /// The application's windows when the pane took the shown window, and, after that window
     /// closed, until when the pane waits for a window that replaces it.
     private var known: [AXUIElement] = []
@@ -82,17 +88,37 @@ final class AppPaneHost {
         self.entry = entry
         draw()
         let scripting = BrowserScripting(bundleIdentifier: entry.bundleIdentifier)
+        if scripting != nil, request.window == nil { terminal.onBytes = { [weak self] in self?.browserKeys($0) } }
         if request.url != nil, scripting == nil { return fail("\(entry.name) is not a browser that a pane can open at an address.") }
         do {
             let application = try await Opening.running(entry)
+            guard !ending else { return }
             let pid = application.processIdentifier
             watchTermination(of: pid)
             let element: AXUIElement
             let created: Bool
             if let scripting, request.window == nil {
-                let opened = try await Opening.newBrowserWindow(entry, pid: pid, scripting: scripting, url: request.url)
-                element = opened.0
-                browserWindow = opened.1.isEmpty ? nil : opened.1
+                let previousIDs = try await BrowserEvents.run { try BrowserEvents.windowIDs(pid: pid) }
+                guard !ending else { return }
+                guard let before = DockedWindow.windowList(of: pid) else {
+                    throw Opening.Failure(text: "Accessibility did not report the windows of \(entry.name). Check the terminal’s Accessibility access.")
+                }
+                let id = try await createBrowserWindow(application, scripting: scripting, before: previousIDs)
+                guard !ending else { return }
+                let bounds = try await BrowserEvents.run { try BrowserEvents.originalBounds(pid: pid, id: id, scripting: scripting) }
+                browserOriginalBounds = bounds
+                guard !ending else { return }
+                element = try await Opening.newAccessibilityWindow(entry, pid: pid, before: before, frame: bounds.frame)
+                let currentIDs = try await BrowserEvents.run { try BrowserEvents.windowIDs(pid: pid) }
+                guard currentIDs.subtracting(previousIDs) == [id] else {
+                    throw Opening.Failure(text: "The browser’s windows changed before this pane could identify its window.")
+                }
+                guard !ending else { return }
+                let address = request.url ?? (scripting == .safari ? URL(string: "about:blank") : nil)
+                if let address {
+                    try await BrowserEvents.run { try BrowserEvents.navigate(pid: pid, scripting: scripting, id: id, url: address) }
+                }
+                guard !ending else { return }
                 created = true
                 // The panel's order over the terminal depends on which application is active;
                 // it waits until the activation that the browser took has gone back.
@@ -119,8 +145,25 @@ final class AppPaneHost {
             self.timer = timer
             follow()
         } catch {
-            fail(error.text)
+            fail((error as? Opening.Failure)?.text ?? "\(entry.name) did not open a window by Apple Events: \(error.localizedDescription)")
         }
+    }
+
+    private func createBrowserWindow(_ application: NSRunningApplication, scripting: BrowserScripting, before: Set<String>) async throws -> String {
+        let pid = application.processIdentifier
+        let previous = NSWorkspace.shared.frontmostApplication
+        creatingBrowser = true
+        defer {
+            Opening.restoreFrontmost(previous, browser: pid)
+            creatingBrowser = false
+            if let exitStatus { finish(status: exitStatus) }
+        }
+        let id = try await BrowserEvents.run {
+            guard !application.isTerminated else { throw Opening.Failure(text: "The browser quit before it opened a window.") }
+            return try BrowserEvents.createWindow(pid: pid, scripting: scripting, before: before)
+        }
+        ownedBrowser = (application, scripting, id)
+        return id
     }
 
     private func watchTermination(of pid: pid_t) {
@@ -233,14 +276,55 @@ final class AppPaneHost {
         draw()
     }
 
+    /// Terminal input goes to this pane even while its window is parked. A tab request does
+    /// not activate the app or use the window that currently has the keyboard.
+    private func browserKeys(_ bytes: ArraySlice<UInt8>) {
+        for action in browserInput.feed(bytes) {
+            switch action {
+            case .quit: return end(status: 0)
+            case .focus: giveKeyboard()
+            case .invalid: message = "Use :tab or :tab followed by an http or https URL."
+            case .newTab(let url): openTab(url)
+            }
+        }
+        draw()
+    }
+
+    private func openTab(_ url: URL?) {
+        guard !ending, window != nil, let (application, scripting, id) = ownedBrowser, !application.isTerminated else {
+            message = "This pane has no browser window ready for a new tab."
+            return
+        }
+        guard !tabPending else {
+            message = "A tab request is still in progress. No second request was sent."
+            return
+        }
+        tabPending = true
+        message = "Opening a tab in browser window \(id)…"
+        let pid = application.processIdentifier
+        let previous = NSWorkspace.shared.frontmostApplication
+        Task {
+            do {
+                let tab = try await BrowserEvents.run { try BrowserEvents.newTab(pid: pid, windowID: id, scripting: scripting, url: url) }
+                message = "Opened \(tab.map { "tab \($0)" } ?? "a tab") in browser window \(id)."
+            } catch {
+                message = "Could not confirm a new tab in browser window \(id): \(error.localizedDescription) Check that window before retrying."
+            }
+            Opening.restoreFrontmost(previous, browser: pid)
+            guard !ending else { return }
+            tabPending = false
+            draw()
+        }
+    }
+
     // MARK: - Placeholder
 
     private func draw() {
         let name = entry?.name ?? request.app
         var identity: [String] = []
         if let window {
+            if let browserWindow { identity.append("browser window ID \(browserWindow) · PID \(window.pid)") }
             if let number = window.number { identity.append("window \(number)") }
-            if let browserWindow { identity.append("browser window ID \(browserWindow)") }
             if !shownTitle.isEmpty { identity.append(shownTitle) }
         }
         var status: String
@@ -269,33 +353,65 @@ final class AppPaneHost {
         }
         if let message { status = message + " " + status }
         terminal.draw(title: name, identity: identity.joined(separator: " · "), status: status,
-                      keys: "q closes this pane and puts the window back. Another key, or a click on the window, gives \(name) the keyboard.",
-                      command: nil, marker: overlay.anchor.marker)
+                      keys: browserWindow != nil ? ":tab [URL] opens a tab here. q closes this pane and its browser window." : "q closes this pane and puts the window back. Another key, or a click on the window, gives \(name) the keyboard.",
+                      command: browserInput.line, marker: overlay.anchor.marker)
     }
 
     // MARK: - Ending
 
     private func fail(_ text: String) {
-        guard !ending else { return }
-        ending = true
-        overlay.stop()
-        terminal.leave(before: .now() + 0.2)
-        terminal.report("App Pane: \(text)", before: .now() + 0.2)
-        _exit(1)
+        stop(status: 1, terminalGone: false, message: "App Pane: \(text)")
     }
 
-    /// Releases the window and ends the process. The process ends within two seconds even when the
-    /// application answers Accessibility slowly, and output to the terminal waits at most a fifth
-    /// of a second, so neither keeps the process alive.
     func end(status: Int32, terminalGone: Bool = false) {
+        stop(status: status, terminalGone: terminalGone, message: nil)
+    }
+
+    private func stop(status: Int32, terminalGone: Bool, message: String?) {
         guard !ending else { return }
-        ending = true
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { _exit(status) }
+        exitStatus = status
         timer?.invalidate()
         mirror.stop()
         overlay.stop()
-        window?.release()
         if !terminalGone { terminal.leave(before: .now() + 0.2) }
+        if let message { terminal.report(message, before: .now() + 0.2) }
+        // Once the create event is sent, its reply must either supply the owned ID or fail
+        // before we exit. Neither Accessibility nor the order of windows assigns ownership.
+        if !creatingBrowser { finish(status: status) }
+    }
+
+    private func finish(status: Int32) {
+        if let ownedBrowser {
+            let application = ownedBrowser.application
+            let pid = application.processIdentifier
+            let id = ownedBrowser.id
+            let scripting = ownedBrowser.scripting
+            let parkedBounds = window?.parked == true ? browserOriginalBounds : nil
+            Task {
+                do {
+                    try await BrowserEvents.run {
+                        guard !application.isTerminated,
+                              let window = BrowserEvents.window(id: id, scripting: scripting) else { return }
+                        // An unload prompt can hold the close event. Put the exact owned window
+                        // back on screen first, so a refused close never hides that prompt.
+                        if let parkedBounds {
+                            do { try BrowserEvents.restoreBounds(pid: pid, window: window, bounds: parkedBounds) }
+                            catch let error as NSError where error.code == procNotFound { return }
+                            catch { paneLog.error("Could not restore owned browser window \(id, privacy: .public): \(error.localizedDescription, privacy: .public)") }
+                        }
+                        _ = try BrowserEvents.send(pid: pid, event: kAEClose, parameters: [keyDirectObject: window], timeout: 2)
+                    }
+                } catch let error as NSError {
+                    if error.code != errAENoSuchObject && error.code != procNotFound {
+                        paneLog.error("Could not close owned browser window \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+                _exit(status)
+            }
+            return
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { _exit(status) }
+        window?.restore()
         _exit(status)
     }
 }

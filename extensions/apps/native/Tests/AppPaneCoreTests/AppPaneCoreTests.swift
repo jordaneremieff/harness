@@ -85,24 +85,25 @@ struct ApplicationsTests {
         #expect(BrowserScripting(bundleIdentifier: nil) == nil)
     }
 
-    @Test func writesNewWindowScriptsWithQuotedValues() throws {
-        let url = try PaneRequest.address("https://example.com/?q=%22x%22")
-        let chromium = try #require(BrowserScripting.chromium.newWindowScript(bundleIdentifier: "com.brave.Browser", url: url))
-        #expect(chromium == """
-        tell application id "com.brave.Browser"
-        set newWindow to make new window
-        set URL of active tab of newWindow to "https://example.com/?q=%22x%22"
-        return id of newWindow
-        end tell
-        """)
-        let safari = try #require(BrowserScripting.safari.newWindowScript(bundleIdentifier: "com.apple.Safari", url: nil))
-        #expect(safari.contains("make new document\nreturn id of front window"))
-        #expect(BrowserScripting.chromium.newWindowScript(bundleIdentifier: "bad\" id", url: nil) == nil)
-        #expect(BrowserScripting.quoted("a\"b\\c") == "\"a\\\"b\\\\c\"")
+    @Test func usesTheBrowsersWindowIDType() {
+        #expect(BrowserScripting.chromium.windowID("157") == .text("157"))
+        #expect(BrowserScripting.safari.windowID("157") == .integer(157))
+        #expect(BrowserScripting.safari.windowID("2147483648") == nil)
+        for malformed in ["", "0", "01", "-1", " 1", "1.5", "١"] {
+            #expect(BrowserScripting.chromium.windowID(malformed) == nil)
+            #expect(BrowserScripting.safari.windowID(malformed) == nil)
+        }
     }
 }
 
 struct GeometryTests {
+    @Test func readsTheBrowsersSignedWindowEdges() {
+        let edges: [Int16] = [-40, -200, 560, 700]
+        #expect(Geometry.quickDrawFrame(edges.withUnsafeBytes { Data($0) }) == CGRect(x: -200, y: -40, width: 900, height: 600))
+        #expect(Geometry.quickDrawFrame(Data(repeating: 0, count: 8)) == nil)
+        #expect(Geometry.quickDrawFrame(Data(repeating: 0, count: 7)) == nil)
+    }
+
     @Test func convertsAppKitFramesToAccessibilityFrames() {
         let pane = CGRect(x: 900, y: 82, width: 900, height: 500)
         #expect(Geometry.accessibilityRect(pane, primaryHeight: 1125) == CGRect(x: 900, y: 543, width: 900, height: 500))

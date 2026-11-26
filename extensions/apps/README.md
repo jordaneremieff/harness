@@ -10,7 +10,7 @@ Click the window in the pane to work in it. The app becomes the active applicati
 
 When the pane's tab is hidden, the window waits just outside the bottom right corner of the screen, so it never shows over another tab. It returns when the tab comes back.
 
-- A browser (Brave, Chrome, Edge, Vivaldi, Chromium or Safari) gets a new window for the pane, at an address when one is given. Closing the pane closes that window.
+- A browser (Brave, Chrome, Edge, Vivaldi, Chromium or Safari) gets a new window for the pane, at an address when one is given. `:tab` followed by Enter in the pane's terminal opens a tab in that window; `:tab https://example.com` opens it at an address. Neither command targets the front window. Closing the pane closes the window it created, even when the pane's tab is hidden. Before it asks a parked window to close, the pane returns it to its original position so you can answer any browser prompt.
 - Another app shows its main window, or the window whose title contains the requested text. Closing the pane puts the window back where it was.
 - Closing the window, or quitting the app, closes the pane.
 - `q` in the pane closes it.
@@ -21,7 +21,9 @@ A window that another pane already shows stays in that pane. An app that is not 
 
 `apps_show` takes `app` (a name such as `brave`, `slack` or `sublime`, a bundle identifier, or an absolute `.app` path) and optionally `url` for a new browser window or `window` for text in an existing window's title. It checks the app and returns `show`, the program and arguments of the pane. The agent runs `show` as the program of a new split on the right of its own pane, without taking focus, and with the pane set to close when its program ends. The tool opens no pane itself.
 
-The pane's first lines name the app, its window-server window number, the browser window ID when the pane opened a browser window, and the window title. An agent reads them from the pane. To read or act on a page in a browser pane, it uses the browser tools on the tab in that window, within the browser access that the operator configured.
+Keep the block ID returned when the app pane opens. To open a new browser tab, send the text `:tab https://example.com` and the Enter key to **that block**, not to the focused pane or the browser application. The pane accepts one HTTP or HTTPS address, or no address for a blank tab. Read its reply before sending another request. If the pane or its window is gone, do not retry in the front window. System URL openers and global keyboard shortcuts still follow system focus.
+
+The pane's first lines identify the browser process and scripting window when the pane created one. To inspect a page or act on it, use the browser tools on a tab in that process and window, within the browser access that the operator configured. Attaching an existing window by title does not give the pane ownership of it or a `:tab` target.
 
 ## Setup and permissions
 
@@ -38,6 +40,6 @@ The window is the app's own window placed over the pane; the terminal does not e
 - `index.ts` registers `apps_show`, `/apps` and the palette command.
 - `show.ts` checks requests and builds the pane program's arguments; `palette-command.ts` answers the palette.
 - `app-update.ts` and `native/build.mts` build and install App Pane.
-- `native/` holds App Pane. `AppPaneCore` holds request parsing, app matching, browser scripts and geometry; `AppPane` holds the pane program. It uses the shared `native-pane` package to find and follow its pane.
+- `native/` holds App Pane. `AppPaneCore` parses requests and pane input, matches apps and calculates geometry. `AppPane` owns the window and sends Apple Events to its browser process. It uses the shared `native-pane` package to find and follow its pane.
 
 Run `node --test extensions/apps/*.test.mts` and `node extensions/apps/native/build.mts test`.

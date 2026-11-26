@@ -83,17 +83,11 @@ final class DockedWindow {
         NSRunningApplication(processIdentifier: pid)?.activate(options: [])
     }
 
-    /// Closes a window that the pane opened, or returns a window that it took to its earlier frame.
-    func release() {
-        guard exists else { return }
-        if created {
-            var button: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &button) == .success, let button {
-                AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString)
-            }
-        } else if !fullScreen {
-            place(original)
-        }
+    /// Returns a borrowed window to its earlier frame. The pane releases an owned browser
+    /// window by scripting ID, independently of which Accessibility window it found.
+    func restore() {
+        guard !created, exists, !fullScreen else { return }
+        place(original)
     }
 
     private func place(_ rect: CGRect) {
@@ -134,11 +128,13 @@ final class DockedWindow {
         return (value as? Bool) ?? false
     }
 
-    static func windows(of pid: pid_t) -> [AXUIElement] {
+    static func windowList(of pid: pid_t) -> [AXUIElement]? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &value) == .success else { return [] }
-        return (value as? [AXUIElement]) ?? []
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &value) == .success else { return nil }
+        return value as? [AXUIElement]
     }
+
+    static func windows(of pid: pid_t) -> [AXUIElement] { windowList(of: pid) ?? [] }
 
     static func element(_ application: AXUIElement, _ attribute: String) -> AXUIElement? {
         var value: CFTypeRef?

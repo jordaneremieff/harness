@@ -67,74 +67,24 @@ enum Opening {
         }
     }
 
-    /// A new browser window, at `url` when given, opened by Apple Events. Returns the window and
-    /// its scripting ID, which the browser's own scripting interface also reports.
-    static func newBrowserWindow(_ entry: AppEntry, pid: pid_t, scripting: BrowserScripting, url: URL?) async throws(Failure) -> (AXUIElement, String) {
-        guard let bundle = entry.bundleIdentifier, let script = scripting.newWindowScript(bundleIdentifier: bundle, url: url) else {
-            throw Failure(text: "\(entry.name) has no bundle identifier to address.")
-        }
-        let before = DockedWindow.windows(of: pid)
-        let active = NSWorkspace.shared.frontmostApplication
-        let result = await AppleScript.run(script, timeout: 30)
-        // A browser activates itself for a new window; the application that was active, usually
-        // the terminal, keeps the keyboard.
-        defer {
-            if let active, active.processIdentifier != pid, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-                active.activate(options: [])
-            }
-        }
-        guard result.status == 0 else {
-            let detail = result.error.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw Failure(text: "\(entry.name) did not open a window by Apple Events\(detail.isEmpty ? "." : ": \(detail)")")
-        }
-        let identity = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Finds the Accessibility window only after the pane has recorded its scripting identity.
+    static func newAccessibilityWindow(_ entry: AppEntry, pid: pid_t, before: [AXUIElement], frame: CGRect) async throws(Failure) -> AXUIElement {
         let deadline = Date().addingTimeInterval(8)
         while Date() < deadline {
             let fresh = DockedWindow.windows(of: pid).filter { window in
                 !before.contains { CFEqual($0, window) } && DockedWindow.string(window, kAXSubroleAttribute) == kAXStandardWindowSubrole
             }
-            if let window = fresh.first { return (window, identity) }
+            if fresh.count == 1, let actual = DockedWindow.frame(of: fresh[0]), Geometry.close(frame, actual) { return fresh[0] }
+            if fresh.count > 1 { break }
             try? await Task.sleep(for: .milliseconds(100))
         }
-        throw Failure(text: "\(entry.name) opened a window that this pane could not find.")
-    }
-}
-
-/// Runs AppleScript through osascript, the same route as other Apple Events that programs in
-/// this terminal send, with a time limit.
-enum AppleScript {
-    struct Result: Sendable {
-        var status: Int32
-        var output: String
-        var error: String
+        throw Failure(text: "\(entry.name) opened a window that this pane could not identify in Accessibility.")
     }
 
-    static func run(_ script: String, timeout: TimeInterval) async -> Result {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                process.arguments = ["-"]
-                let input = Pipe(), output = Pipe(), error = Pipe()
-                process.standardInput = input
-                process.standardOutput = output
-                process.standardError = error
-                do { try process.run() } catch {
-                    continuation.resume(returning: Result(status: -1, output: "", error: error.localizedDescription))
-                    return
-                }
-                input.fileHandleForWriting.write(Data(script.utf8))
-                try? input.fileHandleForWriting.close()
-                let timer = DispatchWorkItem { if process.isRunning { process.terminate() } }
-                DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timer)
-                let out = output.fileHandleForReading.readDataToEndOfFile()
-                let err = error.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                timer.cancel()
-                continuation.resume(returning: Result(status: process.terminationStatus,
-                                                      output: String(decoding: out.prefix(4096), as: UTF8.self),
-                                                      error: String(decoding: err.prefix(4096), as: UTF8.self)))
-            }
+    /// Restore focus only when the browser took it while it opened a window or tab.
+    static func restoreFrontmost(_ previous: NSRunningApplication?, browser pid: pid_t) {
+        if let previous, previous.processIdentifier != pid, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+            previous.activate(options: [])
         }
     }
 }

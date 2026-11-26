@@ -1,9 +1,22 @@
 import CoreGraphics
+import Foundation
 
 /// Screen coordinates. AppKit places windows from the bottom left of the primary screen with y
 /// upwards; Accessibility and the window server use the top left of the primary screen with y
 /// downwards. Both use points.
 public enum Geometry {
+    /// A QuickDraw rectangle from an Apple event contains four native-endian signed 16-bit
+    /// edges in top, left, bottom, right order, in the same coordinates as Accessibility.
+    public static func quickDrawFrame(_ data: Data) -> CGRect? {
+        guard data.count == 8 else { return nil }
+        return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            func edge(_ offset: Int) -> Int { Int(raw.loadUnaligned(fromByteOffset: offset, as: Int16.self)) }
+            let top = edge(0), left = edge(2), bottom = edge(4), right = edge(6)
+            guard right > left, bottom > top else { return nil }
+            return CGRect(x: left, y: top, width: right - left, height: bottom - top)
+        }
+    }
+
     public static func accessibilityRect(_ rect: CGRect, primaryHeight: CGFloat) -> CGRect {
         CGRect(x: rect.minX, y: primaryHeight - rect.maxY, width: rect.width, height: rect.height)
     }

@@ -34,7 +34,7 @@ export const SHOW_DESCRIPTION =
 export const SHOW_SNIPPET = "Prepare a pane that shows a real macOS app window (browser, Slack, editor)";
 export const SHOW_GUIDELINES = [
 	"When the operator asks to open, show or put a macOS application in a pane, call apps_show, then use its exact show argv as the program of a new split to the right of your own pane, with no target, without taking focus, and with the pane set to close when its program ends, unless the operator names another placement.",
-	"The pane holds the real application window, so the operator types in it directly after a click. To act in a browser pane, read the pane's first lines for its browser window ID and use the browser tools on the tab in that window.",
+	"For a new tab in a browser window that apps_show opened, send :tab or :tab <http(s) URL> and Enter to that exact app pane, even when another window has focus. Check the pane's reply; do not use a system URL opener or keyboard shortcut. For page actions, use the browser tools on a tab in the browser window ID shown by the pane.",
 ];
 
 export type ShowOutcome =
@@ -121,6 +121,9 @@ export function outcomeText(outcome: ShowOutcome): string {
 		`label: ${outcome.label}`,
 		`${app.name} (${app.running ? "running" : "not running; the pane starts it"}). The pane shows ${window}. Closing the pane ${created ? "closes that window" : "puts the window back where it was"}; closing the window closes the pane.`,
 		"Use show as the program of a new split to the right of your pane, set to close when its program ends, unless the operator asked for another placement.",
+		...(created
+			? ["Keep the new pane's ID. To open another tab, send :tab <http(s) URL> and Enter to that pane."]
+			: []),
 	].join("\n");
 }
 

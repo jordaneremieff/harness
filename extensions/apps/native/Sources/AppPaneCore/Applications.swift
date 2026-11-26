@@ -111,26 +111,17 @@ public enum BrowserScripting: Equatable, Sendable {
         }
     }
 
-    /// AppleScript that opens a new window of the browser, at `url` when given, and returns the
-    /// window's scripting ID. The application is addressed by its bundle identifier.
-    public func newWindowScript(bundleIdentifier: String, url: URL?) -> String? {
-        guard Applications.isBundleIdentifier(bundleIdentifier) else { return nil }
-        let address = url.map { Self.quoted($0.absoluteString) }
-        var lines = ["tell application id \(Self.quoted(bundleIdentifier))"]
-        switch self {
-        case .chromium:
-            lines.append("set newWindow to make new window")
-            if let address { lines.append("set URL of active tab of newWindow to \(address)") }
-            lines.append("return id of newWindow")
-        case .safari:
-            lines.append(address.map { "make new document with properties {URL:\($0)}" } ?? "make new document")
-            lines.append("return id of front window")
-        }
-        lines.append("end tell")
-        return lines.joined(separator: "\n")
+    /// Chromium specifies windows by a text ID, while Safari uses an integer ID.
+    public enum WindowID: Equatable, Sendable {
+        case text(String)
+        case integer(Int32)
     }
 
-    static func quoted(_ text: String) -> String {
-        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    public func windowID(_ id: String) -> WindowID? {
+        guard !id.isEmpty, id.utf8.allSatisfy({ (48...57).contains($0) }), id.first != "0" else { return nil }
+        switch self {
+        case .chromium: return .text(id)
+        case .safari: return Int32(id).map(WindowID.integer)
+        }
     }
 }

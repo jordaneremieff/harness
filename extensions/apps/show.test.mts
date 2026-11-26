@@ -45,6 +45,15 @@ test("apps_show returns the pane program for a browser address", { skip: process
 	const text = outcomeText(outcome);
 	assert.match(text, /^show: \["\/agent\/apps\/AppPane\.app\/Contents\/MacOS\/AppPane"/u);
 	assert.match(text, /closes that window/u);
+	assert.match(text, /:tab/u);
+});
+
+test("a borrowed browser window offers no tab command", { skip: process.platform !== "darwin" }, async () => {
+	const outcome = await runShow({ app: "brave", window: "Inbox" }, context());
+	assert.equal(outcome.ok, true);
+	const text = outcomeText(outcome);
+	assert.match(text, /puts the window back where it was/u);
+	assert.doesNotMatch(text, /:tab/u);
 });
 
 test("apps_show passes a window title for another application", { skip: process.platform !== "darwin" }, async () => {

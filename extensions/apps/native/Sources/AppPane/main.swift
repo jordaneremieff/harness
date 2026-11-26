@@ -6,7 +6,9 @@ import NativePane
 /// application that the text names. Otherwise the program runs as the program of a terminal pane.
 @MainActor
 private func run() {
-    let arguments = Array(CommandLine.arguments.dropFirst())
+    var arguments = Array(CommandLine.arguments.dropFirst())
+    let ownsWindow = arguments.first == PaneProcess.argument
+    if ownsWindow { arguments.removeFirst() }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     if arguments == ["--list"] {
@@ -39,11 +41,13 @@ private func run() {
         FileHandle.standardError.write(Data("App Pane runs as the program of a terminal pane.\n".utf8))
         exit(2)
     }
+    if !ownsWindow { exit(PaneProcess.launch(arguments)) }
     let application = NSApplication.shared
     application.setActivationPolicy(.accessory)
     let host = AppPaneHost(request: request, terminal: terminal)
+    guard let lifetime = PaneProcess.watchLifetime({ [weak host] in host?.end(status: 0, terminalGone: true) }) else { return }
     host.start()
-    withExtendedLifetime(host) { application.run() }
+    withExtendedLifetime((host, lifetime)) { application.run() }
 }
 
 run()

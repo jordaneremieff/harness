@@ -96,6 +96,7 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSUIElement</key><true/>
+<key>NSAppleEventsUsageDescription</key><string>Open tabs in the browser window shown in this pane, and close the window when the pane closes.</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 `;
