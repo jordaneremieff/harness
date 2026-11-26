@@ -151,11 +151,19 @@ struct WorkspaceScreenTests {
         #expect(window.firstResponder === source)
         #expect(source.selectedRange() == NSRange(location: 4, length: 2))
 
-        // A tab dropped on the right part of the page takes the right side of the stage.
+        // A tab dropped on the right part of the page takes the right side of the stage. A wide
+        // sidebar gives way to the second side.
+        try click(view, label: "Project files (cmd+O)")
+        let edge = try #require(children(view, WorkspaceDivider.self).first { $0.accessibilityLabel() == "Sidebar width" })
+        edge.mouseDown(with: try pointer(.leftMouseDown, x: 288, in: window))
+        edge.mouseDragged(with: try pointer(.leftMouseDragged, x: 500, in: window))
+        edge.mouseUp(with: try pointer(.leftMouseUp, x: 500, in: window))
+        #expect(edge.position == 500)
         let other = try tab("b.swift", in: view)
         try drag(other, to: NSPoint(x: 860, y: 200), in: window)
         other.mouseUp(with: try pointer(.leftMouseUp, x: 860, y: 200, in: window))
         try await eventually { self.tabs(view) == [["sample.swift", "a.swift", "Composed tab: Result"], ["b.swift"]] }
+        #expect(edge.position == 446)
 
         // A location in a composed tab shows its file on the other side, so the tab stays on show.
         try click(view, label: "Composed tab: Result")
@@ -170,6 +178,8 @@ struct WorkspaceScreenTests {
         try await eventually { self.tabs(view) == [["a.swift", "Composed tab: Result"], ["b.swift"]] }
         try click(view, label: "Close b.swift")
         try await eventually { self.tabs(view) == [["a.swift", "Composed tab: Result"]] }
+        view.layoutSubtreeIfNeeded()
+        #expect(edge.position == 500)
         #expect(await screen.prepareToClose())
     }
 

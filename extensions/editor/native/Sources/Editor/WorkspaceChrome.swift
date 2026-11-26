@@ -105,8 +105,14 @@ final class WorkspaceChrome: NSView {
     var expandedPanel = false { didSet { if expandedPanel != oldValue { needsLayout = true } } }
     var showsSideBySide: Bool { WorkspaceLayout.fitsBeside(pane: bounds.width) && !expandedPanel }
     var sidebarWidth: CGFloat { side.isHidden ? 0 : sidebarEdge.isHidden ? side.frame.width : sidebarEdge.position }
-    /// A stage with room for a second tab group.
-    var fitsSecondGroup: Bool { groups.count == 1 && WorkspaceLayout.fitsTwoGroups(stage: stage.bounds.width) }
+    /// A stage with room for a second tab group. A wide sidebar yields to the second group
+    /// down to its own limit, so the room is the one the stage would then have.
+    var fitsSecondGroup: Bool {
+        guard groups.count == 1, !stage.isHidden else { return false }
+        let beside = accessory != nil && showsSideBySide
+        let sidebar = beside ? WorkspaceLayout.sidebar(chosen: chosenSidebar, pane: bounds.width, groups: 2) + 1 + WorkspaceDivider.reachAfter : 0
+        return WorkspaceLayout.fitsTwoGroups(stage: bounds.width - sidebar)
+    }
     var hasPathText: Bool { showPath && !pathField.stringValue.isEmpty }
     override var isFlipped: Bool { true }
 
