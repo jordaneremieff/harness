@@ -1,4 +1,4 @@
-import { arr, int, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
+import { arr, bool, int, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 
 const choice = <T extends string>(values: readonly T[], description?: string): Schema<T> => ({
 	type: "string",
@@ -12,13 +12,16 @@ export const editorParameters = obj({
 		"members",
 		"state",
 		"tree",
+		"files",
 		"search",
+		"replace",
 		"git",
 		"read",
 		"new",
 		"edit",
 		"patch",
 		"save",
+		"revert",
 		"note",
 		"thread",
 		"reply",
@@ -31,7 +34,7 @@ export const editorParameters = obj({
 	rev: opt(
 		int({
 			minimum: 0,
-			description: "Exact revision last read. Required for edits, saves, text notes and view updates.",
+			description: "Exact revision last read. Required for edits, saves, reverts, text notes and view updates.",
 		}),
 	),
 	offset: opt(
@@ -60,8 +63,33 @@ export const editorParameters = obj({
 			key: text("Exact target key. Empty folder key means root.", 4096),
 		}),
 	),
-	query: opt(text("Literal search query.", 256)),
-	kind: opt(choice(["paths", "text"] as const)),
+	query: opt(text("Search or replace: literal text, or a JavaScript regular expression when regex is true.", 512)),
+	kind: opt(
+		choice(["paths", "text"] as const, "Search relative path names or text. Text search includes unsaved file drafts."),
+	),
+	caseSensitive: opt(bool({ description: "Text search and replace: match case. Defaults to true." })),
+	wholeWord: opt(bool({ description: "Text search and replace: require word boundaries." })),
+	regex: opt(bool({ description: "Text search and replace: interpret query as a JavaScript regular expression." })),
+	include: opt(
+		text(
+			"Text search and replace: comma-separated project folders or globs. A leading minus excludes a pattern.",
+			4096,
+		),
+	),
+	exclude: opt(text("Text search and replace: comma-separated project folders or globs to skip.", 4096)),
+	contextLines: opt(int({ minimum: 0, maximum: 3, description: "Text search: lines before and after a match." })),
+	replacement: opt(
+		text("Replace: new text. Regex replacements support capture groups such as $1. Disk stays unchanged.", 65536),
+	),
+	paths: opt(
+		arr(text("Project-relative file path.", 4096), {
+			maxItems: 4096,
+			description: "Replace only these files; omit to replace across the filtered project.",
+		}),
+	),
+	base: opt(
+		bool({ description: "Git: return the HEAD text of doc instead of status and diff, within the response limit." }),
+	),
 	title: opt(text("Name of the composed tab.", 160)),
 	blocks: opt(
 		arr(
@@ -80,4 +108,4 @@ export const editorParameters = obj({
 });
 
 export const editorToolDescription =
-	"Work with people and other agents in one Editor folder. Join makes this conversation available in the editor without opening a pane. State lists shared drafts, threads and composed tabs; members lists connected conversations. Read the current draft (not just disk), then edit a unique passage or patch an exact UTF-16 range at that revision. New creates a draft; save explicitly writes to disk. Note anchors a thread to a UTF-16 range or a named target; thread reads it and reply posts back. Compose creates an interactive tab of text, code and file locations, or updates its exact id and rev. View reads a tab. Tree, search and git inspect the folder. Always use the root supplied with an invitation. No tool opens a pane or wakes another agent.";
+	"Work with people and other agents in one Editor folder. Join makes this conversation available in the editor without opening a pane. State lists shared drafts, threads and composed tabs; members lists connected conversations. Read the current draft (not just disk), then edit a unique passage or patch an exact UTF-16 range at that revision. New creates a draft; save writes it to disk; revert resets it to the disk file. Note anchors a thread to a UTF-16 range or a named target; thread reads it and reply posts back. Compose creates an interactive tab of text, code and file locations, or updates its exact id and rev. View reads a tab. Tree lists folder children; files lists project file paths. Search checks paths or text, including unsaved drafts. Replace edits matching drafts without writing disk files. Git shows status, a diff or HEAD text. Always use the root supplied with an invitation. No tool opens a pane or wakes another agent.";

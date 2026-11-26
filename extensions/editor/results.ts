@@ -26,8 +26,21 @@ export function statePage(data: Data, input: Data): Data {
 	return { ...data, ...groups, offset: start, nextOffset: n < rows.length ? n : null, total: rows.length };
 }
 
+const browseKeys = new Map([
+	["tree", "entries"],
+	["git", "files"],
+	["files", "files"],
+]);
+
+function basePage(data: Data): Data {
+	if (typeof data.text !== "string" || Buffer.byteLength(data.text) <= pageBytes) return data;
+	const { text: _omitted, ...rest } = data;
+	return { ...rest, limited: true };
+}
+
 export function browsePage(data: Data, input: Data): Data {
-	const key = input.op === "tree" ? "entries" : input.op === "git" ? "files" : "hits";
+	if (input.op === "git" && input.base === true) return basePage(data);
+	const key = browseKeys.get(String(input.op)) ?? "hits";
 	const entries = data[key];
 	if (!Array.isArray(entries)) return data;
 	const result = { ...data };

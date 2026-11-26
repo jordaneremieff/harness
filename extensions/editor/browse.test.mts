@@ -76,19 +76,23 @@ test("search matches relative paths and literal text and does not read protected
 		hits: [{ path: "repo-b/source/sample.txt" }],
 		limited: false,
 	});
-	assert.deepEqual(await browse(root, { op: "search", kind: "text", query: "[a.b]*" }), {
-		hits: [
-			{ path: "repo-a/sample.txt", line: 2, preview: "[a.b]* hit" },
-			{ path: "repo-a/sample.txt", line: 4, preview: "second [a.b]* hit" },
+	const found = await browse(root, { op: "search", kind: "text", query: "[a.b]*" });
+	assert.equal(found.limited, false);
+	assert.deepEqual(
+		(found.hits as { path: string; line: number; column: number; length: number; text: string }[]).map(
+			({ path, line, column, length, text }) => ({ path, line, column, length, text }),
+		),
+		[
+			{ path: "repo-a/sample.txt", line: 2, column: 0, length: 6, text: "[a.b]* hit" },
+			{ path: "repo-a/sample.txt", line: 4, column: 7, length: 6, text: "second [a.b]* hit" },
 		],
-		limited: false,
-	});
+	);
 });
 
 test("search yields to other work, rejects cancellation, and marks capped results as partial", async (t) => {
 	const root = await fixture(t);
 	await writeFile(join(root, "many.txt"), "hit\n".repeat(350));
-	await writeFile(join(root, "wide.txt"), "x".repeat(600 * 1024));
+	await writeFile(join(root, "wide.txt"), "x".repeat(2 * 1024 * 1024 + 1));
 	const bounded = await browse(root, { op: "search", kind: "text", query: "hit" });
 	assert.equal(bounded.limited, true);
 	assert.equal((bounded.hits as unknown[]).length, 150);
@@ -256,6 +260,67 @@ test("Git still diffs a selected untracked file past the status list cap", async
 	assert.equal(result.limited, true);
 	assert.equal((result.files as unknown[]).length, 400);
 	assert.match(String(result.diff), /\+outside status page/);
+});
+
+test("project files list only existing regular tracked and unignored paths", async (t) => {
+	const root = await fixture(t);
+	await repo(root, "main");
+	await writeFile(join(root, ".gitignore"), "hidden*\n");
+	await writeFile(join(root, "hidden-tracked"), "kept by the index");
+	await writeFile(join(root, "hidden-untracked"), "ignored");
+	await writeFile(join(root, "untracked"), "shown");
+	await symlink("tracked.txt", join(root, "link"));
+	git(root, "add", "-f", "--", "hidden-tracked", "link");
+	await unlink(join(root, "tracked.txt"));
+	const result = await browse(root, { op: "files" });
+	assert.equal(result.limited, false);
+	assert.deepEqual((result.files as string[]).sort(), [".gitignore", "hidden-tracked", "untracked"]);
+});
+
+test("project file walk skips dependency folders and symlinks outside Git", async (t) => {
+	const root = await fixture(t);
+	await mkdir(join(root, "src"));
+	await mkdir(join(root, "node_modules"));
+	await writeFile(join(root, "src/index.ts"), "export {};\n");
+	await writeFile(join(root, "node_modules/internal"), "dependency");
+	await symlink("src", join(root, "alias"));
+	assert.deepEqual(await browse(root, { op: "files" }), { files: ["src/index.ts"], limited: false });
+});
+
+test("Git base reads a regular file from HEAD instead of disk or the index", async (t) => {
+	const root = await fixture(t);
+	await repo(root, "main");
+	await mkdir(join(root, "sub"));
+	await writeFile(join(root, "sub/base[1].txt"), "\uFEFFhead text\r\n");
+	await writeFile(join(root, "large"), Buffer.alloc(2 * 1024 * 1024 + 1, "a"));
+	await symlink("tracked.txt", join(root, "link"));
+	git(root, "add", "--", "sub/base[1].txt", "large", "link");
+	git(root, "-c", "user.name=Tester", "-c", "user.email=test@example.invalid", "commit", "-qm", "Base files");
+	await writeFile(join(root, "sub/base[1].txt"), "index text\n");
+	git(root, "add", "--", "sub/base[1].txt");
+	await writeFile(join(root, "sub/base[1].txt"), "disk text\n");
+	await unlink(join(root, "link"));
+	assert.deepEqual(await browse(root, { op: "git", doc: "sub/base[1].txt", base: true }), {
+		repo: true,
+		tracked: true,
+		limited: false,
+		text: "head text\n",
+	});
+	assert.deepEqual(await browse(root, { op: "git", doc: "untracked", base: true }), {
+		repo: true,
+		tracked: false,
+		limited: false,
+	});
+	assert.deepEqual(await browse(root, { op: "git", doc: "link", base: true }), {
+		repo: true,
+		tracked: false,
+		limited: false,
+	});
+	assert.deepEqual(await browse(root, { op: "git", doc: "large", base: true }), {
+		repo: true,
+		tracked: true,
+		limited: true,
+	});
 });
 
 test("Git ignores project diff helpers and does not read an external config include", async (t) => {

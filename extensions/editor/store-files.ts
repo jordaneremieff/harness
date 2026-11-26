@@ -84,7 +84,17 @@ export interface Location {
 	stat: BigIntStats | undefined;
 }
 
-export function locate(root: string, doc: string): Location {
+function assertEntry(stat: BigIntStats, allowDirectory: boolean): void {
+	if (stat.isFile() || (allowDirectory && stat.isDirectory())) return;
+	throw new EditorError(
+		allowDirectory
+			? "Use a regular file or directory without symlinks."
+			: "Only regular files without symlinks are supported.",
+		"invalid",
+	);
+}
+
+export function locate(root: string, doc: string, allowDirectory = false): Location {
 	fileName(doc);
 	let parentStat = lstatSync(root, { bigint: true });
 	if (realpathSync.native(root) !== root || !parentStat.isDirectory()) {
@@ -108,7 +118,7 @@ export function locate(root: string, doc: string): Location {
 	let path = join(canonical, leaf);
 	const stat = statIfPresent(path);
 	if (stat) {
-		if (!stat.isFile()) throw new EditorError("Only regular files without symlinks are supported.", "invalid");
+		assertEntry(stat, allowDirectory);
 		path = realpathSync.native(path);
 		if (dirname(path) !== canonical || signature(lstatSync(path, { bigint: true })) !== signature(stat)) {
 			throw new EditorError("The file path changed on disk.", "conflict");

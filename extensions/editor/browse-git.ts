@@ -2,13 +2,14 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { fileName, isWithin } from "./store-files.ts";
+import { decode, EditorError, fileName, isWithin, MAX_FILE_BYTES } from "./store-files.ts";
 
 const GIT_TIME = 1_500;
 const STATUS_BYTES = 256 * 1024;
 const STATUS_FILES = 400;
 const DIFF_FILE_BYTES = 2 * 1024 * 1024;
 const DIFF_BYTES = 128 * 1024;
+const LIST_BYTES = 4 * 1024 * 1024;
 const GIT_ENV = {
 	HOME: "/var/empty",
 	PATH: "/usr/bin:/bin",
@@ -269,25 +270,14 @@ async function makePatch(command: Command, file: string, untracked: boolean, unb
 	return { output: Buffer.concat([staged.output, unstaged.output]), limited: unstaged.limited };
 }
 
-export async function gitBrowse(
-	root: string,
-	inputDoc: unknown,
-	signal?: AbortSignal,
-): Promise<Record<string, unknown>> {
-	if (inputDoc !== undefined && typeof inputDoc !== "string") throw new Error("Use a folder-relative file path.");
-	const doc = inputDoc === undefined ? undefined : fileName(inputDoc);
-	const end = performance.now() + GIT_TIME;
-	const { worktrees, fileBytes } = await selectedLocation(root, doc, signal);
-	const repo = await findRepo(root, worktrees, signal);
-	signal?.throwIfAborted();
-	if (!repo) return { repo: false, branch: "", files: [], limited: false };
+async function gitCommand(root: string, repo: Repo, end: number, signal?: AbortSignal): Promise<Command | undefined> {
 	const tool = await run("/usr/bin/xcrun", ["--no-cache", "--find", "git"], root, end, 4096, signal);
-	if (tool.limited) return { repo: true, branch: "", files: [], limited: true };
+	if (tool.limited) return;
 	const git = await realpath(tool.output.toString().trim());
 	const profile = repo.externalCommon
 		? ["-D", `ADMIN=${repo.metadata}`, "-D", `COMMON=${repo.externalCommon}`, "-p", READ_ONLY + LINKED_METADATA]
 		: ["-p", READ_ONLY];
-	const command = (args: string[], bytes: number, acceptOne = false) =>
+	return (args, bytes, acceptOne = false) =>
 		run(
 			"/usr/bin/sandbox-exec",
 			[
@@ -319,6 +309,74 @@ export async function gitBrowse(
 			signal,
 			acceptOne,
 		);
+}
+
+export async function gitFiles(root: string, end: number, maximum: number, signal?: AbortSignal) {
+	signal?.throwIfAborted();
+	const repo = await repoAt(root, root);
+	if (!repo) return;
+	const command = await gitCommand(root, repo, end, signal);
+	if (!command) return { files: [], limited: true };
+	const list = await command(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], LIST_BYTES);
+	const files = new Set<string>();
+	let limited = list.limited;
+	for (const bytes of completeRecords(list.output)) {
+		try {
+			const path = fileName(decoder.decode(bytes));
+			if (files.has(path)) continue;
+			if (files.size === maximum) {
+				limited = true;
+				break;
+			}
+			files.add(path);
+		} catch {
+			limited = true;
+		}
+	}
+	return { files: [...files], limited };
+}
+
+async function headText(command: Command, file: string) {
+	const empty = { repo: true, tracked: false, limited: false };
+	const tree = await command(["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], 512, true);
+	if (tree.limited) return { ...empty, limited: true };
+	const oid = tree.output.toString().trim();
+	if (!oid) return empty;
+	if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(oid))
+		throw new EditorError("Git returned an invalid HEAD tree.", "invalid");
+	const result = await command(["ls-tree", "-z", oid, "--", file], 8192);
+	if (result.limited) return { ...empty, limited: true };
+	// Read only regular files from HEAD; a symlink blob is just its target name.
+	const match = /^100(?:644|755) blob ([0-9a-f]{40}|[0-9a-f]{64})\t/u.exec(result.output.toString());
+	if (!match) return empty;
+	const blob = await command(["cat-file", "blob", match[1]], MAX_FILE_BYTES + 1);
+	if (blob.limited || blob.output.length > MAX_FILE_BYTES) return { repo: true, tracked: true, limited: true };
+	return { repo: true, tracked: true, limited: false, text: decode(blob.output).text };
+}
+
+export async function gitBrowse(
+	root: string,
+	inputDoc: unknown,
+	signal?: AbortSignal,
+	base = false,
+): Promise<Record<string, unknown>> {
+	if ((inputDoc !== undefined || base) && typeof inputDoc !== "string") {
+		throw new EditorError("Use a folder-relative file path.", "invalid");
+	}
+	const doc = inputDoc === undefined ? undefined : fileName(inputDoc as string);
+	const end = performance.now() + GIT_TIME;
+	const { worktrees, fileBytes } = await selectedLocation(root, doc, signal);
+	const repo = await findRepo(root, worktrees, signal);
+	signal?.throwIfAborted();
+	const empty = base ? { tracked: false } : { branch: "", files: [] };
+	if (!repo) return { ...empty, repo: false, limited: false };
+	const command = await gitCommand(root, repo, end, signal);
+	if (!command) return { ...empty, repo: true, limited: true };
+	if (base && doc !== undefined) return headText(command, relative(repo.worktree, join(root, doc)));
+	return gitStatus(root, repo, command, doc, fileBytes);
+}
+
+async function gitStatus(root: string, repo: Repo, command: Command, doc: string | undefined, fileBytes: number) {
 	const status = await command(["status", ...STATUS_FLAGS], STATUS_BYTES);
 	const { branch, files, limited, unborn } = parseStatus(root, repo, status);
 	const result = { repo: true, branch, files, limited };

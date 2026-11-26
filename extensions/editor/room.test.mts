@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { EditorRoom } from "./room.ts";
 import type { Invitation, Participant } from "./participants.ts";
@@ -39,6 +39,10 @@ test("a native pane hands a folder thread to one participant, which edits its sh
 			const ticket = JSON.parse(await readFile(path, "utf8"));
 			assert.equal(ticket.file, "sample.ts");
 			assert.equal(ticket.root, root);
+			assert.equal(ticket.settings, join(state, "editor", "settings.json"));
+			assert.equal(ticket.layout, join(dirname(path), "layout.json"));
+			await assert.rejects(stat(ticket.settings), { code: "ENOENT" });
+			await assert.rejects(stat(ticket.layout), { code: "ENOENT" });
 			await rm(path);
 			api = new URL(`http://127.0.0.1:${ticket.port}/api`);
 			token = ticket.token;
@@ -57,6 +61,12 @@ test("a native pane hands a folder thread to one participant, which edits its sh
 	assert.ok(api);
 	assert.equal((await fetch(api, { method: "POST" })).status, 403);
 	assert.deepEqual((await (await pane({ op: "members" })).json()).members, [a]);
+	assert.deepEqual(await author.tool({ op: "files" }), { files: ["sample.ts"], limited: false });
+	for (const op of ["rename", "remove", "mkdir", "copy"]) {
+		await assert.rejects(author.tool({ op }), /Unknown editor action/);
+	}
+	assert.equal((await pane({ op: "mkdir", path: "src" })).status, 200);
+	assert.equal((await stat(join(root, "src"))).isDirectory(), true);
 	await reader.tool({ op: "join", root });
 	assert.deepEqual(
 		new Set((await (await pane({ op: "members" })).json()).members.map((m: Participant) => m.id)),
@@ -67,6 +77,8 @@ test("a native pane hands a folder thread to one participant, which edits its sh
 		await pane({ op: "patch", doc: file.doc, rev: file.rev, start: 21, end: 22, text: "2" })
 	).json();
 	assert.equal(changed.rev, file.rev + 1);
+	const found = await (await pane({ op: "search", kind: "text", query: "count = 2" })).json();
+	assert.equal(found.hits[0].draft, true);
 	const note = await (await pane({ op: "note", target: { kind: "folder", key: "" }, text: "Map this folder" })).json();
 	assert.equal((await pane({ op: "send", id: note.id, to: b.id, message: "Map this folder" })).status, 200);
 	assert.equal(messages.length, 1);

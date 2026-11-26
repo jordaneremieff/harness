@@ -33,6 +33,18 @@ import {
 	statIfPresent,
 } from "./store-files.ts";
 import { initViews, viewHeaders, views } from "./views.ts";
+import {
+	checkSubtree,
+	copyEntry,
+	fileAction,
+	makeFolder,
+	moveEntry,
+	sourceEntry,
+	systemTrash,
+	targetEntry,
+	type Trash,
+	trashEntry,
+} from "./workspace-files.ts";
 
 const DOCS_LIMIT = 512;
 const THREADS_LIMIT = 128;
@@ -47,11 +59,36 @@ type Document = {
 	doc: string;
 	rev: number;
 	dirty: 0 | 1;
+	seq?: number;
 	base: string | null;
 	stamp: string | null;
 	eol: Eol;
 	bom: 0 | 1;
 };
+export type ProjectText = {
+	doc: string;
+	text: string;
+	draft: boolean;
+	seq?: number;
+	eol: Eol;
+	bom: boolean;
+	stamp: string | null;
+	base: string | null;
+};
+
+export function diskProjectText(target: Location, seq?: number): ProjectText {
+	if (!target.stat) throw new EditorError(`File not found: ${target.doc}`, "not_found");
+	const bytes = readBytes(target);
+	return {
+		doc: target.doc,
+		...decode(bytes),
+		draft: false,
+		seq,
+		stamp: signature(target.stat),
+		base: digest(bytes),
+	};
+}
+
 const TARGET_KINDS = ["file", "folder", "tab", "pane", "setting", "view"] as const;
 type Target = { kind: (typeof TARGET_KINDS)[number]; key: string };
 type Header = {
@@ -240,10 +277,12 @@ export class Workspace {
 	readonly dir: string;
 	readonly #db: DatabaseSync;
 	readonly #statements = new Map<string, StatementSync>();
+	readonly #trash: Trash;
 	#lastDiskCheck: { doc: string; stamp: string; hash: string } | undefined;
 	#closed = false;
 
-	constructor(root: string, agentDir: string) {
+	constructor(root: string, agentDir: string, trash: Trash = systemTrash) {
+		this.#trash = trash;
 		this.root = folderRoot(root);
 		const privateRoot = join(realpathSync.native(agentDir), "editor");
 		this.dir = join(privateRoot, digest(Buffer.from(this.root)));
@@ -322,7 +361,7 @@ export class Workspace {
 	}
 
 	#get(doc: string): Document | undefined {
-		return this.#sql("SELECT doc, rev, dirty, base, stamp, eol, bom FROM documents WHERE doc = ?").get(doc) as
+		return this.#sql("SELECT doc, rev, dirty, base, stamp, eol, bom, seq FROM documents WHERE doc = ?").get(doc) as
 			| Document
 			| undefined;
 	}
@@ -435,6 +474,72 @@ export class Workspace {
 		return { ...describe(row), text };
 	}
 
+	projectDrafts(limit: number): string[] {
+		return this.#sql("SELECT doc FROM documents WHERE dirty = 1 AND doc NOT GLOB 'scratch:*' ORDER BY seq DESC LIMIT ?")
+			.all(limit)
+			.map((row) => row.doc as string);
+	}
+
+	projectText(doc: string): ProjectText {
+		return this.#transaction(false, () => {
+			const { row, target } = this.#named(doc);
+			if (row?.dirty) {
+				const { seq, stamp, base, eol, bom } = row;
+				return { doc: row.doc, text: this.#body(row.doc), draft: true, seq, stamp, base, eol, bom: bom === 1 };
+			}
+			if (!target) throw new EditorError(`File not found: ${doc}`, "not_found");
+			return diskProjectText(target, row?.seq);
+		});
+	}
+
+	replaceProjectText(previous: ProjectText, text: string): { doc: string; rev: number } {
+		const { doc, eol, bom } = previous;
+		plainText(text);
+		assertFileSize(text, eol, bom);
+		return this.#transaction(true, () => {
+			const row = this.#get(doc);
+			if (row?.seq !== previous.seq)
+				throw new EditorError("The draft changed during replace. Search again.", "conflict");
+			const target = locate(this.root, doc);
+			if (target.doc !== doc || (!previous.draft && (!target.stat || signature(target.stat) !== previous.stamp))) {
+				throw new EditorError("The disk file changed during replace. Search again.", "conflict");
+			}
+			const rev = (row?.rev ?? 0) + 1;
+			if (!row)
+				this.#add(
+					{ doc, rev, dirty: 1, base: previous.base, stamp: previous.stamp, eol, bom: Number(bom) as 0 | 1 },
+					text,
+				);
+			else {
+				this.#sql("UPDATE bodies SET text = ? WHERE doc = ?").run(text, doc);
+				this.#sql(
+					"UPDATE documents SET rev = ?, dirty = 1, base = ?, stamp = ?, eol = ?, bom = ?, seq = ? WHERE doc = ?",
+				).run(rev, previous.base, previous.stamp, eol, Number(bom), this.#bump(), doc);
+			}
+			return { doc, rev };
+		});
+	}
+
+	#revert(doc: string, expected: number): Record<string, unknown> {
+		if (SCRATCH.test(doc)) throw new EditorError("A scratch draft has no disk file.", "invalid");
+		return this.#transaction(true, () => {
+			const row = this.#need(doc);
+			revision(row, expected);
+			const disk = diskProjectText(locate(this.root, doc));
+			const changed = this.#body(doc) !== disk.text;
+			if (changed) {
+				row.rev++;
+				this.#sql("UPDATE bodies SET text = ? WHERE doc = ?").run(disk.text, doc);
+			}
+			if (changed || row.dirty || row.base !== disk.base) {
+				this.#sql(
+					"UPDATE documents SET rev = ?, dirty = 0, base = ?, stamp = ?, eol = ?, bom = ?, seq = ? WHERE doc = ?",
+				).run(row.rev, disk.base, disk.stamp, disk.eol, Number(disk.bom), this.#bump(), doc);
+			}
+			return { ...describe({ ...row, dirty: 0 }), text: disk.text };
+		});
+	}
+
 	#new(path: string | undefined): Record<string, unknown> {
 		return this.#transaction(true, () => {
 			const target = path === undefined ? undefined : locate(this.root, path);
@@ -543,6 +648,111 @@ export class Workspace {
 		});
 	}
 
+	#below(doc: string) {
+		const rows = this.#sql(
+			"SELECT doc, dirty FROM documents WHERE doc = ? OR (doc >= ? AND doc < ?) ORDER BY doc LIMIT 8193",
+		).all(doc, `${doc}/`, `${doc}0`) as Pick<Document, "doc" | "dirty">[];
+		if (rows.length > 8192) throw new EditorError("Too many drafts belong to this folder.", "limit");
+		return rows;
+	}
+
+	#rename(from: string, to: string) {
+		if (from === to) throw new EditorError("Choose a different destination.", "invalid");
+		const source = sourceEntry(this.root, from);
+		const destination = targetEntry(this.root, to, source);
+		const oldDoc = source.doc,
+			newDoc = destination.doc;
+		checkSubtree(this.root, source);
+		let moved = false;
+		try {
+			return this.#transaction(true, () => {
+				if (this.#below(newDoc).length) throw new EditorError("A draft already uses the destination.", "conflict");
+				const mapping = this.#below(oldDoc).map(({ doc }) => ({
+					from: doc,
+					to: fileName(newDoc + doc.slice(oldDoc.length)),
+				}));
+				const targets = this.#sql(`SELECT DISTINCT target_key AS key FROM threads
+					WHERE target_kind IN ('file', 'folder', 'tab') AND (target_key = ? OR (target_key >= ? AND target_key < ?)) LIMIT 8193`).all(
+					oldDoc,
+					`${oldDoc}/`,
+					`${oldDoc}0`,
+				);
+				if (targets.length > 8192) throw new EditorError("Too many thread anchors belong to this folder.", "limit");
+				const seq = this.#bump();
+				for (const change of mapping)
+					this.#sql("UPDATE documents SET doc = ?, seq = ? WHERE doc = ?").run(change.to, seq, change.from);
+				for (const row of targets) {
+					const key = row.key as string;
+					this.#sql(
+						"UPDATE threads SET target_key = ? WHERE target_key = ? AND target_kind IN ('file', 'folder', 'tab')",
+					).run(fileName(newDoc + key.slice(oldDoc.length)), key);
+				}
+				moveEntry(this.root, source, destination);
+				moved = true;
+				return { from: oldDoc, to: newDoc, mapping };
+			});
+		} catch (error) {
+			if (moved) {
+				try {
+					const item = sourceEntry(this.root, newDoc);
+					if (item.stat.dev !== source.stat.dev || item.stat.ino !== source.stat.ino) throw error;
+					moveEntry(this.root, item, targetEntry(this.root, oldDoc, item));
+				} catch {
+					throw new EditorError(
+						"The disk move completed, but the workspace update failed. The drafts still use their old paths.",
+						"conflict",
+					);
+				}
+			}
+			throw error;
+		}
+	}
+
+	#remove(path: string) {
+		const source = sourceEntry(this.root, path);
+		checkSubtree(this.root, source);
+		return this.#transaction(true, () => {
+			const kept: string[] = [];
+			for (const row of this.#below(source.doc)) {
+				if (row.dirty) {
+					kept.push(row.doc);
+					continue;
+				}
+				this.#sql("UPDATE threads SET doc = NULL, target_kind = 'file', target_key = ? WHERE doc = ?").run(
+					row.doc,
+					row.doc,
+				);
+				this.#sql("DELETE FROM bodies WHERE doc = ?").run(row.doc);
+				this.#sql("DELETE FROM documents WHERE doc = ?").run(row.doc);
+			}
+			this.#bump();
+			trashEntry(this.root, source, this.#trash);
+			return { path: source.doc, kept };
+		});
+	}
+
+	#mkdir(path: string) {
+		return this.#transaction(true, () => {
+			const target = targetEntry(this.root, path);
+			if (this.#get(target.doc)) throw new EditorError("A draft already uses the destination.", "conflict");
+			makeFolder(this.root, target);
+			return { path: target.doc };
+		});
+	}
+
+	#copy(from: string, to: string) {
+		return this.#transaction(true, () => {
+			const source = sourceEntry(this.root, from);
+			const target = targetEntry(this.root, to);
+			if (source.stat.isDirectory() && isWithin(source.path, target.path)) {
+				throw new EditorError("A folder cannot be copied into itself.", "invalid");
+			}
+			if (this.#below(target.doc).length) throw new EditorError("A draft already uses the destination.", "conflict");
+			copyEntry(this.root, source, target);
+			return { path: target.doc };
+		});
+	}
+
 	#thread(id: string): Record<string, unknown> {
 		return this.#transaction(false, () => {
 			const anchor = this.#sql(
@@ -627,6 +837,16 @@ export class Workspace {
 			case "edit":
 			case "patch":
 				return this.#edit(input, input.op === "patch");
+			case "revert":
+				return this.#revert(docField(input), number(input, "rev"));
+			case "rename":
+				return fileAction(() => this.#rename(field(input, "from"), field(input, "to")));
+			case "remove":
+				return fileAction(() => this.#remove(field(input, "path")));
+			case "mkdir":
+				return fileAction(() => this.#mkdir(field(input, "path")));
+			case "copy":
+				return fileAction(() => this.#copy(field(input, "from"), field(input, "to")));
 			case "save":
 				return this.#save(
 					docField(input),

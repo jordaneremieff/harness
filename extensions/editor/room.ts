@@ -5,6 +5,7 @@ import { browse } from "./browse.ts";
 import { invite, join, members, type Invitation, type Participant } from "./participants.ts";
 import { servePane } from "./pane-service.ts";
 import { preparePane, type PreparePane } from "./pane-launch.ts";
+import { projectReplace } from "./project-search.ts";
 import { statePage, browsePage } from "./results.ts";
 import { Workspace } from "./store.ts";
 export { editorParameters, editorToolDescription } from "./schema.ts";
@@ -23,13 +24,15 @@ const storageOps = new Set([
 	"edit",
 	"patch",
 	"save",
+	"revert",
 	"note",
 	"thread",
 	"reply",
 	"compose",
 	"view",
 ]);
-const browseOps = new Set(["tree", "search", "git"]);
+const browseOps = new Set(["tree", "files", "search", "git"]);
+const paneFileOps = new Set(["rename", "remove", "mkdir", "copy"]);
 const field = (input: Data, name: string, limit: number) => {
 	const v = input[name];
 	if (typeof v !== "string" || !v.trim() || v.length > limit) throw Error(`Invalid ${name}.`);
@@ -154,6 +157,8 @@ export class EditorRoom {
 						token: pane.token,
 						root,
 						file,
+						settings: joinPath(dirname(c.store.dir), "settings.json"),
+						layout: joinPath(c.store.dir, "layout.json"),
 					}),
 				);
 			} finally {
@@ -214,25 +219,28 @@ export class EditorRoom {
 		const op = String(input.op);
 		if (op === "members") return { members: await members(c.store.dir) };
 		if (op === "send") return this.handoff(c, input);
-		if (browseOps.has(op)) return browse(c.store.root, input, signal);
-		if (!storageOps.has(op)) throw Error("Unknown editor action.");
+		if (browseOps.has(op)) return browse(c.store.root, input, signal, c.store);
+		if (op === "replace") return projectReplace(c.store, input, signal);
+		if (!storageOps.has(op) && !paneFileOps.has(op)) throw Error("Unknown editor action.");
 		return c.store.run(input, "You");
 	}
 	async tool(request: Data, signal?: AbortSignal): Promise<Data> {
 		signal?.throwIfAborted();
 		const { root, ...input } = request;
 		const op = String(input.op);
-		if (!storageOps.has(op) && !browseOps.has(op) && op !== "join" && op !== "members")
+		if (!storageOps.has(op) && !browseOps.has(op) && op !== "replace" && op !== "join" && op !== "members")
 			throw Error("Unknown editor action.");
 		const { store } = await this.forInput({ root });
 		signal?.throwIfAborted();
 		if (this.closed) throw Error("This Editor session closed.");
 		if (op === "join") return { root: store.root, folder: basename(store.root), participant: this.actor };
 		if (op === "members") return { members: await members(store.dir) };
-		if (browseOps.has(op)) return browsePage(await browse(store.root, input, signal), input);
+		if (browseOps.has(op)) return browsePage(await browse(store.root, input, signal, store), input);
+		if (op === "replace") return projectReplace(store, input, signal, 32_000);
 		if (op === "state") return statePage(store.run({ op }, this.actor.label), input);
 		const result = store.run(input, this.actor.label);
 		if (op === "read") return readPage(result, input);
+		if (op === "revert") return readPage(result, { limit: input.limit });
 		if ((op === "new" || op === "save") && typeof result.text === "string") {
 			const { text, ...receipt } = result;
 			return { ...receipt, total: text.length };
