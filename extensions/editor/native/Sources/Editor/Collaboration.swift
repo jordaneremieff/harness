@@ -96,12 +96,12 @@ final class Collaboration: NSObject, NSTextViewDelegate {
     private let api: any EditorAPI
     private let page = CollaborationLayout()
     private let detail = CollaborationLayout.column()
-    private let inboxButton = CollaborationButton("Threads")
+    private let inboxButton = collaborationButton("Threads", symbol: "chevron.backward")
     private let audience = NSPopUpButton(frame: .zero, pullsDown: false)
     private let audienceID = CollaborationLabel("", style: .secondary)
-    private let reloadMembers = CollaborationButton("Refresh")
-    private let post = CollaborationButton("Post Note")
-    private let send = CollaborationButton("Send Request")
+    private let reloadMembers = collaborationButton("", symbol: "arrow.clockwise")
+    private let post = collaborationButton("Post Note", symbol: "bubble.left")
+    private let send = collaborationButton("Send Request", symbol: "paperplane")
     private let input = NSTextView()
     private lazy var editor = textEditor()
 
@@ -114,17 +114,26 @@ final class Collaboration: NSObject, NSTextViewDelegate {
     private var memberTask: Task<Void, Never>?
     private var writing = false
     private var stopped = false
+    private var offline = false
 
     init(api: any EditorAPI) {
         self.api = api
         super.init()
         input.delegate = self
-        inboxButton.actionBody = { [weak self] in self?.showInbox() }
-        reloadMembers.actionBody = { [weak self] in self?.refreshMembers() }
-        post.actionBody = { [weak self] in self?.submit(deliver: false) }
-        send.actionBody = { [weak self] in self?.submit(deliver: true) }
+        inboxButton.run = { [weak self] in self?.showInbox() }
+        reloadMembers.run = { [weak self] in self?.refreshMembers() }
+        post.run = { [weak self] in self?.submit(deliver: false) }
+        send.run = { [weak self] in self?.submit(deliver: true) }
         audience.target = self
         audience.action = #selector(audienceChanged)
+        audience.isBordered = false
+        audience.bezelStyle = .accessoryBarAction
+        reloadMembers.toolTip = "Refresh recipients"
+        reloadMembers.setAccessibilityLabel("Refresh recipients")
+        reloadMembers.widthAnchor.constraint(equalToConstant: 29).isActive = true
+        send.isOn = true
+        page.onLook = { [weak self] in self?.applyLook() }
+        applyLook()
         audience.setAccessibilityLabel("Exact recipient")
         audience.setContentHuggingPriority(.defaultLow, for: .horizontal)
         audience.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -134,6 +143,11 @@ final class Collaboration: NSObject, NSTextViewDelegate {
 
     func stop() {
         stopped = true
+        goOffline()
+    }
+
+    func goOffline() {
+        offline = true
         threadTask?.cancel()
         threadTask = nil
         memberTask?.cancel()
@@ -208,11 +222,14 @@ final class Collaboration: NSObject, NSTextViewDelegate {
             renderAnchor(anchor)
             renderComposer(reply: false)
         case .thread(let id):
-            let reply = CollaborationButton("Write Reply") { [weak self] in
+            let reply = collaborationButton("", symbol: "square.and.pencil") { [weak self] in
                 guard let self else { return }
                 self.page.reveal(self.editor)
                 self.input.window?.makeFirstResponder(self.input)
             }
+            reply.setAccessibilityLabel("Write reply")
+            reply.toolTip = "Write reply"
+            reply.widthAnchor.constraint(equalToConstant: 27).isActive = true
             page.add(page.row([inboxButton, CollaborationLabel("Thread", style: .heading), CollaborationLayout.spacer(), reply]))
             page.add(detail)
             renderLoadingThread(id)
@@ -254,13 +271,13 @@ final class Collaboration: NSObject, NSTextViewDelegate {
     }
 
     private func addInboxItem(_ title: String, _ description: String, to destination: Mode) {
-        let open = CollaborationButton(title) { [weak self] in self?.select(destination) }
+        let open = collaborationButton(title, symbol: "chevron.right") { [weak self] in self?.select(destination) }
         open.setAccessibilityLabel("\(title): \(description)")
         let item = CollaborationLayout.column()
         item.spacing = 3
         page.add(CollaborationLabel(description), to: item)
         page.add(page.row([open, CollaborationLayout.spacer()]), to: item)
-        page.add(item, to: detail)
+        page.add(page.card(item), to: detail)
     }
 
     private func renderComposer(reply: Bool) {
@@ -272,7 +289,8 @@ final class Collaboration: NSObject, NSTextViewDelegate {
         page.add(CollaborationLabel("Send to a workspace participant", style: .secondary))
         page.add(page.row([audience, reloadMembers]))
         page.add(audienceID)
-        page.add(page.row([post, send, CollaborationLayout.spacer()]))
+        page.add(post)
+        page.add(send)
     }
 
     private func renderAnchor(_ anchor: CollaborationAnchor, quote: String? = nil) {
@@ -280,10 +298,10 @@ final class Collaboration: NSObject, NSTextViewDelegate {
         page.add(CollaborationLabel(anchor.label, style: .secondary), to: detail)
         if let quote, !quote.isEmpty {
             page.add(CollaborationLabel("Original selection", style: .secondary), to: detail)
-            page.add(CollaborationLabel(quote, style: .code, selectable: true), to: detail)
+            page.add(page.card(CollaborationLabel(quote, style: .code, selectable: true)), to: detail)
         }
         if let file = anchor.file {
-            let open = CollaborationButton("Open File") { [weak self] in self?.onOpen?(file, nil) }
+            let open = collaborationButton("Open File") { [weak self] in self?.onOpen?(file, nil) }
             page.add(page.row([open, CollaborationLayout.spacer()]), to: detail)
         }
     }
@@ -295,7 +313,7 @@ final class Collaboration: NSObject, NSTextViewDelegate {
     }
 
     private func loadThread(_ id: String) {
-        guard !stopped else { return }
+        guard !stopped, !offline else { return }
         threadTask?.cancel()
         threadTask = Task { [weak self, api] in
             do {
@@ -311,11 +329,11 @@ final class Collaboration: NSObject, NSTextViewDelegate {
                     item.spacing = 3
                     self.page.add(CollaborationLabel(author, style: .heading), to: item)
                     self.page.add(CollaborationLabel(text, selectable: true), to: item)
-                    self.page.add(item, to: self.detail)
+                    self.page.add(self.page.card(item), to: self.detail)
                 }
             } catch {
                 guard !Task.isCancelled, let self, self.mode == .thread(id) else { return }
-                let retry = CollaborationButton("Reload Thread") { [weak self] in self?.loadThread(id) }
+                let retry = collaborationButton("Reload Thread") { [weak self] in self?.loadThread(id) }
                 self.page.clear(self.detail)
                 self.page.add(self.page.row([retry, CollaborationLayout.spacer()]), to: self.detail)
                 self.onError?(error.localizedDescription)
@@ -324,7 +342,7 @@ final class Collaboration: NSObject, NSTextViewDelegate {
     }
 
     private func refreshMembers() {
-        guard !stopped, mode != .inbox else { return }
+        guard !stopped, !offline, mode != .inbox else { return }
         memberTask?.cancel()
         memberTask = Task { [weak self, api] in
             do {
@@ -373,8 +391,8 @@ final class Collaboration: NSObject, NSTextViewDelegate {
     }
 
     private func updateControls() {
-        let active = !writing && !stopped
-        inboxButton.isEnabled = active
+        let active = !writing && !stopped && !offline
+        inboxButton.isEnabled = !writing && !stopped
         reloadMembers.isEnabled = active
         audience.isEnabled = active && audience.numberOfItems > 1
         input.isEditable = active
@@ -386,7 +404,7 @@ final class Collaboration: NSObject, NSTextViewDelegate {
         let origin = mode
         let text = input.string
         let recipient = deliver ? recipientID : nil
-        guard !stopped, !writing, origin != .inbox, !deliver || recipient != nil else { return }
+        guard !stopped, !offline, !writing, origin != .inbox, !deliver || recipient != nil else { return }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             onError?("Enter a message first.")
             return
@@ -457,21 +475,40 @@ final class Collaboration: NSObject, NSTextViewDelegate {
         else if mode == .inbox { renderInbox() }
     }
 
+    private func applyLook() {
+        let theme = WorkspaceStyle.theme
+        audience.font = WorkspaceStyle.interfaceFont(-1)
+        audience.contentTintColor = theme.text
+        let ranges = input.selectedRanges
+        input.font = WorkspaceStyle.interfaceFont()
+        input.textColor = theme.text
+        input.insertionPointColor = theme.caret
+        input.selectedTextAttributes = [.backgroundColor: theme.selection]
+        input.backgroundColor = theme.editor
+        if input.selectedRanges != ranges { input.selectedRanges = ranges }
+        editor.backgroundColor = theme.editor
+        editor.layer?.borderColor = theme.panelBorder.cgColor
+    }
+
     private func textEditor() -> NSScrollView {
         let scroll = NSScrollView()
-        scroll.borderType = .bezelBorder
+        scroll.borderType = .noBorder
         scroll.hasVerticalScroller = true
+        scroll.scrollerStyle = .overlay
         scroll.autohidesScrollers = true
+        scroll.wantsLayer = true
+        scroll.layer?.cornerRadius = 7
+        scroll.layer?.borderWidth = 1
+        scroll.layer?.masksToBounds = true
         input.isRichText = false
         input.importsGraphics = false
-        input.font = .systemFont(ofSize: NSFont.systemFontSize)
         input.isVerticallyResizable = true
         input.isHorizontallyResizable = false
         input.autoresizingMask = [.width]
-        input.textContainerInset = NSSize(width: 5, height: 4)
+        input.textContainerInset = NSSize(width: 9, height: 8)
         input.textContainer?.widthTracksTextView = true
         scroll.documentView = input
-        scroll.heightAnchor.constraint(equalToConstant: 86).isActive = true
+        scroll.heightAnchor.constraint(equalToConstant: 104).isActive = true
         return scroll
     }
 }
@@ -519,7 +556,7 @@ final class CompositionPage {
         displayedRevision = revision
         page.clear()
         page.add(CollaborationLabel(title, style: .heading, selectable: true))
-        let note = CollaborationButton("Add Note") { [weak self] in
+        let note = collaborationButton("Add Note", symbol: "bubble.left") { [weak self] in
             guard let self else { return }
             self.onNote?(["target": ["kind": "view", "key": self.id]])
         }
@@ -533,7 +570,7 @@ final class CompositionPage {
         }
         switch kind {
         case "text": return CollaborationLabel(text, selectable: true)
-        case "code": return CollaborationLabel(text, style: .code, selectable: true)
+        case "code": return page.card(CollaborationLabel(text, style: .code, selectable: true))
         case "location":
             guard let file = block["doc"] as? String, let line = block["line"] as? Int, line > 0 else {
                 throw CollaborationIssue("Editor returned an invalid file location.")
@@ -543,10 +580,10 @@ final class CompositionPage {
             if !text.isEmpty { page.add(CollaborationLabel(text, selectable: true), to: location) }
             let address = "\(file):\(line)"
             page.add(CollaborationLabel(address, style: .secondary, selectable: true), to: location)
-            let open = CollaborationButton("Open File") { [weak self] in self?.onOpen?(file, line) }
+            let open = collaborationButton("Open File", symbol: "arrow.up.right") { [weak self] in self?.onOpen?(file, line) }
             open.setAccessibilityLabel("Open \(address)")
             page.add(page.row([open, CollaborationLayout.spacer()]), to: location)
-            return location
+            return page.card(location)
         default:
             throw CollaborationIssue("Editor returned an unknown view block.")
         }

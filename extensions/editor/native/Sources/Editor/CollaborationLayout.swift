@@ -1,28 +1,20 @@
 import AppKit
 
 @MainActor
-final class CollaborationButton: NSButton {
-    var actionBody: (() -> Void)?
-
-    init(_ title: String, action: (() -> Void)? = nil) {
-        self.actionBody = action
-        super.init(frame: .zero)
-        self.title = title
-        bezelStyle = .rounded
-        target = self
-        self.action = #selector(activate)
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    @objc private func activate() { actionBody?() }
+func collaborationButton(_ title: String, symbol: String? = nil, run: (() -> Void)? = nil) -> WorkspaceButton {
+    let button = WorkspaceButton(title, symbol: symbol)
+    button.run = run
+    button.heightAnchor.constraint(greaterThanOrEqualToConstant: 26).isActive = true
+    return button
 }
 
 @MainActor
 final class CollaborationLabel: NSTextField {
     enum Style { case body, heading, secondary, code }
+    private let style: Style
 
     init(_ text: String, style: Style = .body, selectable: Bool = false) {
+        self.style = style
         super.init(frame: .zero)
         stringValue = text
         isBordered = false
@@ -34,17 +26,23 @@ final class CollaborationLabel: NSTextField {
         cell?.wraps = true
         cell?.isScrollable = false
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        switch style {
-        case .body: font = .systemFont(ofSize: NSFont.systemFontSize)
-        case .heading: font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-        case .secondary:
-            font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-            textColor = .secondaryLabelColor
-        case .code: font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        }
+        applyLook()
     }
 
     required init?(coder: NSCoder) { nil }
+
+    func applyLook() {
+        let theme = WorkspaceStyle.theme
+        switch style {
+        case .body: font = WorkspaceStyle.interfaceFont(); textColor = theme.text
+        case .heading: font = WorkspaceStyle.interfaceFont(1, weight: .semibold); textColor = theme.text
+        case .secondary: font = WorkspaceStyle.interfaceFont(-1); textColor = theme.secondaryText
+        case .code:
+            font = .monospacedSystemFont(ofSize: WorkspaceStyle.settings.interfaceSize, weight: .regular)
+            textColor = theme.syntax("string") ?? theme.text
+        }
+        invalidateIntrinsicContentSize()
+    }
 
     override func layout() {
         super.layout()
@@ -57,12 +55,14 @@ final class CollaborationLabel: NSTextField {
 struct CollaborationLayout {
     let view = NSScrollView()
     private let content = column()
+    private let canvas = CollaborationCanvas()
+    var onLook: (() -> Void)? { get { canvas.onLook } nonmutating set { canvas.onLook = newValue } }
 
     init() {
         view.hasVerticalScroller = true
         view.autohidesScrollers = true
         view.drawsBackground = false
-        let canvas = CollaborationCanvas()
+        view.scrollerStyle = .overlay
         view.documentView = canvas
         canvas.translatesAutoresizingMaskIntoConstraints = false
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -71,10 +71,10 @@ struct CollaborationLayout {
             canvas.topAnchor.constraint(equalTo: view.contentView.topAnchor),
             canvas.leadingAnchor.constraint(equalTo: view.contentView.leadingAnchor),
             canvas.widthAnchor.constraint(equalTo: view.contentView.widthAnchor),
-            content.topAnchor.constraint(equalTo: canvas.topAnchor, constant: 10),
-            content.leadingAnchor.constraint(equalTo: canvas.leadingAnchor, constant: 12),
-            content.trailingAnchor.constraint(equalTo: canvas.trailingAnchor, constant: -12),
-            content.bottomAnchor.constraint(equalTo: canvas.bottomAnchor, constant: -10),
+            content.topAnchor.constraint(equalTo: canvas.topAnchor, constant: 16),
+            content.leadingAnchor.constraint(equalTo: canvas.leadingAnchor, constant: 14),
+            content.trailingAnchor.constraint(equalTo: canvas.trailingAnchor, constant: -14),
+            content.bottomAnchor.constraint(equalTo: canvas.bottomAnchor, constant: -16),
         ])
     }
 
@@ -82,9 +82,11 @@ struct CollaborationLayout {
         let result = NSStackView()
         result.orientation = .vertical
         result.alignment = .leading
-        result.spacing = 8
+        result.spacing = 10
         return result
     }
+
+    func card(_ child: NSView) -> NSView { CollaborationCard(content: child) }
 
     static func spacer() -> NSView {
         let space = NSView()
@@ -130,6 +132,52 @@ struct CollaborationLayout {
     }
 }
 
+@MainActor
 private final class CollaborationCanvas: NSView {
+    var onLook: (() -> Void)?
+    private var observer: NSObjectProtocol?
     override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        observer = NotificationCenter.default.addObserver(forName: .workspaceStyleDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.applyLook(to: self)
+                self.onLook?()
+            }
+        }
+    }
+    required init?(coder: NSCoder) { nil }
+
+    isolated deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+
+    private func applyLook(to view: NSView) {
+        (view as? CollaborationLabel)?.applyLook()
+        view.needsDisplay = true
+        view.subviews.forEach { applyLook(to: $0) }
+    }
+}
+
+@MainActor
+private final class CollaborationCard: NSView {
+    init(content: NSView) {
+        super.init(frame: .zero)
+        addSubview(content)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+        ])
+    }
+    required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let theme = WorkspaceStyle.theme
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+        theme.panel.setFill(); shape.fill()
+        theme.panelBorder.setStroke(); shape.stroke()
+    }
 }

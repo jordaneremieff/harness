@@ -53,6 +53,7 @@ final class PaneHost {
         overlay.ready = false
         overlay.window.title = "Editor"
         overlay.window.onClose = { [weak self] in self?.requestClose() }
+        screen.onDisconnect = { [weak self] hasUnsentText in self?.piClosed(hasUnsentText: hasUnsentText) }
         overlay.onChange = { [weak self] in self?.placementChanged() }
         occlusionObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeOcclusionStateNotification, object: overlay.window, queue: .main
@@ -123,10 +124,9 @@ final class PaneHost {
         guard !finished else { return }
         let marker = overlay.anchor.marker
         drawnMarker = marker
-        terminal.draw(
-            title: "Editor", identity: "Native pane", status: startup.placeholder,
-            keys: "Return: Focus Editor   Ctrl-C: Close", command: nil, marker: marker
-        )
+        let status = screen.isDisconnected ? "Pi closed. Editor still shows your unsent text." : startup.placeholder
+        terminal.draw(title: "Editor", identity: "Native pane", status: status,
+                      keys: "Return: Focus Editor   Ctrl-C: Close", command: nil, marker: marker)
     }
 
     private func placementChanged() {
@@ -166,11 +166,22 @@ final class PaneHost {
             let safe = await screen.prepareToClose()
             guard let self else { return }
             closeRequest = nil
-            if safe { finish() }
+            if safe {
+                if screen.isDisconnected { finish(terminalNotice: "Pi closed.", notifyPi: false) }
+                else { finish() }
+            }
         }
     }
 
-    private func finish(problem: String? = nil) {
+    private func piClosed(hasUnsentText: Bool) {
+        guard !finished else { return }
+        if hasUnsentText {
+            screen.showDisconnected { [weak self] in self?.requestClose() }
+            drawPlaceholder()
+        } else { finish(terminalNotice: "Pi closed.", notifyPi: false) }
+    }
+
+    private func finish(problem: String? = nil, terminalNotice: String? = nil, notifyPi: Bool = true) {
         guard !finished else { return }
         finished = true
         loading?.cancel()
@@ -181,8 +192,9 @@ final class PaneHost {
         overlay.stop()
         screen.stop()
         terminal.leave(before: .now() + .milliseconds(150))
-        if let problem { terminal.report("Editor: \(problem)", before: .now() + .milliseconds(150)) }
+        if let report = problem ?? terminalNotice { terminal.report("Editor: \(report)", before: .now() + .milliseconds(150)) }
         let status: Int32 = problem == nil ? 0 : 1
+        if !notifyPi { _exit(status) }
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { _exit(status) }
         Task { [api] in
             let fields: Fields = problem.map { ["error": $0] } ?? [:]

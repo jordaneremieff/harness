@@ -5,12 +5,12 @@ import AppKit
 final class WorkspaceButton: NSButton {
     var run: (() -> Void)?
     var context: (() -> NSMenu)?
+    var preferredTint: NSColor? { didSet { refreshTint() } }
     /// A control that stays on, such as the button of the sidebar panel on show.
     var isOn = false {
         didSet {
             guard isOn != oldValue else { return }
-            contentTintColor = isOn ? .labelColor : nil
-            needsDisplay = true
+            refreshTint()
         }
     }
     private var hovering = false { didSet { if hovering != oldValue { needsDisplay = true } } }
@@ -29,9 +29,21 @@ final class WorkspaceButton: NSButton {
         setAccessibilityLabel(help ?? title)
         target = self
         action = #selector(pressed)
+        styleChanged()
+        NotificationCenter.default.addObserver(self, selector: #selector(styleChanged), name: .workspaceStyleDidChange, object: nil)
     }
     required init?(coder: NSCoder) { nil }
     @objc private func pressed() { run?() }
+
+    @objc private func styleChanged() {
+        font = WorkspaceStyle.interfaceFont(-1, weight: .medium)
+        refreshTint()
+    }
+
+    private func refreshTint() {
+        contentTintColor = preferredTint ?? (isOn ? WorkspaceStyle.theme.text : WorkspaceStyle.theme.secondaryText)
+        needsDisplay = true
+    }
     override func menu(for event: NSEvent) -> NSMenu? { context?() ?? super.menu(for: event) }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -84,17 +96,15 @@ final class WorkspaceRegion: NSView {
     }
     var line: Edge? { didSet { needsDisplay = true } }
     override var isFlipped: Bool { true }
-    private var styleObserver: NSObjectProtocol?
 
     init(_ surface: Surface = .chrome, line: Edge? = nil) {
         self.surface = surface
         self.line = line
         super.init(frame: .zero)
-        styleObserver = NotificationCenter.default.addObserver(forName: .workspaceStyleDidChange, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.needsDisplay = true }
-        }
+        NotificationCenter.default.addObserver(self, selector: #selector(styleChanged), name: .workspaceStyleDidChange, object: nil)
     }
     required init?(coder: NSCoder) { nil }
+    @objc private func styleChanged() { needsDisplay = true }
 
     override func draw(_ dirtyRect: NSRect) {
         colour.setFill()

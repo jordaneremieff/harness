@@ -7,9 +7,11 @@ struct WorkspaceTab: Equatable {
     var symbol: String
     var unsaved = false
     var warns = false
+    var preview = false
+    var colourRole: String? = nil
 }
 
-/// One set of tabs with the page of its selected tab. A stage shows one or two of them.
+/// One set of tabs with the page of its selected tab.
 struct WorkspaceGroup {
     let id: Int
     var tabs: [WorkspaceTab]
@@ -23,6 +25,8 @@ enum WorkspaceDrop: Equatable {
     case slot(group: Int, index: Int)
     /// A new group on one side of an existing one.
     case beside(group: Int, trailing: Bool)
+    /// A new group above or below an existing one.
+    case stacked(group: Int, trailing: Bool)
 }
 
 /// One tab. The pointer selects it on a press, drags it after a short distance and closes it
@@ -39,6 +43,7 @@ final class WorkspaceTabView: NSButton {
     var isChosen = false { didSet { if isChosen != oldValue { refresh() } } }
     var inActiveGroup = true { didSet { if inActiveGroup != oldValue { refresh() } } }
     var onPress: (() -> Void)?
+    var onKeep: (() -> Void)?
     var onClose: (() -> Void)?
     var onMenu: (() -> NSMenu)?
     /// Receives the window location of the press that started a drag. Returns false when a
@@ -64,9 +69,7 @@ final class WorkspaceTabView: NSButton {
         focusRingType = .none
         target = self
         action = #selector(press)
-        name.font = .systemFont(ofSize: 12)
         name.lineBreakMode = .byTruncatingMiddle
-        icon.symbolConfiguration = .init(pointSize: 11, weight: .regular)
         closer.run = { [weak self] in self?.onClose?() }
         for view in [icon, name, closer] { addSubview(view) }
         show(item)
@@ -80,47 +83,62 @@ final class WorkspaceTabView: NSButton {
         setAccessibilityLabel(next.detail)
         closer.setAccessibilityLabel("Close \(next.label)")
         icon.image = NSImage(systemSymbolName: next.symbol, accessibilityDescription: nil)
+        applyStyle()
+    }
+
+    func applyStyle() {
+        let font = WorkspaceStyle.interfaceFont()
+        name.font = item.preview ? NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) : font
+        icon.symbolConfiguration = .init(pointSize: max(10, font.pointSize - 1), weight: .regular)
+        needsLayout = true
         refresh()
     }
 
     var fittingWidth: CGFloat {
-        min(Self.maximumWidth, max(Self.minimumWidth, ceil(name.intrinsicContentSize.width) + 64))
+        min(Self.maximumWidth, max(Self.minimumWidth, ceil(name.intrinsicContentSize.width) + 51 + WorkspaceStyle.settings.interfaceSize))
     }
 
     private func refresh() {
         let strong = isChosen && inActiveGroup || hovering
-        name.textColor = strong ? .labelColor : .secondaryLabelColor
-        icon.contentTintColor = item.warns ? .systemOrange : .secondaryLabelColor
+        let theme = WorkspaceStyle.theme
+        name.textColor = strong ? theme.text : theme.secondaryText
+        let role = item.colourRole.flatMap { theme.role($0) }
+        icon.contentTintColor = item.warns ? theme.warning : role ?? theme.secondaryText
         // An unsaved tab shows its mark where the close control sits; the pointer brings the control back.
         let mark = item.unsaved && !hovering
         closer.image = NSImage(systemSymbolName: mark ? "circle.fill" : "xmark", accessibilityDescription: nil)
         closer.symbolConfiguration = .init(pointSize: mark ? 6.5 : 8.5, weight: mark ? .regular : .semibold)
         closer.isHidden = !(mark || hovering || isChosen)
-        setAccessibilityValue(isChosen ? "Selected" : "")
+        closer.preferredTint = mark ? theme.modified : nil
+        let state = [(isChosen, "Selected"), (item.preview, "Preview"), (item.unsaved, "Modified")]
+        setAccessibilityValue(state.filter { $0.0 }.map { $0.1 }.joined(separator: ", "))
         needsDisplay = true
     }
 
     override func layout() {
         super.layout()
         let h = bounds.height
-        icon.frame = NSRect(x: 9, y: (h - 14) / 2, width: 14, height: 14)
-        closer.frame = NSRect(x: bounds.width - 23, y: (h - 16) / 2, width: 16, height: 16)
-        name.frame = NSRect(x: 28, y: (h - 16) / 2, width: max(0, bounds.width - 28 - 24), height: 16)
+        let iconSize = max(14, WorkspaceStyle.settings.interfaceSize + 1)
+        let textHeight = ceil(name.intrinsicContentSize.height)
+        let start = 13 + iconSize
+        icon.frame = NSRect(x: 8, y: (h - iconSize) / 2, width: iconSize, height: iconSize)
+        closer.frame = NSRect(x: bounds.width - 23, y: (h - 18) / 2, width: 18, height: 18)
+        name.frame = NSRect(x: start, y: (h - textHeight) / 2, width: max(0, bounds.width - start - 24), height: textHeight)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         guard isChosen || hovering else { return }
-        (isChosen ? WorkspaceStyle.content : WorkspaceStyle.hover).setFill()
-        // Only the top corners are round: the chosen tab runs into the page below it.
+        (isChosen ? (inActiveGroup ? WorkspaceStyle.content : WorkspaceStyle.inactiveTab) : WorkspaceStyle.hover).setFill()
+        // The selected tab reaches the page. Its lower corners sit outside the clipped area.
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: bounds).addClip()
-        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height + 6), xRadius: 6, yRadius: 6).fill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: -6, width: bounds.width, height: bounds.height + 6), xRadius: 6, yRadius: 6).fill()
         NSGraphicsContext.restoreGraphicsState()
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let hit = super.hitTest(point) else { return nil }
-        return hit === closer ? hit : self
+        return hit === closer && (!item.unsaved || hovering) ? hit : self
     }
 
     override func updateTrackingAreas() {
@@ -132,6 +150,7 @@ final class WorkspaceTabView: NSButton {
     }
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
+    override func viewDidHide() { super.viewDidHide(); hovering = false }
 
     @objc private func press() { onPress?() }
 
@@ -139,6 +158,7 @@ final class WorkspaceTabView: NSButton {
         pressedAt = event.locationInWindow
         dragging = false
         onPress?()
+        if event.clickCount == 2, item.preview { onKeep?() }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -168,7 +188,7 @@ final class WorkspaceTabView: NSButton {
 /// The row of tabs above a page.
 @MainActor
 final class WorkspaceTabStrip: NSView {
-    static let height: CGFloat = 34
+    static var height: CGFloat { WorkspaceStyle.tabHeight }
     private static let tabTop: CGFloat = 4
 
     private final class Row: NSView {
@@ -181,15 +201,16 @@ final class WorkspaceTabStrip: NSView {
 
     private let scroll = NSScrollView()
     private let row = Row()
+    private let add = WorkspaceButton("", symbol: "plus", help: "New scratch (cmd+N)")
     private(set) var tabs: [WorkspaceTabView] = []
     private var resting: [CGFloat] = []
     /// The key of a tab that follows the pointer and takes no place in the row.
     private(set) var lifted: String?
     /// Room kept open among the resting tabs for a tab that would land there.
     private(set) var opening: (index: Int, width: CGFloat)?
-    var onBlankDoubleClick: (() -> Void)? {
-        get { row.onBlankDoubleClick }
-        set { row.onBlankDoubleClick = newValue }
+    var onNewTab: (() -> Void)? {
+        get { add.run }
+        set { add.run = newValue; row.onBlankDoubleClick = newValue }
     }
     override var isFlipped: Bool { true }
 
@@ -204,6 +225,7 @@ final class WorkspaceTabStrip: NSView {
         scroll.verticalScrollElasticity = .none
         scroll.documentView = row
         addSubview(scroll)
+        addSubview(add)
         setAccessibilityRole(.tabGroup)
     }
     required init?(coder: NSCoder) { nil }
@@ -217,7 +239,11 @@ final class WorkspaceTabStrip: NSView {
 
     override func layout() {
         super.layout()
-        scroll.frame = bounds
+        let addWidth = min(30, bounds.width / 2)
+        let addHeight = min(26, bounds.height)
+        scroll.frame = NSRect(x: 0, y: 0, width: bounds.width - addWidth, height: bounds.height)
+        add.frame = NSRect(x: bounds.width - addWidth + 2, y: (bounds.height - addHeight) / 2,
+                           width: max(0, addWidth - 4), height: addHeight)
         arrange()
     }
 
@@ -267,7 +293,8 @@ final class WorkspaceTabStrip: NSView {
 
     private func arrange(animated: Bool = false) {
         let placed = tabs.filter { $0.item.key != lifted }
-        let room = max(0, bounds.width - (opening?.width ?? 0))
+        let visibleWidth = scroll.bounds.width
+        let room = max(0, visibleWidth - (opening?.width ?? 0))
         // Tabs share a crowded strip evenly while their names still read. After that the row scrolls.
         let share = placed.isEmpty ? 0 : max(WorkspaceTabView.crowdedWidth, (room / CGFloat(placed.count)).rounded(.down))
         resting = placed.map { min($0.fittingWidth, share) }
@@ -279,9 +306,10 @@ final class WorkspaceTabStrip: NSView {
             x += width
         }
         if let opening, opening.index >= placed.count { x += opening.width }
-        row.frame = NSRect(x: 0, y: 0, width: max(x, bounds.width), height: Self.height)
-        let move = { for (tab, frame) in zip(placed, frames) where tab.frame != frame { (animated ? tab.animator() : tab).frame = frame } }
-        if animated, window != nil {
+        row.frame = NSRect(x: 0, y: 0, width: max(x, visibleWidth), height: bounds.height)
+        let animate = animated && WorkspaceStyle.settings.animations && window != nil
+        let move = { for (tab, frame) in zip(placed, frames) where tab.frame != frame { (animate ? tab.animator() : tab).frame = frame } }
+        if animate {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.14
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -320,8 +348,8 @@ final class WorkspaceGroupView: NSView {
 
     override func layout() {
         super.layout()
-        let top = strip.isHidden ? 0 : WorkspaceTabStrip.height
-        strip.frame = NSRect(x: 0, y: 0, width: bounds.width, height: WorkspaceTabStrip.height)
+        let top = min(bounds.height, WorkspaceTabStrip.height)
+        strip.frame = NSRect(x: 0, y: 0, width: bounds.width, height: top)
         pageHost.frame = NSRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top))
         page?.frame = pageHost.bounds
     }

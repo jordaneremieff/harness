@@ -20,9 +20,7 @@ private final class WorkspaceDropMark: NSView {
     }
 }
 
-/// The frame of the workspace: the toolbar, the sidebar, one or two tab groups and the status
-/// line. It owns the geometry a person arranges with the pointer; the content of each part
-/// comes from its owner.
+/// The workspace frame owns the geometry of the sidebar, tab groups and status line.
 @MainActor
 final class WorkspaceChrome: NSView {
     var onCommand: ((String) -> Void)?
@@ -31,9 +29,14 @@ final class WorkspaceChrome: NSView {
     var onSelect: ((String) -> Void)?
     var onClose: ((String) -> Void)?
     var onMove: ((String, WorkspaceDrop) -> Void)?
+    var onDropFile: ((String, WorkspaceDrop) -> Void)?
+    var onKeepTab: ((String) -> Void)?
     var onActivate: ((Int) -> Void)?
     var onTabMenu: ((String) -> NSMenu)?
     var onMenu: (() -> NSMenu)?
+    var onIndentationMenu: (() -> NSMenu)?
+    var onLanguageMenu: (() -> NSMenu)?
+    var onGeometryChange: (() -> Void)?
     var onNote: ((String, String) -> Void)?
     var onPath: ((String) -> Void)?
     var onCancelPath: (() -> Void)?
@@ -41,11 +44,10 @@ final class WorkspaceChrome: NSView {
     var onFitSidebar: (() -> CGFloat?)?
 
     private static let sidebarKey = "sidebarWidth"
-    private static let toolHeight: CGFloat = 38
-    private static let footHeight: CGFloat = 24
+    private static let fileDrop = NSPasteboard.PasteboardType("app.pi.editor.path")
     private let defaults: UserDefaults
-    private let bar = WorkspaceRegion(.bar, line: .bottom)
     private let side = WorkspaceRegion()
+    private let sidebarHeader = WorkspaceRegion(line: .bottom)
     private let stage = WorkspaceRegion(.content)
     private let banner = WorkspaceRegion(line: .bottom)
     private let pathRow = WorkspaceRegion(line: .bottom)
@@ -53,10 +55,17 @@ final class WorkspaceChrome: NSView {
     private let overlay = WorkspaceOverlay()
     private let dropMark = WorkspaceDropMark()
     private let sidebarEdge = WorkspaceDivider(label: "Sidebar width")
-    private let groupEdge = WorkspaceDivider(label: "Tab group width")
+    private var columnEdges: [WorkspaceDivider] = []
+    private var rowEdges: [WorkspaceDivider] = []
     private let folder: NSTextField
     private let status = NSTextField(labelWithString: "")
+    private let branch = NSTextField(labelWithString: "")
+    private let position = NSTextField(labelWithString: "")
+    private let indentation = WorkspaceButton("", help: "Indentation options")
+    private let language = WorkspaceButton("", help: "Language options")
+    private let format = NSTextField(labelWithString: "")
     private let details = NSTextField(labelWithString: "")
+    private let sidebarButton = WorkspaceButton("", symbol: "sidebar.left", help: "Toggle sidebar")
     private let wrap = WorkspaceButton("", symbol: "text.word.spacing", help: "Wrap lines")
     private let message = NSTextField(wrappingLabelWithString: "")
     private let panels: [(name: String, button: WorkspaceButton)] = [
@@ -65,8 +74,6 @@ final class WorkspaceChrome: NSView {
         ("git", WorkspaceButton("", symbol: "arrow.triangle.branch", help: "Local Git")),
         ("notes", WorkspaceButton("", symbol: "bubble.left.and.bubble.right", help: "Conversations (cmd+option+T)")),
     ]
-    private let add = WorkspaceButton("", symbol: "plus", help: "New scratch (cmd+N)")
-    private let save = WorkspaceButton("", symbol: "square.and.arrow.down", help: "Save file (cmd+S)")
     private let more = WorkspaceButton("", symbol: "ellipsis.circle", help: "Workspace actions")
     private let hideMessage = WorkspaceButton("", symbol: "xmark", help: "Dismiss message")
     private let messageAction = WorkspaceButton("")
@@ -74,10 +81,23 @@ final class WorkspaceChrome: NSView {
     private let pathSubmit = WorkspaceButton("")
     private let pathCancel = WorkspaceButton("", symbol: "xmark", help: "Cancel path entry")
 
-    /// The width a person gave the sidebar. The layout limits it while the pane is narrow.
-    private var chosenSidebar: CGFloat?
-    /// The part of the stage that the first of two groups takes.
-    private var share: CGFloat = 0.5
+    /// The chosen sidebar width before the pane's current width limits it.
+    var sidebarChoice: Double? { didSet { if sidebarChoice != oldValue { needsLayout = true } } }
+    var arrangement: WorkspaceArrangement = .single {
+        didSet {
+            guard arrangement != oldValue else { return }
+            splitWeights = []
+            needsLayout = true
+        }
+    }
+    /// Cumulative positions within each axis, with gutters excluded. Columns come first, then
+    /// rows, both in display order. An empty array selects equal bands on both axes.
+    var splitWeights: [Double] = [] { didSet { if splitWeights != oldValue { needsLayout = true } } }
+    private var chosenSidebar: CGFloat? { sidebarChoice.flatMap { $0.isFinite ? CGFloat($0) : nil } }
+    private var effectiveArrangement: WorkspaceArrangement {
+        arrangement.expanding(to: max(1, groupViews.count), preferRows: arrangement.rows > 1)
+    }
+    private var geometryEdited = false
     private var groups: [WorkspaceGroup] = []
     private var groupViews: [WorkspaceGroupView] = []
     private var tabViews: [String: WorkspaceTabView] = [:]
@@ -100,21 +120,21 @@ final class WorkspaceChrome: NSView {
         var point: CGPoint
     }
     private var drag: TabDrag?
-    private var styleObserver: NSObjectProtocol?
     private var escape: Any?
     private var settle: (() -> Void)?
+    private weak var settlingGhost: WorkspaceTabView?
     private var creep: Task<Void, Never>?
+    private var fileTarget: WorkspaceDrop?
 
     var expandedPanel = false { didSet { if expandedPanel != oldValue { needsLayout = true } } }
+    var keepsEmptyGroups = false
     var showsSideBySide: Bool { WorkspaceLayout.fitsBeside(pane: bounds.width) && !expandedPanel }
     var sidebarWidth: CGFloat { side.isHidden ? 0 : sidebarEdge.isHidden ? side.frame.width : sidebarEdge.position }
     /// A stage with room for a second tab group. A wide sidebar yields to the second group
     /// down to its own limit, so the room is the one the stage would then have.
     var fitsSecondGroup: Bool {
         guard groups.count == 1, !stage.isHidden else { return false }
-        let beside = accessory != nil && showsSideBySide
-        let sidebar = beside ? WorkspaceLayout.sidebar(chosen: chosenSidebar, pane: bounds.width, groups: 2) + 1 + WorkspaceDivider.reachAfter : 0
-        return WorkspaceLayout.fitsTwoGroups(stage: bounds.width - sidebar)
+        return WorkspaceLayout.fitsTwoGroups(stage: bounds.width - stageInset(columns: 2))
     }
     /// The person typed a path that has not been submitted.
     var hasPathText: Bool { showPath && !pathField.stringValue.isEmpty && pathField.stringValue != pathStart }
@@ -125,17 +145,12 @@ final class WorkspaceChrome: NSView {
         folder = NSTextField(labelWithString: URL(fileURLWithPath: root).lastPathComponent)
         super.init(frame: NSRect(x: 0, y: 0, width: 640, height: 480))
         if let stored = defaults.object(forKey: Self.sidebarKey) as? Double, stored.isFinite, (1...10_000).contains(stored) {
-            chosenSidebar = CGFloat(stored)
+            sidebarChoice = stored
         }
-        folder.font = .systemFont(ofSize: 13, weight: .semibold)
         folder.lineBreakMode = .byTruncatingMiddle
         folder.toolTip = root
         folder.setAccessibilityLabel("Project folder")
-        status.font = .systemFont(ofSize: 11)
-        status.lineBreakMode = .byTruncatingMiddle
-        details.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        details.textColor = .secondaryLabelColor
-        message.font = .systemFont(ofSize: 12)
+        for label in [status, branch, position, format, details] { label.lineBreakMode = .byTruncatingTail }
         message.maximumNumberOfLines = 3
         message.lineBreakMode = .byTruncatingTail
         pathField.placeholderString = "Path relative to the project folder"
@@ -144,20 +159,34 @@ final class WorkspaceChrome: NSView {
         pathField.action = #selector(submitPath)
         dropMark.isHidden = true
         overlay.addSubview(dropMark)
-        for view in [bar, stage, side, sidebarEdge, pathRow, banner, foot, overlay] { addSubview(view) }
-        stage.addSubview(groupEdge)
-        for view in panels.map(\.button) + [folder, add, save, more] { bar.addSubview(view) }
+        for view in [stage, side, sidebarEdge, pathRow, banner, foot, overlay] { addSubview(view) }
+        stage.clipsToBounds = true
+        side.clipsToBounds = true
+        side.addSubview(sidebarHeader)
+        for view in panels.map(\.button) + [folder] { sidebarHeader.addSubview(view) }
         for view in [pathField, pathSubmit, pathCancel] { pathRow.addSubview(view) }
         for view in [message, hideMessage, messageAction] { banner.addSubview(view) }
-        for view in [status, details, wrap] { foot.addSubview(view) }
+        for view in [sidebarButton, branch, status, details, position, indentation, language, format, wrap, more] { foot.addSubview(view) }
 
         for (name, button) in panels { button.run = { [weak self] in self?.onSidebar?(name) } }
-        panels[0].button.context = { [weak self] in self?.noteMenu("folder", "") ?? NSMenu() }
-        add.run = { [weak self] in self?.onCommand?("scratch") }
-        save.run = { [weak self] in self?.onCommand?("save") }
+        panels[0].button.context = { [weak self] in
+            guard let self else { return NSMenu() }
+            let menu = noteMenu("folder", "")
+            menu.insertItem(WorkspaceChoice("Refresh Files") { [weak self] in self?.onCommand?("refreshFiles") }, at: 0)
+            return menu
+        }
+        sidebarButton.run = { [weak self] in self?.onCommand?("sidebar") }
         more.run = { [weak self] in
-            guard let self, let menu = onMenu?() else { return }
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: more.bounds.minY - 4), in: more)
+            guard let self else { return }
+            openMenu(onMenu?(), at: more)
+        }
+        indentation.run = { [weak self] in
+            guard let self else { return }
+            openMenu(onIndentationMenu?(), at: indentation)
+        }
+        language.run = { [weak self] in
+            guard let self else { return }
+            openMenu(onLanguageMenu?(), at: language)
         }
         more.context = { [weak self] in self?.noteMenu("pane", "workspace") ?? NSMenu() }
         wrap.run = { [weak self] in self?.onCommand?("wrap") }
@@ -174,32 +203,37 @@ final class WorkspaceChrome: NSView {
             resizeSidebar(to: sidebarWidth + distance)
             keepSidebar()
         }
-        groupEdge.onDrag = { [weak self] position in self?.resizeGroups(to: position) }
-        groupEdge.onFit = { [weak self] in self?.resizeGroups(share: 0.5) }
-        groupEdge.onStep = { [weak self] distance in
-            guard let self else { return }
-            resizeGroups(to: groupEdge.position + distance)
-        }
-        styleObserver = NotificationCenter.default.addObserver(forName: .workspaceStyleDidChange, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.styleChanged() }
-        }
+        for index in 0..<3 { columnEdges.append(makeDivider(.columns, index: index)) }
+        for index in 0..<2 { rowEdges.append(makeDivider(.rows, index: index)) }
+        registerForDraggedTypes([Self.fileDrop])
+        NotificationCenter.default.addObserver(self, selector: #selector(styleChanged), name: .workspaceStyleDidChange, object: nil)
         styleChanged()
     }
     required init?(coder: NSCoder) { nil }
 
-    /// Repaints every part after the theme or the interface size changes.
-    private func styleChanged() {
+    @objc private func styleChanged() {
         let theme = WorkspaceStyle.theme
+        folder.font = WorkspaceStyle.interfaceFont(1, weight: .semibold)
         folder.textColor = theme.text
-        status.textColor = theme.text
-        details.textColor = theme.secondaryText
+        message.font = WorkspaceStyle.interfaceFont()
         message.textColor = theme.text
-        func repaint(_ view: NSView) {
-            view.needsDisplay = true
-            view.subviews.forEach(repaint)
+        pathField.font = WorkspaceStyle.interfaceFont()
+        pathField.backgroundColor = theme.editor
+        pathField.textColor = theme.text
+        for label in [status, branch, position, format, details] {
+            label.font = WorkspaceStyle.interfaceFont(-1)
+            label.textColor = label === status ? theme.text : theme.secondaryText
         }
-        repaint(self)
+        for tab in tabViews.values { tab.applyStyle() }
+        for view in groupViews { view.needsLayout = true; view.strip.needsLayout = true; view.strip.needsDisplay = true }
+        for edge in [sidebarEdge] + columnEdges + rowEdges { edge.needsDisplay = true }
+        dropMark.needsDisplay = true
         needsLayout = true
+    }
+
+    private func openMenu(_ menu: NSMenu?, at button: NSView) {
+        guard let menu, menu.numberOfItems > 0, button.window != nil else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.maxY), in: button)
     }
 
     private func noteMenu(_ kind: String, _ key: String) -> NSMenu {
@@ -245,15 +279,32 @@ final class WorkspaceChrome: NSView {
 
     // MARK: Status, messages and the path row
 
-    func setStatus(_ text: String, _ detail: String, canSave: Bool) {
+    func setStatus(_ text: String, _ detail: String, canSave _: Bool) {
         statusText = text
         if notice == nil { showStatus() }
-        if details.stringValue != detail { details.stringValue = detail; needsLayout = true }
-        save.isEnabled = canSave
+        if details.stringValue != detail { details.stringValue = detail; layoutStatus() }
+    }
+
+    func setEditorStatus(branch: String?, position: String, indentation: String?, language: String?, format: String) {
+        var changed = false
+        for (label, value) in [(self.branch, branch ?? ""), (self.position, position), (self.format, format)] where label.stringValue != value {
+            label.stringValue = value
+            label.toolTip = value.isEmpty ? nil : value
+            changed = true
+        }
+        for (button, value) in [(self.indentation, indentation ?? ""), (self.language, language ?? "")] where button.title != value {
+            button.title = value
+            button.setAccessibilityLabel([button.toolTip, value].compactMap { $0 }.joined(separator: ": "))
+            changed = true
+        }
+        if changed { layoutStatus() }
     }
     private func showStatus() {
-        if status.stringValue != statusText { status.stringValue = statusText }
-        status.toolTip = statusText
+        if status.stringValue != statusText {
+            status.stringValue = statusText
+            layoutStatus()
+        }
+        status.toolTip = statusText.isEmpty ? nil : statusText
     }
     /// Returns the status line to the current status before its notice ends.
     func clearNotice() {
@@ -263,9 +314,11 @@ final class WorkspaceChrome: NSView {
     }
     /// Reports a finished action in the status line for a few seconds. The page does not move.
     func notify(_ text: String) {
+        if text.isEmpty { clearNotice(); return }
         notice?.cancel()
         status.stringValue = text
         status.toolTip = text
+        layoutStatus()
         notice = Task { [weak self] in
             try? await Task.sleep(for: .seconds(max(4, Double(text.count) / 14)))
             guard !Task.isCancelled, let self else { return }
@@ -311,32 +364,45 @@ final class WorkspaceChrome: NSView {
     /// Shows a panel in the sidebar, or none, and marks the button of the panel on show.
     func setSidebar(_ panel: NSView?, named name: String?) {
         for (candidate, button) in panels { button.isOn = panel != nil && candidate == name }
+        sidebarButton.isOn = panel != nil
+        sidebarButton.setAccessibilityValue(panel != nil ? "Shown" : "Hidden")
         guard accessory !== panel else { return }
         accessory?.removeFromSuperview()
         accessory = panel
-        if let panel { side.addSubview(panel) }
+        if let panel { side.addSubview(panel, positioned: .below, relativeTo: sidebarHeader) }
         needsLayout = true
         layoutSubtreeIfNeeded()
     }
 
     private func resizeSidebar(to position: CGFloat) {
-        let limit = WorkspaceLayout.maximumSidebar(pane: bounds.width, groups: max(1, groups.count))
+        let limit = WorkspaceLayout.maximumSidebar(pane: bounds.width, groups: effectiveArrangement.columns)
         let width = min(max(WorkspaceLayout.minimumSidebar, position.rounded()), limit)
-        guard width != chosenSidebar else { return }
-        chosenSidebar = width
+        guard width != sidebarWidth else { return }
+        sidebarChoice = Double(width)
+        geometryEdited = true
         needsLayout = true
         layoutSubtreeIfNeeded()
     }
     private func keepSidebar() {
-        if let chosenSidebar { defaults.set(Double(chosenSidebar), forKey: Self.sidebarKey) }
+        guard geometryEdited else { return }
+        if let sidebarChoice { defaults.set(sidebarChoice, forKey: Self.sidebarKey) }
         else { defaults.removeObject(forKey: Self.sidebarKey) }
+        reportGeometryEdit()
     }
+
+    private func reportGeometryEdit() {
+        guard geometryEdited else { return }
+        geometryEdited = false
+        onGeometryChange?()
+    }
+
     /// Fits the sidebar to its content, or returns it to the standard width.
     private func fitSidebar() {
-        // The content ends where the reach of the edge begins.
-        chosenSidebar = onFitSidebar?().map { max(WorkspaceLayout.minimumSidebar, $0.rounded(.up) + WorkspaceDivider.reachBefore) }
+        let choice = onFitSidebar?().map { Double(max(WorkspaceLayout.minimumSidebar, $0.rounded(.up) + WorkspaceDivider.reachBefore)) }
+        guard sidebarChoice != choice else { return }
+        sidebarChoice = choice
+        geometryEdited = true
         keepSidebar()
-        needsLayout = true
         layoutSubtreeIfNeeded()
     }
 
@@ -344,14 +410,14 @@ final class WorkspaceChrome: NSView {
 
     /// Shows the tab groups of the stage. Tab and group views are kept by their keys, so a
     /// view under the pointer or with the keyboard stays in place while others change.
-    func setGroups(_ next: [WorkspaceGroup], active: Int, reveal: String? = nil) {
+    func setGroups(_ requested: [WorkspaceGroup], active: Int, reveal: String? = nil) {
+        let next = Array(requested.prefix(4))
         let same = active == activeGroup && next.count == groups.count && zip(next, groups).allSatisfy {
             $0.id == $1.id && $0.tabs == $1.tabs && $0.selected == $1.selected && $0.page === $1.page
         }
         if !same {
             let views = next.map { group in groupViews.first { $0.id == group.id } ?? makeGroup(group.id) }
             for old in groupViews where !views.contains(where: { $0 === old }) { old.removeFromSuperview() }
-            if views.count == 2, groupViews.count != 2 { share = 0.5 }
             groupViews = views
             var kept: [String: WorkspaceTabView] = [:]
             for (group, view) in zip(next, views) {
@@ -363,7 +429,6 @@ final class WorkspaceChrome: NSView {
                     kept[item.key] = tab
                     return tab
                 })
-                view.strip.isHidden = group.tabs.isEmpty
                 view.show(page: group.page)
                 view.needsLayout = true
             }
@@ -382,8 +447,12 @@ final class WorkspaceChrome: NSView {
     private func makeGroup(_ id: Int) -> WorkspaceGroupView {
         let view = WorkspaceGroupView(id: id)
         view.onActivate = { [weak self] in self?.onActivate?(id) }
-        view.strip.onBlankDoubleClick = { [weak self] in self?.onCommand?("scratch") }
-        stage.addSubview(view, positioned: .below, relativeTo: groupEdge)
+        view.strip.onNewTab = { [weak self] in
+            guard let self else { return }
+            onActivate?(id)
+            onCommand?("scratch")
+        }
+        stage.addSubview(view, positioned: .below, relativeTo: columnEdges.first)
         return view
     }
 
@@ -391,6 +460,7 @@ final class WorkspaceChrome: NSView {
         let tab = WorkspaceTabView(item: item)
         let key = item.key
         tab.onPress = { [weak self] in self?.onSelect?(key) }
+        tab.onKeep = { [weak self] in self?.onKeepTab?(key) }
         tab.onClose = { [weak self] in self?.onClose?(key) }
         tab.onMenu = { [weak self] in self?.onTabMenu?(key) ?? NSMenu() }
         tab.onDragStart = { [weak self, weak tab] press in
@@ -409,21 +479,63 @@ final class WorkspaceChrome: NSView {
         return tab
     }
 
-    private func resizeGroups(to position: CGFloat) {
-        let room = stage.bounds.width - WorkspaceDivider.thickness
-        guard room > 0 else { return }
-        resizeGroups(share: (position - WorkspaceDivider.reachBefore) / room)
+    private func makeDivider(_ axis: WorkspaceDivider.Axis, index: Int) -> WorkspaceDivider {
+        let label = axis == .columns ? "Tab group width" : "Tab group height"
+        let edge = WorkspaceDivider(label: label, axis: axis)
+        edge.onDrag = { [weak self] in self?.resizeGroups(axis, index: index, to: $0) }
+        edge.onEnd = { [weak self] in self?.reportGeometryEdit() }
+        edge.onFit = { [weak self] in self?.fitGroups(axis: axis, index: index) }
+        edge.onStep = { [weak self, weak edge] distance in
+            guard let self, let edge else { return }
+            resizeGroups(axis, index: index, to: edge.position + distance)
+            reportGeometryEdit()
+        }
+        stage.addSubview(edge)
+        return edge
     }
-    private func resizeGroups(share next: CGFloat) {
-        share = min(max(0, next), 1)
-        needsLayout = true
+
+    private func groupGeometry() -> WorkspaceLayout.Stage {
+        WorkspaceLayout.Stage(size: stage.bounds.size, arrangement: effectiveArrangement, weights: splitWeights)
+    }
+
+    private func storeSplit(_ choice: Double, axis: WorkspaceDivider.Axis, index: Int) {
+        let layout = effectiveArrangement
+        let horizontal = layout.columns - 1
+        let vertical = layout.rows - 1
+        var next = splitWeights
+        if next.count != horizontal + vertical {
+            next = (0..<horizontal).map { Double($0 + 1) / Double(layout.columns) }
+                 + (0..<vertical).map { Double($0 + 1) / Double(layout.rows) }
+        }
+        next[(axis == .columns ? 0 : horizontal) + index] = choice
+        guard next != splitWeights else { return }
+        splitWeights = next
+        geometryEdited = true
         layoutSubtreeIfNeeded()
+    }
+
+    private func resizeGroups(_ axis: WorkspaceDivider.Axis, index: Int, to position: CGFloat) {
+        let geometry = groupGeometry()
+        let bands = axis == .columns ? geometry.columns : geometry.rows
+        guard index < bands.count - 1,
+              let choice = bands.choice(at: position, divider: index) else { return }
+        storeSplit(choice, axis: axis, index: index)
+    }
+
+    private func fitGroups(axis: WorkspaceDivider.Axis, index: Int) {
+        let geometry = groupGeometry()
+        let bands = axis == .columns ? geometry.columns : geometry.rows
+        guard index < bands.count - 1, bands.room > 0 else { return }
+        let middle = (bands.cuts[index] + bands.cuts[index + 2]) / 2
+        storeSplit(Double(middle / bands.room), axis: axis, index: index)
+        reportGeometryEdit()
     }
 
     // MARK: Dragging a tab
 
     /// Lifts a tab from its strip. The tab keeps the point of the press under the pointer.
     private func beginDrag(_ tab: WorkspaceTabView, pressedAt press: NSPoint) -> Bool {
+        clearFileDrop()
         settle?()
         let key = tab.item.key
         guard drag == nil, let group = groups.first(where: { $0.tabs.contains { $0.key == key } }),
@@ -439,7 +551,7 @@ final class WorkspaceChrome: NSView {
             let shadow = NSShadow()
             shadow.shadowBlurRadius = 8
             shadow.shadowOffset = NSSize(width: 0, height: -2)
-            shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
+            shadow.shadowColor = WorkspaceStyle.theme.panelShadow
             return shadow
         }()
         overlay.addSubview(ghost, positioned: .above, relativeTo: dropMark)
@@ -448,35 +560,66 @@ final class WorkspaceChrome: NSView {
         drag = TabDrag(key: key, origin: group.id, home: home, grab: CGPoint(x: point.x - frame.minX, y: point.y - frame.minY),
                        ghost: ghost, target: .slot(group: group.id, index: home), point: point)
         escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53, let self, drag != nil else { return event }
+            guard event.keyCode == 53, let self, event.window === window, drag != nil else { return event }
             finishDrag(commit: false)
             return nil
         }
         return true
     }
 
-    private func landing(at point: CGPoint, for drag: TabDrag) -> WorkspaceDrop? {
+    private func landing(at point: CGPoint, origin: Int?, grabX: CGFloat) -> WorkspaceDrop? {
+        guard !stage.isHidden else { return nil }
         for (group, view) in zip(groups, groupViews) {
             let strip = convert(view.strip.bounds, from: view.strip)
-            if !view.strip.isHidden, strip.insetBy(dx: 0, dy: -10).contains(point) {
-                return .slot(group: group.id, index: view.strip.slot(leading: point.x - drag.grab.x - strip.minX))
+            if strip.contains(point) {
+                return .slot(group: group.id, index: view.strip.slot(leading: point.x - grabX - strip.minX))
             }
             let page = convert(view.pageHost.bounds, from: view.pageHost)
             guard page.contains(point) else { continue }
-            if groups.count == 1 {
-                guard group.tabs.count > 1, fitsSecondGroup else { return nil }
-                let part = (point.x - page.minX) / max(1, page.width)
-                return part < 0.35 ? .beside(group: group.id, trailing: false) : part > 0.65 ? .beside(group: group.id, trailing: true) : nil
+            if groups.count < 4, group.id != origin || group.tabs.count > 1 || keepsEmptyGroups {
+                let x = (point.x - page.minX) / page.width
+                let y = (point.y - page.minY) / page.height
+                let edges: [(distance: CGFloat, drop: WorkspaceDrop)] = [
+                    (x, .beside(group: group.id, trailing: false)),
+                    (1 - x, .beside(group: group.id, trailing: true)),
+                    (y, .stacked(group: group.id, trailing: false)),
+                    (1 - y, .stacked(group: group.id, trailing: true)),
+                ]
+                if let next = edges.min(by: { $0.distance < $1.distance }), next.distance <= 0.26,
+                   splitFrame(for: next.drop, origin: origin) != nil { return next.drop }
             }
-            return group.id == drag.origin ? nil : .slot(group: group.id, index: group.tabs.count)
+            return group.id == origin ? nil : .slot(group: group.id, index: group.tabs.count)
         }
         return nil
+    }
+
+    /// Match the preset and insertion order the screen applies when the drop creates a group.
+    private func splitFrame(for target: WorkspaceDrop, origin: Int?) -> NSRect? {
+        let id: Int, trailing: Bool, stacked: Bool
+        switch target {
+        case .beside(let group, let after): (id, trailing, stacked) = (group, after, false)
+        case .stacked(let group, let after): (id, trailing, stacked) = (group, after, true)
+        case .slot: return nil
+        }
+        guard let anchor = groups.firstIndex(where: { $0.id == id }) else { return nil }
+        var index = anchor + (trailing ? 1 : 0)
+        var next = effectiveArrangement.expanding(to: groups.count + 1, preferRows: stacked)
+        if !keepsEmptyGroups, let source = groups.firstIndex(where: { $0.id == origin }), groups[source].tabs.count == 1 {
+            if source < index { index -= 1 }
+            next = next.expanding(to: groups.count, preferRows: next == .rows2 || next == .rows3)
+        }
+        let x = stageInset(columns: next.columns)
+        let size = NSSize(width: max(0, bounds.width - x), height: stage.bounds.height)
+        let nextGeometry = WorkspaceLayout.Stage(size: size, arrangement: next, weights: [])
+        let box = nextGeometry.group(index)
+        guard box.width >= WorkspaceTabView.minimumWidth, box.height >= WorkspaceTabStrip.height + 24 else { return nil }
+        return box.offsetBy(dx: x, dy: stage.frame.minY)
     }
 
     /// Moves the dragged tab to a point in this view and shows where a drop would put it.
     private func moveDrag(to point: CGPoint) {
         guard var drag else { return }
-        let target = landing(at: point, for: drag)
+        let target = landing(at: point, origin: drag.origin, grabX: drag.grab.x)
         drag.target = target
         drag.point = point
         self.drag = drag
@@ -488,18 +631,16 @@ final class WorkspaceChrome: NSView {
         case .slot(let id, _)?:
             guard let view = groupViews.first(where: { $0.id == id }) else { break }
             let strip = convert(view.strip.bounds, from: view.strip)
-            if strip.insetBy(dx: 0, dy: -10).contains(point) {
+            if strip.contains(point) {
                 // Over a strip the tab rides in the row, as it will sit after the drop.
-                origin.y = strip.minY + (WorkspaceTabStrip.height - drag.ghost.frame.height)
+                origin.y = strip.maxY - drag.ghost.frame.height
                 origin.x = min(max(strip.minX, origin.x), max(strip.minX, strip.maxX - drag.ghost.frame.width))
                 if point.x < strip.minX + 28 { edge = (view.strip, -1) } else if point.x > strip.maxX - 28 { edge = (view.strip, 1) }
             } else {
                 mark = convert(view.pageHost.bounds, from: view.pageHost)
             }
-        case .beside(let id, let trailing)?:
-            guard let view = groupViews.first(where: { $0.id == id }) else { break }
-            let page = convert(view.pageHost.bounds, from: view.pageHost)
-            mark = NSRect(x: trailing ? page.midX : page.minX, y: page.minY, width: page.width / 2, height: page.height)
+        case .beside?, .stacked?:
+            if let target { mark = splitFrame(for: target, origin: drag.origin) }
         case nil: break
         }
         drag.ghost.setFrameOrigin(origin)
@@ -508,8 +649,7 @@ final class WorkspaceChrome: NSView {
             if case .slot(let id, let index)? = target, id == view.id { opening = (index, drag.ghost.frame.width) }
             view.strip.hold(lifted: view.id == drag.origin ? drag.key : nil, opening: opening, animated: true)
         }
-        dropMark.isHidden = mark == nil
-        if let mark { dropMark.frame = mark.insetBy(dx: 6, dy: 6) }
+        showDropMark(mark)
 
         // A crowded strip scrolls while the dragged tab waits at one of its ends.
         creep?.cancel()
@@ -522,7 +662,7 @@ final class WorkspaceChrome: NSView {
         }
     }
 
-    private func finishDrag(commit: Bool) {
+    private func finishDrag(commit: Bool, animated: Bool = true) {
         guard let drag else { return }
         self.drag = nil
         creep?.cancel()
@@ -543,23 +683,106 @@ final class WorkspaceChrome: NSView {
             return
         }
         // The tab returns to its place.
-        guard window != nil, let view = groupViews.first(where: { $0.id == drag.origin }) else { release(); return }
+        guard animated, WorkspaceStyle.settings.animations, window != nil,
+              let view = groupViews.first(where: { $0.id == drag.origin }) else { release(); return }
         for other in groupViews {
             other.strip.hold(lifted: other.id == drag.origin ? drag.key : nil,
                              opening: other.id == drag.origin ? (drag.home, drag.ghost.frame.width) : nil, animated: true)
         }
         let rest = convert(view.strip.landing(at: drag.home, width: drag.ghost.frame.width), from: view.strip)
+        settlingGhost = drag.ghost
         settle = { [weak self] in
             self?.settle = nil
+            self?.settlingGhost = nil
             release()
         }
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.16
+            context.duration = 0.14
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             drag.ghost.animator().frame = rest
-        }, completionHandler: { [weak self] in
-            MainActor.assumeIsolated { self?.settle?() }
+        }, completionHandler: { [weak self, weak ghost = drag.ghost] in
+            MainActor.assumeIsolated {
+                guard let self, let ghost, self.settlingGhost === ghost else { return }
+                self.settle?()
+            }
         })
+    }
+
+    // MARK: File drops from the navigator
+
+    private func showDropMark(_ rect: NSRect?, inset: CGFloat = 6) {
+        dropMark.isHidden = rect == nil
+        if let rect { dropMark.frame = rect.insetBy(dx: inset, dy: inset) }
+    }
+
+    private func clearFileDrop() {
+        guard fileTarget != nil else { return }
+        fileTarget = nil
+        showDropMark(nil)
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        let source = sender.draggingSourceOperationMask
+        let operation: NSDragOperation = source.contains(.copy) ? .copy : source.intersection(.move)
+        guard drag == nil, onDropFile != nil, !operation.isEmpty,
+              let outline = sender.draggingSource as? NSOutlineView, outline.window === window,
+              sender.draggingPasteboard.string(forType: Self.fileDrop)?.isEmpty == false else {
+            clearFileDrop()
+            return []
+        }
+        settle?()
+        let point = convert(sender.draggingLocation, from: nil)
+        fileTarget = landing(at: point, origin: nil, grabX: 0)
+        switch fileTarget {
+        case .slot(let id, var index)?:
+            guard let view = groupViews.first(where: { $0.id == id }) else { break }
+            let strip = convert(view.strip.bounds, from: view.strip)
+            if strip.contains(point) {
+                let local = point.x - strip.minX
+                let distance: CGFloat = local < 22 ? -9 : local > strip.width - 30 ? 9 : 0
+                if distance != 0 && view.strip.scroll(by: distance) {
+                    index = view.strip.slot(leading: local)
+                    fileTarget = .slot(group: id, index: index)
+                }
+                let slot = view.strip.landing(at: index, width: 4)
+                let x = max(1, min(slot.minX, view.strip.bounds.maxX - 5))
+                showDropMark(convert(NSRect(x: x, y: 5, width: 4, height: max(0, view.strip.bounds.height - 10)), from: view.strip), inset: 0)
+            } else {
+                showDropMark(convert(view.pageHost.bounds, from: view.pageHost))
+            }
+        case .beside?, .stacked?:
+            if let fileTarget { showDropMark(splitFrame(for: fileTarget, origin: nil)) }
+        case nil: showDropMark(nil)
+        }
+        return fileTarget == nil ? [] : operation
+    }
+
+    override func wantsPeriodicDraggingUpdates() -> Bool { true }
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) { clearFileDrop() }
+    override func draggingEnded(_ sender: any NSDraggingInfo) { clearFileDrop() }
+
+    override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool { fileTarget != nil }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        defer { clearFileDrop() }
+        let point = convert(sender.draggingLocation, from: nil)
+        guard let outline = sender.draggingSource as? NSOutlineView, outline.window === window,
+              let fileTarget = landing(at: point, origin: nil, grabX: 0),
+              let path = sender.draggingPasteboard.string(forType: Self.fileDrop), !path.isEmpty,
+              let onDropFile else { return false }
+        onDropFile(path, fileTarget)
+        return true
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window {
+            finishDrag(commit: false, animated: false)
+            clearFileDrop()
+            settle?()
+        }
+        super.viewWillMove(toWindow: newWindow)
     }
 
     // MARK: Layout
@@ -567,22 +790,8 @@ final class WorkspaceChrome: NSView {
     override func layout() {
         super.layout()
         let w = bounds.width, h = bounds.height
-        let slot = min(30, max(22, (w - 12) / 8))
-        bar.frame = NSRect(x: 0, y: 0, width: w, height: Self.toolHeight)
-        var left: CGFloat = 6
-        for (_, button) in panels {
-            button.frame = NSRect(x: left, y: 5, width: slot, height: 28)
-            left += slot + 1
-        }
-        var right = w - 6
-        for item in [more, save, add] {
-            right -= slot
-            item.frame = NSRect(x: right, y: 5, width: slot, height: 28)
-            right -= 1
-        }
-        folder.frame = NSRect(x: left + 8, y: 10, width: max(0, right - left - 16), height: 18)
-
-        var top = Self.toolHeight
+        let footHeight = min(h, WorkspaceStyle.statusHeight)
+        var top: CGFloat = 0
         pathRow.isHidden = !showPath
         if showPath {
             pathRow.frame = NSRect(x: 0, y: top, width: w, height: 38)
@@ -609,53 +818,134 @@ final class WorkspaceChrome: NSView {
             let size = overlaySize(bounds.size)
             switch overlayPlacement {
             case .top:
-                let width = min(size.width, w - 16)
+                let width = max(0, min(size.width, w - 16))
                 overlayView.frame = NSRect(x: ((w - width) / 2).rounded(), y: top + 8, width: width, height: min(size.height, max(0, h - top - 16)))
             case .bottom:
-                bottomDock = min(size.height, max(0, h - top - Self.footHeight - 60))
-                overlayView.frame = NSRect(x: 0, y: h - Self.footHeight - bottomDock, width: w, height: bottomDock)
+                bottomDock = min(size.height, max(0, h - top - footHeight - 60))
+                overlayView.frame = NSRect(x: 0, y: h - footHeight - bottomDock, width: w, height: bottomDock)
             }
         }
-        let height = max(0, h - top - Self.footHeight - bottomDock)
-        let count = max(1, groupViews.count)
-        let beside = accessory != nil && showsSideBySide
-        let sideWidth: CGFloat = accessory == nil ? 0 : beside ? WorkspaceLayout.sidebar(chosen: chosenSidebar, pane: w, groups: count) : w
+        let height = max(0, h - top - footHeight - bottomDock)
+        let columns = effectiveArrangement.columns
+        let inset = stageInset(columns: columns)
+        let beside = inset > 0
+        let sideWidth = accessory == nil ? 0 : beside ? inset - 1 - WorkspaceDivider.reachAfter : w
         side.isHidden = accessory == nil
-        // The sidebar width runs to the line; the edge takes its reach from both regions.
         side.frame = NSRect(x: 0, y: top, width: beside ? sideWidth - WorkspaceDivider.reachBefore : sideWidth, height: height)
-        accessory?.frame = side.bounds
+        layoutSidebar()
         sidebarEdge.isHidden = !beside
         sidebarEdge.frame = NSRect(x: sideWidth - WorkspaceDivider.reachBefore, y: top, width: WorkspaceDivider.thickness, height: height)
         sidebarEdge.canShrink = sideWidth > WorkspaceLayout.minimumSidebar
-        sidebarEdge.canGrow = sideWidth < WorkspaceLayout.maximumSidebar(pane: w, groups: count)
-        let strips = groupViews.contains { !$0.strip.isHidden }
+        sidebarEdge.canGrow = sideWidth < WorkspaceLayout.maximumSidebar(pane: w, groups: columns)
         sidebarEdge.surfaces = (side.colour, stage.colour)
-        sidebarEdge.band = strips ? (WorkspaceTabStrip.height, WorkspaceStyle.chrome, WorkspaceDivider.reachBefore) : nil
 
         stage.isHidden = accessory != nil && !beside
-        let inset = beside ? sideWidth + 1 + WorkspaceDivider.reachAfter : 0
         stage.frame = NSRect(x: inset, y: top, width: max(0, w - inset), height: height)
-        groupEdge.isHidden = groupViews.count != 2
-        if groupViews.count == 2 {
-            let first = WorkspaceLayout.firstGroup(share: share, stage: stage.bounds.width)
-            groupViews[0].frame = NSRect(x: 0, y: 0, width: first, height: height)
-            groupEdge.frame = NSRect(x: first, y: 0, width: WorkspaceDivider.thickness, height: height)
-            let start = first + WorkspaceDivider.thickness
-            groupViews[1].frame = NSRect(x: start, y: 0, width: max(0, stage.bounds.width - start), height: height)
-            groupEdge.surfaces = (stage.colour, stage.colour)
-            groupEdge.band = (WorkspaceTabStrip.height, WorkspaceStyle.chrome, 0)
-            let least = min(WorkspaceLayout.minimumGroup, ((stage.bounds.width - WorkspaceDivider.thickness) / 2).rounded(.down))
-            groupEdge.canShrink = first > least
-            groupEdge.canGrow = stage.bounds.width - start > least
-        } else {
-            groupViews.first?.frame = stage.bounds
-        }
-
-        foot.frame = NSRect(x: 0, y: h - Self.footHeight, width: w, height: Self.footHeight)
-        let detailWidth = min(w * 0.55, details.intrinsicContentSize.width)
-        wrap.frame = NSRect(x: w - 28, y: 2, width: 22, height: 21)
-        details.frame = NSRect(x: w - detailWidth - 35, y: 5, width: detailWidth, height: 16)
-        status.frame = NSRect(x: 10, y: 5, width: max(0, w - detailWidth - 53), height: 16)
+        layoutGroups()
+        foot.frame = NSRect(x: 0, y: h - footHeight, width: w, height: footHeight)
+        layoutStatus()
         overlay.frame = bounds
+    }
+
+    private func stageInset(columns: Int) -> CGFloat {
+        guard accessory != nil, showsSideBySide else { return 0 }
+        return WorkspaceLayout.sidebar(chosen: chosenSidebar, pane: bounds.width, groups: columns) + 1 + WorkspaceDivider.reachAfter
+    }
+
+    private func layoutSidebar() {
+        let width = side.bounds.width
+        let header = min(side.bounds.height, WorkspaceTabStrip.height)
+        sidebarHeader.frame = NSRect(x: 0, y: 0, width: width, height: header)
+        accessory?.frame = NSRect(x: 0, y: header, width: width, height: max(0, side.bounds.height - header))
+        let slot = min(28, max(0, (width - 12) / 5))
+        let buttonHeight = min(header, 28)
+        var x = width - 5
+        for (_, button) in panels.reversed() {
+            x -= slot
+            button.frame = NSRect(x: x, y: (header - buttonHeight) / 2, width: slot, height: buttonHeight)
+        }
+        folder.frame = centredLabel(folder, x: 11, width: x - 15, height: header)
+    }
+
+    private func layoutGroups() {
+        let geometry = groupGeometry()
+        for (index, group) in groupViews.enumerated() { group.frame = geometry.group(index) }
+        let strips = (0..<geometry.rows.count).compactMap { index -> (y: CGFloat, height: CGFloat)? in
+            let row = geometry.rows.band(index)
+            let height = min(row.length, WorkspaceTabStrip.height)
+            return height >= 1 ? (row.origin, height) : nil
+        }
+        sidebarEdge.stripBands = strips.prefix(groupViews.isEmpty ? 0 : 1).map {
+            NSRect(x: 0, y: $0.y, width: sidebarEdge.bounds.width, height: $0.height)
+        }
+        layoutDividers(columnEdges, bands: geometry.columns, across: stage.bounds.height, strips: strips, axis: .columns)
+        layoutDividers(rowEdges, bands: geometry.rows, across: stage.bounds.width, strips: [], axis: .rows)
+    }
+
+    private func layoutDividers(_ edges: [WorkspaceDivider], bands: WorkspaceLayout.Bands, across: CGFloat,
+                                strips: [(y: CGFloat, height: CGFloat)], axis: WorkspaceDivider.Axis) {
+        for (i, edge) in edges.enumerated() {
+            edge.isHidden = i >= bands.count - 1
+            guard !edge.isHidden else { continue }
+            let start = bands.divider(i)
+            if axis == .columns {
+                edge.frame = NSRect(x: start, y: 0, width: bands.gutter, height: across)
+                edge.surfaces = (stage.colour, stage.colour)
+                edge.stripBands = strips.map { NSRect(x: 0, y: $0.y, width: bands.gutter, height: $0.height) }
+            } else {
+                edge.frame = NSRect(x: 0, y: start, width: across, height: bands.gutter)
+                edge.surfaces = (stage.colour, WorkspaceStyle.chrome)
+            }
+            edge.canShrink = bands.band(i).length > bands.least
+            edge.canGrow = bands.band(i + 1).length > bands.least
+        }
+    }
+
+    private func centredLabel(_ label: NSTextField, x: CGFloat, width: CGFloat, height: CGFloat) -> NSRect {
+        let lineHeight = min(height, ceil(label.intrinsicContentSize.height))
+        return NSRect(x: x, y: ((height - lineHeight) / 2).rounded(), width: max(0, width), height: lineHeight)
+    }
+
+    private func layoutStatus() {
+        let w = foot.bounds.width, h = foot.bounds.height
+        let square = min(28, w / 5)
+        let buttonHeight = max(0, h - 4)
+        sidebarButton.frame = NSRect(x: 4, y: 2, width: square, height: buttonHeight)
+        var right = w - 4
+        for button in [more, wrap] {
+            right -= square
+            button.frame = NSRect(x: right, y: 2, width: square, height: buttonHeight)
+        }
+        func measure(_ label: NSTextField) -> CGFloat {
+            guard let font = label.font else { return 0 }
+            return ceil((label.stringValue as NSString).size(withAttributes: [.font: font]).width) + 4
+        }
+        for label in [details, format] {
+            label.isHidden = label.stringValue.isEmpty || (label === format && w < 520)
+            guard !label.isHidden else { continue }
+            let width = min(measure(label), w * 0.19)
+            right -= width + 8
+            label.frame = centredLabel(label, x: right, width: width, height: h)
+        }
+        for button in [language, indentation] {
+            button.isHidden = button.title.isEmpty
+            guard !button.isHidden else { continue }
+            let width = min(button.fittingSize.width + 8, w * 0.22)
+            right -= width
+            button.frame = NSRect(x: right, y: 2, width: width, height: buttonHeight)
+        }
+        var left = square + 10
+        let notices = !status.stringValue.isEmpty
+        position.isHidden = notices || position.stringValue.isEmpty
+        branch.isHidden = notices || branch.stringValue.isEmpty || w < 360
+        status.isHidden = !notices
+        if !branch.isHidden {
+            let cap = max(0, right - left - min(135, measure(position))) / 2
+            let width = min(measure(branch), w * 0.18, cap)
+            branch.frame = centredLabel(branch, x: left, width: width, height: h)
+            left += width + 9
+        }
+        position.frame = centredLabel(position, x: left, width: right - left - 6, height: h)
+        status.frame = centredLabel(status, x: left, width: right - left - 6, height: h)
     }
 }

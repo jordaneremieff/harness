@@ -112,10 +112,10 @@ struct WorkspaceScreenTests {
         #expect(edge.position == 420)
         #expect(!source.isHiddenOrHasHiddenAncestor)
 
-        try click(view, label: "Project files (cmd+O)")
+        #expect(screen.registry.run("view.sidebar"))
         #expect(edge.isHidden)
         #expect(source.enclosingScrollView?.frame.width == 900)
-        try click(view, label: "Project files (cmd+O)")
+        #expect(screen.registry.run("view.sidebar"))
         #expect(edge.position == 420)
 
         let next = WorkspaceScreen(api: WorkspaceFixture(), root: "/project", defaults: defaults)
@@ -169,17 +169,18 @@ struct WorkspaceScreenTests {
 
         // The selected tab moves to the front. A composed tab arrives during the drag.
         let moved = try tab("sample.swift", in: view)
-        try drag(moved, to: NSPoint(x: 2, y: moved.convert(moved.bounds, to: nil).midY), in: window)
+        let stripY = moved.convert(moved.bounds, to: nil).midY
+        try drag(moved, to: NSPoint(x: 2, y: stripY), in: window)
         api.publishTab()
         try await screen.synchronise()
-        moved.mouseUp(with: try pointer(.leftMouseUp, x: 2, y: 480, in: window))
+        moved.mouseUp(with: try pointer(.leftMouseUp, x: 2, y: stripY, in: window))
         #expect(tabs(view) == [["sample.swift", "a.swift", "b.swift", "Composed tab: Result"]])
         #expect(window.firstResponder === source)
         #expect(source.selectedRange() == NSRange(location: 4, length: 2))
 
         // A tab dropped on the right part of the page takes the right side of the stage. A wide
         // sidebar gives way to the second side.
-        try click(view, label: "Project files (cmd+O)")
+        #expect(screen.registry.run("view.files"))
         let edge = try #require(children(view, WorkspaceDivider.self).first { $0.accessibilityLabel() == "Sidebar width" })
         edge.mouseDown(with: try pointer(.leftMouseDown, x: 288, in: window))
         edge.mouseDragged(with: try pointer(.leftMouseDragged, x: 500, in: window))
@@ -243,7 +244,7 @@ struct WorkspaceScreenTests {
         try await eventually { self.children(view,NSTextField.self).contains { $0.stringValue == "Updated the greeting." } }
         #expect(children(view,NSTextField.self).contains { $0.stringValue == "👋🏽" })
         #expect(source.string == api.text)
-        try click(view,label: "Conversations (cmd+option+T)")
+        #expect(screen.registry.run("view.notes"))
         #expect(window.makeFirstResponder(source))
         let responder = window.firstResponder
         try await screen.synchronise()
@@ -265,13 +266,13 @@ struct WorkspaceScreenTests {
         defer { screen.stop(); window.orderOut(nil) }
         try await screen.start(file: nil)
         #expect(api.treeReads == 1)
-        try click(screen.view, label: "New scratch (cmd+N)")
+        #expect(screen.registry.run("file.newScratch"))
         try await eventually { self.children(screen.view, CodeTextView.self).first != nil }
         let text = try #require(children(screen.view, CodeTextView.self).first)
         text.insertText("A native draft",replacementRange: NSRange(location:0,length:0))
         screen.view.layoutSubtreeIfNeeded()
         let top = text.convert(text.bounds, to: screen.view).minY
-        try click(screen.view, label: "Save file (cmd+S)")
+        #expect(screen.registry.run("file.save"))
         let path = try #require(children(screen.view, NSTextField.self).first { $0.accessibilityLabel() == "Project-relative file path" })
         path.stringValue = "Notes/greeting.txt"
         let submit = try #require(path.action)
@@ -285,13 +286,222 @@ struct WorkspaceScreenTests {
         #expect(await screen.prepareToClose())
     }
 
+    @Test func editedPreviewStaysWhenAnotherPreviewOpens() async throws {
+        _ = NSApplication.shared
+        let screen = WorkspaceScreen(api: WorkspaceFixture(), root: "/project")
+        let window = window(screen, width: 900)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "a.swift")
+        screen.previewFromTree("b.swift")
+        try await eventually { screen.currentEditor?.doc == "b.swift" }
+        let first = try tab("b.swift", in: screen.view)
+        #expect(first.item.preview)
+        screen.previewFromTree("sample.swift")
+        try await eventually { screen.currentEditor?.doc == "sample.swift" }
+        #expect(screen.openDocuments == ["a.swift", "sample.swift"])
+        let edited = try #require(screen.currentEditor)
+        edited.textView.insertText("// local\n", replacementRange: NSRange(location: 0, length: 0))
+        #expect(!(try tab("sample.swift", in: screen.view)).item.preview)
+        screen.previewFromTree("b.swift")
+        try await eventually { screen.currentEditor?.doc == "b.swift" }
+        #expect(screen.openDocuments == ["a.swift", "sample.swift", "b.swift"])
+    }
+
+    @Test func chosenGridRestoresGroupsCaretScrollAndSkipsMissingFiles() async throws {
+        _ = NSApplication.shared
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let files = WorkspaceFiles(layout: folder.appendingPathComponent("workspace.json"))
+        let api = WorkspaceFixture()
+        api.text = (0..<200).map { "let value\($0) = \($0)\n" }.joined()
+        let screen = WorkspaceScreen(api: api, root: "/project", files: files)
+        let firstWindow = window(screen, width: 1100)
+        try await screen.start(file: "a.swift")
+        try await screen.open("sample.swift")
+        screen.chooseArrangement(.grid)
+        #expect(screen.registry.run("layout.moveToGroup4"))
+        #expect(screen.currentEditor?.doc == "sample.swift")
+        #expect(Set(children(screen.view, WorkspaceGroupView.self).map(\.frame.minY)).count == 2)
+        let editor = try #require(screen.currentEditor)
+        screen.chrome.splitWeights = [0.35, 0.55]
+        screen.view.layoutSubtreeIfNeeded()
+        editor.go(line: 75)
+        let selected = editor.textView.selectedRange()
+        let scroll = editor.scroll.contentView.bounds.origin.y
+        #expect(scroll > 0)
+        #expect(await screen.prepareToClose())
+        screen.stop(); firstWindow.orderOut(nil)
+        let saved = try SessionLayout.read(try #require(files.layout))
+        #expect(saved.arrangement == .grid)
+        #expect(saved.active == saved.groups[3].id)
+        #expect(saved.positions["doc:sample.swift"]?.selections.first?.location == selected.location)
+        api.missing.insert("a.swift")
+        let restored = WorkspaceScreen(api: api, root: "/project", files: files)
+        let secondWindow = window(restored, width: 1100)
+        defer { restored.stop(); secondWindow.orderOut(nil) }
+        try await restored.start(file: nil)
+        #expect(restored.openDocuments == ["sample.swift"])
+        let source = try #require(restored.currentEditor)
+        #expect(source.textView.selectedRange() == selected)
+        let priorViewport = try #require(saved.positions["doc:sample.swift"]?.viewport)
+        let restoredViewport = try #require(WorkspacePosition(source).viewport)
+        #expect(restoredViewport.character == priorViewport.character)
+        #expect(abs(restoredViewport.offset - priorViewport.offset) < 2)
+        #expect(restored.chrome.splitWeights == [0.35, 0.55])
+        #expect(children(restored.view, WorkspaceGroupView.self).count == 4)
+    }
+
+    @Test func closingDirtyTabOffersCancelKeepAndDiscard() async throws {
+        _ = NSApplication.shared
+        let api = WorkspaceFixture()
+        let screen = WorkspaceScreen(api: api, root: "/project")
+        let window = window(screen, width: 850)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "sample.swift")
+        let editor = try #require(screen.currentEditor)
+        editor.textView.insertText("// local\n", replacementRange: NSRange(location: 0, length: 0))
+        #expect(screen.registry.run("file.closeTab"))
+        try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
+        try click(screen.view, label: "Cancel")
+        try await eventually { self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
+        #expect(screen.currentEditor === editor)
+        #expect(screen.registry.run("file.closeTab"))
+        try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
+        try click(screen.view, label: "Keep as draft")
+        try await eventually { screen.openDocuments.isEmpty }
+        #expect(api.text.hasPrefix("// local"))
+        #expect(screen.registry.run("file.reopenTab"))
+        try await eventually { screen.currentEditor?.doc == "sample.swift" }
+        #expect(screen.registry.run("file.closeTab"))
+        try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
+        try click(screen.view, label: "Discard changes")
+        try await eventually { screen.openDocuments.isEmpty }
+        #expect(api.reverted == "sample.swift")
+        #expect(!api.text.hasPrefix("// local"))
+    }
+
+    @Test func closingWithSaveWritesTheRevisionBeforeRemovingTheTab() async throws {
+        _ = NSApplication.shared
+        let api = WorkspaceFixture()
+        let screen = WorkspaceScreen(api: api, root: "/project")
+        let window = window(screen, width: 850)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "sample.swift")
+        let editor = try #require(screen.currentEditor)
+        editor.textView.insertText("// save\n", replacementRange: NSRange(location: 0, length: 0))
+        #expect(screen.registry.run("file.closeTab"))
+        try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
+        try click(screen.view, label: "Save")
+        try await eventually { screen.openDocuments.isEmpty }
+        #expect(api.onDisk.hasPrefix("// save"))
+        #expect(api.savedPath == "sample.swift")
+    }
+
+    @Test func diskConflictCanKeepTheDraftOrReloadTheDiskFile() async throws {
+        _ = NSApplication.shared
+        let api = WorkspaceFixture()
+        let screen = WorkspaceScreen(api: api, root: "/project")
+        let window = window(screen, width: 850)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "sample.swift")
+        let editor = try #require(screen.currentEditor)
+        editor.textView.insertText("// my draft\n", replacementRange: NSRange(location: 0, length: 0))
+        try await editor.flush()
+        api.onDisk = "// the disk file\n"
+        api.diskChanged = true
+        try await screen.synchronise()
+        #expect(editor.diskConflict)
+        #expect(screen.registry.run("file.save"))
+        try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
+        #expect(self.children(screen.view, NSButton.self).contains { $0.title == "Save as…" })
+        try click(screen.view, label: "Keep my draft")
+        try await eventually { self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
+        #expect(editor.textView.string.hasPrefix("// my draft"))
+        #expect(screen.registry.run("file.save"))
+        try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
+        try click(screen.view, label: "Reload from disk")
+        try await eventually { editor.textView.string == api.onDisk }
+        #expect(!editor.diskConflict)
+        #expect(api.reverted == "sample.swift")
+    }
+
+    @Test func projectRenameKeepsTheDraftAndTrashNamesItBeforeTheMove() async throws {
+        _ = NSApplication.shared
+        let api = WorkspaceFixture()
+        let screen = WorkspaceScreen(api: api, root: "/project")
+        let window = window(screen, width: 850)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "sample.swift")
+        let editor = try #require(screen.currentEditor)
+        editor.textView.insertText("// local\n", replacementRange: NSRange(location: 0, length: 0))
+        editor.textView.setSelectedRange(NSRange(location: 4, length: 2))
+        screen.fileAction(.rename("sample.swift", "new.swift"))
+        try await eventually { screen.openDocuments == ["new.swift"] }
+        #expect(screen.currentEditor === editor)
+        #expect(editor.textView.selectedRange() == NSRange(location: 4, length: 2))
+        #expect(api.text.hasPrefix("// local"))
+        screen.fileAction(.remove("new.swift"))
+        try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
+        #expect(self.children(screen.view, NSTextField.self).contains { $0.stringValue.contains("unsaved drafts: new.swift") })
+        #expect(api.trashed == nil)
+        try click(screen.view, label: "Move to Trash")
+        try await eventually { api.trashed == "new.swift" }
+        #expect(screen.openDocuments == ["new.swift"])
+        #expect(editor.textView.string.hasPrefix("// local"))
+    }
+
+    @Test func statusMenusChangeTheOpenFileAndShowItsPositionAndFormat() async throws {
+        _ = NSApplication.shared
+        let screen = WorkspaceScreen(api: WorkspaceFixture(), root: "/project")
+        let window = window(screen, width: 1080)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "sample.swift")
+        let editor = try #require(screen.currentEditor)
+        editor.go(line: 2)
+        func choose(_ title: String, in menu: NSMenu?) throws {
+            let item = try #require(menu?.items.first { $0.title == title })
+            #expect(NSApp.sendAction(try #require(item.action), to: item.target, from: item))
+        }
+        try choose("Indent with tabs", in: screen.chrome.onIndentationMenu?())
+        try choose("Width: 6", in: screen.chrome.onIndentationMenu?())
+        #expect(!editor.indentation.spaces && editor.indentation.width == 6)
+        try choose("Python", in: screen.chrome.onLanguageMenu?())
+        #expect(editor.languageID == "python")
+        let labels = children(screen.view, NSTextField.self).map(\.stringValue)
+        #expect(labels.contains { $0.contains("Line 2, Column 1") })
+        #expect(labels.contains { $0.contains("UTF-8") && $0.contains("LF") })
+    }
+
+    @Test func disconnectedWorkspaceKeepsUnsentSourceReadable() async throws {
+        _ = NSApplication.shared
+        let api = WorkspaceFixture()
+        let screen = WorkspaceScreen(api: api, root: "/project")
+        let window = window(screen, width: 800)
+        defer { screen.stop(); window.orderOut(nil) }
+        var pending: Bool?
+        screen.onDisconnect = { [weak screen] unsent in
+            pending = unsent
+            screen?.showDisconnected(close: {})
+        }
+        try await screen.start(file: "sample.swift")
+        let editor = try #require(screen.currentEditor)
+        api.closed = true
+        editor.textView.insertText("unsent", replacementRange: NSRange(location: 0, length: 0))
+        try await eventually { pending == true }
+        #expect(editor.textView.string.hasPrefix("unsent"))
+        #expect(!editor.textView.isEditable)
+        #expect(await screen.prepareToClose())
+    }
+
     @Test func workspaceChromeDoesNotPaintOverSourceGlyphs() async throws {
         _ = NSApplication.shared
         let screen = WorkspaceScreen(api: WorkspaceFixture(), root: "/project")
-        let window = window(screen, width: 410)
+        let window = window(screen, width: 850)
         window.appearance = NSAppearance(named: .darkAqua)
         defer { screen.stop(); window.orderOut(nil) }
-        try await screen.start(file: "sample.swift")
+        try await screen.start(file: nil)
+        try await screen.open("sample.swift")
         let view = screen.view
         view.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
@@ -302,9 +512,9 @@ struct WorkspaceScreenTests {
         let sourceFrame = source.convert(source.bounds, to: view)
         let firstLines = Int(sourceFrame.minY * scale)..<Int((sourceFrame.minY + 55) * scale)
         let origin = source.convert(source.textContainerOrigin, to: view)
-        let glyphs = Int(origin.x * scale)..<Int(min(view.bounds.maxX, origin.x + 70) * scale)
+        let glyphs = Int((origin.x + 4) * scale)..<Int(min(view.bounds.maxX, origin.x + 32) * scale)
         let showsKeyword = firstLines.contains { y in glyphs.contains { x in
-            guard let c = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
+            guard let c = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return false }
             return c.redComponent > c.greenComponent + 0.15 && c.blueComponent > c.greenComponent + 0.15
         } }
         #expect(showsKeyword)
@@ -334,7 +544,14 @@ private final class WorkspaceFixture: EditorAPI {
     let member = "agent:18"
     let id = "page-1"
     let scratch = "scratch:1b1d2d47-ecae-43ed-a270-7f20cf183161"
+    var onDisk = "let 🌊 = 1\nreturn 3"
+    var diskChanged = false
+    var primary = "sample.swift"
     var text = "let 🌊 = 1\nreturn 3"
+    var reverted: String?
+    var trashed: String?
+    var closed = false
+    var missing: Set<String> = []
     var scratchText: String?
     var rev = 1
     var seq = 1
@@ -353,6 +570,7 @@ private final class WorkspaceFixture: EditorAPI {
         messages.append(["author":"Agent", "text":"Updated the greeting."])
     }
     func call(_ op: String, _ fields: Fields) async throws -> Fields {
+        if closed { throw URLError(.cannotConnectToHost) }
         switch op {
         case "state":
             if fields["since"] as? Int == seq { return ["seq":seq,"unchanged":true] }
@@ -363,13 +581,18 @@ private final class WorkspaceFixture: EditorAPI {
             treeReads += 1
             return ["entries":[["path":"sample.swift","name":"sample.swift","dir":false]],"next":NSNull()]
         case "read":
-            let doc = fields["doc"] as? String ?? "sample.swift"
-            guard doc == "sample.swift" else {
+            let doc = fields["doc"] as? String ?? primary
+            if missing.contains(doc) { throw EditorIssue(code: "not_found", message: "File not found.") }
+            guard doc == primary else {
                 if fields["ifRev"] as? Int == 1 { return ["doc":doc,"unchanged":true,"rev":1,"dirty":false] }
                 return ["doc":doc,"title":(doc as NSString).lastPathComponent,"rev":1,"dirty":false,"text":"// \(doc)\n"]
             }
-            if fields["ifRev"] as? Int == rev { return ["doc":"sample.swift","unchanged":true,"rev":rev,"dirty":true] }
-            return ["doc":"sample.swift","title":"sample.swift","rev":rev,"dirty":rev > 1,"text":text]
+            let diskChanged = diskChanged || trashed == doc
+            if fields["ifRev"] as? Int == rev {
+                return ["doc": doc, "unchanged": true, "rev": rev, "dirty": text != onDisk,
+                        "diskChanged": diskChanged, "eol": "\n", "bom": false]
+            }
+            return ["doc": doc, "title": doc, "rev": rev, "dirty": text != onDisk, "text": text, "diskChanged": diskChanged, "eol": "\n", "bom": false]
         case "new":
             scratchText = ""; seq += 1
             return ["doc":scratch,"title":"Untitled","rev":1,"dirty":true,"text":""]
@@ -382,8 +605,32 @@ private final class WorkspaceFixture: EditorAPI {
             let start = try #require(fields["start"] as? Int), end = try #require(fields["end"] as? Int)
             text = (text as NSString).replacingCharacters(in:NSRange(location:start,length:end-start),with:try #require(fields["text"] as? String))
             rev += 1; seq += 1
-            return ["doc":"sample.swift","rev":rev,"dirty":true]
+            return ["doc": primary, "rev": rev, "dirty": true]
+        case "rename":
+            let from = try #require(fields["from"] as? String), to = try #require(fields["to"] as? String)
+            #expect(from == primary)
+            primary = to
+            seq += 1
+            return ["from": from, "to": to, "mapping": [["from": from, "to": to]]]
+        case "remove":
+            let doc = try #require(fields["path"] as? String)
+            trashed = doc
+            return ["path": doc, "kept": text != onDisk ? [doc] : []]
+        case "revert":
+            let doc = try #require(fields["doc"] as? String)
+            #expect(fields["rev"] as? Int == rev)
+            reverted = doc
+            diskChanged = false
+            text = onDisk
+            rev += 1
+            return ["doc": doc, "title": doc, "rev": rev, "dirty": false, "text": text]
+        case "git": return fields["base"] as? Bool == true ? ["tracked": false] : ["branch": "main", "files": []]
         case "save":
+            if fields["doc"] as? String == primary, fields["path"] == nil {
+                #expect(fields["rev"] as? Int == rev)
+                onDisk = text; savedPath = primary; savedText = text
+                return ["doc": primary, "rev": rev, "title": primary, "dirty": false, "text": text]
+            }
             let doc = try #require(fields["path"] as? String), text = try #require(scratchText)
             savedPath = doc; savedText = text
             return ["doc":doc,"rev":2,"title":(doc as NSString).lastPathComponent,"dirty":false,"text":text]

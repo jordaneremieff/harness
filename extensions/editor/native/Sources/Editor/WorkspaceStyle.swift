@@ -26,8 +26,10 @@ enum WorkspaceStyle {
     static var content: NSColor { theme.editor }
     /// Behind the sidebar and tab strips.
     static var chrome: NSColor { theme.chrome }
-    /// Behind the toolbar and the status line.
+    /// Behind the status line.
     static var bar: NSColor { theme.bar }
+    /// The selected tab in a group that does not hold the workspace selection.
+    static var inactiveTab: NSColor { theme.panel }
     static var line: NSColor { theme.line }
     /// Under the pointer.
     static var hover: NSColor { theme.hover }
@@ -36,6 +38,8 @@ enum WorkspaceStyle {
     /// Where a dragged tab will land.
     static var landing: NSColor { theme.accent.withAlphaComponent(0.16) }
     static var landingEdge: NSColor { theme.accent.withAlphaComponent(0.7) }
+    static var tabHeight: CGFloat { max(34, settings.interfaceSize + 19) }
+    static var statusHeight: CGFloat { max(25, settings.interfaceSize + 11) }
 
     /// Text of the sidebar, tabs and status line at the interface size.
     static func interfaceFont(_ delta: CGFloat = 0, weight: NSFont.Weight = .regular) -> NSFont {
