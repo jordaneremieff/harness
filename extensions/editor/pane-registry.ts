@@ -79,6 +79,16 @@ function alive(pid: number): boolean {
 	}
 }
 
+function gone(pid: unknown): boolean {
+	if (!Number.isSafeInteger(pid) || (pid as number) < 1) return false;
+	try {
+		process.kill(pid as number, 0);
+		return false;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ESRCH";
+	}
+}
+
 async function paneRecord(dir: string, id: string, checkService = true): Promise<PaneRecord | undefined> {
 	const path = join(dir, `${id}.json`);
 	try {
@@ -94,6 +104,11 @@ async function paneRecord(dir: string, id: string, checkService = true): Promise
 			)
 				return;
 			const value: PaneRecord = JSON.parse(await handle.readFile("utf8"));
+			// A pane whose app has exited cannot return; its record and service log go with it.
+			if (value?.id === id && gone(value.appPid)) {
+				await Promise.all([rm(path, { force: true }), rm(join(dir, `${id}.stderr.log`), { force: true })]);
+				return;
+			}
 			if (
 				value?.id === id &&
 				Number.isSafeInteger(value.port) &&

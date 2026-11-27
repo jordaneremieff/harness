@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -10,6 +10,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { PaneEvent } from "./pane-events.ts";
 import { preparePane } from "./pane-launch.ts";
+import { notifyPanes } from "./pane-registry.ts";
 import { EditorRoom } from "./room.ts";
 import { Workspace } from "./store.ts";
 
@@ -200,4 +201,32 @@ test("the pane-owned child outlives a session, attaches another and delivers liv
 	const store = new Workspace(root, agentDir);
 	assert.equal(store.run({ op: "read", doc }, "You").text, "Other writer\n");
 	store.close();
+});
+
+test("pane scans remove the records of exited apps and keep those of live apps", async (t) => {
+	const dir = await realpath(await mkdtemp(join(tmpdir(), "editor-pane-records-")));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const panes = join(dir, "panes");
+	await mkdir(panes, { mode: 0o700 });
+	const exited = spawn(process.execPath, ["-e", ""]);
+	await once(exited, "exit");
+	const record = (id: string, appPid: number) => ({
+		id,
+		port: 9,
+		token: "a".repeat(64),
+		appPid,
+		servicePid: appPid,
+		loaded: true,
+		visible: false,
+		startedAt: 1,
+		lastVisibleAt: null,
+		currentSession: null,
+	});
+	const gone = randomUUID();
+	const live = randomUUID();
+	await writeFile(join(panes, `${gone}.json`), JSON.stringify(record(gone, exited.pid ?? 0)), { mode: 0o600 });
+	await writeFile(join(panes, `${gone}.stderr.log`), "service output", { mode: 0o600 });
+	await writeFile(join(panes, `${live}.json`), JSON.stringify(record(live, process.pid)), { mode: 0o600 });
+	assert.equal(await notifyPanes(dir, { op: "workspace" }), 0);
+	assert.deepEqual((await readdir(panes)).sort(), [`${live}.json`]);
 });
