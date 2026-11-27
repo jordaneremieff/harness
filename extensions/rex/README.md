@@ -431,7 +431,8 @@ publishes no command of its own. The [apps extension](../apps/README.md) publish
   reply opens a native failure dialog with the cause on the dismiss row. The Rex app controls
   that row's available width. A completion notice uses the native acknowledgement dialog.
 - A pane that a command opens splits the focused pane evenly to the right or below, or floats over
-  the middle of its window, without moving focus. It receives the
+  the middle of its window, without moving focus. When the tab's focused block is still zoomed
+  after a split, the runtime ends that zoom by window, so the split shows and focus stays. It receives the
   [pane stacking feed](#pane-stacking-feed) offer that the record names, closes when its program
   exits with status 0 and stays open after a failure.
 - Steps run under the operator's account with the Rex server's environment, not the shell's, so

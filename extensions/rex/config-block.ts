@@ -2,7 +2,7 @@
  * The version of the configuration block. Setup keeps the exact block of this version, replaces a block of an earlier
  * version after the operator confirms, and refuses any other text between the markers.
  */
-export const BLOCK_VERSION = 8;
+export const BLOCK_VERSION = 9;
 const BEGIN = /^-- pi-harness: pi actions v(\d+) begin\r?$/gm;
 const END = /^-- pi-harness: pi actions end\r?$/gm;
 const MARKER = /^-- pi-harness: .*$/gm;
@@ -86,8 +86,23 @@ function pi_harness.open(ctx, registry, show)
     local direction = "horizontal"
     if show.placement == "below" then direction = "vertical" end
     placed, err = rex.session.new_split{ anchor_id = ctx.block_id, direction = direction, side = "after", ratio = 0.5, layout = layout, focus = false }
+    if placed ~= nil then pi_harness.reveal(ctx) end
   end
   if placed == nil then pi_harness.problem("Pi could not open the pane: " .. tostring(err)) end
+end
+
+-- A zoom can outlast a split made without focus and hide the new pane behind the zoomed block. Ending the zoom of the
+-- focused block by window keeps focus and the active tab.
+function pi_harness.reveal(ctx)
+  local described = rex.call("session.describe_block", { session_id = ctx.session_id, block_id = ctx.block_id })
+  local window = described and described.block and described.block.window_id
+  if window == nil then return end
+  local view = rex.call("session.view", { session_id = ctx.session_id })
+  for _, w in ipairs(view and view.windows or {}) do
+    if w.window_id == window and w.zoomed_block_id ~= nil then
+      rex.call("session.zoom_block", { session_id = ctx.session_id, window_id = window, zoom = false })
+    end
+  end
 end
 
 function pi_harness.request(entry, ctx, answers)
