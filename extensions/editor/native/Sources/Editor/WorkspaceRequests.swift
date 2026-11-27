@@ -295,7 +295,7 @@ final class WorkspaceRequests {
         captureDraft()
         let text = card.draft
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        guard text.utf16.count <= 8192 else { card.failure = "Use at most 8,192 UTF-16 units."; paint(); return }
+        guard text.utf8.count <= 4096 else { card.failure = "Use at most 4,096 bytes."; paint(); return }
         card.failure = nil
         card.writing = true
         paint()

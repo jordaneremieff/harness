@@ -38,6 +38,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
     let revisionMap = DraftRevisionMap()
     private var visibleThreadAnchors: [CodeThreadAnchor] = []
     private(set) var reviews: [DraftChangeReview] = []
+    private var reportedDiskAuthors: [Int: String] = [:]
     /// Runs after the selection or the insertion point moves.
     var onSelectionChange: (() -> Void)?
     /// The indentation that typing uses in this file: spaces or tabs, and the width of one level.
@@ -512,8 +513,13 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
     }
 
     private func adoptMetadata(_ record: CodeDraftRecord) {
-        if doc != record.doc { revisionMap.abandon() }
-        else { revisionMap.commit(from: revision, to: record.rev) }
+        if doc != record.doc {
+            revisionMap.abandon()
+            reportedDiskAuthors.removeAll()
+        } else {
+            revisionMap.commit(from: revision, to: record.rev)
+            reportedDiskAuthors = reportedDiskAuthors.filter { $0.key > record.rev }
+        }
         doc = record.doc
         revision = record.rev
         title = record.title
@@ -595,7 +601,11 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         if !changes.isEmpty {
             textView.breakUndoCoalescing()
             textView.applyDraftChanges(changes)
-            let review = DraftChangeReview(author: record.author ?? "External edit", changes: changes, before: before,
+            // One review may combine several revisions or replace local text. Neither identifies one disk report.
+            let diskRevision = record.author == "Disk" && !changedFile && record.rev > 0 &&
+                record.rev - 1 == revision && before.utf8.elementsEqual(sharedText.utf8) ? record.rev : nil
+            let label = diskRevision.flatMap { reportedDiskAuthors[$0] } ?? record.author ?? "External edit"
+            let review = DraftChangeReview(author: label, diskRevision: diskRevision, changes: changes, before: before,
                                            after: record.text, track: revisionMap.track)
             reviews.insert(review, at: 0)
             while reviews.count > 12 || (reviews.count > 1 && reviews.reduce(0, { $0 + $1.byteCount }) > 4 * 1024 * 1024) {
@@ -623,6 +633,15 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
             return
         }
         applyUndo(changes, name: "Reverse External Change", removeReview: review.id)
+    }
+
+    func nameDiskWriter(_ name: String, at revision: Int) {
+        if let review = reviews.first(where: { $0.diskRevision == revision }) {
+            if review.nameDiskWriter(name) { onReviewChange?() }
+        } else if revision > self.revision {
+            reportedDiskAuthors[revision] = name
+            if reportedDiskAuthors.count > 12, let oldest = reportedDiskAuthors.keys.min() { reportedDiskAuthors[oldest] = nil }
+        }
     }
 
     func dismissReview(_ review: DraftChangeReview) {

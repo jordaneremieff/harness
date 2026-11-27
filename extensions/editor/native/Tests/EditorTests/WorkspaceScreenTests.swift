@@ -618,6 +618,42 @@ struct WorkspaceScreenTests {
         try await eventually { screen.currentEditor?.doc == "attached.swift" && received.last == "attach" }
     }
 
+    @Test func workspaceEventsNameTheSessionAndRevealAnAgentLocationWithoutTakingFocus() async throws {
+        _ = NSApplication.shared
+        let api = WorkspaceFixture()
+        api.emitsEvents = true
+        let screen = WorkspaceScreen(api: api, root: "/project")
+        let window = window(screen, width: 980)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: api.primary)
+        let original = try #require(screen.currentEditor)
+        #expect(window.makeFirstResponder(original.textView))
+        let origin = original.textView.source.range(of: "return")
+        original.textView.setSelectedRange(origin)
+        api.sessionActive = true
+        api.event(.members)
+        try await eventually { children(screen.view, NSTextField.self).contains { $0.stringValue == "Agent" } }
+
+        api.text = "let 🌊 = 1\nreturn 4"
+        api.onDisk = api.text
+        api.readAuthor = "Disk"
+        api.rev = 2
+        api.event(.file(2))
+        try await eventually { original.reviews.first?.author == "Agent" }
+        #expect(original.textView.string == api.text)
+        #expect(original.textView.selectedRange() == origin)
+        #expect(window.firstResponder === original.textView)
+
+        api.event(.show("another.swift"))
+        try await eventually {
+            children(screen.view, CodeTextView.self).contains { $0.revealMark?.range == NSRange(location: 3, length: 7) }
+        }
+        #expect(screen.currentEditor === original)
+        #expect(window.firstResponder === original.textView)
+        #expect(original.textView.selectedRange() == origin)
+        #expect(children(screen.view, NSTextField.self).contains { $0.stringValue.contains("Look here") })
+    }
+
     @Test func workspaceChromeDoesNotPaintOverSourceGlyphs() async throws {
         _ = NSApplication.shared
         let screen = WorkspaceScreen(api: WorkspaceFixture(), root: "/project")
@@ -688,7 +724,10 @@ private final class WorkspaceFixture: EditorAPI {
     var savedPath: String?
     var savedText: String?
     var savedReplacement: String?
-    enum FixtureEvent: Sendable { case workspace, attach(String, Int) }
+    enum FixtureEvent: Sendable { case workspace, attach(String, Int), members, file(Int), show(String) }
+    var readAuthor = "Agent"
+    var sessionActive = false
+    private var participant: Fields { ["id": member, "label": "Agent", "kind": "ordinary"] }
     var emitsEvents = false
     var waitingForEvents = false
     private var cursor = 1
@@ -713,14 +752,20 @@ private final class WorkspaceFixture: EditorAPI {
             let row: Fields = switch event {
             case .workspace: ["type":"workspace", "seq":seq]
             case let .attach(doc, line): ["type":"attach", "doc":doc, "line":line]
+            case .members: ["type":"members", "members":[participant]]
+            case let .file(rev): ["type":"file", "path":primary, "change":"modified", "rev":rev, "by":participant]
+            case let .show(doc): ["type":"show", "doc":doc, "start":3, "end":10, "message":"Look here", "by":participant]
             }
             return ["cursor":cursor,"events":[row]]
         case "watch": return ["watched":(fields["docs"] as? [String])?.count ?? 0]
         case "state":
-            if fields["since"] as? Int == seq { return ["seq":seq,"unchanged":true] }
+            let current: Any = sessionActive ? participant as Any : NSNull()
+            let live: [Fields] = sessionActive ? [participant] : []
+            if fields["since"] as? Int == seq { return ["seq":seq,"unchanged":true,"currentSession":current,"members":live] }
             var thread = anchor; thread["id"] = "thread"; thread["messageCount"] = messages.count
             thread["preview"] = messages.last?["text"]
-            return ["seq":seq,"docs":[],"threads":quote == nil ? [] : [thread],"views":composed ? [["title":"Result","id":id,"rev":1]] : []]
+            return ["seq":seq,"docs":[],"threads":quote == nil ? [] : [thread],"views":composed ? [["title":"Result","id":id,"rev":1]] : [],
+                    "currentSession":current,"members":live]
         case "tree":
             treeReads += 1
             return ["entries":[["path":"sample.swift","name":"sample.swift","dir":false]],"next":NSNull()]
@@ -736,7 +781,8 @@ private final class WorkspaceFixture: EditorAPI {
                 return ["doc": doc, "unchanged": true, "rev": rev, "dirty": text != onDisk,
                         "diskChanged": diskChanged, "eol": "\n", "bom": false]
             }
-            return ["doc": doc, "title": doc, "rev": rev, "dirty": text != onDisk, "text": text, "diskChanged": diskChanged, "eol": "\n", "bom": false]
+            return ["doc": doc, "title": doc, "rev": rev, "dirty": text != onDisk, "text": text, "diskChanged": diskChanged,
+                    "eol": "\n", "bom": false, "author": readAuthor]
         case "new":
             scratchText = ""; seq += 1
             return ["doc":scratch,"title":"Untitled","rev":1,"dirty":true,"text":""]

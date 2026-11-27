@@ -8,14 +8,17 @@ final class DraftChangeReview {
         let after: String
     }
 
-    let author: String
+    private(set) var author: String
+    let diskRevision: Int?
     let hunks: [Hunk]
     let id = UUID()
     let byteCount: Int
     let excerpts: [ReviewExcerpt]
 
-    init(author: String, changes: [DraftTextChange], before: String, after: String, track: (NSRange) -> TrackedDraftRange) {
+    init(author: String, diskRevision: Int? = nil, changes: [DraftTextChange], before: String, after: String,
+         track: (NSRange) -> TrackedDraftRange) {
         self.author = author
+        self.diskRevision = diskRevision
         var shift = 0
         var bytes = 0
         let records = changes.map { change in
@@ -29,6 +32,12 @@ final class DraftChangeReview {
                                           locations: Array(zip(changes.map(\.range), records.map(\.span.range))))
         excerpts = snippets
         byteCount = bytes + snippets.reduce(0) { $0 + $1.before.text.utf8.count + $1.after.text.utf8.count }
+    }
+
+    func nameDiskWriter(_ name: String) -> Bool {
+        guard diskRevision != nil, author == "Disk", name != author else { return false }
+        author = name
+        return true
     }
 
     func inverse(in source: NSString) -> [DraftTextChange]? {

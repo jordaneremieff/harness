@@ -185,6 +185,25 @@ struct CodeEditorTests {
         #expect(editor.reviews.isEmpty)
     }
 
+    @Test func diskAttributionRequiresAMatchingSingleRevision() async throws {
+        let fixture = try Fixture(text: "let answer = 1\n")
+        defer { fixture.editor.stop() }
+        let doc = fixture.editor.doc
+        fixture.api.records[doc]?["author"] = "Disk"
+        fixture.editor.nameDiskWriter("First Agent", at: 2)
+        fixture.api.remote(doc, text: "let answer = 2\n")
+        try await fixture.editor.refresh()
+        #expect(fixture.editor.reviews.first?.author == "First Agent")
+        fixture.editor.nameDiskWriter("Unmatched Agent", at: 1)
+        #expect(fixture.editor.reviews.first?.author == "First Agent")
+
+        fixture.api.remote(doc, text: "let answer = 3\n")
+        fixture.api.remote(doc, text: "let answer = 4\n")
+        try await fixture.editor.refresh()
+        fixture.editor.nameDiskWriter("Last Agent", at: 4)
+        #expect(fixture.editor.reviews.first?.author == "Disk")
+    }
+
     @Test func collaborationInvalidationTouchesOnlyChangedVisibleRows() throws {
         let fixture = try Fixture(text: "first line\nsecond line\nthird line\nfourth line\n")
         defer { fixture.editor.stop() }

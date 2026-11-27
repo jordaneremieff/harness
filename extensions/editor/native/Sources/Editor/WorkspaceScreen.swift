@@ -1552,7 +1552,14 @@ final class WorkspaceScreen {
             guard let self else { return }
             requests.state(fields, editors: Array(buffers.values))
         }
-        onWorkspaceEvent = { [weak self] fields in self?.requests.event(fields) }
+        onWorkspaceEvent = { [weak self] fields in
+            guard let self else { return }
+            if fields["type"] as? String == "file", let path = fields["path"] as? String,
+               let revision = fields["rev"] as? Int, let writer = (fields["by"] as? Fields).flatMap(RequestParticipant.init) {
+                buffers[path]?.nameDiskWriter(writer.label, at: revision)
+            }
+            requests.event(fields)
+        }
         requests.onOpen = { [weak self] doc in self?.act { try await $0.open(doc) } }
         requests.onResumeFile = { [weak self] doc, resume in
             self?.act { screen in try await screen.open(doc); resume() }

@@ -24,6 +24,11 @@ struct WorkspaceRequestsTests {
         let cardInSource = editor.textView.convert(requests.view.bounds, from: requests.view)
         #expect(!cardInSource.intersects(avoided))
         #expect(window.firstResponder === requests.view.input)
+        requests.view.input.string = String(repeating: "🌊", count: 1_025)
+        requests.view.onSend?()
+        #expect(labels(requests.view).contains("Use at most 4,096 bytes."))
+        #expect(api.notes.isEmpty && api.sent.isEmpty)
+        requests.view.input.string = ""
         requests.view.input.insertText("Check this choice", replacementRange: NSRange(location: 0, length: 0))
         requests.view.input.keyDown(with: try key("\r", code: 36, window: window))
         requests.view.input.insertText("Keep the explanation short.", replacementRange: requests.view.input.selectedRange())
