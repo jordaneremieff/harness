@@ -187,11 +187,11 @@ test("live source and edit bodies stay out of collapsed cards, with a click hint
 	});
 	assert.doesNotMatch(screen(component), /to expand|private/u);
 	component.updateResult(result(JSON.stringify({ status: "applied", generation: 9, retained: true })));
-	assert.match(screen(component), /Applied to the live buffer at generation 9; private recovery retained\./u);
+	assert.match(screen(component), /Replaced 1 passage\./u);
 	assert.match(screen(component), /\.\.\. \(click to expand\)/u);
 	assert.doesNotMatch(screen(component), /private (anchor|replacement)/u);
 	component.setExpanded(true);
-	assert.match(screen(component), /private replacement/u);
+	assert.match(screen(component), /- private anchor\n +\+ private replacement/u);
 
 	const read = card("markdown_live", { op: "read", handle: "full-handle" });
 	read.updateResult(
@@ -213,6 +213,26 @@ test("live source and edit bodies stay out of collapsed cards, with a click hint
 		/Continue with markdown_live \{"op":"read","handle":"full-handle","offset":25,"baseGeneration":3,"baseDigest":"sha256:fixture"\}/u,
 	);
 	assert.match(screen(read), /private source/u);
+});
+
+test("applied edits distinguish inserts, deletes and no change without exposing their text", (t) => {
+	keys(t);
+	const changes = [
+		{ start: 0, end: 0, expected: "", replacement: "secret" },
+		{ start: 5, end: 8, expected: "old", replacement: "" },
+	];
+	const receipt = result("", { status: "applied", generation: 2, retained: true });
+	const mixed = card("markdown_live", { op: "apply", edits: changes });
+	mixed.updateResult(receipt);
+	assert.match(screen(mixed), /Added 1 passage, removed 1 passage/u);
+	assert.doesNotMatch(screen(mixed), /secret|old/u);
+	const same = card("markdown_live", { op: "apply", edits: [{ find: "secret", replace: "secret" }] });
+	same.updateResult(receipt);
+	assert.match(screen(same), /No text changed: the replacement matched the original/u);
+	same.updateResult(result("", { status: "error", edit: 1, message: "Anchor not found." }, true));
+	assert.match(screen(same), /Edit not applied. Anchor not found/u);
+	same.updateResult(result("", { status: "uncertain", message: "No receipt." }, true));
+	assert.doesNotMatch(screen(same), /not applied/u);
 });
 
 test("shows a launch offer, confirmed view, refusal and thrown diagnostic as distinct outcomes", (t) => {
@@ -409,8 +429,9 @@ test("publication moves its counted hint to the bottom after settlement and refl
 	);
 	const wide = screen(component, 65);
 	assert.match(wide, /Saved .*revision 4/u);
-	assertHint(wide, 1);
-	assertHint(screen(component, 45), 3);
+	assert.doesNotMatch(wide, /abcdefghij|more line/u);
+	assert.doesNotMatch(screen(component, 45), /abcdefghij|more line/u);
+	assert.match(wide, /ctrl\+g to expand/u);
 	component.setExpanded(true);
 	assert.doesNotMatch(screen(component, 45), /to expand/u);
 });

@@ -131,18 +131,46 @@ function readInput(args: Fields) {
 		skip: ["query", "contains", "kind"],
 	};
 }
+function editText(edit: unknown) {
+	const value = record(edit);
+	const before = value.find ?? value.expected;
+	const after = value.replace ?? value.replacement;
+	return typeof before === "string" && typeof after === "string" ? { before, after } : undefined;
+}
+function editPreview(edits: unknown[]): string {
+	return edits
+		.map((edit, index) => {
+			const pair = editText(edit);
+			if (!pair) return safe(json(edit));
+			const range = record(edit);
+			const location = typeof range.start === "number" ? ` at ${range.start}:${range.end}` : "";
+			const change = [
+				pair.before && `- ${safe(pair.before).replace(/\n/gu, "\n- ")}`,
+				pair.after && `+ ${safe(pair.after).replace(/\n/gu, "\n+ ")}`,
+			];
+			return [`Edit ${index + 1}${location}`, ...change.filter(Boolean)].join("\n");
+		})
+		.join("\n\n");
+}
 function liveInput(args: Fields) {
 	const op = line(args.op);
 	const show = op === "show";
 	return {
-		subject: [op, line(show ? args.document : args.handle)].filter(Boolean).join(" "),
+		subject: [op, show ? line(args.document) : ""].filter(Boolean).join(" "),
 		facts: [
 			show ? line(args.handle) : "",
 			fact("revision", args.revision),
 			fact("offset", args.offset),
 			line(args.commentState),
 		],
-		skip: ["op", "handle", "revision", "offset", "commentState", ...(show ? ["document"] : [])],
+		skip: [
+			"op",
+			"revision",
+			"offset",
+			"commentState",
+			...(show ? ["document", "handle"] : []),
+			...(op === "apply" && Array.isArray(args.edits) ? ["edits"] : []),
+		],
 	};
 }
 const inputs = {
@@ -157,7 +185,14 @@ function callInfo(name: Name, args: Fields) {
 		subject: info.subject,
 		facts: info.facts.filter(Boolean).join(" · "),
 		body: bounded(info.body ?? ""),
-		extra: bounded(argumentsText(args, info.skip)),
+		extra: bounded(
+			[
+				argumentsText(args, info.skip),
+				name === "markdown_live" && args.op === "apply" && Array.isArray(args.edits) ? editPreview(args.edits) : "",
+			]
+				.filter(Boolean)
+				.join("\n"),
+		),
 	};
 }
 type CallInfo = ReturnType<typeof callInfo>;
@@ -262,7 +297,17 @@ function liveList(v: Fields): Copy | undefined {
 		.map((item: unknown) => {
 			const p = record(item);
 			const view = record(p.view);
-			return [line(p.handle), documentIdentity(view), line(view.title)].filter(Boolean).join(" · ");
+			const privateBuffer = !view.documentId || view.dirty === true || view.conflict === true;
+			return [
+				privateBuffer ? "Live buffer" : line(view.title) || documentIdentity(view),
+				view.conflict === true
+					? "save conflict"
+					: view.dirty === true
+						? "unsaved changes"
+						: fact("revision", view.revision),
+			]
+				.filter(Boolean)
+				.join(" · ");
 		})
 		.filter(Boolean)
 		.join("\n");
@@ -328,7 +373,7 @@ function liveCopy(v: Fields, args: Fields): Copy | undefined {
 		case "commentSet":
 			return { outcome: `Comment ${line(v.commentState)}.`, more: receipt(v) };
 		case "applied":
-			return liveApplied(v);
+			return liveApplied(v, args);
 		case "claimed":
 			return { outcome: "Claimed the passage.", more: receipt(v, "status") };
 		case "released":
@@ -339,17 +384,36 @@ function liveCopy(v: Fields, args: Fields): Copy | undefined {
 		case "uncertain":
 		case "error":
 			return {
-				outcome: line(v.message) || "The live operation did not complete.",
+				outcome: [
+					args.op === "apply" && v.status !== "uncertain" ? "Edit not applied." : "",
+					line(v.message) || "The live operation did not complete.",
+				]
+					.filter(Boolean)
+					.join(" "),
 				more: receipt(v, "status", "message"),
 			};
 	}
 }
-function liveApplied(v: Fields): Copy {
-	const generation = fact("generation", v.generation);
-	return {
-		outcome: `Applied to the live buffer${generation ? ` at ${generation}` : ""}${v.retained === true ? "; private recovery retained" : ""}.`,
-		more: receipt(v, "status", "generation", "retained"),
-	};
+function liveApplied(v: Fields, args: Fields): Copy {
+	const edits = Array.isArray(args.edits) ? args.edits.map(editText) : [];
+	let summary = "Edited the live buffer";
+	if (edits.length && edits.every((pair) => pair !== undefined)) {
+		const changed = edits.filter(({ before, after }) => before !== after);
+		const added = changed.filter(({ before }) => !before).length;
+		const removed = changed.filter(({ after }) => !after).length;
+		const replaced = changed.length - added - removed;
+		const parts = [
+			added && `added ${units(added, "passage")}`,
+			removed && `removed ${units(removed, "passage")}`,
+			replaced && `replaced ${units(replaced, "passage")}`,
+		]
+			.filter(Boolean)
+			.join(", ");
+		summary = parts
+			? parts.charAt(0).toUpperCase() + parts.slice(1)
+			: "No text changed: the replacement matched the original";
+	}
+	return { outcome: `${summary}.`, more: receipt(v) };
 }
 function candidateCoverage(search: Fields): string {
 	const searched = number(search.searched);
@@ -387,7 +451,7 @@ function readFind(v: Fields, matches: unknown[]): Copy {
 	const preview = matches
 		.map((item) => {
 			const row = record(item);
-			return [documentIdentity({ documentId: row.id, revision: row.revision }), line(row.title)]
+			return [line(row.title), documentIdentity({ documentId: row.id, revision: row.revision })]
 				.filter(Boolean)
 				.join(" · ");
 		})
@@ -474,11 +538,12 @@ function extraResult(presentation: Copy | undefined, retained: string, outcome: 
 function resultView(name: Name, output: AgentToolResult<unknown>, state: State, partial: boolean, failed: boolean) {
 	const text = output.content.flatMap((part) => (part.type === "text" ? [safe(part.text)] : []));
 	const value = detail(name, output);
-	state.hideCallBody = bareArgumentDiagnostic(name, value, text[0] ?? "", failed);
+	const argumentDiagnostic = bareArgumentDiagnostic(name, value, text[0] ?? "", failed);
+	state.hideCallBody = argumentDiagnostic || (name === "markdown_publish" && !partial);
 	const diagnostic = line(record(value.error).message) || line(value.message);
 	const presentation = partial || (failed && !diagnostic) ? undefined : copy(name, value, state.args ?? {}, text);
 	const retained = text.join("\n");
-	const first = firstResultLine(retained, state.hideCallBody);
+	const first = firstResultLine(retained, argumentDiagnostic);
 	const outcome = partial
 		? "Working…"
 		: presentation?.outcome || line(first) || (failed ? "The operation failed." : "No result text returned.");
