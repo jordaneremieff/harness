@@ -87,6 +87,34 @@ enum Opening {
             previous.activate(options: [])
         }
     }
+
+    /// Gives the keyboard back to `previous` whenever the browser takes it within `duration`
+    /// after it opened a window or a tab. A Chromium browser can activate itself a moment after
+    /// it answers the request, which a single check right after the answer misses. The watch ends
+    /// when the person clicks a window of the browser, or when `handed` reports that the pane
+    /// gave the browser the keyboard itself.
+    static func returnFocus(to previous: NSRunningApplication?, from pid: pid_t, within duration: TimeInterval = 1,
+                            handed: @MainActor () -> Bool = { false }) async {
+        guard let previous, previous.processIdentifier != pid, !previous.isTerminated else { return }
+        let deadline = Date().addingTimeInterval(duration)
+        while Date() < deadline {
+            if handed() || clickedWindow(of: pid) { return }
+            restoreFrontmost(previous, browser: pid)
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        if !handed(), !clickedWindow(of: pid) { restoreFrontmost(previous, browser: pid) }
+    }
+
+    /// Whether the last click, within half a second, went to a window of the application.
+    private static func clickedWindow(of pid: pid_t) -> Bool {
+        let types: [CGEventType] = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        guard types.contains(where: { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) < 0.5 }) else { return false }
+        let location = NSEvent.mouseLocation
+        let pointer = CGPoint(x: location.x, y: (NSScreen.screens.first?.frame.height ?? 0) - location.y)
+        let windows = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [])
+            .compactMap(ServerWindow.init)
+        return windows.first { $0.layer == 0 && $0.bounds.contains(pointer) }?.owner == pid
+    }
 }
 
 /// One pane per window: each pane holds an exclusive lock named after the window while it shows

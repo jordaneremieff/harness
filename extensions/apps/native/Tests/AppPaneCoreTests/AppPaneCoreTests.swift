@@ -113,11 +113,54 @@ struct GeometryTests {
         #expect(Geometry.snapped(CGRect(x: 10.4, y: 20.6, width: 99.2, height: 50.3)) == CGRect(x: 10, y: 21, width: 100, height: 50))
     }
 
-    @Test func parksInTheBottomRightCornerOfTheScreen() {
-        let screen = CGRect(x: 0, y: 0, width: 1800, height: 1125)
-        #expect(Geometry.parkingOrigin(screen: screen, primaryHeight: 1125) == CGPoint(x: 1799, y: 1124))
-        let second = CGRect(x: 1800, y: 100, width: 1000, height: 800)
-        #expect(Geometry.parkingOrigin(screen: second, primaryHeight: 1125) == CGPoint(x: 2799, y: 1024))
+    @Test func parksInABottomCornerOutsideEveryOtherScreen() {
+        let size = CGSize(width: 800, height: 600)
+        let primary = CGRect(x: 0, y: 0, width: 1800, height: 1125)
+        #expect(Geometry.parkingOrigin(size: size, near: CGRect(x: 100, y: 100, width: 10, height: 10), screens: [primary])
+            == CGPoint(x: 1799, y: 1124))
+        // A display to the right that reaches below the primary screen would show the window's
+        // corner; the left corner of the primary screen is free.
+        let right = CGRect(x: 1800, y: 600, width: 1000, height: 1000)
+        #expect(Geometry.parkingOrigin(size: size, near: primary, screens: [primary, right]) == CGPoint(x: -799, y: 1124))
+        // A pane on the right display parks at that display's free corner first.
+        let pane = CGRect(x: 2000, y: 700, width: 500, height: 500)
+        #expect(Geometry.parkingOrigin(size: size, near: pane, screens: [primary, right]) == CGPoint(x: 2799, y: 1599))
+        // Displays on every side of each bottom corner leave no free corner.
+        let below = CGRect(x: -1000, y: 1125, width: 4000, height: 1000)
+        #expect(Geometry.parkingOrigin(size: size, near: primary, screens: [primary, below]) == CGPoint(x: 2999, y: 2124))
+        #expect(Geometry.parkingOrigin(size: size, near: primary, screens: []) == nil)
+    }
+
+    @Test func readsWindowServerRecords() {
+        let record: [String: Any] = [
+            kCGWindowNumber as String: NSNumber(value: 52320), kCGWindowOwnerPID as String: NSNumber(value: 10154),
+            kCGWindowLayer as String: NSNumber(value: 0), kCGWindowIsOnscreen as String: NSNumber(value: true),
+            kCGWindowBounds as String: CGRect(x: 989, y: 75, width: 803, height: 960).dictionaryRepresentation,
+        ]
+        #expect(ServerWindow(record) == ServerWindow(number: 52320, owner: 10154, bounds: CGRect(x: 989, y: 75, width: 803, height: 960)))
+        #expect(ServerWindow([:]) == nil)
+    }
+
+    @Test func checksWhetherAWindowFilledItsPane() {
+        let target = CGRect(x: 100, y: 75, width: 363, height: 761)
+        #expect(Docking.check(target.offsetBy(dx: 0.5, dy: 0), target: target) == .filled)
+        // A minimum width keeps the window wider at the pane's place.
+        #expect(Docking.check(CGRect(x: 100, y: 75, width: 500, height: 761), target: target) == .limited)
+        // The old frame of a request that the application did not carry out is a miss.
+        #expect(Docking.check(CGRect(x: 100, y: 75, width: 300, height: 761), target: target) == .missed)
+        #expect(Docking.check(CGRect(x: 400, y: 75, width: 363, height: 761), target: target) == .missed)
+    }
+
+    @Test func confirmsASizeLimitOnlyWhenTheWindowChangedSize() {
+        let target = CGRect(x: 100, y: 75, width: 363, height: 761)
+        let minimum = CGRect(x: 100, y: 75, width: 500, height: 761)
+        let earlier = CGRect(x: 100, y: 75, width: 803, height: 761)
+        #expect(Docking.limitConfirmed(minimum, target: target, before: earlier, requests: 2))
+        #expect(!Docking.limitConfirmed(minimum, target: target, before: earlier, requests: 1))
+        // A shrink that never reached the application leaves the earlier size at the same place.
+        #expect(!Docking.limitConfirmed(earlier, target: target, before: earlier, requests: 5))
+        #expect(Docking.limitConfirmed(minimum, target: target, before: nil, requests: 2))
+        #expect(!Docking.limitConfirmed(target, target: target, before: earlier, requests: 2))
     }
 
     @Test func choosesTheMainWindowOrATitledOne() {

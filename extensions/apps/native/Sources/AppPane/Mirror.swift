@@ -46,6 +46,17 @@ final class MirrorView: NSView {
                 }
             }
         }
+        // A capture that the system ends, for example when the window server restarts it, leaves
+        // the last image standing; the pane then shows its own text until a new capture starts.
+        output.onStop = { [weak self] generation in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, generation == self.generation else { return }
+                    self.stop()
+                    self.onState?()
+                }
+            }
+        }
         wantsLayer = true
         layer?.masksToBounds = true
         display.videoGravity = .resize
@@ -116,6 +127,7 @@ final class MirrorView: NSView {
                     throw MirrorError(text: "The window is not available to screen capture.")
                 }
                 let stream = SCStream(filter: SCContentFilter(desktopIndependentWindow: target), configuration: Self.configuration(streamSize), delegate: output)
+                output.bind(stream)
                 try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: queue)
                 try await stream.startCapture()
                 guard current == generation else {
@@ -170,15 +182,25 @@ final class MirrorOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private let renderer: AVSampleBufferVideoRenderer
     /// Called once per capture, with its generation, when the first complete image arrives.
     var onFirstFrame: (@Sendable (Int) -> Void)?
+    /// Called with the capture's generation when the system ends the current capture.
+    var onStop: (@Sendable (Int) -> Void)?
     private let state = NSLock()
     private var generation = 0
     private var delivered = true
+    /// The capture whose frames reach the display; frames of an earlier capture that arrive
+    /// late are dropped.
+    private var current: ObjectIdentifier?
 
     func begin(generation: Int) {
         state.withLock {
             self.generation = generation
             delivered = false
+            current = nil
         }
+    }
+
+    func bind(_ stream: SCStream) {
+        state.withLock { current = ObjectIdentifier(stream) }
     }
 
     init(renderer: AVSampleBufferVideoRenderer) {
@@ -187,6 +209,8 @@ final class MirrorOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     func stream(_ stream: SCStream, didStopWithError error: any Error) {
         mirrorLog.error("capture stopped: \(error.localizedDescription, privacy: .public)")
+        let ended: Int? = state.withLock { current == ObjectIdentifier(stream) ? generation : nil }
+        if let ended { onStop?(ended) }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
@@ -199,9 +223,12 @@ final class MirrorOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             CFDictionarySetValue(dictionary, Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
                                  Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
         }
-        if renderer.status == .failed { renderer.flush() }
-        renderer.enqueue(buffer)
+        // The check and the enqueue happen under one lock, so a frame of an earlier capture never
+        // reaches the display after a new capture began.
         let first: Int? = state.withLock {
+            guard current == ObjectIdentifier(stream) else { return nil }
+            if renderer.status == .failed { renderer.flush() }
+            renderer.enqueue(buffer)
             guard !delivered else { return nil }
             delivered = true
             return generation

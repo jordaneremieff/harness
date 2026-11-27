@@ -8,9 +8,11 @@ The pane runs App Pane, a small native program. It finds its own pane on screen,
 
 Click the window in the pane to work in it. The app becomes the active application and takes the keyboard; its menus, shortcuts and text fields behave as they always do. Click another pane to go back to the terminal. While the terminal is in front, the pane keeps showing the app through a live image of its window, so a page, a chat or a build log stays visible beside the conversation. A click on that image, or a key typed in the pane, hands the keyboard back to the app.
 
-When the pane's tab is hidden, the window waits just outside the bottom right corner of the screen, so it never shows over another tab. It returns when the tab comes back.
+When the pane's tab is hidden, the window waits just outside a bottom corner of the screen, on the side away from any other display, so it never shows over another tab. It returns when the tab comes back. When a layout change makes Rex rebuild the pane, the window stays where it is until the pane is found again, instead of leaving for the corner and coming back.
 
-- A browser (Brave, Chrome, Edge, Vivaldi, Chromium or Safari) gets a new window for the pane, at an address when one is given. `:tab` followed by Enter in the pane's terminal opens a tab in that window; `:tab https://example.com` opens it at an address. Neither command targets the front window. Closing the pane closes the window it created, even when the pane's tab is hidden. Before it asks a parked window to close, the pane returns it to its original position so you can answer any browser prompt.
+The window follows the pane as Rex moves and resizes it. If the app does not take the pane's size at once, the pane asks again. While the app does not answer, the pane waits for it without holding up the terminal.
+
+- A browser (Brave, Chrome, Edge, Vivaldi, Chromium or Safari) gets a new window for the pane, at an address when one is given. `:tab` followed by Enter in the pane's terminal opens a tab in that window; `:tab https://example.com` opens it at an address. Neither command targets the front window. When the browser opens the window or a tab, it does not keep the keyboard. Closing the pane closes the window it created, even when the pane's tab is hidden. Before it asks a parked window to close, the pane returns it to its original position so you can answer any browser prompt.
 - Another app shows its main window, or the window whose title contains the requested text. Closing the pane puts the window back where it was.
 - Closing the window, or quitting the app, closes the pane.
 - `q` in the pane closes it.
