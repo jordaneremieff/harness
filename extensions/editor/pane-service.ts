@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { browse } from "./browse.ts";
 import { authorised, json, jsonBody, listen, type Payload } from "./local.ts";
-import { PaneEvents, type FileEvent, type RequestState } from "./pane-events.ts";
+import { type FileReport, PaneEvents, type RequestState } from "./pane-events.ts";
 import { notifyPanes, paneIdPattern, registerPane, type PaneControl, type PaneRecord } from "./pane-registry.ts";
 import { invite, isParticipant, members, type Invitation, type Participant } from "./participants.ts";
 import { projectReplace } from "./project-search.ts";
@@ -183,16 +183,17 @@ export async function startPaneService(config: PaneConfig) {
 		}
 	}
 
-	function diskChange(event: FileEvent) {
-		if (watched.has(event.path)) watched.set(event.path, stamp(event.path));
+	function diskChange({ path, change, by, thread }: FileReport) {
+		if (watched.has(path)) watched.set(path, stamp(path));
 		// Invalid or missing disk files still need a file event so open drafts can show the conflict.
+		let rev: number | undefined;
 		try {
-			store.refreshDisk(event.path);
+			rev = store.refreshDisk(path);
 		} catch {
 			/* The read API exposes file errors. */
 		}
 		workspace();
-		events.publish(event);
+		events.publish({ type: "file", path, change, by, thread, ...(rev === undefined ? {} : { rev }) });
 	}
 
 	function checkDisk() {

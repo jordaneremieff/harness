@@ -104,7 +104,7 @@ final class PaneHost {
             if workspaceOpened {
                 if !workspaceLoaded { startupReport.write(problem) }
                 startup = .disconnected
-                screen.showDisconnected { [weak self] in self?.requestClose() }
+                screen.showDisconnected(problem: problem) { [weak self] in self?.requestClose() }
                 overlay.ready = true
                 drawPlaceholder()
             } else {

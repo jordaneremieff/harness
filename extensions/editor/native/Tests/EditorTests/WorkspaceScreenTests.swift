@@ -587,7 +587,9 @@ struct WorkspaceScreenTests {
         let editor = try #require(screen.currentEditor)
         api.closed = true
         editor.textView.insertText("unsent", replacementRange: NSRange(location: 0, length: 0))
-        screen.showDisconnected(close: {})
+        let problem = "Service log: /workspace/panes/service.stderr.log"
+        screen.showDisconnected(problem: problem, close: {})
+        #expect(children(screen.view, NSTextField.self).contains { $0.toolTip?.contains(problem) == true })
         #expect(pending == true)
         #expect(editor.textView.string.hasPrefix("unsent"))
         #expect(!editor.textView.isEditable)

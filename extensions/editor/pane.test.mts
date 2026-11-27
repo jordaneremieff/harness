@@ -181,12 +181,14 @@ test("the pane-owned child outlives a session, attaches another and delivers liv
 	await writeFile(join(root, doc), "Direct\n");
 	const direct = next("file");
 	await attached.reportFile(join(root, doc), "modified");
-	assert.deepEqual(await direct, { type: "file", path: doc, change: "modified", by: second });
+	assert.deepEqual(await direct, { type: "file", path: doc, change: "modified", by: second, rev: read.rev + 1 });
 	const adopted = await call("read", { doc });
 	assert.equal(adopted.rev, read.rev + 1);
 	assert.equal(adopted.text, "Direct\n");
+	await attached.reportFile(join(root, doc), "modified");
+	assert.deepEqual(await next("file"), { type: "file", path: doc, change: "modified", by: second });
 	await writeFile(join(root, doc), "Other writer\n");
-	assert.deepEqual(await next("file"), { type: "file", path: doc, change: "modified" });
+	assert.deepEqual(await next("file"), { type: "file", path: doc, change: "modified", rev: adopted.rev + 1 });
 	assert.equal((await call("read", { doc })).text, "Other writer\n");
 	const shown = next("show");
 	assert.deepEqual(await attached.tool({ op: "show", doc, start: 0, end: 5, message: "Look here" }), { panes: 1 });

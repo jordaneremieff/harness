@@ -30,8 +30,11 @@ final class EditorService: EditorAPI {
         let process = Process()
         let input = Pipe()
         let output = Pipe()
+        let stderr = Pipe()
         var writeSource: DispatchSourceWrite?
         var readSource: DispatchSourceRead?
+        var stderrSource: DispatchSourceRead?
+        var stderrRemaining = 64 * 1024
         var configOffset = 0
         var writeSuspended = false
         var line = Data()
@@ -45,6 +48,7 @@ final class EditorService: EditorAPI {
     private static let unavailable = EditorIssue(code: "service_unavailable", message: "Editor lost its connection to the workspace service.")
     private static let lineLimit = 1024
     private let ticket: EditorTicket
+    private let log: EditorServiceLog
     private let startupTimeout: Duration
     private var configuration = Data()
     private var attempt: Attempt?
@@ -54,8 +58,9 @@ final class EditorService: EditorAPI {
     private var onStopped: (() -> Void)?
     var onStatus: ((Status) -> Void)?
 
-    init(ticket: EditorTicket, startupTimeout: Duration = .seconds(10)) {
+    init(ticket: EditorTicket, workspace: URL, startupTimeout: Duration = .seconds(10)) {
         self.ticket = ticket
+        self.log = EditorServiceLog(workspace: workspace, paneId: ticket.paneId)
         self.startupTimeout = startupTimeout
     }
 
@@ -66,7 +71,7 @@ final class EditorService: EditorAPI {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .withoutEscapingSlashes
         guard var line = try? encoder.encode(config), line.count < 32768 else {
-            onStatus?(.failed("The workspace service configuration exceeds its startup limit."))
+            fail("The workspace service configuration exceeds its startup limit.")
             return
         }
         line.append(10)
@@ -126,13 +131,14 @@ final class EditorService: EditorAPI {
         child.process.arguments = [ticket.program]
         child.process.standardInput = child.input
         child.process.standardOutput = child.output
-        child.process.standardError = FileHandle.nullDevice
+        child.process.standardError = child.stderr
         child.process.terminationHandler = { [weak self] _ in
             Task { @MainActor in self?.exited(id) }
         }
         guard fcntl(inFD, F_SETNOSIGPIPE, 1) != -1,
               fcntl(inFD, F_SETFL, O_NONBLOCK) != -1,
-              fcntl(outFD, F_SETFL, O_NONBLOCK) != -1 else {
+              fcntl(outFD, F_SETFL, O_NONBLOCK) != -1,
+              fcntl(child.stderr.fileHandleForReading.fileDescriptor, F_SETFL, O_NONBLOCK) != -1 else {
             relaunchOrFail("Editor could not configure the service pipes (system error \(errno)).")
             return
         }
@@ -159,6 +165,7 @@ final class EditorService: EditorAPI {
         attempt = child
         try? child.input.fileHandleForReading.close()
         try? child.output.fileHandleForWriting.close()
+        startStderr(child)
 
         let reader = DispatchSource.makeReadSource(fileDescriptor: outFD, queue: .main)
         reader.setEventHandler { [weak self] in MainActor.assumeIsolated { self?.readHandshake(id) } }
@@ -238,6 +245,45 @@ final class EditorService: EditorAPI {
         onStatus?(.ready)
     }
 
+    private func startStderr(_ child: Attempt) {
+        try? child.stderr.fileHandleForWriting.close()
+        let handle = child.stderr.fileHandleForReading
+        let reader = DispatchSource.makeReadSource(fileDescriptor: handle.fileDescriptor, queue: .main)
+        let id = child.id
+        reader.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let child = self.attempt, child.id == id else { return }
+                _ = self.drainStderr(child)
+            }
+        }
+        reader.setCancelHandler { try? handle.close() }
+        child.stderrSource = reader
+        reader.resume()
+    }
+
+    @discardableResult
+    private func drainStderr(_ child: Attempt) -> Bool {
+        guard child.stderrSource != nil else { return false }
+        var bytes = [UInt8](repeating: 0, count: 16 * 1024)
+        let fd = child.stderr.fileHandleForReading.fileDescriptor
+        var count: Int
+        repeat { count = Darwin.read(fd, &bytes, bytes.count) } while count < 0 && errno == EINTR
+        if count < 0, errno == EAGAIN { return false }
+        guard count > 0 else { closeStderr(child); return false }
+        // Keep the pipe drained after the cap so noisy stderr cannot block the child.
+        let retained = min(count, child.stderrRemaining)
+        if retained > 0 {
+            child.stderrRemaining -= retained
+            log.append(bytes.prefix(retained))
+        }
+        return true
+    }
+
+    private func closeStderr(_ child: Attempt) {
+        child.stderrSource?.cancel()
+        child.stderrSource = nil
+    }
+
     private func pipeClosed(_ child: Attempt, problem: String) {
         // The pipe may report EOF before Foundation reports the child's exit status.
         child.deadline?.cancel()
@@ -279,6 +325,9 @@ final class EditorService: EditorAPI {
         guard let child = attempt, child.id == id else { return }
         let stage = child.client == nil ? "before its startup handshake" : "after its startup handshake"
         if !child.retiring { closePipes(child) }
+        // Termination can arrive before the read source observes the last stderr bytes.
+        while child.stderrRemaining > 0, drainStderr(child) {}
+        closeStderr(child)
         child.killDeadline?.cancel()
         attempt = nil
         if !child.retiring, !stopped { onStatus?(.reconnecting) }
@@ -299,7 +348,11 @@ final class EditorService: EditorAPI {
             launch()
         } else {
             let detail = firstFailure.flatMap { $0 == problem ? nil : "First attempt: \($0) " } ?? ""
-            onStatus?(.failed("\(detail)\(problem)"))
+            fail("\(detail)\(problem)")
         }
+    }
+
+    private func fail(_ problem: String) {
+        onStatus?(.failed("\(problem) \(log.location())"))
     }
 }

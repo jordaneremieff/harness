@@ -1,13 +1,14 @@
 import type { Participant } from "./participants.ts";
 
 export type RequestState = "queued" | "working" | "answered" | "failed";
-export type FileEvent = {
+export type FileReport = {
 	type: "file";
 	path: string;
 	change: "modified" | "created" | "deleted";
 	by?: Participant;
 	thread?: string;
 };
+export type FileEvent = FileReport & { rev?: number };
 export type ShowEvent = {
 	type: "show";
 	by: Participant;

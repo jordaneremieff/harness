@@ -1249,12 +1249,12 @@ final class WorkspaceScreen {
         onDisconnect?(unsent)
     }
 
-    func showDisconnected(close: @escaping () -> Void) {
+    func showDisconnected(problem: String, close: @escaping () -> Void) {
         connectionClosed()
         for editor in buffers.values { editor.stop(); editor.textView.isEditable = false }
         collaboration.goOffline()
         refreshStatus()
-        chrome.setMessage("Editor could not reconnect to its workspace service. Copy any unsent text before you close this pane.",
+        chrome.setMessage("Copy any unsent text before you close this pane. \(problem)",
                           action: "Close Editor", run: close)
     }
 

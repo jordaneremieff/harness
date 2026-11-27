@@ -58,7 +58,8 @@ private final class EditorApplication: NSObject, NSApplicationDelegate {
             report.write(problem)
             Self.fail(problem)
         }
-        let service = EditorService(ticket: ticket)
+        let workspace = URL(fileURLWithPath: ticketPath).deletingLastPathComponent()
+        let service = EditorService(ticket: ticket, workspace: workspace)
         let files = WorkspaceFiles(settings: ticket.settings.map { URL(fileURLWithPath: $0) },
                                    layout: ticket.layout.map { URL(fileURLWithPath: $0) },
                                    appearance: Self.paneAppearanceFile())

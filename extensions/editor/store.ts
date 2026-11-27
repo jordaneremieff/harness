@@ -568,14 +568,18 @@ export class Workspace {
 		});
 	}
 
-	refreshDisk(doc: string): void {
-		const known = this.#get(fileName(doc));
+	refreshDisk(doc: string): number | undefined {
+		const path = fileName(doc);
+		const known = this.#get(path);
 		if (!known || known.dirty) return;
-		this.#transaction(true, () => {
-			const row = this.#get(doc);
+		return this.#transaction(true, () => {
+			const row = this.#get(path);
 			if (!row || row.dirty) return;
-			const target = locate(this.root, doc);
-			if (target.stat && row.stamp !== signature(target.stat)) this.#refreshDisk(doc, target, row, row.rev);
+			const target = locate(this.root, path);
+			if (!target.stat || row.stamp === signature(target.stat)) return;
+			const previous = row.rev;
+			this.#refreshDisk(path, target, row, previous);
+			if (row.rev !== previous) return row.rev;
 		});
 	}
 

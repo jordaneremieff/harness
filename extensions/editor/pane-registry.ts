@@ -3,14 +3,14 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, opendir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Payload } from "./local.ts";
-import type { FileEvent, RequestState, ShowEvent } from "./pane-events.ts";
+import type { FileReport, RequestState, ShowEvent } from "./pane-events.ts";
 import { isParticipant, type Participant } from "./participants.ts";
 
 export const paneIdPattern = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i;
 export type PaneControl =
 	| { op: "attach"; participant: Participant; doc?: string; line?: number }
 	| { op: "show"; event: ShowEvent }
-	| { op: "file"; event: FileEvent }
+	| { op: "file"; event: FileReport }
 	| { op: "workspace" }
 	| { op: "members" }
 	| { op: "request"; thread: string; state: RequestState; by: Participant; at: number };

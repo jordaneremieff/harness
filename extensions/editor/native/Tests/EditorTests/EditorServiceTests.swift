@@ -63,7 +63,7 @@ struct EditorServiceTests {
             try #require(await states.next(isolation: MainActor.shared) == .reconnecting)
         }
         let failure = await states.next(isolation: MainActor.shared)
-        #expect(failure == .failed("The workspace service stopped after its startup handshake (signal \(SIGKILL))."))
+        #expect(failure == .failed("The workspace service stopped after its startup handshake (signal \(SIGKILL)). \(fixture.logLocation)"))
         #expect(try fixture.pids().count == 2)
         await #expect(throws: EditorIssue.self) { _ = try await service.call("state") }
     }
@@ -87,22 +87,29 @@ struct EditorServiceTests {
         try #require(await states.next(isolation: MainActor.shared) == .reconnecting)
         try #require(await states.next(isolation: MainActor.shared) == .reconnecting)
         let failure = await states.next(isolation: MainActor.shared)
-        #expect(failure == .failed("First attempt: The workspace service exceeded the startup handshake size limit. The workspace service did not return its startup handshake in time."))
+        #expect(failure == .failed("First attempt: The workspace service exceeded the startup handshake size limit. The workspace service did not return its startup handshake in time. \(fixture.logLocation)"))
         #expect(try fixture.pids().count == 2)
     }
 
-    @Test(.timeLimit(.minutes(1))) func failureReportsExitStatusWithoutChildOutput() async throws {
+    @Test(.timeLimit(.minutes(1))) func failureNamesTheBoundedPrivateLogWithoutEchoingStderr() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let service = try fixture.service(script: """
             printf '%s' 'private detail' >&2
+            printf '%0131072d' 0 >&2
             exit 23
             """)
         var states = start(service)
         defer { service.stop {} }
         try #require(await states.next(isolation: MainActor.shared) == .reconnecting)
         try #require(await states.next(isolation: MainActor.shared) == .reconnecting)
-        #expect(await states.next(isolation: MainActor.shared) == .failed("The workspace service stopped before its startup handshake (exit status 23)."))
+        #expect(await states.next(isolation: MainActor.shared) == .failed("The workspace service stopped before its startup handshake (exit status 23). \(fixture.logLocation)"))
+        let bytes = try Data(contentsOf: fixture.logURL)
+        #expect(bytes.count == 128 * 1024)
+        #expect(bytes.prefix(14) == Data("private detail".utf8))
+        #expect(bytes.dropFirst(64 * 1024).prefix(14) == Data("private detail".utf8))
+        let info = try FileManager.default.attributesOfItem(atPath: fixture.logURL.path)
+        #expect(info[.posixPermissions] as? Int == 0o600)
     }
 
     @Test(.timeLimit(.minutes(1))) func reportsMissingNodeExecutableWithoutItsPath() async throws {
@@ -111,7 +118,22 @@ struct EditorServiceTests {
         let service = try fixture.service(script: "", node: fixture.root.appendingPathComponent("missing-node").path)
         var states = start(service)
         defer { service.stop {} }
-        #expect(await states.next(isolation: MainActor.shared) == .failed("Editor could not run the Node executable: the executable was not found."))
+        #expect(await states.next(isolation: MainActor.shared) == .failed("Editor could not run the Node executable: the executable was not found. \(fixture.logLocation)"))
+    }
+
+    @Test func serviceLogDoesNotFollowAnExistingLink() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let manager = FileManager.default
+        try manager.createDirectory(at: fixture.logURL.deletingLastPathComponent(), withIntermediateDirectories: false,
+                                    attributes: [.posixPermissions: 0o700])
+        let decoy = fixture.root.appendingPathComponent("decoy")
+        try "untouched".write(to: decoy, atomically: false, encoding: .utf8)
+        try manager.createSymbolicLink(at: fixture.logURL, withDestinationURL: decoy)
+        let log = EditorServiceLog(workspace: fixture.root, paneId: fixture.paneId)
+        log.append(Array("diagnostic".utf8)[...])
+        #expect(log.location().contains("could not write"))
+        #expect(try String(contentsOf: decoy, encoding: .utf8) == "untouched")
     }
 
     @Test func publishesOnePrivateBoundedLineWithoutFollowingLinks() throws {
@@ -157,6 +179,8 @@ struct EditorServiceTests {
     private struct Fixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let paneId = UUID().uuidString
+        var logURL: URL { root.appendingPathComponent("panes").appendingPathComponent("\(paneId).stderr.log") }
+        var logLocation: String { "Service log: \(logURL.path)" }
 
         init() throws {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
@@ -180,7 +204,7 @@ struct EditorServiceTests {
                                       root: root.path, agentDir: root.appendingPathComponent("agent").path,
                                       participant: .init(id: "test", label: "Test", kind: .durable),
                                       file: nil, settings: nil, layout: nil)
-            return EditorService(ticket: ticket, startupTimeout: timeout)
+            return EditorService(ticket: ticket, workspace: root, startupTimeout: timeout)
         }
     }
 }
