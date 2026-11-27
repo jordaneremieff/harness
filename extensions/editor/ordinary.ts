@@ -233,11 +233,14 @@ export function registerOrdinary(pi: ExtensionAPI): void {
 	});
 	pi.on("turn_end", async (event, ctx) => {
 		const binding = sessionBinding(ctx);
+		// Only the run's last turn answers: tool results or queued steering and follow-up messages continue it.
 		if (
 			binding &&
 			event.outcome === "completed" &&
 			event.message.role === "assistant" &&
 			!ctx.signal?.aborted &&
+			event.toolResults.length === 0 &&
+			event.context.pendingMessages.length === 0 &&
 			["stop", "length"].includes(event.message.stopReason)
 		) {
 			const body = answerText(event.message, Math.max(0, binding.answerInputs - 1));

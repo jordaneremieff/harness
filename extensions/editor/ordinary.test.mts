@@ -298,6 +298,27 @@ test("ordinary Pi places editor invites, restores dropped follow-ups and withdra
 		text: "Automatic ordinary answer.",
 	});
 
+	// A steering message queued during the first turn continues the run; only its last turn answers.
+	const steeredTurn = latch();
+	const steerQueued = latch();
+	faux.setResponses([
+		async () => {
+			steeredTurn.open();
+			await steerQueued.promise;
+			return fauxAssistantMessage("Turn one answer.");
+		},
+		fauxAssistantMessage("Final answer after steering."),
+	]);
+	assert.equal((await pane("send", { id: thread, to: actor, message: "Answer once the run ends." })).accepted, true);
+	await steeredTurn.promise;
+	session.agent.steer({ role: "user", content: [{ type: "text", text: "Also cover Y." }], timestamp: Date.now() });
+	steerQueued.open();
+	await session.waitForIdle();
+	assert.deepEqual((await pane("thread", { id: thread })).messages.at(-1), {
+		author,
+		text: "Final answer after steering.\n\n[This answer also addressed 1 other input.]",
+	});
+
 	const entered = latch();
 	const release = latch();
 	faux.setResponses([
