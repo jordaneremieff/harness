@@ -8,7 +8,7 @@ A participant can read the unsaved draft, edit an exact passage, annotate a diff
 
 ## Look and settings
 
-- Editor paints every surface from the shared Catppuccin palette and follows the machine's [pane appearance](../../docs/conventions/pane-appearance.md): System, Light or Dark, and Frappé, Macchiato or Mocha for the dark appearance. A choice in Editor reaches the Markdown reader and Explorer, and their choices reach Editor.
+- Editor paints every surface from the shared Catppuccin palette and follows the machine's [pane appearance](../../docs/conventions/pane-appearance.md): System, Light or Dark, and Frappé, Macchiato or Mocha for the dark appearance. Editor and the Markdown reader share this choice.
 - **Settings** (`cmd+,`) shows the theme choice and every setting as a typed control: font family, size, line spacing, ligatures and interface size; caret style and width; line numbers, fold buttons, change marks, minimap, indent guides, rulers, whitespace and wrapping; tab width, spaces or tabs, indentation detection, automatic indentation and closing pairs; save cleanup; reopened tabs and previews. A change applies to every open pane at once. A language selector edits the values of one language, such as wrapping for Markdown.
 - The settings live in `<agentDir>/editor/settings.json`, which holds only the values that differ from the defaults, with per-language values under `languages`. The file accepts comments and trailing commas. Editor applies a change to the file at once, whether Settings, a person or an agent made it, and Settings lists any value it ignored and why.
 - `cmd+=`, `cmd+-` and `cmd+0` change the font size. The command palette (`cmd+shift+P`) lists every command with its shortcut, and toggles the view settings.

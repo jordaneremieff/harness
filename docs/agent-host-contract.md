@@ -254,7 +254,7 @@ After runtime closure and owned socket removal, the holder validates the named i
 
 ### Explicit stored-host acquisition
 
-A consumer starts a stored host only after explicit user action. Selection, page load, retained discovery, and connection checks do not acquire a writer. Before the action, disclose that starting the host can resume unfinished Durable work without a new prompt. A start request contains an exact external conversation identity and a separate bounded request ID, never composer text or a task-submission payload.
+A consumer starts a stored host only after explicit user action. Selection, page load, retained discovery, and connection checks do not acquire a writer. Before the action, disclose that starting the host can resume unfinished Durable work without a new prompt. A start request contains an exact external conversation identity and a separate bounded request ID. It carries no task payload.
 
 The package process entry is `extensions/agent/durable-runner.ts`. Invoke it without a shell:
 
