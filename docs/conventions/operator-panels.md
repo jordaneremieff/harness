@@ -195,9 +195,8 @@ own UI opens next, or text placed in the editor, sees the real editor.
   selection, belongs to the extension instance, not to the view.
 
 Owners: jobs (`/jobs`), stash (`/stash`), clipboard (`/clipboard`), markdown
-(`/markdown recent` and `/markdown published`), pillars (`/pillars browse`),
-policy (`/policy`), and statusline (`/commands`, `/statuses`, and the Model
-view). The agent extension draws its own work view, which `/agent` opens in
+(`/markdown`), pillars (`/pillars browse`), policy (`/policy`), and statusline
+(`/statuses` and the Model view). The agent extension draws its own work view, which `/agent` opens in
 the same editor slot, and hosts owner views in the attached terminal.
 
 ## Attached panels
