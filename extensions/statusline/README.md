@@ -4,9 +4,8 @@ This extension replaces Pi's default footer with a two-line statusline for
 long-running agentic sessions. Line 1 carries the session's route identity and
 metrics; line 2 carries the project context and whatever extension statuses
 other extensions publish through `ctx.ui.setStatus()`. The footer shows status
-only: it adds no navigation labels and no menu. The statusline owns three
-views in the editor slot below the native transcript: Commands, Model, and
-Statuses. Each opens on its own, following the [operator panel convention](../../docs/conventions/operator-panels.md).
+only: it adds no navigation labels and no menu. The statusline owns the Model and Statuses
+views in the editor slot below the native transcript. Each opens on its own, following the [operator panel convention](../../docs/conventions/operator-panels.md).
 The Model view opens from the footer's model and level segments and has no
 command of its own. The code for these views loads on demand.
 
@@ -16,7 +15,6 @@ command of its own. The code for these views loads on demand.
 |---|---|---|
 | footer | `ctx.ui.setFooter` | Two-line statusline, installed on `session_start` in TUI mode only. |
 | `/statusline` | command | Toggle between the custom statusline and Pi's default footer. |
-| `/commands` | command | Open the Commands view: every command, prompt template, and skill, searchable. |
 | `/statuses` | command | Open the Statuses view: the complete extension status map. |
 | model and level segments | footer click targets | In fullscreen, a click on the `provider/model` segment or its `[level]` bracket opens the Model view. |
 | `+N` cell | footer click target | In fullscreen, the hidden-status count opens the Statuses view. |
@@ -24,9 +22,8 @@ command of its own. The code for these views loads on demand.
 
 No extension-specific configuration is required. The custom footer starts
 enabled; use `/statusline` to switch to Pi's default footer or back. With the
-footer disabled, `/commands` and `/statuses` still open their views. Statuses
-explains that it needs the statusline footer, and the Model click targets are
-absent. There are no tools, timers beyond one
+footer disabled, `/statuses` still opens the view and explains how to enable
+the statusline footer. The Model click targets are absent. There are no tools, timers beyond one
 footer-owned tick, or background work.
 
 ## Footer clicks
@@ -34,8 +31,7 @@ footer-owned tick, or background work.
 In fullscreen, these parts of the footer take a plain left click: the
 `provider/model` segment or its `[level]` bracket opens the Model view, the
 `+N` cell opens the Statuses view, and a shown status cell runs the extension
-command whose name equals its status key, with no arguments, the way the
-Commands view runs a command. The [status key registry](../../docs/conventions/status-keys.md)
+command whose name equals its status key, with no arguments. The [status key registry](../../docs/conventions/status-keys.md)
 makes that command open its owner's view, so a click on the agents entry opens
 `/agent` and one on the jobs entry opens `/jobs`. A status whose key names no
 extension command is not a control. Every other click stays with Pi, so drag
@@ -46,42 +42,12 @@ click.
 ## Views
 
 Each view shows its own title and a key row. A click on a control does the same
-thing as its key. `/` focuses search; Tab moves between regions. PageUp and
-PageDown read. Commands and Statuses show detail beside the list at 90 columns
+thing as its key. Tab moves between regions. PageUp and PageDown read.
+Statuses shows detail beside the list at 90 columns
 or wider, and in a nested view on narrower terminals. `x` opens More, or
 `ctrl+n` while a text field has focus. Escape closes More, leaves the current
 edit, runs Cancel if offered, leaves a nested view, or closes the frame, in
 that order. Pi then restores the editor and its draft.
-
-### Commands
-
-A searchable list of `pi.getCommands()`: extension commands, prompt templates,
-and skills under their exact invocation names, including collision suffixes
-such as `review:1`. Pi's `sourceInfo` is the provenance shown for each entry;
-ownership is never inferred from names or paths. Builtin interactive commands
-such as `/model` are not in that inventory and are not offered. The search
-field filters the list, matching every query word against the name or
-description; the detail shows the description, the kind, the source path, and
-any unsent arguments. Selection never runs anything. The keys of this view are
-`enter` to run an extension command, `a` to run it with arguments, and `e` to
-put a prompt or skill in the editor.
-
-- **Run** and **Run with arguments…** (extension commands): the frame closes
-  first, so the command's own UI can open. The exact registration is then
-  compared field by field; only a still-present, unchanged registration is sent
-  through `pi.sendUserMessage("/name args", { expandPromptTemplates: true })`.
-  Pi runs extension commands immediately, even while the agent is busy, without
-  a model acknowledgement. A registration that disappeared or changed is
-  refused with a notification, so a stale selection never becomes a model
-  prompt.
-- **Put in editor…** (prompt templates and skills): the invocation text is
-  prepared in the editor, never sent. An empty editor receives it directly.
-  With a draft, the form asks for the placement: *Insert at the cursor* pastes
-  through Pi's paste handling and keeps the draft; *Replace the draft* keeps
-  the removed draft recoverable through **Restore replaced draft** in
-  Commands.
-- The query, the selection, and typed arguments survive closing and reopening
-  within the session.
 
 ### Model
 
@@ -248,13 +214,12 @@ set the window title, write the clipboard, or emit a hyperlink.
 ## Files
 
 - `index.ts`: registration, the footer factory, the pointer targets, tick
-  ownership, view lifecycle, and the `/statusline`, `/commands`, and
-  `/statuses` commands.
-- `views.ts`: the Commands, Model, and Statuses views.
+  ownership, view lifecycle, and the `/statusline` and `/statuses` commands.
+- `views.ts`: the Model and Statuses views.
 - `frame.ts`: the editor-slot frame, key row and More menu.
 - `browser.ts`, `form.ts`, `view-parts.ts`: list and detail layout, staged fields,
   and bounded reading and selection.
-- `commands.ts`: exact command dispatch and editor placement for prompts and skills.
+- `commands.ts`: guarded command dispatch from footer status cells.
 - `metrics.ts`: session usage aggregation and bounded append catch-up.
 - `format.ts`: pure formatting, cache telemetry, and width-shedding composition
   with the model and count spans used for hit-testing.

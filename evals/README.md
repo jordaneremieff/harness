@@ -16,21 +16,25 @@ Run all commands from the repository root. The participant
 provider, model ID, and thinking level before planning or execution.
 
 ```bash
-npm run evals -- validate prompts/tldr.eval.mts
+npm run evals -- validate prompts/policy-enforce.eval.mts
 
-npm run evals -- plan prompts/tldr.eval.mts \
+npm run evals -- plan prompts/policy-enforce.eval.mts \
   --participant anthropic/claude-model:high \
   --repetitions 1 \
   --allow-home-credentials \
   --grant-effect paid-model-inference \
+  --grant-effect credential-command-execution \
+  --grant-effect credential-refresh \
   --grant-effect read-approved-model-credentials \
   --grant-effect credential-resolution
 
-npm run evals -- run prompts/tldr.eval.mts \
+npm run evals -- run prompts/policy-enforce.eval.mts \
   --participant anthropic/claude-model:high \
   --repetitions 1 \
   --allow-home-credentials \
   --grant-effect paid-model-inference \
+  --grant-effect credential-command-execution \
+  --grant-effect credential-refresh \
   --grant-effect read-approved-model-credentials \
   --grant-effect credential-resolution \
   --approve sha256:<exact-plan-digest>
@@ -40,7 +44,7 @@ npm run evals -- inspect <run-id> --summary
 npm run evals -- inspect <run-id> --summary --case <case-id>
 npm run evals -- inspect <run-id> --case <case-id> --case <another-case-id>
 npm run evals -- inspect <run-id> --reveal
-npm run evals -- adjudicate <run-id> --verdict pass --preferred A --notes "Human review notes"
+npm run evals -- adjudicate <human-reviewed-run-id> --verdict pass --notes "Human review notes"
 npm run evals -- adjudicate <partial-run-id> --verdict pass --scope usable-executions --notes "Scoped human review notes"
 npm run evals -- delete <run-id> --approve <run-id>
 ```
@@ -111,26 +115,6 @@ A `tool-result` check has config `{ name: string, isError?: boolean, contentCont
   config: { name: "read", isError: true, contentContains: ["Blocked"], contentOmits: ["approved"] },
 }
 ```
-
-### Prompt behavior suites
-
-`prompts/tldr.eval.mts` compares the maintained short-by-default summary with
-a plain `tldr <hint>` message over identical synthetic context. It covers bare
-requests, long assessments, proposals, focus and form hints, whole-session
-scope, returning readers, receipts, delivery explanations, exact commands,
-missing context, repeated summaries, omission of optional bookkeeping, risks
-when decisions are mentioned, actor attribution, agent-coined terms, and
-rhetorical clutter. A shipped-command case checks practical use rather than
-a recap of tests and evaluation verdicts. Character limits and exact-span
-checks establish deterministic floors; human-required review decides whether
-the operator understands the discussion, its result, and what it means for use.
-The empty tool lists do not establish refusal of available tools.
-`prompts/tldr.eval.test.mts` checks resource resolution and passing and failing
-synthetic outputs without model inference.
-
-`prompts/templates.test.mts` checks discovery through the public Pi resource
-loader without model inference. Package discovery and an explicit candidate
-load remain separate from semantic quality and active-session readback.
 
 ### Policy enforcement suite
 

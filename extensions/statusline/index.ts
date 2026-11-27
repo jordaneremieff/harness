@@ -36,7 +36,6 @@ import {
 import { dispatchCommand } from "./commands.ts";
 import type { Frame } from "./frame.ts";
 import { MetricsCache, type SessionMetrics } from "./metrics.ts";
-import type { CommandsState } from "./views.ts";
 
 const TICK_MS = 5_000;
 /** Full reset bounds each label and status cell's own SGR state. */
@@ -215,12 +214,11 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	/** The installed footer's status provider; the Statuses view reads through it. */
 	let readStatuses: (() => ReadonlyMap<string, string>) | undefined;
 
-	let commandState: CommandsState | undefined;
 	let activeView: { frame?: Frame } | undefined;
 	const loadViews = () => Promise.all([import("./frame.ts"), import("./views.ts")]);
 
-	const viewNames = { commands: "Commands", model: "Model", statuses: "Statuses" };
-	/** Commands wait for the view; footer clicks use the same path without waiting. */
+	const viewNames = { model: "Model", statuses: "Statuses" };
+	/** The command waits for the view; footer clicks use the same path without waiting. */
 	async function openOwn(ctx: ExtensionContext, id: keyof typeof viewNames): Promise<void> {
 		if (ctx.mode !== "tui") {
 			if (ctx.hasUI) ctx.ui.notify(`The ${viewNames[id]} view requires an interactive Pi terminal.`, "warning");
@@ -234,12 +232,10 @@ export default function registerStatusline(pi: ExtensionAPI) {
 			if (activeView !== opening) return;
 			await openFrame(
 				ctx,
-				(host) => {
-					if (id === "model") return views.modelView(pi, ctx, host, () => requestRender());
-					if (id === "statuses") return views.statusesView(host, readStatuses);
-					commandState ??= views.createCommandsState();
-					return views.commandsView(pi, ctx, host, commandState);
-				},
+				(host) =>
+					id === "model"
+						? views.modelView(pi, ctx, host, () => requestRender())
+						: views.statusesView(host, readStatuses),
 				(frame) => {
 					opening.frame = frame;
 					// Release the editor slot before a close continuation dispatches another command.
@@ -252,14 +248,14 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * A click on a status cell runs the extension command named like its key, with no arguments, as the Commands
-	 * view runs one. False when no extension registers such a command, so the click stays with Pi.
+	 * A click on a status cell runs the extension command named like its key, with no arguments.
+	 * If no extension registers that command, the click stays with Pi.
 	 */
 	const statusCommand = (key: string) =>
 		pi.getCommands().find((candidate) => candidate.source === "extension" && candidate.name === key);
 	function runStatusCommand(ctx: ExtensionContext, key: string): void {
 		const command = statusCommand(key);
-		if (!command || dispatchCommand(pi, command, "").kind !== "sent")
+		if (!command || !dispatchCommand(pi, command))
 			ctx.ui.notify(`The /${sanitizeDisplay(key)} registration changed; Pi did not run it.`, "warning");
 	}
 
@@ -379,7 +375,6 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		const closing = activeView;
 		activeView = undefined;
 		closing?.frame?.close();
-		commandState = undefined;
 		stopTick();
 		current = undefined;
 		requestRender = () => {};
@@ -436,11 +431,6 @@ export default function registerStatusline(pi: ExtensionAPI) {
 				ctx.ui.notify(notice, "info");
 			}
 		},
-	});
-
-	pi.registerCommand("commands", {
-		description: "Browse every command, prompt and skill, and run or prepare one",
-		handler: async (_args, ctx) => openOwn(ctx, "commands"),
 	});
 
 	pi.registerCommand("statuses", {

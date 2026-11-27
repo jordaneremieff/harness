@@ -23,7 +23,7 @@ pi install /absolute/path/to/harness.releases/<name>
 ```
 
 Pi uses the local path directly, without copying it. The entry loads the
-snapshot's extensions, skills, and prompt templates together. After the first
+snapshot's extensions and skills together. After the first
 install, the [development workflow](conventions/worktrees.md) owns trial,
 activation, recovery, and publication. Follow
 [storage host retirement](pi-durable-harness.md#storage-host-retirement)
@@ -100,7 +100,7 @@ and its documented `PI_*` environment overrides. See the
      [Pi configuration](conventions/worktrees.md#pi-configuration).
    - For an extension that has its own settings entry, remove that entry.
    - `pi remove <source>` removes one configured source. For the harness
-     package source, that removes every harness extension, skill, and prompt.
+     package source, that removes every harness extension and skill.
 
    Start a new Pi process after the change. Stopping a load leaves the
    extension's stored data in place.
@@ -114,7 +114,6 @@ The harness is a Pi package. `package.json` declares the resources under the
 {
   "pi": {
     "skills": ["./skills"],
-    "prompts": ["./prompts"],
     "extensions": ["./extensions"]
   }
 }
@@ -146,8 +145,8 @@ The harness is a Pi package. `package.json` declares the resources under the
   or snapshot needs its own `npm ci`.
 - Validate changes against the installed Pi declarations, not only the tests.
 
-The manifest activates extensions, skills, and the prompt templates in
-`prompts/`. Other tracked package content has explicit consumers:
+The manifest activates extensions and skills. Other tracked package content has
+explicit consumers:
 
 - `pillars/` is the doctrine corpus served by the
   [Pillars extension](../extensions/pillars/README.md). The
@@ -157,10 +156,10 @@ The manifest activates extensions, skills, and the prompt templates in
   `config/pi/agent/AGENTS.md`. Machines deploy it through the explicit setup
   above; no package manifest entry activates it.
 - `docs/` explains this repository and owns repository conventions.
+- `prompts/` holds maintained evaluation suites and their colocated deterministic tests.
 - `scripts/` contains repository automation.
 
-The [prompt ownership convention](conventions/prompts.md) documents the shared
-prompt commands and their use. Maintained evaluations use the explicit,
+Maintained evaluations use the explicit,
 approval-gated [evaluation application](../evals/README.md). Evaluation evidence
 stays ignored under `.evals/`; no evaluation runs automatically in CI or normal
 tests.
@@ -292,7 +291,6 @@ documented surface:
   by cross-extension recovery seeds.
 - [Evaluation suites](conventions/evaluation-suites.md): package interfaces
   available to colocated suites and deterministic tests.
-- [Prompts](conventions/prompts.md): shared template ownership and commands.
 - [Development workflow](conventions/worktrees.md): branches, checks, push, routing.
 
 New cross-extension behavior belongs here before it ships: write the

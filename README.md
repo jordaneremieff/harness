@@ -1,7 +1,7 @@
 # harness
 
 My personal [Pi](https://github.com/earendil-works/pi) harness: a Pi package of
-extensions, skills, prompt templates, design doctrine, and shared configuration.
+extensions, skills, design doctrine, and shared configuration.
 I use it to shape how the agent works across projects and machines. It builds on
 Pi's own capabilities instead of maintaining a parallel agent core; the
 [durable-harness track](docs/pi-durable-harness.md) records the upstream
@@ -16,9 +16,6 @@ for tool composition, inherited tool selection, and explicit MCP allowlists.
 - [Extensions](extensions/): executable tools, commands, and interface changes.
   Each extension directory has its own README.
 - [Skills](skills/): task procedures, each defined in a `SKILL.md` file.
-- [Prompt templates](prompts/): operator-invoked shortcuts, including
-  [`/tldr [hint]`](prompts/tldr.md) for a short, plain-language summary.
-  See the [prompt convention](docs/conventions/prompts.md) for use and ownership.
 - [Pillars](pillars/README.md): principles, patterns, and heuristics that guide
   agent judgment.
 - [Documentation](docs/): [architecture](docs/architecture.md) and [repository conventions](docs/conventions/).

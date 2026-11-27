@@ -68,9 +68,6 @@ interface MockUi {
 	setFooter(factory: MockFactory | undefined): void;
 	notify(message: string, type?: string): void;
 	custom(factory: CustomFactory, options?: unknown): Promise<unknown>;
-	getEditorText(): string;
-	setEditorText(text: string): void;
-	pasteToEditor(text: string): void;
 }
 
 interface MockCtx {
@@ -125,7 +122,6 @@ interface CtxOverrides {
 	mode?: string;
 	hasUI?: boolean;
 	tuiMode?: "regular" | "fullscreen";
-	editorText?: string;
 	cwd?: string;
 	model?: MockModel;
 	models?: MockModel[];
@@ -232,9 +228,7 @@ function makeCtx(over: CtxOverrides = {}) {
 	const noticeLevels: (string | undefined)[] = [];
 	const branchChangeCbs: (() => void)[] = [];
 	const customCalls: Array<{ factory: CustomFactory; options: unknown }> = [];
-	const editorCalls: string[] = [];
 	const state = { idle: true, aborts: 0 };
-	let editorText = over.editorText ?? "";
 	let customDriver: CustomDriver | undefined;
 	const model = over.model ?? {
 		id: "test-model",
@@ -276,15 +270,6 @@ function makeCtx(over: CtxOverrides = {}) {
 					customDriver = undefined;
 					driver?.(factory, resolve, reject);
 				}),
-			getEditorText: () => editorText,
-			setEditorText: (text) => {
-				editorCalls.push(`set:${text}`);
-				editorText = text;
-			},
-			pasteToEditor: (text) => {
-				editorCalls.push(`paste:${text}`);
-				editorText += text;
-			},
 		},
 	};
 	const footerData: MockFooterData = {
@@ -343,9 +328,7 @@ function makeCtx(over: CtxOverrides = {}) {
 		tui,
 		branchChangeCbs,
 		customCalls,
-		editorCalls,
 		onNextFrame,
-		editorText: () => editorText,
 	};
 }
 
@@ -389,43 +372,15 @@ function typeText(frame: Frame, text: string): void {
 	for (const character of text) frame.handleInput(character);
 }
 
-/** Focus the search field with `/`, type to filter the command list, then return to the list. */
-function filterTo(frame: Frame, text: string): void {
-	frame.handleInput("/");
-	typeText(frame, text);
-	frame.handleInput("\r");
-}
-
-/** Click the footer control drawn as `label`, at the position the last render gave it. */
-function clickFooter(frame: Frame, label: string, width = 160): void {
-	const lines = frame.render(width);
-	const row = strip(lines.at(-1) ?? "");
-	const at = row.indexOf(label);
-	assert.ok(at >= 0, `no footer control ${label} in: ${row}`);
-	const event: TuiMouseEvent = {
-		type: "click",
-		button: "left",
-		x: at,
-		y: lines.length - 1,
-		screenX: at,
-		screenY: lines.length - 1,
-		width,
-		height: lines.length,
-		shift: false,
-		alt: false,
-		ctrl: false,
-	};
-	assert.ok(frame.handleMouse(event)?.handled, `${label} is clickable`);
-}
-
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("registration and mode gating", () => {
-	it("registers the toggle, the view commands and session handlers", () => {
+	it("registers the toggle, Statuses and session handlers", () => {
 		const { handlers, commands } = makePi();
 		assert.ok(handlers.has("session_start"));
 		assert.ok(handlers.has("session_shutdown"));
-		for (const name of ["statusline", "commands", "statuses"]) assert.ok(commands.has(name), name);
+		for (const name of ["statusline", "statuses"]) assert.ok(commands.has(name), name);
+		assert.equal(commands.has("commands"), false);
 		assert.equal(
 			commands.has("model-reasoning"),
 			false,
@@ -987,214 +942,25 @@ describe("status clicks", () => {
 			plain.dispose();
 		}
 	});
-});
 
-describe("Commands view", () => {
-	it("sends an extension command only after an explicit Run with the exact current registration", async () => {
-		const review = registration("review:1", { description: "Review the current diff" });
-		const { handlers, commands, sent } = makePi(() => [registration("evo"), review]);
-		const mocks = makeCtx({});
-		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		const done = mocks.onNextFrame(async (frame) => {
-			filterTo(frame, "review");
-			assert.match(frameText(frame), /Review the current diff/);
-			assert.equal(sent.length, 0, "selection sends nothing");
-			act(frame, "Run with arguments…");
-			typeText(frame, "src/index.ts");
-			assert.equal(sent.length, 0, "typing sends nothing");
-			act(frame, "Run");
-		});
-		await commands.get("commands").handler("", mocks.ctx);
-		await done;
-		assert.deepEqual(sent, [{ content: "/review:1 src/index.ts", options: { expandPromptTemplates: true } }]);
-	});
-
-	it("shows enter run in the footer, and Enter and a footer click both run the selected command", async () => {
-		const { handlers, commands, sent } = makePi(() => [
-			registration("review:1", { description: "Review the current diff" }),
-		]);
-		const mocks = makeCtx({});
-		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		const byKey = mocks.onNextFrame((frame) => {
-			filterTo(frame, "review");
-			const row = strip(frame.render(160).at(-1) ?? "");
-			for (const control of ["enter run", "a arguments", "esc close"])
-				assert.ok(row.includes(control), `${control} in: ${row}`);
-			frame.handleInput("\r");
-		});
-		await commands.get("commands").handler("", mocks.ctx);
-		await byKey;
-		const byClick = mocks.onNextFrame((frame) => {
-			// The query and selection survive reopening, so the list is already filtered.
-			clickFooter(frame, "enter run");
-		});
-		await commands.get("commands").handler("", mocks.ctx);
-		await byClick;
-		assert.deepEqual(sent, [
-			{ content: "/review:1", options: { expandPromptTemplates: true } },
-			{ content: "/review:1", options: { expandPromptTemplates: true } },
-		]);
-	});
-
-	it("keeps unsent arguments and the selection when the frame closes and reopens", async () => {
-		const { handlers, commands, sent } = makePi(() => [registration("evo"), registration("review:1")]);
-		const mocks = makeCtx({});
-		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		let done = mocks.onNextFrame((frame) => {
-			filterTo(frame, "review");
-			act(frame, "Run with arguments…");
-			typeText(frame, "half typed");
-			frame.handleInput("\u001b");
-			frame.handleInput("\u001b");
-		});
-		await commands.get("commands").handler("", mocks.ctx);
-		await done;
-		done = mocks.onNextFrame((frame) => {
-			assert.match(frameText(frame), /Unsent arguments: half typed/);
-			act(frame, "Run with arguments…");
-			assert.match(frameText(frame), /half typed/);
-		});
-		await commands.get("commands").handler("", mocks.ctx);
-		await done;
-		assert.equal(sent.length, 0);
-	});
-
-	it("refuses a command whose registration disappeared and sends nothing", async () => {
-		let inventory = [registration("evo"), registration("review:1")];
-		const { handlers, commands, sent } = makePi(() => inventory);
-		const mocks = makeCtx({});
-		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		const done = mocks.onNextFrame((frame) => {
-			filterTo(frame, "review");
-			inventory = [registration("evo")];
-			act(frame, "Run");
-		});
-		await commands.get("commands").handler("", mocks.ctx);
-		await done;
-		assert.equal(sent.length, 0, "a disappeared command is never sent as a prompt");
-		assert.equal(
-			mocks.notifications.at(-1),
-			"The selected /review:1 registration changed; Pi did not send the command.",
+	it("does not run a footer command if the registration changes before dispatch", async () => {
+		let reads = 0;
+		const { handlers, sent } = makePi(() =>
+			++reads <= 2 ? [registration("jobs")] : [registration("jobs", { sourceInfo: { path: "/other/jobs.ts" } })],
 		);
-		assert.equal(mocks.noticeLevels.at(-1), "warning");
-	});
-
-	it("refuses a same-name command when its provenance changes after selection", async () => {
-		const selected = registration("review:1");
-		const { commands, sent } = makePi(() => [selected]);
-		const mocks = makeCtx();
-		const done = mocks.onNextFrame((frame) => {
-			filterTo(frame, "review");
-			selected.sourceInfo.path = "/ext/replacement/index.ts";
-			frame.handleInput("\r");
-		});
-		await commands.get("commands").handler("", mocks.ctx);
-		await done;
-		assert.deepEqual(sent, []);
-		assert.equal(
-			mocks.notifications.at(-1),
-			"The selected /review:1 registration changed; Pi did not send the command.",
-		);
-		assert.equal(mocks.noticeLevels.at(-1), "warning");
-	});
-
-	it("keeps printable keys in search and lets More and Escape leave the edit in order", async () => {
-		const { commands, sent } = makePi(() => [registration("example")]);
-		const mocks = makeCtx();
-		const done = mocks.onNextFrame((frame) => {
-			assert.equal(frame.capturesViewportInput, true);
-			frameText(frame);
-			frame.handleInput("/");
-			typeText(frame, "ex");
-			assert.match(frameText(frame), /1 of \d+ commands/);
-			assert.match(frameText(frame), /ctrl\+n more/);
-			frame.handleInput("\x0e");
-			assert.match(frameText(frame), /\nMore\s*\n/);
-			frame.handleInput("\x1b");
-			assert.doesNotMatch(frameText(frame), /\nMore\s*\n/);
-			assert.match(frameText(frame), /Search {2}ex/);
-			frame.handleInput("\x1b");
-			assert.match(frameText(frame), /type to find a command/);
-			frame.handleInput("\x1b");
-			assert.match(frameText(frame), /esc close/);
-		});
-		await commands.get("commands").handler("", mocks.ctx);
-		await done;
-		assert.deepEqual(sent, []);
-	});
-
-	it("prepares a prompt template into an empty editor and never sends it", async () => {
-		const { handlers, commands, sent } = makePi(() => [registration("recap", { source: "prompt" })]);
-		const mocks = makeCtx({});
+		const mocks = makeCtx({ tuiMode: "fullscreen", statuses: new Map([["jobs", "jobs ready"]]) });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		const done = mocks.onNextFrame((frame) => {
-			filterTo(frame, "recap");
-			assert.deepEqual(
-				frame.viewActions.map((action) => action.label),
-				["Put in editor…"],
-				"a prompt offers no Run",
-			);
-			act(frame, "Put in editor…");
-			assert.doesNotMatch(frameText(frame), /Placement/, "an empty editor needs no placement choice");
-			typeText(frame, "today");
-			act(frame, "Put in editor");
-		});
-		await commands.get("commands").handler("", mocks.ctx);
-		await done;
-		assert.equal(sent.length, 0);
-		assert.deepEqual(mocks.editorCalls, ["set:/recap today"]);
-	});
-
-	it("keeps an existing draft unless the operator chooses Replace, then offers recovery", async () => {
-		const { handlers, commands, sent } = makePi(() => [registration("skill:dig", { source: "skill" })]);
-		const mocks = makeCtx({ editorText: "half-written draft" });
-		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		let done = mocks.onNextFrame((frame) => {
-			filterTo(frame, "dig");
-			act(frame, "Put in editor…");
-			assert.match(frameText(frame), /Insert at the cursor/);
-			frame.handleInput("\r");
-			frame.handleInput("\u001b[B");
-			assert.match(frameText(frame), /Replace the draft/);
-			act(frame, "Put in editor");
-		});
-		await commands.get("commands").handler("", mocks.ctx);
-		await done;
-		assert.equal(sent.length, 0);
-		assert.deepEqual(mocks.editorCalls, ["set:/skill:dig"]);
-		assert.match(mocks.notifications.at(-1) ?? "", /Restore replaced draft/);
-		done = mocks.onNextFrame((frame) => act(frame, "Restore replaced draft"));
-		await commands.get("commands").handler("", mocks.ctx);
-		await done;
-		assert.equal(mocks.editorCalls.at(-1), "paste:half-written draft", "recovery inserts into the current editor text");
-	});
-
-	it("closes an open frame on session shutdown without sending", async () => {
-		const { handlers, commands, sent } = makePi();
-		const mocks = makeCtx({});
-		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		let frame: Frame | undefined;
-		mocks.ctx.ui.custom = (factory) =>
-			new Promise((resolve) => {
-				frame = factory(mocks.tui, mocks.theme, { getKeys: () => [] }, resolve) as Frame;
-			});
-		const pending = commands.get("commands").handler("", mocks.ctx);
-		for (let attempt = 0; !frame && attempt < 400; attempt++) await turn();
-		assert.ok(frame, "the frame opened");
-		filterTo(frame, "review");
-		await handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mocks.ctx);
-		await pending;
-		assert.equal(sent.length, 0);
-	});
-
-	it("explains the terminal requirement outside tui mode", async () => {
-		const { handlers, commands } = makePi();
-		const rpc = makeCtx({ mode: "rpc", hasUI: true });
-		await handlers.get("session_start")(sessionStart, rpc.ctx);
-		await commands.get("commands").handler("", rpc.ctx);
-		assert.equal(rpc.notifications.at(-1), "The Commands view requires an interactive Pi terminal.");
-		assert.equal(rpc.noticeLevels.at(-1), "warning");
-		assert.equal(rpc.customCalls.length, 0);
+		const footer = installFooter(mocks);
+		try {
+			const line = strip(footer.render(120)[1]);
+			const x = line.indexOf("jobs ready");
+			assert.ok(x >= 0);
+			assert.equal(footer.handleMouse?.(click(x, 1, 120))?.handled, true);
+			assert.deepEqual(sent, []);
+			assert.match(mocks.notifications.at(-1) ?? "", /registration changed/);
+		} finally {
+			footer.dispose();
+		}
 	});
 });
 
