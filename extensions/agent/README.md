@@ -5848,10 +5848,25 @@ mode the command shows the ID without copying it.
 
 ## Primary restart and continuity
 
-`/restart` performs the ordinary Pi shutdown and restarts the CLI with its saved
-session. It refuses unsaved sessions, active primary work, and unsupported host
-modes. Independent Durable hosts continue. Other extensions' process-local work
-still ends with the primary process.
+`/restart` performs the ordinary Pi shutdown, then replaces the process in
+place and opens its saved session. It refuses unsaved sessions, active primary
+work, and unsupported host modes. Independent Durable hosts continue. Other
+extensions' process-local work still ends with the primary process.
+
+The replacement keeps the current agent directory and repeats Pi's restriction
+and resource flags as typed, including tool lists, extension paths, and system
+prompts. It does not repeat the original prompt, session selectors, or flags
+registered by extensions. The recovery command printed before replacement also
+includes the repeated flags. Restart refuses arguments with terminal control
+characters, including line breaks in flag values.
+
+On macOS, `/restart` reads the terminal's Program Resume token from the process's
+initial environment and passes it only to the replacement process. Pi clears its
+old record during shutdown and reports the current session after replacement.
+Pi then updates the record when you change sessions and clears it on `/quit`.
+A terminal must trust the reported command before it restores the session. If
+the token is absent or unreadable, `/restart` still opens the saved session,
+but terminal resume stays unavailable until Pi starts fresh with a token.
 
 Ordinary session shutdown waits for its own primary channel and endpoint removal
 before process replacement. A status-display error does not bypass that cleanup.

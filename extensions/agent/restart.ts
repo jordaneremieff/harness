@@ -1,6 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync, statSync, writeSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { getPackageDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getPackageDir, parseArgs, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export interface RestartHosts {
 	/** A stable snapshot of this extension's process-local owners, not sibling work. */
@@ -47,18 +48,94 @@ function safeCause(error: unknown): string {
 	return "restart operation unavailable";
 }
 
+function resumeFlags(argv: string[]): string[] {
+	const args: string[] = [];
+	for (let i = 2; i < argv.length; i++) {
+		if (argv[i] === "--") {
+			args.push(...argv.slice(i));
+			break;
+		}
+		// Pi consumes its profile selector before parseArgs and carries it in the environment.
+		if (argv[i] === "--agent-dir") i++;
+		else args.push(argv[i]);
+	}
+	return parseArgs(args).resumeFlags;
+}
+
+const tokenVariable = "OSC7577_TOKEN";
+const procArgsProgram = String.raw`
+ObjC.import('Foundation');
+ObjC.bindFunction('sysctl', ['int', ['void *', 'unsigned int', 'void *', 'void *', 'void *', 'unsigned long']]);
+function run(argv) {
+  const mib = $.NSData.alloc.initWithBase64EncodedStringOptions(argv[0], 0);
+  const size = $.NSMutableData.alloc.initWithBase64EncodedStringOptions(argv[1], 0);
+  const buffer = $.NSMutableData.dataWithLength(Number(argv[2]));
+  if ($.sysctl(mib.bytes, 3, buffer.mutableBytes, size.mutableBytes, null, 0) !== 0) return '';
+  const text = $.NSString.alloc.initWithDataEncoding(buffer, $.NSISOLatin1StringEncoding).js;
+  const prefix = '\0' + argv[3] + '=';
+  const start = text.lastIndexOf(prefix);
+  if (start < 0) return '';
+  const valueStart = start + prefix.length;
+  const end = text.indexOf('\0', valueStart);
+  if (end < 0) return '';
+  const value = text.slice(valueStart, end);
+  return /^[A-Za-z0-9_-]{22,64}(?![\s\S])/.test(value) ? value : '';
+}
+`;
+
+export function readInitialResumeToken(pid: number, name: string, run = execFileSync): string | undefined {
+	try {
+		// KERN_PROCARGS2 retains the initial environment even if Pi replaces its process title.
+		const mib = Buffer.alloc(12);
+		mib.writeInt32LE(1, 0); // CTL_KERN
+		mib.writeInt32LE(49, 4); // KERN_PROCARGS2
+		mib.writeInt32LE(pid, 8);
+		const capacity = 1024 * 1024;
+		const size = Buffer.alloc(8);
+		size.writeBigUInt64LE(BigInt(capacity));
+		const out = run(
+			"/usr/bin/osascript",
+			[
+				"-l",
+				"JavaScript",
+				"-e",
+				procArgsProgram,
+				mib.toString("base64"),
+				size.toString("base64"),
+				String(capacity),
+				name,
+			],
+			{
+				encoding: "utf8",
+				env: {},
+				stdio: ["ignore", "pipe", "ignore"],
+				timeout: 2000,
+				killSignal: "SIGKILL",
+				maxBuffer: 1024,
+			},
+		);
+		const value = out.replace(/\n$/u, "");
+		return /^[A-Za-z0-9_-]{22,64}(?![\s\S])/u.test(value) ? value : undefined;
+	} catch {
+		// Child process errors may retain stdout. Never expose them.
+		return undefined;
+	}
+}
+
 /** Pi owns graceful cleanup. This listener runs only at its final successful exit. */
 export function armRestart(
 	launch: RestartLaunch,
 	host: RestartProcess = process,
 	write: (fd: number, text: string) => unknown = writeSync,
+	token?: string,
 ): () => void {
 	const listener = (code: number): void => {
 		if (code !== 0) return;
 		try {
 			write(1, `Restarting Pi. If it does not return, run: ${launch.args.map(shellQuote).join(" ")}\n`);
 			if (!host.execve) throw new Error("execve unavailable");
-			host.execve(launch.executable, launch.args, host.env);
+			const env = token ? { ...host.env, [tokenVariable]: token } : host.env;
+			host.execve(launch.executable, launch.args, env);
 		} catch (error) {
 			host.exitCode = 1;
 			try {
@@ -81,6 +158,7 @@ interface RestartOptions {
 	packageDir?: () => string;
 	guard?: RestartGuard;
 	write?: (fd: number, text: string) => unknown;
+	readToken?: () => string | undefined;
 }
 
 class RestartRefusal extends Error {}
@@ -139,6 +217,7 @@ export function createRestartCommand(options: RestartOptions) {
 	const host = options.process ?? process;
 	shared[guardKey] ??= { pending: false };
 	const guard = options.guard ?? shared[guardKey];
+	const readToken = options.readToken ?? (() => readInitialResumeToken(process.pid, tokenVariable));
 	const preflight = (ctx: ExtensionContext): { identity: string; launch: RestartLaunch } => {
 		if (!ctx.hasUI || ctx.mode !== "tui" || options.managedChild(ctx)) throw new RestartRefusal(cliRefusal);
 		const cli = cliPath(host, options.packageDir ?? getPackageDir);
@@ -152,7 +231,16 @@ export function createRestartCommand(options: RestartOptions) {
 		const sessionDir = native.getSessionDir();
 		const launch = {
 			executable: host.execPath,
-			args: [host.execPath, ...host.execArgv, cli, "--session-dir", sessionDir, "--session", sessionFile],
+			args: [
+				host.execPath,
+				...host.execArgv,
+				cli,
+				"--session-dir",
+				sessionDir,
+				"--session",
+				sessionFile,
+				...resumeFlags(host.argv),
+			],
 		};
 		if (launch.args.some((arg) => /[\x00-\x1f\x7f-\x9f]/u.test(arg)))
 			throw new RestartRefusal("Pi restart requires launch arguments without terminal control characters.");
@@ -202,7 +290,7 @@ export function createRestartCommand(options: RestartOptions) {
 				const after = preflight(ctx);
 				if (before.identity !== after.identity)
 					throw new RestartRefusal("Pi restart requires fresh confirmation after the session or agent hosts change.");
-				disarm = armRestart(after.launch, host, options.write);
+				disarm = armRestart(after.launch, host, options.write, readToken());
 				ctx.shutdown();
 				committed = true;
 			} catch (error) {

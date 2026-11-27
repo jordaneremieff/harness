@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
 	chmodSync,
@@ -17,7 +18,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { armRestart, createRestartCommand, type RestartHosts, type RestartProcess } from "./restart.ts";
+import {
+	armRestart,
+	createRestartCommand,
+	readInitialResumeToken,
+	type RestartHosts,
+	type RestartProcess,
+} from "./restart.ts";
 
 function fixture() {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-restart-")));
@@ -85,6 +92,7 @@ function fixture() {
 		managedChild: () => state.managed,
 		hosts: () => state.hosts,
 		guard,
+		readToken: (): string | undefined => undefined,
 	};
 	const command = createRestartCommand(options);
 	return {
@@ -453,10 +461,27 @@ test("restart excludes duplicate admission across registered command instances",
 	}
 });
 
-test("accepted restart arms once before graceful shutdown with exact argv and unchanged environment", async () => {
+test("accepted restart preserves Pi resume flags and uses the unchanged environment without a token", async () => {
 	const f = fixture();
 	const output: string[] = [];
+	const flags = ["-e", "./ext.ts", "--tools", "read,grep", "-ne"];
 	try {
+		f.host.argv = [
+			process.execPath,
+			f.cli,
+			"--agent-dir",
+			"./profile",
+			"--session-dir",
+			"./old-sessions",
+			"--session",
+			"old-session",
+			"--fork",
+			"another-session",
+			...flags,
+			"--",
+			"a prompt",
+			"--no-tools",
+		];
 		let captured: unknown[] = [];
 		f.ctx.ui.confirm = async (title, body) => {
 			assert.equal(title, "Restart this Pi session?");
@@ -482,16 +507,59 @@ test("accepted restart arms once before graceful shutdown with exact argv and un
 		f.events.emit("exit", 0);
 		assert.deepEqual(captured, [
 			process.execPath,
-			[process.execPath, ...f.host.execArgv, f.cli, "--session-dir", f.root, "--session", f.session],
+			[process.execPath, ...f.host.execArgv, f.cli, "--session-dir", f.root, "--session", f.session, ...flags],
 			f.host.env,
 		]);
 		assert.equal(captured[2], f.host.env);
 		assert.equal(f.events.listenerCount("exit"), 0);
 		assert.match(output[0], /'\\''quoted'\\''/u);
 		assert.match(output[0], /^Restarting Pi\./u);
-		assert.doesNotMatch(output.join(""), /not printed|sensitive text|--fork|a prompt/u);
+		assert.ok(output[0].endsWith("'-e' './ext.ts' '--tools' 'read,grep' '-ne'\n"));
+		assert.doesNotMatch(
+			output.join(""),
+			/not printed|sensitive text|--agent-dir|old-session|--fork|a prompt|--no-tools/u,
+		);
 		assert.match(output[1], /failed after shutdown: invalid restart arguments/u);
 		assert.equal(f.host.exitCode, 1);
+	} finally {
+		f.close();
+	}
+});
+
+test("restart reads the token before shutdown and gives it only to the replacement environment", async () => {
+	const f = fixture();
+	const token = randomBytes(24).toString("base64url");
+	const output: string[] = [];
+	const originalEnv = { ...f.host.env };
+	let capturedEnv: NodeJS.ProcessEnv | undefined;
+	try {
+		const command = createRestartCommand({
+			...f.options,
+			hosts: () => {
+				f.calls.push("preflight");
+				return f.state.hosts;
+			},
+			readToken: () => {
+				f.calls.push("read token");
+				return token;
+			},
+			write: (_fd, text) => output.push(text),
+		});
+		f.host.execve = (_file, _args, env) => {
+			capturedEnv = env;
+			throw new Error(token);
+		};
+		await command.handler("", f.ctx);
+		assert.deepEqual(f.calls, ["preflight", "confirm", "preflight", "read token", "shutdown"]);
+		f.events.emit("exit", 0);
+		assert.deepEqual(f.calls, ["preflight", "confirm", "preflight", "read token", "shutdown"]);
+		const actualEnv = capturedEnv;
+		assert.ok(actualEnv?.OSC7577_TOKEN === token);
+		assert.equal(Object.keys(actualEnv).length, Object.keys(originalEnv).length + 1);
+		assert.deepEqual(Object.fromEntries(Object.keys(originalEnv).map((key) => [key, actualEnv[key]])), originalEnv);
+		assert.deepEqual(f.host.env, originalEnv);
+		assert.ok(!output.some((text) => text.includes(token)));
+		assert.ok(!f.notices.some((text) => text.includes(token)));
 	} finally {
 		f.close();
 	}
@@ -525,6 +593,56 @@ test("shutdown rejection removes the listener and releases admission without uns
 	} finally {
 		f.close();
 	}
+});
+
+test("initial environment reader works after a process title change and environment deletion", {
+	skip: process.platform !== "darwin",
+	timeout: 15_000,
+}, async () => {
+	const marker = randomBytes(24).toString("base64url");
+	const child = spawn(
+		process.execPath,
+		[
+			"-e",
+			`
+		process.title = 'pi';
+		delete process.env.RESTART_FIXTURE_MARKER;
+		delete process.env.RESTART_FIXTURE_MALFORMED;
+		process.stdout.write('ready');
+		process.stdin.resume();
+	`,
+		],
+		{
+			env: { RESTART_FIXTURE_MARKER: marker, RESTART_FIXTURE_MALFORMED: `${marker}\n` },
+			stdio: ["pipe", "pipe", "ignore"],
+		},
+	);
+	const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+	try {
+		const ready = await new Promise<boolean>((resolve, reject) => {
+			child.stdout.once("data", (data: Buffer) => resolve(data.toString() === "ready"));
+			child.once("error", reject);
+			void closed.then(() => resolve(false));
+		});
+		assert.ok(ready && child.pid);
+		assert.ok(readInitialResumeToken(child.pid, "RESTART_FIXTURE_MARKER") === marker);
+		assert.equal(readInitialResumeToken(child.pid, "RESTART_FIXTURE_MISSING") === undefined, true);
+		assert.equal(readInitialResumeToken(child.pid, "RESTART_FIXTURE_MALFORMED") === undefined, true);
+	} finally {
+		child.stdin.end();
+		child.kill();
+		await closed;
+	}
+});
+
+test("initial environment reader discards osascript errors without exposing output", () => {
+	const marker = randomBytes(24).toString("base64url");
+	assert.equal(
+		readInitialResumeToken(process.pid, "RESTART_FIXTURE_MARKER", () => {
+			throw Object.assign(new Error("osascript failed"), { stdout: marker });
+		}),
+		undefined,
+	);
 });
 
 test("restart replaces the process after graceful cleanup with the same PID", {
