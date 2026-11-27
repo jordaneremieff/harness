@@ -488,6 +488,8 @@ interface RosterViewport {
 	footer?: { text: string; color: ThemeColor };
 	/** Two rows per agent, without the activity or reason row, for a list with little height. */
 	compact?: boolean;
+	/** Keep the agent rows, but omit sections from a list of running work. */
+	flat?: boolean;
 	range?(start: number, maxStart: number): void;
 	row?(row: AgentConversationSummary, line: number, height: number): void;
 }
@@ -519,7 +521,7 @@ function groupHeading(group: RosterGroup, total: SectionTotal, theme: Theme): st
 /** The lines from row `start` on: each section's heading before its first shown row. */
 function layoutFrom(
 	rows: readonly AgentConversationSummary[],
-	groups: readonly RosterGroup[],
+	groups: readonly RosterGroup[] | undefined,
 	start: number,
 	height: number,
 	compact = false,
@@ -530,7 +532,7 @@ function layoutFrom(
 	for (let index = start; index < rows.length; index++) {
 		const row = rows[index];
 		const size = row && !compact ? rosterRowCount(row) : ROSTER_ROWS;
-		const heading = index === start || groups[index] !== groups[index - 1];
+		const heading = groups && (index === start || groups[index] !== groups[index - 1]);
 		const headingRows = heading ? (lines === 0 ? 1 : 2) : 0;
 		if (lines + headingRows + size > height) break;
 		if (heading) {
@@ -570,7 +572,7 @@ function sectionTotals(
 /** Keep the selection in view unless the operator chose an explicit scroll position. */
 function rosterWindow(
 	rows: readonly AgentConversationSummary[],
-	groups: readonly RosterGroup[],
+	groups: readonly RosterGroup[] | undefined,
 	selected: string | undefined,
 	room: number,
 	requested: number | undefined,
@@ -601,9 +603,9 @@ function deriveRoster(
 	theme: Theme,
 	viewport?: RosterViewport,
 ): DerivedRoster {
-	const groups = rows.map((row) => rosterGroup(row, now));
-	const totals = sectionTotals(rows, groups);
 	const compact = viewport?.compact ?? false;
+	const groups = viewport?.flat ? undefined : rows.map((row) => rosterGroup(row, now));
+	const totals = groups && sectionTotals(rows, groups);
 	const room = Math.max(ROSTER_ROWS + 1, height - 1);
 	const { start, maxStart } = rosterWindow(rows, groups, selected, room, viewport?.start, compact);
 	const layout = layoutFrom(rows, groups, start, room, compact);
@@ -615,8 +617,8 @@ function deriveRoster(
 		const heading = layout.headings.find((item) => item.index === index);
 		if (heading) {
 			if (!heading.first) lines.push("");
-			const group = groups[index] ?? "earlier";
-			lines.push(groupHeading(group, totals.get(group) ?? { count: 0, cost: 0, partial: false }, theme));
+			const group = groups?.[index] ?? "earlier";
+			lines.push(groupHeading(group, totals?.get(group) ?? { count: 0, cost: 0, partial: false }, theme));
 		}
 		const block = rosterRow(row, rows, selected, width, theme, now, viewport?.reasons, compact);
 		const line = lines.length;
@@ -669,6 +671,7 @@ export function rosterLines(
 		viewport?.start,
 		viewport?.footer,
 		viewport?.compact ?? false,
+		viewport?.flat ?? false,
 	]);
 	let derived = cache.get(key);
 	if (!derived) {

@@ -454,12 +454,12 @@ it("registered list separates evidence warnings from exact pagination at 60 colu
 	const args = { query: "review" };
 	const next = { ...args, cursor: "YWJj" };
 	const call = `agent_list(${JSON.stringify(next)})`;
-	for (const [unavailable, profileGap] of [
-		[false, false],
-		[true, false],
-		[false, true],
-		[true, true],
-	]) {
+	for (const [unavailable, profileGap, expectedWarnings] of [
+		[false, false, []],
+		[true, false, ["[Discovery evidence incomplete]"]],
+		[false, true, ["[Profile search incomplete]"]],
+		[true, true, ["[Discovery evidence incomplete]"]],
+	] as const) {
 		const warnings: string[] = [];
 		const component = nativeTool(
 			"agent_list",
@@ -481,12 +481,16 @@ it("registered list separates evidence warnings from exact pagination at 60 colu
 		const collapsed = text(component, 60);
 		assert.match(collapsed, /0 conversations on this page; next page available/u);
 		assert.doesNotMatch(collapsed, /YWJj/u);
-		const incomplete = unavailable || profileGap;
-		if (incomplete) assert.match(collapsed, /^\s*\[Discovery evidence incomplete\]\s*$/mu);
-		else assert.doesNotMatch(collapsed, /Discovery evidence incomplete/u);
-		assert.deepEqual(warnings, incomplete ? ["[Discovery evidence incomplete]"] : []);
+		const displayedWarnings = collapsed
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line.startsWith("["));
+		assert.deepEqual(displayedWarnings, expectedWarnings);
+		assert.deepEqual(warnings, expectedWarnings);
 		component.setExpanded(true);
-		assert.ok(text(component, 60).includes(`Next page: ${call}`));
+		const expanded = text(component, 60);
+		assert.ok(expanded.includes(`Next page: ${call}`));
+		assert.equal(/^\s*Profile search incomplete\s*$/mu.test(expanded), unavailable && profileGap);
 	}
 });
 

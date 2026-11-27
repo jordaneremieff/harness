@@ -244,6 +244,7 @@ it("status leads with observed activity and keeps its source and limits", () => 
 		name: "Parser review",
 		busy: true,
 		availability: "live",
+		runId: 42,
 		model: { provider: "provider", modelId: "model" },
 		thinkingLevel: "high",
 		timers: 0,
@@ -258,13 +259,14 @@ it("status leads with observed activity and keeps its source and limits", () => 
 	const working = screen(card, 60);
 	assert.match(
 		working,
-		/^agent_status Parser review\nprovider\/model · high · selected status\nWorking\nDurable agent · live host observation/u,
+		/^agent_status Parser review\nprovider\/model · high · selected status\nWorking · run 42\nDurable agent · live host observation/u,
 	);
-	assert.doesNotMatch(working, /Activity:|0 timers|unplaced|work open/u);
-	assert.match(working, /\[Compact status omits facts; see full detail\]/u);
+	assert.doesNotMatch(working, /Activity:|0 timers|unplaced|work open|Compact status omits|host inventory/u);
+	assert.equal(hints(working).length, 1);
 	card.setExpanded(true);
-	assert.match(screen(card), /Working\nDurable agent · live host observation/u);
-	assert.match(screen(card), /\[Compact status omits facts; see full detail\]/u);
+	assert.match(screen(card), /Working · run 42\nDurable agent · live host observation/u);
+	assert.ok(screen(card).includes(`Get full detail with agent_status(${JSON.stringify({ ...args, detail: true })})`));
+	assert.match(screen(card), /Omitted host inventory/u);
 
 	const idle = nativeRow("agent_status", args, {
 		format: "compact",
@@ -278,11 +280,14 @@ it("status leads with observed activity and keeps its source and limits", () => 
 		},
 	});
 	assert.match(screen(idle), /\nIdle\nDurable agent · live host observation/u);
-	assert.match(screen(idle), /1 timer\n2 unplaced inputs · oldest 10s\n1 open work item/u);
+	assert.match(screen(idle), /2 unplaced inputs · oldest 10s\n1 open work item/u);
+	assert.doesNotMatch(screen(idle), /1 timer|run 42/u);
+	idle.setExpanded(true);
+	assert.match(screen(idle), /^1 timer$/mu);
 
 	const retained = nativeRow("agent_status", args, { format: "compact", live: false, conversation });
 	assert.match(screen(retained), /Live session activity not observed\nDurable agent · retained snapshot/u);
-	assert.doesNotMatch(screen(retained), /\n(?:Working|Idle)\n/u);
+	assert.doesNotMatch(screen(retained), /\n(?:Working|Idle)\b|run 42/u);
 	const unknown = nativeRow("agent_status", args, { format: "compact", conversation: { ...conversation, busy: null } });
 	assert.match(screen(unknown), /Live session activity not established\nDurable agent · live host observation/u);
 	const ordinary = nativeRow(
@@ -303,6 +308,64 @@ it("status leads with observed activity and keeps its source and limits", () => 
 		assert.match(screen(ordinary), /\[Retained ancestry scan incomplete\]/u);
 		assert.doesNotMatch(screen(ordinary), /\n(?:Working|Idle)\n/u);
 	}
+});
+
+it("activity shows live evidence and the newest retained reply ahead of scan details", () => {
+	const args = { sessionId: targetId, view: "activity", limit: 2 };
+	const details = {
+		view: "activity",
+		sessionId: targetId,
+		metadata: {
+			live: true,
+			operation: 42,
+			runningTools: [
+				{ name: "bash", toolCallId: "tool-1" },
+				{ name: "read", toolCallId: "tool-2", parentToolCallId: "tool-1" },
+			],
+			pending: 1,
+		},
+		turns: [
+			{
+				entries: [
+					{ id: 71, role: "user", text: "Check the parser." },
+					{ id: 72, role: "assistant", text: "The boundary cases pass.\nHere is the output." },
+				],
+			},
+			{ entries: [{ id: 42, role: "assistant", text: "I reproduced the failure." }] },
+		],
+		coverage: { scannedEntries: 19, complete: false },
+		nextCursor: { after: 42 },
+	};
+	const card = nativeRow("agent_inspect", args, details);
+	const collapsed = screen(card, 80);
+	assert.match(collapsed, /Live observation · run 42 · 1 pending input\nCurrent tools · bash, read/u);
+	assert.match(collapsed, /Retained reply · The boundary cases pass\./u);
+	assert.doesNotMatch(collapsed, /19 entries scanned|Check the parser|tool-1|reproduced/u);
+	assert.equal(hints(collapsed).length, 1);
+	card.setExpanded(true);
+	assert.match(screen(card), /Here is the output\.|I reproduced the failure\./u);
+	assert.match(screen(card), /19 entries scanned/u);
+	assert.match(screen(card), /"parentToolCallId": "tool-1"/u);
+	assert.ok(
+		screen(card).includes(
+			`Next page: agent_inspect(${JSON.stringify({ view: "activity", sessionId: targetId, cursor: details.nextCursor, limit: 2 })})`,
+		),
+	);
+	assert.equal(hints(screen(card)).length, 0);
+
+	const retrying = nativeRow("agent_inspect", args, {
+		...details,
+		metadata: { ...details.metadata, lastError: "Old failure", autoRetry: { errorMessage: "Provider timed out" } },
+	});
+	assert.match(screen(retrying), /Retrying · Provider timed out/u);
+	assert.doesNotMatch(screen(retrying), /Old failure/u);
+
+	const older = nativeRow("agent_inspect", { ...args, cursor: { after: 99 } }, details);
+	assert.match(screen(older), /Older retained activity\nReply on this page/u);
+	assert.doesNotMatch(screen(older), /Live observation|Current tools|run 42/u);
+	const retained = nativeRow("agent_inspect", args, { ...details, metadata: { ...details.metadata, live: false } });
+	assert.match(screen(retained), /Retained activity only/u);
+	assert.doesNotMatch(screen(retained), /Live observation|Current tools|run 42/u);
 });
 
 it("fleet status leads with counts and keeps one separate coverage warning at narrow widths", () => {

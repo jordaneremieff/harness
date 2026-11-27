@@ -1161,17 +1161,19 @@ function statusPage(details: Record<string, unknown>, context: AgentCardContext)
 	const { tool: _tool, ...nextArgs } = next;
 	const where = storageId && storageId !== record(context.args).storageId ? `Storage ${storageId}` : "";
 	const scanned = count(coverage.scanned);
+	const working = retained ? [] : rows.filter((row) => liveActivity(row) === "working");
+	const visible = working.length ? working : rows;
 	return {
 		outcome: `${cardinal(rows.length, "conversation")} on ${scope}${continuation ? "; more available" : ""}`,
-		body: [
-			where,
-			...rows.map((row) => storagePageRow(row, retained)),
+		body: factLines([where, ...visible.map((row) => storagePageRow(row, retained))]),
+		expanded: factLines([
+			continuation ? `Continue with agent_status(${JSON.stringify(nextArgs)})` : "",
+			...(working.length
+				? rows.filter((row) => !working.includes(row)).map((row) => storagePageRow(row, retained))
+				: []),
 			scanned === undefined || scanned === rows.length ? "" : `${cardinal(scanned, "conversation")} scanned`,
 			coverage.complete === true ? "Storage scan reached its end" : "",
-		]
-			.filter(Boolean)
-			.join("\n"),
-		expanded: continuation ? `Continue with agent_status(${JSON.stringify(nextArgs)})` : undefined,
+		]),
 		limit: coverage.complete === false && !continuation ? "Storage scan incomplete" : undefined,
 	};
 }
@@ -1180,7 +1182,19 @@ function storagePageRow(row: Record<string, unknown>, retained: boolean): string
 	const label = text(row.name) || text(row.identity);
 	if (!label) return "";
 	const activity = retained ? "" : liveActivity(row);
-	return `${label} · ${activity || "live activity not observed"}`;
+	const run = activity === "working" ? count(row.runId) : undefined;
+	return `${label} · ${activity || "live activity not observed"}${run ? ` · run ${run}` : ""}`;
+}
+
+function statusOverviewRow(row: Record<string, unknown>): string {
+	const state = text(row.state);
+	const health = record(row.health);
+	const cause = text(row.error) || text(health.lastError) || text(record(health.compactionFailure).errorMessage);
+	const retry = text(record(health.autoRetry).errorMessage);
+	const tool = state === "working" ? text(record(row.currentTool).name) : "";
+	return [text(row.name) || text(row.id), state, cause || (retry ? `retrying: ${retry}` : tool)]
+		.filter(Boolean)
+		.join(" · ");
 }
 
 function statusOverview(details: Record<string, unknown>): ToolResultPresentation {
@@ -1195,29 +1209,40 @@ function statusOverview(details: Record<string, unknown>): ToolResultPresentatio
 			.join(" · ");
 	const observed = count(sessions.observed);
 	const failures = array(details.failures).length;
+	const unavailable = count(sessions.unavailable);
+	const summary = facts([
+		["working", "working"],
+		["attention", sessions.attention === 1 ? "needs attention" : "need attention"],
+	]);
+	const [notable, other]: [string[], string[]] = [[], []];
+	for (const row of rows) {
+		const health = record(row.health);
+		const list =
+			["working", "starting", "failed"].includes(text(row.state)) || row.attention || Object.keys(health).length
+				? notable
+				: other;
+		list.push(statusOverviewRow(row));
+	}
+	const scope =
+		observed === undefined
+			? `${cardinal(rows.length, "conversation row")} returned`
+			: `${cardinal(observed, "conversation")} observed; ${cardinal(rows.length, "row")} returned`;
 	return {
-		outcome:
-			observed === undefined
-				? `${cardinal(rows.length, "conversation row")} returned`
-				: `${cardinal(observed, "conversation")} observed; ${cardinal(rows.length, "row")} returned`,
-		body: [
-			facts([
-				["working", "working"],
-				["attention", "need attention"],
-			]),
-			facts([
-				["unavailable", "unavailable"],
-				["quiet", "quiet"],
-			]),
+		outcome: summary || scope,
+		body: factLines([
+			...notable,
+			unavailable ? `${cardinal(unavailable, "conversation")} unavailable` : "",
+			failures ? `${cardinal(failures, "storage", "storages")} unavailable; absence not established` : "",
+		]),
+		expanded: factLines([
+			summary ? scope : "",
+			facts([["quiet", "quiet"]]),
 			facts([
 				["summarizedUnavailable", "unavailable summarised"],
 				["summarizedQuiet", "quiet summarised"],
 			]),
-			failures ? `${cardinal(failures, "storage", "storages")} unavailable; absence not established` : "",
-			...rows.map((row) => [text(row.name) || text(row.id), text(row.state)].filter(Boolean).join(" · ")),
-		]
-			.filter(Boolean)
-			.join("\n"),
+			...other,
+		]),
 		limit:
 			record(details.coverage).complete === false
 				? "Incomplete coverage; use agent_list to discover stored conversations"
@@ -1317,8 +1342,8 @@ function fullStatusFacts(
 	const inventory = record(details.inventory ?? record(details.status).inventory ?? status.limits);
 	const ordinaryOnly = array(inventory.ordinaryOnly).length;
 	return [
-		statusTimerFact(status),
 		...fullStatusActivityFacts(status, live, theme),
+		statusTimerFact(status),
 		ordinaryOnly ? `${cardinal(ordinaryOnly, "configured extension")} without a native form` : "",
 	];
 }
@@ -1331,12 +1356,11 @@ function fullStatusActivityFacts(status: Record<string, unknown>, live: boolean,
 	const running = live ? runningSlots(runtime) : [];
 	const lastText = text(status.lastText);
 	return [
-		pending > 0 ? cardinal(pending, "pending input") : "",
-		statusUnplaced(status),
+		...(live ? statusRetryFacts(runtime) : []),
 		...running.map(statusToolFact),
+		statusUnplaced(status) || (pending > 0 ? cardinal(pending, "pending input") : ""),
 		lastText ? `${newestTextLabel(text(status.lastTextRole))} · ${lastText}` : "",
 		latestSavedResult(status.submissions, "Saved result · ") ?? "",
-		...(live ? statusRetryFacts(runtime) : []),
 	];
 }
 
@@ -1378,15 +1402,10 @@ function statusUnplaced(status: Record<string, unknown>): string {
 
 function compactStatusFacts(status: Record<string, unknown>, details: Record<string, unknown>): string[] {
 	const queue = count(record(status.queue).inbox) ?? 0;
-	const timers = count(status.timers) ?? 0;
 	const failure = record(status.runFailure);
 	const block = record(status.providerBlock);
-	const unplaced = statusUnplaced(status);
 	return [
-		!unplaced && queue > 0 ? cardinal(queue, "queued input") : "",
-		timers > 0 ? cardinal(timers, "timer") : "",
-		unplaced,
-		statusCountWithAge(status.openWorkCount, status.openWorkOldest, "open work item"),
+		text(block.blockId) ? `Provider block ${block.blockId}` : "",
 		statusDiagnostic(
 			"Run failed",
 			text(failure.reason),
@@ -1395,9 +1414,8 @@ function compactStatusFacts(status: Record<string, unknown>, details: Record<str
 			failure.detailTruncated,
 		),
 		statusDiagnostic("Delivery error", text(details.deliveryError), details.deliveryErrorTruncated),
-		text(block.blockId)
-			? [`Provider block ${text(block.blockId)}`, text(block.recovery)].filter(Boolean).join(" · ")
-			: "",
+		statusUnplaced(status) || (queue > 0 ? cardinal(queue, "queued input") : ""),
+		statusCountWithAge(status.openWorkCount, status.openWorkOldest, "open work item"),
 	];
 }
 
@@ -1421,6 +1439,25 @@ function statusDetailCall(detail: Record<string, unknown>): string {
 	return `Get full detail with agent_status(${JSON.stringify(args)})`;
 }
 
+function statusSnapshotDisclosure(
+	status: Record<string, unknown>,
+	details: Record<string, unknown>,
+	compact: boolean,
+): Pick<ToolResultPresentation, "expanded" | "limit"> {
+	const omissions = [...array(status.omitted), ...array(details.omitted)].map(text).filter(Boolean);
+	const timers = compact ? count(status.timers) : undefined;
+	const detail = statusDetailCall(record(status.detail));
+	return {
+		expanded: factLines([
+			text(record(status.providerBlock).recovery),
+			detail,
+			timers ? cardinal(timers, "timer") : "",
+			...omissions.map((fact) => `Omitted ${fact}`),
+		]),
+		limit: omissions.length && !detail ? "Compact status omits facts" : undefined,
+	};
+}
+
 function statusSnapshot(
 	status: Record<string, unknown>,
 	details: Record<string, unknown>,
@@ -1431,28 +1468,28 @@ function statusSnapshot(
 	const compact = details.format === "compact";
 	const kind = compact && count(status.conversationId) === undefined ? "Ordinary primary" : "Durable agent";
 	const live = !retained && (compact ? status.availability === "live" : fullStatusObserved(status, details));
-	const activity = live ? selectedLiveOutcome(status) : "";
-	const outcome = activity || (live ? "Live session activity not established" : "Live session activity not observed");
+	const outcome = selectedStatusOutcome(status, live);
 	const basis = live ? "live host observation" : retained ? "retained snapshot" : "";
 	const body = compact ? compactStatusFacts(status, details) : fullStatusFacts(status, details, live, theme);
 	const observed = compact
 		? { ...status, agent: { model: status.model, thinkingLevel: status.thinkingLevel } }
 		: status;
 	const identityFacts = snapshotIdentityLines(observed, theme, context, false).map(displayText);
-	const omissions = [...array(status.omitted), ...array(details.omitted)].map(text).filter(Boolean);
 	return {
 		outcome,
-		body: [[kind, basis].filter(Boolean).join(" · "), ...identityFacts, ...body].filter(Boolean).join("\n"),
-		expanded: [statusDetailCall(record(status.detail)), ...omissions.map((fact) => `Omitted ${fact}`)]
-			.filter(Boolean)
-			.join("\n"),
-		limit: omissions.length ? "Compact status omits facts; see full detail" : undefined,
+		body: factLines([[kind, basis].filter(Boolean).join(" · "), ...identityFacts, ...body]),
+		...statusSnapshotDisclosure(status, details, compact),
 	};
 }
 
-function selectedLiveOutcome(status: Record<string, unknown>): string {
-	if (status.busy === true || Object.keys(record(record(status.live).run)).length > 0) return "Working";
-	return status.busy === false ? "Idle" : "";
+function selectedStatusOutcome(status: Record<string, unknown>, live: boolean): string {
+	if (!live) return "Live session activity not observed";
+	const activeRun = record(record(status.live).run);
+	if (status.busy === true || Object.keys(activeRun).length) {
+		const run = count(status.runId ?? activeRun.taskId);
+		return run ? `Working · run ${run}` : "Working";
+	}
+	return status.busy === false ? "Idle" : "Live session activity not established";
 }
 
 function fullStatusObserved(status: Record<string, unknown>, details: Record<string, unknown>): boolean {
@@ -2050,26 +2087,34 @@ function listPresentation(details: Record<string, unknown>): ToolResultPresentat
 	const next = nextCall("agent_list", coverage.next);
 	const scope = !next && coverage.complete === true ? "; end of scan" : pageScope(Boolean(next), coverage);
 	const unavailable = array(coverage.unavailable).length;
-	const incomplete = unavailable > 0 || profiles.complete === false;
+	const incomplete =
+		unavailable > 0
+			? "Discovery evidence incomplete"
+			: profiles.complete === false
+				? "Profile search incomplete"
+				: undefined;
 	const visited = count(coverage.storagesVisited),
 		settled = count(catalog.settled),
 		pending = count(catalog.pending);
 	return {
 		outcome: `${quantity(details.rows.length, "conversation")} on this page${scope}`,
-		limit: incomplete ? "Discovery evidence incomplete" : undefined,
-		body: factLines([
+		limit: incomplete,
+		body: factLines(
+			details.rows.flatMap((value) => {
+				const row = record(value);
+				const label = [text(row.handle), text(row.name)].filter(Boolean).join(" · ") || text(row.identity);
+				const role = text(row.role);
+				return role ? [label, role] : [[label, text(row.firstMessage)].filter(Boolean).join(" · ")];
+			}),
+		),
+		expanded: factLines([
+			next ? `Next page: ${next}` : "",
 			unavailable ? quantity(unavailable, "storage unavailable", "storages unavailable") : "",
-			profiles.complete === false ? "Profile search incomplete" : "",
+			unavailable && profiles.complete === false ? "Profile search incomplete" : "",
 			visited ? quantity(visited, "storage visited on this page", "storages visited on this page") : "",
 			pending ? quantity(pending, "storage scan step open", "storage scan steps open") : "",
 			settled ? quantity(settled, "storage settled by publication", "storages settled by publication") : "",
-			...details.rows.flatMap((value) => {
-				const row = record(value);
-				const label = [text(row.handle), text(row.name)].filter(Boolean).join(" · ") || text(row.identity);
-				return [label, typeof row.role === "string" ? row.role || "No role set" : ""];
-			}),
 		]),
-		expanded: next ? `Next page: ${next}` : undefined,
 	};
 }
 
@@ -2232,7 +2277,59 @@ function inspectedEntry(value: unknown): string {
 	return [label, content].filter(Boolean).join(": ");
 }
 
-type ReadPage = { headline: string; facts: string[] };
+type ReadPage = { headline: string; facts: string[]; expanded?: string[] };
+
+function activityObservation(value: unknown): string[] {
+	const metadata = record(value);
+	if (metadata.live === false) return ["Retained activity only"];
+	if (metadata.live !== true) return [];
+	const run = count(metadata.operation);
+	const pending = count(metadata.pending);
+	const tools = [
+		...new Set(
+			array(metadata.runningTools)
+				.map((slot) => text(record(slot).name))
+				.filter(Boolean),
+		),
+	];
+	const retry = text(record(metadata.autoRetry).errorMessage);
+	const failure = text(metadata.lastError);
+	const compaction = text(record(metadata.compactionFailure).errorMessage);
+	const streamed = text(metadata.streamedText);
+	return [
+		["Live observation", run ? `run ${run}` : "", pending ? cardinal(pending, "pending input") : ""]
+			.filter(Boolean)
+			.join(" · "),
+		(retry && `Retrying · ${retry}`) ||
+			(failure && `Last error · ${failure}`) ||
+			(compaction && `Compaction failed · ${compaction}`),
+		tools.length ? `Current tools · ${tools.join(", ")}` : "",
+		streamed ? `Reply in progress · ${streamed}` : "",
+	];
+}
+
+function activityPage(details: Record<string, unknown>, turns: unknown[], olderPage: boolean): ReadPage {
+	const coverage = record(details.coverage);
+	const entries = turns.flatMap((turn) => array(record(turn).entries).slice().reverse());
+	const newest = entries.map(record).find((entry) => {
+		const body = text(entry.text).trim();
+		return (entry.role === "assistant" || entry.role === "user") && body && !body.startsWith("Thinking:");
+	});
+	const noun = newest?.role === "assistant" ? "reply" : "input";
+	const label = olderPage ? `${noun === "reply" ? "Reply" : "Input"} on this page` : `Retained ${noun}`;
+	return {
+		headline: `${quantity(turns.length, "turn")} on this activity page`,
+		facts: [
+			...(olderPage ? ["Older retained activity"] : activityObservation(details.metadata)),
+			newest ? `${label} · ${text(newest.text).trim().split("\n", 1)[0]}` : "",
+		],
+		expanded: [
+			...turns.flatMap((turn) => array(record(turn).entries).map(inspectedEntry)),
+			counted(coverage.scannedEntries, "entry scanned", "entries scanned"),
+			coverage.complete === true ? "Reached the end of the selected scan" : "",
+		],
+	};
+}
 
 function primaryExactPage(details: Record<string, unknown>, more: boolean): ReadPage {
 	const entry = array(details.entries)[0],
@@ -2270,7 +2367,7 @@ function durableExactPage(details: Record<string, unknown>): ReadPage | undefine
 	};
 }
 
-function inspectionPage(details: Record<string, unknown>, more: boolean): ReadPage | undefined {
+function inspectionPage(details: Record<string, unknown>, more: boolean, olderPage: boolean): ReadPage | undefined {
 	const view = text(details.view),
 		coverage = record(details.coverage);
 	if (view === "exact")
@@ -2284,11 +2381,7 @@ function inspectionPage(details: Record<string, unknown>, more: boolean): ReadPa
 			headline: `${quantity(details.matches.length, "match", "matches")} on this page`,
 			facts: [scanned, complete, ...details.matches.map(inspectedEntry)],
 		};
-	if (view === "activity" && Array.isArray(details.turns))
-		return {
-			headline: `${quantity(details.turns.length, "turn")} on this activity page`,
-			facts: [scanned, complete, ...details.turns.flatMap((turn) => array(record(turn).entries).map(inspectedEntry))],
-		};
+	if (view === "activity" && Array.isArray(details.turns)) return activityPage(details, details.turns, olderPage);
 	if (!Array.isArray(details.entries) || !["history", "activity", "branch"].includes(view)) return undefined;
 	return {
 		headline: `${quantity(details.entries.length, "entry", "entries")} on this ${view} page`,
@@ -2313,12 +2406,12 @@ function inspectPresentation(
 	if (details.view === "result") return inspectResultPresentation(details, context);
 	const next = inspectPageCall(details, context);
 	const more = Boolean(next || Object.keys(record(details.nextCursor)).length);
-	const page = inspectionPage(details, more);
+	const page = inspectionPage(details, more, record(context.args).cursor !== undefined);
 	if (!page) return undefined;
 	return {
 		outcome: page.headline + pageScope(more, details.coverage),
 		body: factLines(page.facts),
-		expanded: next ? `Next page: ${next}` : undefined,
+		expanded: factLines([next ? `Next page: ${next}` : "", ...(page.expanded ?? [])]),
 	};
 }
 

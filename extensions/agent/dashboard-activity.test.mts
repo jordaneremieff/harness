@@ -126,6 +126,115 @@ it("the Jobs tab joins the top rule with its count; j lists only the agents that
 	}
 });
 
+it("Jobs shows reported work independently of the Agents filters and restores Find on return", async () => {
+	const f = fixture(
+		140,
+		40,
+		source([
+			row("trace", {
+				storageId: "trace",
+				name: "Failure trace",
+				state: "failed",
+				error: "Connection lost",
+				creatingOwnerId: "here",
+			}),
+			...agents(),
+		]),
+		undefined,
+		undefined,
+		undefined,
+		"here",
+	);
+	try {
+		await settle();
+		assert.match(visible(f)[1] ?? "", /Related.*All/u);
+		assert.doesNotMatch(shown(f), /Builder/u, "Builder is not in Related");
+		f.ui.handleInput("/");
+		f.ui.handleInput("Failure");
+		f.ui.handleInput("\r");
+		f.ui.handleInput("e");
+		f.ui.handleInput("j");
+		await settle();
+		assert.match(shown(f), /Builder.*\n.*test\/model.*~\$0\.42/u);
+		const lines = visible(f);
+		assert.doesNotMatch(lines[1] ?? "", /Related|All|Failure/u);
+		assert.doesNotMatch(lines[2] ?? "", /Recent \d/u);
+		f.ui.handleInput("/");
+		f.ui.handleInput("missing");
+		f.ui.handleInput("\r");
+		assert.match(shown(f), /No agent matches/u);
+		f.ui.handleInput("\x1b");
+		assert.match(shown(f), /Builder/u);
+		f.ui.handleInput("\x1b");
+		assert.match(visible(f)[1] ?? "", /Failure.*Related.*All/u);
+		assert.match(shown(f), /Failure trace/u);
+		assert.match(footer(f), /esc all agents/u, "the Agents error filter remains set");
+		assert.doesNotMatch(shown(f), /Builder/u);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+for (const [width, height, trigger] of [
+	[80, 18, "key"],
+	[140, 40, "click"],
+] as const) {
+	it(`the Jobs footer opens the selected agent's owner view by ${trigger} at ${width} columns`, async () => {
+		const opened: string[] = [];
+		const f = fixture(width, height, source(agents()), {
+			panels: async (agent) => {
+				opened.push(agent.id);
+				return [
+					{
+						key: "stash",
+						label: "Stashes",
+						contribution: "stash",
+						open: () => ({ title: "Stashes", render: () => [], handleInput: () => false }),
+					},
+					{
+						key: "jobs",
+						label: "Jobs",
+						contribution: "jobs",
+						open: () => ({ title: "Jobs", render: () => ["Job details"], handleInput: () => false }),
+					},
+				];
+			},
+		});
+		try {
+			await settle();
+			f.ui.handleInput("l");
+			f.ui.handleInput("\x1b");
+			f.ui.handleInput("j");
+			assert.match(shown(f), /Builder/u, "Jobs opens its list even when Agents hid it");
+			const control = point(f, "j open jobs");
+			if (trigger === "click") click(f, control.x, control.y);
+			else f.ui.handleInput("j");
+			await settle();
+			assert.equal(f.ui.focus.inspector, "Jobs");
+			assert.match(shown(f), /Job details/u);
+			assert.deepEqual(opened, ["builder"]);
+		} finally {
+			f.ui.dispose();
+		}
+	});
+}
+
+it("the compact Jobs list shows a failed owner view read in the selected pane", async () => {
+	const f = fixture(80, 18, source(agents()), { panels: async () => [] });
+	try {
+		await settle();
+		f.ui.handleInput("j");
+		assert.match(footer(f), /j open jobs/u);
+		f.ui.handleInput("j");
+		await settle();
+		assert.match(shown(f), /host advertises no owner views/u);
+		f.ui.handleInput("\x1b");
+		assert.match(footer(f), /esc agents/u, "Escape returns to the Jobs list");
+	} finally {
+		f.ui.dispose();
+	}
+});
+
 it("on the Jobs tab, an agent whose work ended stays selected and listed, without its work row", async () => {
 	let rows = agents();
 	let changed: (() => void) | undefined;

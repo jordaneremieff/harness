@@ -4,7 +4,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage, createRegistry } from "@earendil-works/pi-durable";
 import { AgentMetaDoc, writeConversationName } from "./durable-controls.ts";
-import { initializeProfile, readProfile, updateProfile, projectProfiles } from "./profile.ts";
+import { initializeProfile, managedInstructions, readProfile, updateProfile, projectProfiles } from "./profile.ts";
 import { profileText } from "./profile-schema.ts";
 import { handleSlug, handleStorageId } from "./identity.ts";
 
@@ -33,6 +33,16 @@ it("uses a deterministic concern address independent of mutable display fields",
 	assert.notEqual(handleStorageId("history", process.cwd()), handleStorageId("architecture", process.cwd()));
 	for (const bad of ["", "History", "@history", "a--b", "a-", "-a", "a/b", "a b", "a".repeat(65)])
 		assert.throws(() => handleSlug(bad));
+});
+it("points to saved expertise only when there is something beyond the visible role to read", () => {
+	for (const role of ["", "Review code"]) {
+		for (const expertise of ["", " \n", "See the source notes"]) {
+			const text = managedInstructions("agent", null, null, { handle: null, role, expertise });
+			assert.equal(text.includes("agent_profile"), Boolean(expertise.trim()));
+			if (role) assert.ok(text.includes(role));
+			assert.ok(!text.includes("See the source notes"));
+		}
+	}
 });
 it("updates native profile and identity instructions atomically without a model turn", async (t) => {
 	const f = await fixture(t);

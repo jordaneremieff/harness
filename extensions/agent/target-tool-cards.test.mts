@@ -415,19 +415,17 @@ describe("compact observation cards", () => {
 			coverage: { complete: true, returned: 1, scanned: 1, next: null },
 			live: false,
 		});
-		const definition = createDashboardToolDefinitions("/work")("agent_status");
-		assert.ok(definition.renderResult);
-		const output = screen(
-			definition.renderResult(
-				{ content: [], details },
-				{ expanded: false, isPartial: false },
-				theme,
-				context() as never,
-			),
-		);
+		const { renderResult } = createDashboardToolDefinitions("/work")("agent_status");
+		assert.ok(renderResult);
+		const render = (expanded: boolean) =>
+			screen(
+				renderResult({ content: [], details }, { expanded, isPartial: false }, theme, context({ expanded }) as never),
+			);
+		const output = render(false);
 		assert.match(output, /1 conversation on a retained storage page/u);
 		assert.match(output, /Reader · live activity not observed/u);
-		assert.match(output, /Storage scan reached its end/u);
+		assert.doesNotMatch(output, /Storage scan reached its end/u);
+		assert.match(render(true), /Storage scan reached its end/u);
 	});
 });
 

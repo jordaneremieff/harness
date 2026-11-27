@@ -57,14 +57,14 @@ it("ordinary delegation guidance names only registered controls and native guida
 			/agent_work complete|widget|exact result references|Preserve known request IDs/u,
 			"the note is operator text: it is no stored state and carries no result reference",
 		);
-		assert.match(ordinary, /in the last (tool )?batch[^.]*write no chat text\./u);
+		assert.match(ordinary, /in the last batch; every call must end the turn\. Write no chat text\./u);
 		assert.match(
 			ordinary,
-			/While work you sent to agents is open, a chat message is only for a decision or act of the operator, a blocker, or a result, and it stands alone/u,
+			/while agents work, chat only for an operator decision or action, a blocker, or a result; let it stand alone/u,
 		);
 		assert.doesNotMatch(ordinary, /short state note/u);
 		assert.match(ordinary, /Results arrive as events/u);
-		assert.match(ordinary, /no repeated status or inspection call/u);
+		assert.match(ordinary, /Never sleep, poll or hold a foreground command open/u);
 		assert.doesNotMatch(
 			ordinary,
 			/the request and its exact result references|final report/u,
@@ -101,17 +101,16 @@ const CURRENT_TOOLS = [
 it("limits preset advice to supported controls and distinguishes target retention from inheritance", () => {
 	for (const name of ["agent_spawn", "agent_place", "agent_configure"] as const) {
 		const text = AGENT_CONTROL_GUIDANCE[name].guidelines?.join("\n") ?? "";
-		assert.match(text, /Use preset to select execution settings/u);
-		assert.match(text, /For an explicit model override, use an exact provider\/model identity/u);
-		assert.match(text, /resolver owns preset and default identity selection/u);
-		assert.match(text, /route, budget, and role preferences before choosing the override/u);
+		assert.match(text, /Creation uses defaultPreset unless selected/u);
+		assert.match(text, /verify exact provider\/model and supported thinking/u);
+		assert.match(text, /Otherwise use preset resolution/u);
+		assert.match(text, /Respect route, budget and role/u);
 		assert.doesNotMatch(text, /^Use an exact/u);
-		assert.match(text, /Omit model and preset.*defaultPreset/u);
-		assert.match(text, /Explicit fields win over preset fields/u);
-		assert.match(text, /Configure retains the target's own values/u);
-		assert.match(text, /never inherits parent execution settings/u);
-		assert.match(text, /receipts record explicit overrides/u);
-		assert.match(text, /advisory unless the operator sets enforceRoster true/u);
+		assert.match(text, /explicit fields win/u);
+		assert.match(text, /Configure retains unspecified target values/u);
+		assert.match(text, /No parent inheritance/u);
+		assert.match(text, /Receipts identify overrides/u);
+		assert.match(text, /Exclusions advise unless enforceRoster is true on creation/u);
 		assert.match(text, /role applies only to handle creation/u);
 	}
 	assert.doesNotMatch((AGENT_CONTROL_GUIDANCE.agent_send.guidelines ?? []).join("\n"), /preset/u);
@@ -156,22 +155,21 @@ it("keeps the approved snippets", () => {
 
 it("keeps the contract, reporting, polling, live-work, and authority guidance", () => {
 	const all = JSON.stringify(AGENT_CONTROL_GUIDANCE);
-	assert.match(all, /objective, endCondition and result are required/u);
+	assert.match(all, /Provide objective, endCondition and result/u);
 	assert.match(all, /carry each operator decision with its source, scope, and restrictions/u);
 	assert.match(all, /Say whether a correction comes from the operator or from you/u);
 	assert.doesNotMatch(all, /AGENTS\.md|Intent authority/u);
-	assert.match(all, /Resolve live work for this request/u);
-	assert.match(all, /delegated results required by this request before claiming completion/u);
-	assert.match(all, /a spawn or send receipt is not that result/u);
-	assert.match(all, /Do not stop unrelated, standing, or background agents merely to finish this request/u);
-	assert.match(all, /continue useful work, redirect changed work, or abort superseded work/u);
-	assert.match(all, /informational reports and blocking questions/u);
-	assert.match(all, /only agent_work complete sends the final report, to the original reply recipient/u);
-	assert.match(all, /A terminal answer settles the current request/u);
-	assert.match(all, /give the substantive result or exact blocker/u);
-	assert.match(all, /state note whose first words say that it is not the result/u);
-	assert.match(all, /Never poll with sleeps or repeated status\/inspection calls/u);
-	assert.match(all, /Settlement notices arrive automatically/u);
+	assert.match(all, /Integrate required results before claiming completion/u);
+	assert.match(all, /A receipt is not a result; settlement is not acceptance/u);
+	assert.match(all, /spare unrelated agents/u);
+	assert.match(all, /Continue useful work, redirect changed work or abort superseded work/u);
+	assert.match(all, /Send progress and blocking questions/u);
+	assert.match(all, /only agent_work complete sends the final report to the original recipient/u);
+	assert.match(all, /Each request retains its route/u);
+	assert.match(all, /Answer with the result or exact blocker/u);
+	assert.match(all, /start the state note by saying it is not the result/u);
+	assert.match(all, /Never poll with sleeps or repeated reads/u);
+	assert.match(all, /results arrive automatically/u);
 	assert.match(all, /report to a running agent is placed at the recipient's next tool boundary/u);
 	assert.match(all, /Use steer when the recipient must change its current work/u);
 });
@@ -184,9 +182,9 @@ it("places follow-ups and reports at tool boundaries without holding the run", (
 	assert.match(send, /report to a running agent is placed at the recipient's next tool boundary/u);
 	assert.match(send, /It does not interrupt a running tool, and it starts no answer-bearing task/u);
 	assert.match(send, /A report is an event for the recipient/u);
-	assert.match(send, /declare the open work with agent_work continue/u);
-	assert.match(send, /Each result, report, or message starts your next run/u);
-	assert.match(send, /Never hold a run open for agent output/u);
+	assert.match(send, /call agent_work continue with the request and exact admitted result references/u);
+	assert.match(send, /Arrivals resume work/u);
+	assert.match(send, /Never sleep, poll or chain long foreground calls/u);
 	assert.doesNotMatch(send, /agent_await|waits for the current run to end/u);
 });
 
@@ -197,40 +195,40 @@ it("describes retained delivery and opt-in unfinished-task check-ins", () => {
 	assert.doesNotMatch(all, /session-ownership section/u);
 	assert.match(
 		AGENT_CONTROL_GUIDANCE.agent_spawn.guidelines?.join("\n") ?? "",
-		/task's answer reports to its request's reply recipient/u,
+		/task's answer routes to its request's reply recipient/u,
 	);
 	assert.match(
 		AGENT_CONTROL_GUIDANCE.agent_send.guidelines?.[0] ?? "",
 		/mode: report to the current request's reply recipient/u,
 	);
-	assert.match(all, /creating owner is provenance/u);
+	assert.match(all, /using the task route, not creator provenance/u);
 	assert.match(all, /expectedRevision/u);
 	assert.match(all, /before relying on past findings/u);
-	assert.match(all, /Results arrive without supervision turns/u);
-	assert.match(all, /agent\.checkInMinutes default is 0/u);
-	assert.match(all, /Check-ins wake a model owner, not an operator owner/u);
+	assert.match(all, /Results arrive without check-ins/u);
+	assert.match(all, /agent\.checkInMinutes defaults to 0/u);
+	assert.match(all, /Check-ins wake model owners only/u);
 	assert.doesNotMatch(all, /default 30/u);
-	assert.match(all, /not a finished result/u);
+	assert.match(all, /a check-in is not a result/u);
 });
 
 it("teaches substantial assignments through a checked brief", () => {
 	const tools = agentControlGuidanceLines(["agent_send", "agent_brief", "agent_spawn"]).join("\n");
-	assert.match(tools, /Brief each substantial task with agent_brief/u);
+	assert.match(tools, /Use agent_brief for substantial tasks/u);
 	assert.match(tools, /- agent_brief: Brief an agent with a checked, standard task brief/u);
-	assert.match(tools, /objective, endCondition and result are required/u);
-	assert.match(tools, /Quote each operator decision you carry in operator with its source and scope/u);
-	assert.match(tools, /preview renders and checks a brief without sending it/u);
+	assert.match(tools, /Provide objective, endCondition and result/u);
+	assert.match(tools, /Quote operator decisions with source and scope/u);
+	assert.match(tools, /Use preview to check without dispatch/u);
 	assert.equal(AGENT_CONTROL_TOOL_NAMES.indexOf("agent_brief"), AGENT_CONTROL_TOOL_NAMES.indexOf("agent_spawn") + 1);
 });
 
 it("teaches nested spawn placement and lineage status", () => {
 	const spawn = AGENT_CONTROL_GUIDANCE.agent_spawn.guidelines?.join("\n") ?? "";
-	assert.match(spawn, /without a handle in the same cwd creates a conversation in your storage/u);
-	assert.match(spawn, /a storage with its own host/u);
-	assert.ok(spawn.includes("selected controls permit further delegation"));
-	assert.ok(spawn.includes("bounded /agent roster"));
+	assert.match(spawn, /without a handle shares storage in the same cwd/u);
+	assert.match(spawn, /another cwd starts a new host/u);
+	assert.ok(spawn.includes("Children may delegate"));
+	assert.ok(spawn.includes("appear in /agent"));
 	const status = AGENT_CONTROL_GUIDANCE.agent_status.guidelines?.join("\n") ?? "";
-	assert.match(status, /names what it omits: host inventory, effort awareness and created-agent detail/u);
+	assert.match(status, /not host inventory, effort awareness or created-agent detail/u);
 	assert.doesNotMatch(status, /Created agents section/u);
 });
 
@@ -248,32 +246,32 @@ it("renders shared rules once without depending on an unselected control", () =>
 		"\n",
 	);
 	for (const rule of [
-		/For an explicit model override/gu,
-		/Use preset to select execution settings/gu,
-		/When no useful work remains for you and results are still due/gu,
-		/Set checkInMinutes only when a task needs a watchdog/gu,
+		/Override only for the task/gu,
+		/Creation uses defaultPreset unless selected/gu,
+		/When no independent work remains/gu,
+		/Set checkInMinutes only for a watchdog/gu,
 	]) {
 		assert.equal([...selected.matchAll(rule)].length, 1);
 	}
 	for (const name of ["agent_spawn", "agent_send"]) {
 		const text = agentControlGuidanceLines([name]).join("\n");
-		assert.match(text, /agent_work continue \(the request and its exact result references\)/u);
-		assert.match(text, /Set checkInMinutes only when a task needs a watchdog/u);
+		assert.match(text, /agent_work continue with the request and exact admitted result references/u);
+		assert.match(text, /Set checkInMinutes only for a watchdog/u);
 	}
 	for (const name of ["agent_spawn", "agent_configure", "agent_place"]) {
-		assert.match(agentControlGuidanceLines([name]).join("\n"), /Use preset to select execution settings/u);
+		assert.match(agentControlGuidanceLines([name]).join("\n"), /Creation uses defaultPreset unless selected/u);
 	}
 });
 
 it("scopes handle reuse and thread discovery to choices made for the task", () => {
 	const spawn = agentControlGuidanceLines(["agent_spawn"]).join("\n");
-	assert.match(spawn, /If you choose to delegate a recurring concern/u);
-	assert.match(spawn, /never reapplies creation defaults on reuse/u);
+	assert.match(spawn, /When delegating a recurring concern/u);
+	assert.match(spawn, /reuse keeps its settings/u);
 	const thread = agentControlGuidanceLines(["agent_collaborate"]).join("\n");
-	assert.match(thread, /If a shared thread would help the task/u);
-	assert.match(thread, /Use one post or close for a message up to 24,000 UTF-16 units/u);
-	assert.match(thread, /Name notify recipients only when their attention matters/u);
-	assert.match(thread, /brief a new agent before you name it in notify/u);
+	assert.match(thread, /If a shared thread would help/u);
+	assert.match(thread, /Post or close in one call up to 24,000 UTF-16 units/u);
+	assert.match(thread, /Notify only for needed attention/u);
+	assert.match(thread, /Brief new agents before notify/u);
 });
 
 it("keeps the no-polling guidance when only status is selected", () => {

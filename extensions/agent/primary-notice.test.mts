@@ -475,8 +475,7 @@ it("refreshes preset descriptions and guidance through the peer-message prompt-s
 		);
 	const assertPresetGuidance = (request: TranscriptContext, key: string) => {
 		const prompt = getCurrentSystemPrompt(request.messages);
-		assert.match(prompt, /Use preset to select execution settings/u);
-		assert.match(prompt, /Omit model and preset to use the machine defaultPreset on creation/u);
+		assert.match(prompt, /Creation uses defaultPreset unless selected; explicit fields win/u);
 		assert.ok(prompt.includes(`Default preset: ${key};`), "the provider sees the current default preset");
 	};
 	for (const [index, key, model] of [

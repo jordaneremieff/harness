@@ -51,7 +51,7 @@ const titles: Record<(typeof BRIEF_SECTIONS)[number], string> = {
 };
 
 export const BRIEF_DESCRIPTION =
-	"Brief an agent with a standard task brief. The fields render into one brief with fixed sections: objective, purpose, quoted operator decisions, context, sources, permitted acts, restrictions, checks, end condition and result. Without sessionId it creates an agent as agent_spawn does; with sessionId it admits the brief to an existing agent as new work, or as a steer. It checks named source paths relative to the recipient's cwd and refuses missing paths. preview renders and checks the brief without sending it. Result references and placement match agent_spawn and agent_send.";
+	"Assign a checked brief to a new or existing agent. Named paths must exist relative to the recipient's cwd. preview checks without dispatch. Creation, placement and result receipts match spawn or send.";
 
 const items = (description: string) => opt(arr(str(), { description }));
 
@@ -63,53 +63,47 @@ export function briefParameters<const P extends Properties, C extends Properties
 		kind: opt(
 			briefEnum(
 				BRIEF_KINDS,
-				"Brief kind. task: a bounded contribution. lead: ownership of a composed outcome, with freedom to divide the work. review: an independent judgment of a claim, change or artifact. partner: a shared inquiry with room to challenge the approach. handoff: continuation of existing work.",
+				"task: bounded contribution; lead: own and divide the outcome; review: independent judgment; partner: shared inquiry; handoff: continue existing work.",
 			),
 		),
-		objective: str({ description: "The outcome to deliver, stated as an observable end state." }),
-		purpose: opt(str({ description: "Why the work matters and which decision or larger goal the result feeds." })),
+		objective: str({ description: "Observable outcome." }),
+		purpose: opt(str({ description: "Decision or goal the result serves." })),
 		operator: opt(
 			arr(
 				obj({
 					quote: str({ description: "The operator's exact words." }),
-					source: str({ description: "Where and when the operator gave them (session, date, thread or file)." }),
-					scope: opt(str({ description: "What the decision covers, when that is narrower than the whole task." })),
+					source: str({ description: "Where and when the operator gave the decision." }),
+					scope: opt(str({ description: "Limits of the decision." })),
 				}),
 				{
-					description:
-						"Operator decisions you carry, each quoted verbatim with its source and scope. Your own proposals and interpretations do not belong here.",
+					description: "Only the operator's decisions, not your interpretations.",
 				},
 			),
 		),
-		context: items("Verified facts the agent needs, each with its source. Say which facts the agent must check again."),
-		sources: items(
-			"Files, URLs, commits or threads to read first, each followed by what it establishes. Start an entry with its path to have the path checked.",
-		),
+		context: items("Verified facts and sources; mark facts to recheck."),
+		sources: items("Files, URLs, commits or threads and what each establishes. Lead with the path to check it."),
 		permitted: items("Edits and acts the task authorises: paths, branches, commits."),
-		restrictions: items("What the agent must not touch or do, and decisions reserved to others."),
-		checks: items("Commands or observations that establish the result, with time limits."),
+		restrictions: items("Prohibited acts and reserved decisions."),
+		checks: items("Checks that establish the result and their time limits."),
 		endCondition: str({
-			description: "The observable state at which the agent stops and reports, including the form of a blocker report.",
+			description: "When to stop and report, including blockers.",
 		}),
 		result: str({ description: "What the final message contains: form, sections and length." }),
 		sessionId: opt(
 			str({
 				minLength: 1,
-				description:
-					"Existing agent identity or @handle that receives the brief. Omit it to create an agent with the creation fields.",
+				description: "Existing agent ID or @handle. Omit to create.",
 			}),
 		),
 		mode: opt(
 			briefEnum(
 				["followUp", "steer"],
-				"With sessionId only. followUp (default): new work. steer: the brief replaces the agent's current work at its next tool boundary.",
+				"Existing agent only: followUp adds work (default); steer redirects it at the next tool boundary.",
 			),
 		),
 		...creation,
 		checkInMinutes,
-		preview: opt(
-			bool({ description: "Render and check the brief without sending it; return the text and every problem found." }),
-		),
+		preview: opt(bool({ description: "Return the brief and any problems without dispatch." })),
 	});
 }
 

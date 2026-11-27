@@ -41,9 +41,7 @@ import {
 	AGENT_CONTROL_EXPOSURE,
 	AGENT_CONTROL_GUIDANCE,
 	agentControlGuidance,
-	FOLLOW_UP_DELIVERY_BOUNDARY,
 	MODEL_SELECTION_GUIDANCE,
-	REPORT_DELIVERY_BOUNDARY,
 	type AgentControlExposure,
 	type AgentControlToolName,
 } from "./control-guidance.ts";
@@ -203,8 +201,7 @@ const checkIn = opt(
 	num({
 		minimum: 0,
 		maximum: 35791,
-		description:
-			"Owner check-in interval in minutes while unanswered. Default: configured agent.checkInMinutes, which is 0 (no check-ins) unless set; results arrive without them.",
+		description: "Minutes between owner check-ins while unanswered. Defaults to agent.checkInMinutes (0 disables).",
 	}),
 );
 const send = obj(
@@ -222,8 +219,7 @@ const send = obj(
 		checkInMinutes: checkIn,
 		expectReply: opt(
 			bool({
-				description:
-					"Ordinary primary target only: ask a question that expects a reply. The recipient sees how to answer; the reply, or one notice when its run ends without one, arrives here as an event.",
+				description: "Ask an ordinary primary for a reply. Its answer or an unanswered-run notice arrives as an event.",
 			}),
 		),
 		inReplyTo: opt(
@@ -976,7 +972,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		promptSnippet: AGENT_CONTROL_GUIDANCE.agent_intent.snippet,
 		promptGuidelines: [...(AGENT_CONTROL_GUIDANCE.agent_intent.guidelines ?? [])],
 		description:
-			"Read current related efforts and your own intent without a write, or publish or clear this ordinary primary session's claim. Intent is a session claim, not verified authority or a lock. Publish and clear also return the published endpoint. No model wake. Independent work needs no claim. Publish where an actual dependency with another effort needs coordination, after bounded discovery; update or clear intent when integration completes. Use agent_send for direct effort contact and agent_collaborate for a retained agreement.",
+			"Read related efforts or publish or clear this session's claim without a model wake. Publish only for a shared dependency; update or clear intent when integration completes.",
 		parameters: IntentParams,
 		outputSchema: unknown(),
 		async execute(_callId, input: Static<typeof IntentParams>, _signal, _update, ctx) {
@@ -996,7 +992,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	register(
 		"agent_collaborate",
-		"Discover and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator; without sessionId the thread goes to your own storage, which for an ordinary primary is its thread storage and needs no agent. Create and join accept participation (at most 256 UTF-16 units); omission preserves an existing declaration and an empty string clears it. Join does not accept message. Use post.message for discussion. Forward reads accept after and optional knownFrameRevision; before is exclusive with after. Follow the returned next call unchanged. Passive facts do not wake a recipient or release its wait; explicit notify stays active. Read the frame and paged exchange without starting a host.",
+		"Create, join, read or contribute to a shared thread. Reads start no host; follow the returned next call unchanged. Only explicit notify recipients wake.",
 		CollaborationParams,
 		(input, ctx, callId) =>
 			getManager().collaborate(
@@ -1030,7 +1026,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_spawn",
-		"Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. Results arrive without check-ins. Task check-ins run only when checkInMinutes or the configured agent.checkInMinutes sets a nonzero interval; the default is 0. Assess a check-in: report progress, let work continue, steer a wrap-up, or abort a hung tool. Steering does not interrupt a running tool. checkInMinutes 0 disables.",
+		"Create a Durable agent or reuse its handle. A prompt starts work. Results arrive automatically; check-ins are optional.",
 		spawn,
 		executeSpawn,
 	);
@@ -1086,7 +1082,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	register(
 		"agent_list",
-		"Discover Durable agent identities and names without a writer. An exact retained handle match comes first, with or without the leading @. A query then observes other storages whose catalog record carries it. While coverage.complete is false, a page without rows is not absence: call agent_list again with the fields of coverage.next.",
+		"Find retained agents without a writer. Exact handles match first, with or without @. Follow coverage.next even after an empty page.",
 		obj(
 			{
 				query: opt(str({ minLength: 1, maxLength: 256 })),
@@ -1100,7 +1096,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_status",
-		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. The global overview reports sessions with id and catalogue state. Under the byte limit, work, waiting inputs and recent faults outlast inactive rows, even caller-owned ones. At most three unprotected older terminal attention rows are sampled. Summary and coverage describe omissions and point to agent_list discovery. Selected status is compact by default. Use detail:true with an explicit sessionId for full state and bounded pending timers. An ordinary primary exposes bounded latest-retained ancestry with detail:true, not live idle or selected-branch state. For one storage, use view: storage-page with its exact storageId. Its conversations use identity (the overview id) and busy (native run activity, not lifecycle state). Continue with coverage.next.tool and its remaining fields unchanged; this backend JSON cursor is separate from agent_list discovery.",
+		"See agents and related efforts. The overview prioritises active work, queued input and recent faults; coverage names omissions. For full selected state and timers use sessionId and detail:true. For one storage use storage-page and its exact storageId; follow coverage.next unchanged, not an agent_list cursor. busy denotes native run activity.",
 		StatusToolInputSchema,
 		async (input, ctx) => {
 			validateStatusDetail(input);
@@ -1133,7 +1129,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_inspect",
-		"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry, not the live selected branch; pass a clipped entry's textCursor as cursor to page its complete allowed text. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor: a history, branch or activity cursor keeps the view and filters of its read; a search continuation repeats view and query. Branch remains raw. Result uses submissionId, a conversation-qualified native requestId, or the separate retained operationId. Missing results return unavailable; supplied selectors must agree. Result answerContinuation pages readable answer text; receiptGroup.next pages recipient references with receiptCursor. When the request declared work, the answer is a state note: work.finalReport.read pages its final report with finalReport true. Images, signatures, and redacted thinking stay omitted.",
+		"Read retained history, activity or results. Ordinary primaries expose latest-retained ancestry only (activity/history); page clipped text with textCursor. For Durable exact entries use entryId and offset 0, then nextOffset. Pass nextCursor as cursor; search repeats view and query. Result selectors must agree: submissionId, scoped requestId or distinct operationId. Follow answerContinuation for text, receiptGroup.next for recipients. For declared work the answer is a state note; follow work.finalReport.read for the final report. Exact and raw views omit images, signatures and redacted thinking.",
 		inspect,
 		(input, ctx, _callId, _admissionCaller, signal) => {
 			if (input.requestId !== undefined && input.view !== "result")
@@ -1147,7 +1143,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_send",
-		`Admit a task, report, or correction to an agent or a live effort primary from agent_status. A primary accepts immediate messages, not Durable controls or schedules. Coordinate with one concise proposal containing its conditions and one answer, not repeated acknowledgments. Put agreements that others must see in a thread. Idle agents start; a busy agent reads each input at its next tool boundary. mode names the class of the input, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Model-origin messages to ordinary primaries use steer. Task check-ins run only when checkInMinutes or agent.checkInMinutes sets a nonzero interval. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.`,
+		"Send work, a correction or a report. A receipt records admission or scheduling, not action. Model messages to live ordinary primaries use immediate steer, not Durable controls or schedules. Exchange one proposal with conditions and one answer, without repeated acknowledgments. Put agreements that others must see in a thread.",
 		send,
 		(input, ctx, callId, _admissionCaller, signal) => {
 			if (input.expectReply === true || input.inReplyTo !== undefined)
@@ -1249,7 +1245,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_place",
-		"Use the agent bound to a directory, or create it. Longest bound directory wins. An optional prompt starts work. Results arrive without check-ins. Task check-ins run only when checkInMinutes or the configured agent.checkInMinutes sets a nonzero interval; the default is 0.",
+		"Use the longest matching directory binding or create an agent. A prompt starts work; results arrive automatically.",
 		obj(
 			{
 				area: opt(str()),

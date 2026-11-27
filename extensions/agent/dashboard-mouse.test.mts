@@ -177,6 +177,46 @@ it("framed footer clicks use the rendered view height, not the terminal height",
 	}
 });
 
+it("a compact roster click opens the agent's conversation without opening a draft", async () => {
+	const width = 80;
+	const height = 18;
+	const f = fixture(width, height, source([row("alpha"), row("bravo", { name: "Agent bravo" })]));
+	try {
+		await turn();
+		const roster = visible(f.ui.render(width));
+		assert.match(roster.at(-1) ?? "", /enter read/u);
+		const picked = point(roster, "Agent bravo");
+		assert.ok(f.ui.handleMouse(event(picked.x, picked.y, width, height))?.handled);
+		await turn();
+		const conversation = visible(f.ui.render(width));
+		assert.equal(f.state.selected, "bravo");
+		assert.equal(f.ui.focus.region, "conversation");
+		assert.match(conversation.join("\n"), /Check the task/u);
+		assert.doesNotMatch(conversation.join("\n"), /╭─ To /u);
+		const back = point(conversation, "esc list");
+		assert.ok(f.ui.handleMouse(event(back.x, back.y, width, height))?.handled);
+		assert.match(visible(f.ui.render(width)).at(-1) ?? "", /enter read/u);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("the wide roster's read control focuses the conversation by mouse", async () => {
+	const width = 124;
+	const height = 24;
+	const f = fixture(width, height);
+	try {
+		await turn();
+		const roster = visible(f.ui.render(width));
+		const read = point(roster, "tab read");
+		assert.ok(f.ui.handleMouse(event(read.x, read.y, width, height))?.handled);
+		assert.equal(f.ui.focus.region, "conversation");
+		assert.match(visible(f.ui.render(width)).at(-1) ?? "", /↑↓ scroll.*esc list/u);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
 for (const width of [80, 140]) {
 	it(`list clicks select passively, times toggle by click, and the message field keeps its draft at ${width}`, async () => {
 		const f = fixture(

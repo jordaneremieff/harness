@@ -138,6 +138,40 @@ it("the Threads message field shows only its text controls and keeps x as draft 
 	}
 });
 
+it("long agent model names do not take columns from the thread exchange", async () => {
+	const width = 124;
+	const options = {
+		collaborate: async (input: Record<string, unknown>) =>
+			input.action === "list"
+				? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+				: threadPage("t1"),
+	};
+	const listWidths: number[] = [];
+	const threadWidths: number[] = [];
+	for (const modelId of ["short", "long-model-name-that-needs-more-columns-in-the-agent-roster"]) {
+		const f = fixture(
+			width,
+			30,
+			source([row("one", { model: { provider: "test", modelId, thinkingLevel: "high" } })]),
+			options,
+		);
+		try {
+			await settle();
+			listWidths.push(visible(f)[1]?.indexOf("│") ?? -1);
+			f.ui.handleInput("t");
+			await settle();
+			const lines = visible(f);
+			threadWidths.push(lines[1]?.indexOf("│") ?? -1);
+			assert.match(lines.join("\n"), /Message 1/u);
+		} finally {
+			f.ui.dispose();
+		}
+	}
+	assert.ok(listWidths[1] > listWidths[0], "the agent roster widens for its model");
+	assert.ok(threadWidths[0] > 0, "this viewport has a visible thread divider");
+	assert.equal(threadWidths[1], threadWidths[0], "the thread exchange keeps its width");
+});
+
 it("a configured key with no clickable form states the limit and keeps the draft", async () => {
 	keys.setUserBindings({ "tui.input.newLine": "alt+escape" });
 	const f = fixture(100, 30, source([row("one", { state: "idle", name: "Alpha" })]));

@@ -247,8 +247,11 @@ for (const [width, height] of [
 				const header = targetHeader(f).join("\n");
 				assert.match(header, busy ? /● Working/u : /Idle/u);
 				assert.doesNotMatch(header, /Stop/u, "the header holds no commands");
-				if (busy) assert.match(screen, /s stop/u);
-				else assert.doesNotMatch(screen, /s stop/u, "Stop shows only while work runs");
+				assert.doesNotMatch(screen, /s stop/u, "the reading footer leaves Stop under More");
+				press(f, "x");
+				if (busy) assert.match(shown(f), /s\s+Stop/u);
+				else assert.doesNotMatch(shown(f), /s\s+Stop/u, "Stop is available only while work runs");
+				press(f, "\x1b");
 				press(f, "\r");
 				const writing = shown(f);
 				assert.match(writing, /╭─ To one ─+┄*╮/u);
@@ -1474,8 +1477,8 @@ it("the footer follows the focused region", async () => {
 	try {
 		await turn();
 		const footer = () => (visible(f.ui.render(164)).at(-1) ?? "").trimEnd();
-		assert.equal(footer(), "↑↓ select · enter message · / find · s stop · x more · esc close");
-		assert.doesNotMatch(footer(), /configure|help|thinking|expand|tab|retained|\$/u);
+		assert.equal(footer(), "↑↓ select · enter message · tab read · / find · x more · esc close");
+		assert.doesNotMatch(footer(), /configure|help|thinking|expand|retained|\$/u);
 		press(f, "/");
 		assert.match(footer(), /↑↓ select · enter done · ctrl\+n more · esc list$/u);
 		press(f, "\x1b");

@@ -235,10 +235,25 @@ describe("status cards", () => {
 		assert.match(screen(card.renderCall(nextArgs, theme, context())), /storage page · continuation/u);
 		const text = render(value, args);
 		assert.match(text, /0 conversations on a retained storage page; more available/u);
-		assert.match(text, /50 conversations scanned/u);
-		assert.doesNotMatch(text, /agent_list|opaque-token|0 working/u);
-		assert.ok(render(value, args, true).includes(`Continue with agent_status(${JSON.stringify(nextArgs)})`));
+		assert.doesNotMatch(text, /50 conversations scanned|agent_list|opaque-token|0 working/u);
+		const expanded = render(value, args, true);
+		assert.match(expanded, /50 conversations scanned/u);
+		assert.ok(expanded.includes(`Continue with agent_status(${JSON.stringify(nextArgs)})`));
 		assert.ok(render(value).includes(storageId), "implicit native storage is named by the result");
+	});
+
+	it("puts observed working rows first without treating a retained run as live", () => {
+		const details = {
+			conversations: [
+				{ identity: "quiet", name: "Quiet review", availability: "live", busy: false },
+				{ identity: "active", name: "Active review", availability: "live", busy: true, runId: 9 },
+			],
+		};
+		assert.match(render(details), /Active review · working · run 9/u);
+		assert.doesNotMatch(render(details), /Quiet review/u);
+		assert.match(render(details, {}, true), /Quiet review · idle/u);
+		assert.match(render({ ...details, live: false }), /Active review · live activity not observed/u);
+		assert.doesNotMatch(render({ ...details, live: false }), /working|run 9/u);
 	});
 
 	it("distinguishes matched fleet samples from machine-wide coverage and from a no-match filter", async () => {
@@ -399,6 +414,7 @@ describe("status cards", () => {
 				}),
 			},
 			{ sessionId: "storage-a", detail: true },
+			true,
 		);
 		assert.match(durable, /Durable agent · live host observation/u);
 		assert.match(durable, /Earliest timer 12 · 1 Oct 2:32 PM · unsettled · overdue/u);
@@ -608,9 +624,12 @@ describe("agent result cards", () => {
 		const text = screen(card, 180);
 		assert.match(text, /Parser review/);
 		assert.match(text, /provider\/model · high/);
-		assert.match(text, /^\nWorking\nDurable agent · live host observation\n/u);
-		assert.match(text, /1 pending input\nRunning read · call call-7\n\.\.\. \(4 more lines, ctrl\+o to expand\)$/u);
-		assert.doesNotMatch(text, /Pending bash|Latest message|Saved result|configured extension/u);
+		assert.match(text, /^\nWorking · run 7\nDurable agent · live host observation\n/u);
+		assert.match(
+			text,
+			/Running read · call call-7\nPending bash · call call-8\n\.\.\. \(4 more lines, ctrl\+o to expand\)$/u,
+		);
+		assert.doesNotMatch(text, /Latest message|Saved result|configured extension/u);
 		assert.deepEqual(resultValue, before);
 		for (const width of [12, 40, 100]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 		const expanded = screen(
@@ -622,8 +641,8 @@ describe("agent result cards", () => {
 			),
 			240,
 		);
-		assert.match(expanded, /^\nWorking\nDurable agent · live host observation\n/u);
-		assert.match(expanded, /Pending bash · call call-8\nLatest message · Check the source$/mu);
+		assert.match(expanded, /^\nWorking · run 7\nDurable agent · live host observation\n/u);
+		assert.match(expanded, /Pending bash · call call-8\n1 pending input\nLatest message · Check the source$/mu);
 		assert.doesNotMatch(expanded, /\x1b|\\u\{|to expand/u, "expanded text has no control characters or hint");
 		assert.match(expanded, /Saved result · done · submission 3\n1 configured extension without a native form/u);
 		assert.match(expanded, /"callId":\s*"call-7"/);
@@ -641,8 +660,11 @@ describe("agent result cards", () => {
 		const render = (expanded: boolean) =>
 			screen(status.renderResult(value, { ...cardKeys, expanded, isPartial: false }, theme, context()), 180);
 		const collapsed = render(false);
-		assert.match(collapsed, /Sleeping read · call signal\n\.\.\. \(4 more lines, ctrl\+o to expand\)$/u);
-		assert.doesNotMatch(collapsed, /Waiting codemode|Running (?:read|codemode)/u);
+		assert.match(
+			collapsed,
+			/Sleeping read · call signal\nWaiting codemode · call child\n\.\.\. \(4 more lines, ctrl\+o to expand\)$/u,
+		);
+		assert.doesNotMatch(collapsed, /Running (?:read|codemode)/u);
 		const expanded = render(true);
 		assert.match(expanded, /Sleeping read · call signal\nWaiting codemode · call child/u);
 		assert.doesNotMatch(expanded, /Running (?:read|codemode)|to expand/u);
@@ -683,7 +705,7 @@ describe("agent result cards", () => {
 			] as const;
 			for (const [lastTextRole, lastText, label] of cases) {
 				const lines = render(conversationStatus({ busy, live, lastTextRole, lastText })).split("\n");
-				assert.equal(lines[1], busy ? "Working" : "Idle");
+				assert.equal(lines[1], busy ? "Working · run 7" : "Idle");
 				assert.ok(lines.includes(`${label} · ${lastText}`));
 				assert.doesNotMatch(lines.join("\n"), /Replying|Working on (?:the task|input)/u);
 			}
@@ -814,7 +836,7 @@ describe("agent result cards", () => {
 	it("summarizes a status overview with unavailable storage counters", () => {
 		const details = {
 			sessions: [
-				{ id: "a", name: "Parser review", state: "working", cost: 0.25, partial: false },
+				{ id: "a", name: "Parser review", state: "working", currentTool: { name: "read" }, cost: 0.25, partial: false },
 				{ id: "b", name: "Reviewer", state: "idle", cost: 0.5, partial: true },
 				{ id: "c", state: "done", cost: 0, partial: false },
 				{ id: "d", state: "failed", cost: 0, partial: false },
@@ -842,10 +864,9 @@ describe("agent result cards", () => {
 			),
 			180,
 		);
-		assert.match(text, /5 conversations observed; 5 rows returned\n1 working · 1 need attention\n3 quiet/);
-		assert.match(text, /Parser review · working/);
-		assert.match(text, /3 more lines/);
-		assert.doesNotMatch(text, /≥|\+\?/);
+		assert.match(text, /1 working · 1 needs attention\nParser review · working · read/);
+		assert.match(text, /ctrl\+o to expand/u);
+		assert.doesNotMatch(text, /rows returned|3 quiet|≥|\+\?/);
 		assert.doesNotMatch(text, /\$/, "sampled costs are not fleet totals");
 		assert.match(text, /1 storage unavailable; absence not established/);
 		assert.doesNotMatch(text, /· new/);
@@ -878,17 +899,31 @@ describe("agent result cards", () => {
 				context(),
 			);
 			const text = screen(card, width);
-			assert.match(text, /122 conversations observed; 12 rows returned/);
-			assert.match(text, /1 working · 1 need attention/);
-			assert.match(text, /100 unavailable · 20 quiet/);
-			assert.match(text, /95 unavailable summarised · 15 quiet summarised/);
+			assert.match(text, /1 working · 1 needs attention/);
+			assert.match(text, /agent-201 · failed · turn failed\nagent-200 · working/u);
+			assert.match(text, /100 conversations unavailable/u);
+			assert.doesNotMatch(text, /rows returned|20 quiet|summarised/u);
 			assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 		}
+		const expanded = screen(
+			createAgentToolCards().agent_status.renderResult(
+				result(value),
+				{ ...cardKeys, expanded: true, isPartial: false },
+				theme,
+				context(),
+			),
+			180,
+		);
+		assert.match(expanded, /122 conversations observed; 12 rows returned\n20 quiet/u);
+		assert.match(expanded, /95 unavailable summarised · 15 quiet summarised/u);
 	});
 
 	it("summarizes a discovery page with coverage and the next page", () => {
 		const details = {
-			rows: [{ identity: "reader" }, { identity: "reviewer" }],
+			rows: [
+				{ identity: "reader", handle: "@reader", name: "Reader", role: "Read the source" },
+				{ identity: "reviewer", name: "Reviewer", role: "", firstMessage: "Check the parser", busy: true },
+			],
 			nextCursor: "Y3Vyc29y",
 			coverage: {
 				complete: false,
@@ -905,11 +940,9 @@ describe("agent result cards", () => {
 			180,
 		);
 		assert.match(text, /2 conversations on this page; next page available/u);
-		assert.match(
-			text,
-			/1 storage unavailable\n3 storages visited on this page\n12 storage scan steps open\n5 storages settled by publication/u,
-		);
-		assert.doesNotMatch(text, /Y3Vyc29y|repeat with coverage/u);
+		assert.match(text, /@reader · Reader\nRead the source\nReviewer · Check the parser/u);
+		assert.match(text, /\[Discovery evidence incomplete\]/u);
+		assert.doesNotMatch(text, /Y3Vyc29y|scan step|storages visited|working|No role set/u);
 		const expanded = screen(
 			renderListResult(
 				result(details),
@@ -920,7 +953,11 @@ describe("agent result cards", () => {
 			180,
 		);
 		assert.ok(expanded.includes('agent_list({"query":"review","cwd":"/work area","limit":2,"cursor":"Y3Vyc29y"})'));
-		assert.match(expanded, /reviewer/u);
+		assert.match(expanded, /"identity":"reviewer"/u);
+		assert.match(
+			expanded,
+			/1 storage unavailable\n3 storages visited on this page\n12 storage scan steps open\n5 storages settled by publication/u,
+		);
 		const covered = screen(
 			renderListResult(
 				result({ rows: [], nextCursor: null, coverage: { complete: true, storagesVisited: 1, unavailable: [] } }),
@@ -929,8 +966,8 @@ describe("agent result cards", () => {
 				context(),
 			),
 		);
-		assert.match(covered, /0 conversations on this page; end of scan\n1 storage visited on this page/u);
-		assert.doesNotMatch(covered, /inventory covered|next page available/iu);
+		assert.match(covered, /0 conversations on this page; end of scan/u);
+		assert.doesNotMatch(covered, /storage visited|inventory covered|next page available/iu);
 	});
 
 	it("summarizes each inspect view against its returned bounds", () => {
@@ -1025,13 +1062,13 @@ describe("agent result cards", () => {
 			screen(
 				renderInspectResult(result(activity), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 			),
-			/2 turns on this activity page; next page available\n7 entries scanned/,
+			/2 turns on this activity page; next page available/,
 		);
 		assert.match(
 			screen(
-				renderInspectResult(result(activity), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
+				renderInspectResult(result(activity), { ...cardKeys, expanded: true, isPartial: false }, theme, context()),
 			),
-			/next page available/,
+			/7 entries scanned/,
 		);
 		const saved = {
 			view: "result",

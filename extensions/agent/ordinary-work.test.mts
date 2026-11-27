@@ -249,11 +249,7 @@ it("ends the turn in the call, takes only a note, and keeps the note nowhere out
 	assert.equal(matchesSchema(OrdinaryWorkParams, { note: "x".repeat(ORDINARY_NOTE_CHARS) }), true);
 	assert.equal(matchesSchema(OrdinaryWorkParams, { note: "x".repeat(ORDINARY_NOTE_CHARS + 1) }), false);
 
-	assert.match(
-		ORDINARY_WORK_DESCRIPTION,
-		/Put no internal identifier in the note \(no session, submission or request ID\)/u,
-		"the note is text for the operator",
-	);
+	assert.match(ORDINARY_WORK_DESCRIPTION, /Describe the work, not internal IDs/u, "the note is text for the operator");
 	assert.doesNotMatch(
 		ORDINARY_WORK_DESCRIPTION,
 		/widget|complete|result references\)/u,
@@ -264,13 +260,10 @@ it("ends the turn in the call, takes only a note, and keeps the note nowhere out
 		/work that this session sent to agents is still open/u,
 		"the use condition is the state of the agent work",
 	);
+	assert.match(ORDINARY_WORK_DESCRIPTION, /In the last batch call only turn-ending tools/u);
 	assert.match(
 		ORDINARY_WORK_DESCRIPTION,
-		/every call in the last tool batch ends the turn: make this call in the last batch, alone or with other calls that also end the turn/u,
-	);
-	assert.match(
-		ORDINARY_WORK_DESCRIPTION,
-		/cover only work sent to agents: when other work of this session also runs and has its own tool that ends the turn, call that tool in the same batch/u,
+		/include the appropriate tool for any other open work/u,
 		"other open work gets its own card",
 	);
 	const texts = [ORDINARY_WORK_DESCRIPTION, f.tool.promptSnippet ?? "", f.tool.label, ORDINARY_CONTINUE_TEXT].join(

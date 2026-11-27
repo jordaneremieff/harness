@@ -475,7 +475,7 @@ Without an action, `/agent` opens the work view. A TUI command that names a
 target without its other arguments, such as `/agent configure @handle`, opens
 that target's form there. In the list, Up/Down selects and Enter opens the
 message field for the selected agent; when the window is too small to show the
-list beside or above the conversation, Enter reads the conversation instead.
+list beside or above the conversation, Enter or a click on the agent reads its conversation instead. When both fit, `Tab read` focuses the conversation.
 `/` moves to Find, where letters narrow the list; Enter or Escape returns to the
 list. PageUp/PageDown reads the selected conversation. Ctrl+O expands tool
 output; Ctrl+T toggles thinking; `z` gives the view most of the window. Esc
@@ -510,8 +510,9 @@ or selects an agent, that agent's identity. Observation actions (`list`,
 admits a follow-up when the target is busy; `/agent steer` admits steering. A
 busy Durable target receives both at its next tool boundary. The
 model-facing `agent_send` also defaults to follow-up/new work; `agent_steer`
-marks a correction. The
-status card labels its newest retained text by author: `Latest reply`,
+marks a correction. The collapsed status overview shows agents at work and those
+that need attention before quiet rows. Expand for the wider inventory. The
+selected status card labels retained text by author: `Latest reply`,
 `Latest input`, or `Latest message` if the role is absent. The live state
 appears separately.
 When the newest entry is a thread notice, its status text (`lastText`) is one
@@ -838,11 +839,12 @@ running work.
 While items run, the top rule carries a title named after the reporting
 contribution, `Jobs` for the jobs extension (`Activity` when several report),
 with the number of items. A click on it, or its first letter as a key (`j`),
-lists only the agents that run something, with the first of them selected
-when the selected agent runs nothing; a click on Agents or Escape over the
-list lists every agent again and keeps the selection. While that list is
-open, the title stays without a count after the last item ends, and the
-selected agent stays listed until the selection moves.
+lists the loaded agents with reported work regardless of the Agents tab's
+scope, error filter or Find field. The flat list has its own Find field. Press
+the activity key again to open the selected agent's advertised owner view
+when available. A click on Agents restores its prior filters. While the activity
+list is open, the title stays without a count after the last item ends, and
+the selected agent stays listed until the selection moves.
 
 In the pane, each item's row names when it started (`started 4m ago`, or the
 exact time after `i`); at most three rows show, the third as a count when more
@@ -898,8 +900,8 @@ there, and the row shows that chord instead of `x`. A key the
 row's own hints claim stays with the view; an action with the same key lists in
 More without one. A footer key with no terminal encoding shows
 `The <key> key has no clickable form here.` instead of acting quietly. Escape
-over the list clears the error filter first,
-then leaves the Jobs list, then clears Find, and keeps the chosen agent.
+in the Jobs list clears its Find field first, then returns to Agents. In Agents,
+Escape clears the error filter before Find.
 
 Selection reads passively: it never starts a host and never moves a draft
 between agents. Sending a message starts a stopped host through the normal
@@ -1057,7 +1059,8 @@ At side-by-side widths, drag the list's divider to exchange width with the
 pane. The list takes 30% of the width, clamped to 32 to 60 columns; a saved
 divider position is clamped to the same range. The list then widens to fit the
 longest model row of the loaded agents, cost included, within 60 columns and while the pane
-keeps 60. Threads uses the same list width. While a drag lasts, the list keeps
+keeps 60. Threads uses the saved divider without widening for agent models.
+While a drag lasts, the list keeps
 32 to 60 columns and the pane keeps at least 60. While the message field shows,
 drag the small grip at its top-right corner upward for more draft rows or
 downward for more conversation rows; the conversation keeps at least four rows,
@@ -2639,9 +2642,10 @@ an idle-only operation. Native callers default the profile target to themselves;
 ordinary primary callers supply an agent target.
 
 One native instruction builder supplies exact identity, current display name,
-handle, role, creator provenance, request-routing rules, and a pointer to saved
-expertise. It does not load the expertise body into every prompt. Role and name
-changes refresh these instructions in the same native commit. The profile
+handle, role, creator provenance and request-routing rules. It points to saved
+expertise only when the profile holds text beyond the visible role. It does not
+load the expertise body into the prompt. Changes to the role, name or expertise
+refresh these instructions in the same native commit. The profile
 survives compaction, reset, and host retirement. Forks start with their own
 identity and an empty profile, not an inherited handle or borrowed expertise.
 Saved expertise remains evidence; fresh sources and task restrictions outrank it.

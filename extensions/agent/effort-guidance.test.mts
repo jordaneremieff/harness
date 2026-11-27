@@ -5,26 +5,31 @@ import register from "./index.ts";
 import { AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
 
 it("gives ordinary coordination tools completion and low-message guidance", async () => {
-	const descriptions = new Map<string, string>();
+	const tools = new Map<
+		string,
+		{ description: string; parameters: { properties: Record<string, { description?: string }> } }
+	>();
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
-		registerTool: (tool: { name: string; description: string }) => descriptions.set(tool.name, tool.description),
+		registerTool: (tool: {
+			name: string;
+			description: string;
+			parameters: { properties: Record<string, { description?: string }> };
+		}) => tools.set(tool.name, tool),
 		registerShortcut() {},
 		registerMessageRenderer() {},
 		registerToolRenderer() {},
 		registerCommand() {},
 		getThinkingLevel: () => "off",
 	} as unknown as ExtensionAPI);
-	assert.match(descriptions.get("agent_intent") ?? "", /update or clear intent when integration completes/u);
-	assert.match(descriptions.get("agent_send") ?? "", /one concise proposal containing its conditions and one answer/u);
-	assert.match(descriptions.get("agent_send") ?? "", /not repeated acknowledgments/u);
-	assert.match(descriptions.get("agent_send") ?? "", /agreements that others must see in a thread\./u);
-	assert.match(
-		descriptions.get("agent_send") ?? "",
-		/Task check-ins run only when checkInMinutes or agent\.checkInMinutes sets a nonzero interval/u,
-	);
-	assert.doesNotMatch(descriptions.get("agent_send") ?? "", /Unanswered tasks send automatic owner check-ins/u);
+	assert.match(tools.get("agent_intent")?.description ?? "", /update or clear intent when integration completes/u);
+	const send = tools.get("agent_send");
+	assert.ok(send);
+	assert.match(send.description, /one proposal with conditions and one answer/u);
+	assert.match(send.description, /without repeated acknowledgments/u);
+	assert.match(send.description, /agreements that others must see in a thread\./u);
+	assert.match(send.parameters.properties.checkInMinutes.description ?? "", /agent\.checkInMinutes \(0 disables\)/u);
 });
 
 it("omits held-await controls from ordinary primaries and retains background spawn", async () => {

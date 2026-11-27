@@ -175,7 +175,7 @@ function helpLines(framed: boolean): string[] {
 		"Relations use exact creation ancestry, task targets and shared thread membership, never directory proximity.",
 		"Each agent shows its name and age, its model, and while it works what it is doing now; an error shows its reason.",
 		"A yellow dot under an agent is work its host runs in the background, such as a job, with how long it has run.",
-		"While agents of this session run background jobs, Jobs joins the top rule with their count: j or a click lists only those agents.",
+		"Jobs lists agents that report running background jobs. Press j or click its tab. In Jobs, press j again for the selected agent's jobs view.",
 		"Selecting an agent reads its conversation without starting its host. Sending a message starts a stopped host.",
 		"",
 		"Keys",
@@ -188,7 +188,8 @@ function helpLines(framed: boolean): string[] {
 		"n starts a new conversation; ? shows this help.",
 		"",
 		"List",
-		"Up and Down select; Home and End go to the first and last agent. Enter opens the message field for the selected agent.",
+		"Up and Down select; Home and End go to the first and last agent. Tab focuses the conversation for reading.",
+		"When only the list fits, Enter or a click on an agent opens its conversation. Otherwise Enter opens the message field.",
 		"/ moves to Find, where letters narrow the list; Enter or Escape returns to the list. Outside a text field, letters are keys.",
 		"e lists only the agents with an error reason, and again every agent.",
 		"l hides or shows the list. Drag the list divider or the message field's grip to resize; double-click a handle to reset it.",
@@ -383,6 +384,7 @@ export class AgentDashboard implements Component, Focusable {
 	private errorsOnly = false;
 	/** True while the running-work tab lists only the agents whose hosts report running work, such as jobs. */
 	private activityOnly = false;
+	private activityFilter = "";
 	/** Running items of the loaded agents and the tab's title, which names their one source and outlasts them. */
 	private activity = { count: 0, title: "" };
 	/** Names of primary sessions from the last effort presence read; most sessions have none. */
@@ -737,7 +739,7 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** Keep the visible order stable while the operator works; a refresh only updates rows in place. */
 	private reconcileOrder(filtered: AgentConversationSummary[]): void {
-		if (!this.rows.length || this.state.filter) {
+		if (!this.rows.length || this.filterText) {
 			this.rows = filtered;
 			return;
 		}
@@ -746,7 +748,7 @@ export class AgentDashboard implements Component, Focusable {
 				const current = filtered.find((item) => item.id === row.id);
 				if (current) return [current];
 				// The selection stays listed, with its newest published facts when the page still has it.
-				if (this.errorsOnly || row.id !== this.state.selected) return [];
+				if ((!this.activityOnly && this.errorsOnly) || row.id !== this.state.selected) return [];
 				return [this.page?.rows.find((item) => item.id === row.id) ?? row];
 			})
 			.concat(filtered.filter((row) => !this.rows.some((item) => item.id === row.id)));
@@ -771,14 +773,19 @@ export class AgentDashboard implements Component, Focusable {
 		if (this.pinned) this.state.selected = this.pinned;
 		else if (
 			!this.state.selected ||
-			(!this.rows.some((row) => row.id === this.state.selected) && (!this.console || this.state.filter))
+			(!this.rows.some((row) => row.id === this.state.selected) && (!this.console || this.filterText))
 		)
 			this.state.selected = this.rows[0]?.id;
 	}
 
+	private get filterText(): string {
+		return this.activityOnly ? this.activityFilter : this.state.filter;
+	}
+
 	/** Find text is the operator's choice: it unpins the selection and lists matches in their own order. */
 	private setFilter(value: string): void {
-		this.state.filter = value;
+		if (this.activityOnly) this.activityFilter = value;
+		else this.state.filter = value;
 		this.rosterScroll = undefined;
 		this.pinned = undefined;
 		this.rows = [];
@@ -791,8 +798,16 @@ export class AgentDashboard implements Component, Focusable {
 			this.page
 				? { observedAt: Date.parse(this.page.observedAt), sessions: this.page.rows, coverage: this.page.coverage }
 				: undefined,
-			this.state.filter,
+			this.filterText,
 		);
+		this.activity = this.activityFacts();
+		this.reconcileOrder(this.activityOnly ? filtered.filter((row) => row.activity?.length) : this.scopeRows(filtered));
+		this.rows = groupRows(this.rows);
+		this.chooseSelection();
+		this.reconcileConsole();
+	}
+
+	private scopeRows(filtered: AgentConversationSummary[]): AgentConversationSummary[] {
 		const related = this.relations.view();
 		const identities = related.identities;
 		// Related work leads when there is some; with none, the list shows every agent instead of an empty pane.
@@ -805,10 +820,10 @@ export class AgentDashboard implements Component, Focusable {
 		)
 			this.allAgents = true;
 		const scoped = this.allAgents ? filtered : filtered.filter((row) => identities.has(relationIdentity(row.id)));
-		this.activity = this.activityFacts();
-		this.reconcileOrder(this.filtered(scoped));
-		this.rows = groupRows(this.rows);
-		this.chooseSelection();
+		return this.errorsOnly ? scoped.filter(listReason) : scoped;
+	}
+
+	private reconcileConsole(): void {
 		const id = this.state.selected;
 		const console = this.console;
 		const row =
@@ -822,12 +837,6 @@ export class AgentDashboard implements Component, Focusable {
 			this.rereadIfStale(row);
 		} else if (row) this.select(row);
 		else if (!id && this.console) this.clearSelection();
-	}
-
-	/** The error filter, then the running-work tab, narrow the scoped rows. */
-	private filtered(scoped: AgentConversationSummary[]): AgentConversationSummary[] {
-		const shown = this.errorsOnly ? scoped.filter(listReason) : scoped;
-		return this.activityOnly ? shown.filter((row) => (row.activity?.length ?? 0) > 0) : shown;
 	}
 
 	private clearSelection(): void {
@@ -1517,6 +1526,8 @@ export class AgentDashboard implements Component, Focusable {
 		const row = this.console?.row;
 		const panels = this.operations.panels;
 		if (!row || !panels) return this.show("Owner views are unavailable here", "warning");
+		// In a list-only viewport the selected pane must be visible to show the read status or failure.
+		if (this.listAlone && this.region === "list") this.region = "conversation";
 		const intent = ++this.intent;
 		const notice: Notice = { text: `Reading the owner views of ${agentDisplayName(row)}…`, kind: "pending" };
 		this.notice = notice;
@@ -1530,8 +1541,7 @@ export class AgentDashboard implements Component, Focusable {
 					"warning",
 				);
 			const only =
-				(contribution === undefined ? undefined : views.find((view) => view.contribution === contribution)) ??
-				(views.length === 1 ? views[0] : undefined);
+				views.find((view) => view.contribution === contribution) ?? (views.length === 1 ? views[0] : undefined);
 			if (only) this.openInspector(only.label, (host) => only.open(host));
 			else this.openInspector("Owner views", (host) => ownerViewChooser(views, row, host));
 		} catch (error) {
@@ -1786,7 +1796,11 @@ export class AgentDashboard implements Component, Focusable {
 		this.newerIntent();
 		this.hits.clear();
 		if (!this.activityOnly) {
+			this.closeInspector();
+			this.region = "list";
 			this.activityOnly = true;
+			this.activityFilter = "";
+			this.find.value = "";
 			this.rosterScroll = undefined;
 			const selected = this.page?.rows.find((row) => row.id === this.state.selected);
 			if (!selected?.activity?.length) {
@@ -1802,9 +1816,11 @@ export class AgentDashboard implements Component, Focusable {
 	/** Every agent again; the selection stays. */
 	private leaveActivity(redraw = true): void {
 		this.activityOnly = false;
+		this.find.value = this.state.filter;
 		this.rosterScroll = undefined;
 		this.rows = [];
 		this.reconcile();
+		if (!this.showList && this.region === "list") this.region = "conversation";
 		if (redraw) this.redraw();
 	}
 
@@ -1824,21 +1840,36 @@ export class AgentDashboard implements Component, Focusable {
 	}
 
 	/**
-	 * The running-work tab's action while agents report running work and the tab is not open. Its key is the
-	 * title's first letter, `j` for Jobs, when no other action of the view takes it.
+	 * The running-work tab's key opens the list, then the selected agent's owner view. Multiple sources
+	 * for that agent use the owner view chooser rather than choosing a source on its behalf.
 	 */
 	private activityAction(others: readonly Action[]): Action | undefined {
-		if (this.surface !== "work" || this.activityOnly || !this.activity.count) return undefined;
+		if (this.surface !== "work" || !this.activity.count) return undefined;
 		const title = this.activity.title;
-		const key = title.charAt(0).toLocaleLowerCase();
+		const name = title.toLocaleLowerCase();
+		const key = name.charAt(0);
 		const free = /^[a-z]$/u.test(key) && !others.some((action) => action.key === key);
+		if (this.activityOnly) {
+			const sources = new Set(this.console?.row.activity?.map((item) => item.source));
+			if (!sources.size || !this.operations.panels) return undefined;
+			const contribution = sources.size === 1 ? [...sources][0] : undefined;
+			const label = contribution ? `Open ${plainLine(contribution)}` : "Owner views";
+			return {
+				id: "activity",
+				label,
+				...(free ? { key } : {}),
+				short: label.toLocaleLowerCase(),
+				primary: true,
+				run: () => void this.openBrowsers(contribution),
+			};
+		}
 		return {
 			id: "activity",
 			label: title,
 			...(free ? { key } : {}),
-			short: title.toLocaleLowerCase(),
+			short: name,
 			primary: true,
-			description: `Only the agents that run ${title.toLocaleLowerCase()} now`,
+			description: `Only the agents that run ${name} now`,
 			run: () => this.openActivity(),
 		};
 	}
@@ -1970,7 +2001,6 @@ export class AgentDashboard implements Component, Focusable {
 				label: "Stop",
 				key: "s",
 				short: "stop",
-				primary: true,
 				tone: "danger",
 				description: "Stop current work; history stays",
 				run: () => this.openAction("abort"),
@@ -2075,7 +2105,7 @@ export class AgentDashboard implements Component, Focusable {
 			},
 		];
 		actions.push(...this.surfaceActions());
-		if (this.errorsOnly || this.rows.some(listReason))
+		if (!this.activityOnly && (this.errorsOnly || this.rows.some(listReason)))
 			actions.push({
 				id: "errors",
 				label: this.errorsOnly ? "Every agent" : "Agents with errors",
@@ -2083,7 +2113,7 @@ export class AgentDashboard implements Component, Focusable {
 				short: this.errorsOnly ? "all agents" : "errors",
 				run: () => this.toggleErrors(),
 			});
-		if (this.console)
+		if (this.console && !this.activityOnly)
 			actions.push({
 				id: "list",
 				label: this.state.layout.listHidden ? "Show list" : "Hide list",
@@ -2126,7 +2156,7 @@ export class AgentDashboard implements Component, Focusable {
 	/** Related or All, and the other tabs, when this host offers them. */
 	private surfaceActions(): Action[] {
 		const actions: Action[] = [];
-		if (this.primaryId)
+		if (this.primaryId && !this.activityOnly)
 			actions.push({
 				id: "scope",
 				label: this.allAgents ? "Related agents" : "All agents",
@@ -2175,7 +2205,7 @@ export class AgentDashboard implements Component, Focusable {
 
 	private regions(): Region[] {
 		const order: Region[] = [];
-		if (!this.state.layout.listHidden || !this.console) order.push("list");
+		if (this.showList) order.push("list");
 		if (this.console) order.push("conversation", "composer");
 		if (this.inspector) order.push("inspector");
 		return order;
@@ -2360,32 +2390,31 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** What Escape over the list does now, for the footer; nothing in the attached terminal once nothing is left to undo. */
 	private listEscapeLabel(): string | undefined {
+		if (this.activityOnly) return this.filterText ? "clear find" : "agents";
 		if (this.errorsOnly) return "all agents";
-		if (this.activityOnly) return "agents";
-		if (!this.state.filter && this.returnSurface) return "back";
-		if (this.state.filter) return "clear find";
+		if (!this.filterText && this.returnSurface) return "back";
+		if (this.filterText) return "clear find";
 		return this.attached ? undefined : "close";
 	}
 
-	/** Escape over the list clears the error filter, then returns to Threads, then clears Find, then leaves the view. */
 	private listEscape(): void {
-		if (this.errorsOnly) {
-			this.toggleErrors();
-			return;
-		}
-		if (this.activityOnly) {
+		if (this.activityOnly && !this.filterText) {
 			this.leaveActivity();
 			return;
 		}
+		if (!this.activityOnly && this.errorsOnly) {
+			this.toggleErrors();
+			return;
+		}
 		const back = this.returnSurface;
-		if (!this.state.filter && back) {
+		if (!this.filterText && back) {
 			this.returnSurface = undefined;
 			this.saveConsole();
 			this.surface = back;
 			this.hits.clear();
 			return;
 		}
-		if (!this.state.filter) {
+		if (!this.filterText) {
 			this.exit();
 			return;
 		}
@@ -2623,14 +2652,7 @@ export class AgentDashboard implements Component, Focusable {
 			lines = [this.renderHeading(width), ...this.efforts.render(width, height - 1, shape.rosterWidth).slice(1)];
 		} else if (this.surface === "threads" && this.threads) {
 			const shape = dashboardGeometry(width, height, 0, false, 0, 4, this.state.layout);
-			lines = [
-				this.renderHeading(width),
-				...this.threads.render(
-					width,
-					height - 2,
-					width >= 100 ? this.listColumns(width, shape.rosterWidth) : shape.rosterWidth,
-				),
-			];
+			lines = [this.renderHeading(width), ...this.threads.render(width, height - 2, shape.rosterWidth)];
 		} else {
 			lines = this.renderWork(width, height - 1);
 			this.resize.end();
@@ -2805,6 +2827,7 @@ export class AgentDashboard implements Component, Focusable {
 					? "new"
 					: undefined;
 		if (enter) controls.push(this.hint(["enter"], enter, 1));
+		if (this.console && !this.listAlone) controls.push(this.hint(["tab"], "read", 1));
 		controls.push(this.hint(["/"], "find", 1));
 		return controls;
 	}
@@ -2869,7 +2892,8 @@ export class AgentDashboard implements Component, Focusable {
 		const theme = this.theme;
 		const rule = (text: string) => theme.fg("borderMuted", text);
 		const tabs = this.renderTabs();
-		const figures = this.surface === "work" && this.sessionFigures ? ` ${plainLine(this.sessionFigures)} ` : "";
+		const figures =
+			this.surface === "work" && !this.activityOnly && this.sessionFigures ? ` ${plainLine(this.sessionFigures)} ` : "";
 		const tail =
 			figures && tabs.x + visibleWidth(figures) + 4 <= width ? `${theme.fg("muted", figures)}${rule("─")}` : "";
 		return fitLine(`${tabs.line}${rule("─".repeat(Math.max(0, width - tabs.x - visibleWidth(tail))))}${tail}`, width);
@@ -2879,7 +2903,7 @@ export class AgentDashboard implements Component, Focusable {
 	private listScope(xEnd: number, y: number, room: number): { text: string; width: number } {
 		const theme = this.theme;
 		const parts: Array<{ text: string; active?: boolean; run(): void }> = [];
-		if (this.primaryId)
+		if (this.primaryId && !this.activityOnly)
 			for (const [all, label] of [
 				[false, "Related"],
 				[true, "All"],
@@ -2909,11 +2933,15 @@ export class AgentDashboard implements Component, Focusable {
 		this.redraw();
 	}
 
+	private get showList(): boolean {
+		return this.activityOnly || !this.state.layout.listHidden || !this.console;
+	}
+
 	private renderWork(width: number, height: number): string[] {
 		const heading = this.renderHeading(width);
 		const bodyHeight = height - 1;
 		const wide = width >= 100;
-		const showList = !this.state.layout.listHidden || !this.console;
+		const showList = this.showList;
 		const shape = dashboardGeometry(width, height, 0, false, 0, 4, this.state.layout);
 		const listWidth = showList && wide ? this.listColumns(width, shape.rosterWidth) : 0;
 		this.resizeColumns = { list: listWidth, pane: width - listWidth - 1 };
@@ -2921,7 +2949,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.listAlone = false;
 		if (listWidth) body = this.renderSplit(width, bodyHeight, listWidth);
 		else if (showList && bodyHeight >= 19 && !this.inspector) {
-			// The pane keeps at least 14 rows below the strip: two agents from 25 rows, one from 21, none below.
+			// The pane keeps at least 14 rows below the strip.
 			// The strip keeps two rows per agent: an activity or reason row would leave no room for a working agent.
 			const strip = this.renderList(width, bodyHeight >= 23 ? 8 : 5, 0, 1, true);
 			body = [...strip, ...this.renderPane(0, 1 + strip.length, width, bodyHeight - strip.length)];
@@ -2995,6 +3023,7 @@ export class AgentDashboard implements Component, Focusable {
 			{
 				start: this.rosterScroll,
 				compact,
+				flat: this.activityOnly,
 				reasons: (row) =>
 					row.model ? this.operations.modelInfo?.(row.model.provider, row.model.modelId)?.reasoning : undefined,
 				footer: facts.text ? { text: facts.text, color: facts.tone } : undefined,
@@ -3048,6 +3077,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.state.selected = id;
 		this.loadMore = false;
 		this.reconcile();
+		if (this.listAlone && this.console) this.region = "conversation";
 		return undefined;
 	}
 
@@ -3055,14 +3085,14 @@ export class AgentDashboard implements Component, Focusable {
 		if (this.rows.length) return undefined;
 		if (this.rosterNotice) return plainLine(this.rosterNotice);
 		if (!this.page) return "Reading agents…";
-		const related = this.allAgents ? undefined : this.relations.view();
+		const related = this.allAgents || this.activityOnly ? undefined : this.relations.view();
 		if (related?.pending) return "Reading related work…";
 		if (related?.failed) return "Related work is unavailable. All shows every loaded agent.";
 		const incomplete = !this.page.coverage.complete;
 		const narrowed = this.narrowedEmpty(incomplete);
 		if (narrowed) return narrowed;
-		if (this.state.filter) {
-			const query = `“${plainLine(this.state.filter)}”`;
+		if (this.filterText) {
+			const query = `“${plainLine(this.filterText)}”`;
 			return incomplete
 				? `No loaded agent matches ${query}. The agent list is incomplete.`
 				: `No agent matches ${query}.`;
@@ -3073,12 +3103,14 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** Why the error filter or the running-work tab leaves the list empty, and the way back. */
 	private narrowedEmpty(incomplete: boolean): string | undefined {
+		if (this.activityOnly)
+			return this.filterText
+				? undefined
+				: `No loaded agent reports running ${(this.activity.title || "work").toLocaleLowerCase()}. Esc returns to Agents.`;
 		if (this.errorsOnly)
 			return incomplete
 				? "No errors in the loaded results. The agent list is incomplete."
 				: "No agent in this view has an error. Esc clears the error filter.";
-		if (this.activityOnly)
-			return `No agent of this session runs ${(this.activity.title || "activity").toLocaleLowerCase()} now. Esc returns to Agents.`;
 		return undefined;
 	}
 
@@ -3088,8 +3120,8 @@ export class AgentDashboard implements Component, Focusable {
 			return { text: plainLine(this.rosterNotice), tone: "warning" };
 		if (this.rosterFailures >= 3 && this.rosterNotice) return { text: plainLine(this.rosterNotice), tone: "warning" };
 		const related = this.relations.view();
-		const first = !this.allAgents && related.pending && !related.loaded;
-		const failed = !this.allAgents && related.failed && !related.pending;
+		const first = !this.activityOnly && !this.allAgents && related.pending && !related.loaded;
+		const failed = !this.activityOnly && !this.allAgents && related.failed && !related.pending;
 		const text = first ? "Reading related work…" : failed ? "Related work: read failed" : "";
 		const more = this.page?.coverage.nextCursor ? (this.loadMore ? "› Load more" : "Load more") : undefined;
 		return { text, tone: failed ? "warning" : "muted", ...(more ? { more } : {}) };
