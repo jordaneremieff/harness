@@ -81,6 +81,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         textView.attachSource()
         textView.delegate = self
         textView.selectionChanged = { [weak self] in self?.onSelectionChange?() }
+        textView.selectionCharacters.onReady = { [weak self] in self?.onSelectionChange?() }
         textView.noteTarget = { [weak self] range in self?.noteItem(range) }
         scroll.bindSourceMargins(to: textView)
         scheduleDecorations(immediate: true)
@@ -94,8 +95,9 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
 
     var languageName: String { textView.syntax.engine.language.displayName }
     var selectionCount: Int { textView.selections.count }
-    var selectedCharacterCount: Int {
-        textView.sourceSelections.reduce(0) { $0 + findText.substring(with: $1).count }
+    var selectedCharacterCount: Int? {
+        guard let storage = textView.textStorage else { return 0 }
+        return textView.selectionCharacters.count(in: storage, ranges: textView.sourceSelections)
     }
 
     /// The 1-based line and display column of the primary insertion point.
@@ -174,7 +176,6 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         }
         setWrap(settings.wordWrap)
         scroll.tile()
-        textView.updateCaretTimer()
         textView.invalidateAdornment()
         textView.invalidateSyntax()
         if previous.minimap != settings.minimap || previous.tabSize != settings.tabSize { scheduleDecorations(immediate: true) }
@@ -290,6 +291,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         pending = true
         editGeneration += 1
         textView.invalidateSyntax()
+        textView.caretOverlay?.synchronize(restart: true)
         scheduleDecorations()
         if firstPendingEdit { onChange?() }
         scheduleFlush()
@@ -308,6 +310,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         onNote = nil
         onChangeMarks = nil
         onSelectionChange = nil
+        textView.selectionCharacters.invalidate()
     }
 
     func flush() async throws {

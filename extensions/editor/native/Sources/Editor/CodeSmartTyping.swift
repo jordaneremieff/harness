@@ -1,6 +1,6 @@
 import AppKit
 
-struct TextBracketMatch {
+struct TextBracketMatch: Equatable {
     let offset: Int
     let mate: Int?
     let kind: String

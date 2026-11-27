@@ -53,6 +53,14 @@ final class CodeGutterView: NSView {
     var changes: [Int: CodeChangeKind] = [:]
     override var isFlipped: Bool { true }
 
+    func invalidateActiveLine(from old: Int, to next: Int) {
+        guard !isHidden, let editor else { return }
+        for row in editor.visibleRows(in: editor.visibleRect) where row.line == old || row.line == next {
+            let rect = convert(row.rect, from: editor)
+            setNeedsDisplay(NSRect(x: 0, y: rect.minY, width: bounds.width, height: rect.height).intersection(bounds))
+        }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         guard let editor else { return }
         let theme = editor.sourceTheme
@@ -67,6 +75,7 @@ final class CodeGutterView: NSView {
             guard row != last else { continue }
             last = row
             let rect = convert(cell.rect, from: editor)
+            guard rect.minY < dirtyRect.maxY, rect.maxY > dirtyRect.minY else { continue }
             let isActive = appearance.highlightLine && row == active
             if isActive {
                 theme.currentLine.setFill()

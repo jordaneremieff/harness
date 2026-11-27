@@ -4,14 +4,22 @@ import AppKit
 final class CodeScrollView: NSScrollView {
     let gutter = CodeGutterView()
     let minimap = CodeMinimapView()
+    let caretOverlay = CodeCaretOverlay()
+    private var marginViewport: NSRect?
 
     func bindSourceMargins(to text: CodeTextView) {
         gutter.editor = text
         minimap.editor = text
         gutter.clipsToBounds = true
         minimap.clipsToBounds = true
+        caretOverlay.observe(text)
+        addSubview(caretOverlay, positioned: .above, relativeTo: contentView)
         addSubview(gutter)
         addSubview(minimap)
+        text.caretOverlay = caretOverlay
+        text.activeLineChanged = { [weak self] old, next in
+            self?.gutter.invalidateActiveLine(from: old, to: next)
+        }
         minimap.onScroll = { [weak self, weak text] line in
             guard let self, let text else { return }
             let location = text.visibleOffset(text.lineRange(line).location)
@@ -46,6 +54,8 @@ final class CodeScrollView: NSScrollView {
         minimap.isHidden = mapWidth == 0
         minimap.frame = NSRect(x: viewport.maxX, y: frame.minY, width: mapWidth, height: frame.height)
         text.updateWrapWidth(viewport.width)
+        caretOverlay.frame = viewport
+        caretOverlay.synchronize(restart: false)
     }
 
     func setChanges(_ changes: [Int: CodeChangeKind]) {
@@ -59,8 +69,11 @@ final class CodeScrollView: NSScrollView {
 
     override func reflectScrolledClipView(_ clip: NSClipView) {
         super.reflectScrolledClipView(clip)
+        guard clip === contentView, marginViewport != clip.bounds else { return }
+        marginViewport = clip.bounds
         gutter.needsDisplay = true
         minimap.needsDisplay = true
+        caretOverlay.synchronize(restart: false)
     }
 
     override func layout() {
@@ -99,6 +112,10 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
     var occurrenceWord: String?
     var selectionChanged: (() -> Void)?
     var adornmentChanged: (() -> Void)?
+    var activeLineChanged: ((Int, Int) -> Void)?
+    weak var caretOverlay: CodeCaretOverlay?
+    var cachedSelectionPaint: CodeSelectionPaint?
+    let selectionCharacters = SelectionCharacterCount()
     var lineIndex: TextLineIndex?
     var folds: [TextFold] = []
     var foundRanges: [NSRange] = []
@@ -109,9 +126,7 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
     }
     var layoutSpacing: CGFloat = 0
     var spaceWidth: CGFloat = 8
-    var caretEpoch = Date.timeIntervalSinceReferenceDate
     var columnCheckpoint: (lineStart: Int, offset: Int, column: Int)?
-    private var caretTimer: Timer?
     private var drag: (anchor: Int, previous: [TextSelection], column: Bool)?
 
     func attachSource() {
@@ -133,46 +148,35 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
         drawSourceBackground(rect)
     }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if window == nil { caretTimer?.invalidate(); caretTimer = nil }
-        else { updateCaretTimer() }
-    }
+    override var shouldDrawInsertionPoint: Bool { false }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
         if result {
-            DispatchQueue.main.async { [weak self] in self?.updateCaretTimer() }
-            invalidateAdornment()
+            DispatchQueue.main.async { [weak self] in self?.caretOverlay?.synchronize(restart: true) }
+            if multiSelection != nil { setNeedsDisplay(visibleRect) }
         }
         return result
     }
 
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder()
-        if result { caretTimer?.invalidate(); caretTimer = nil; invalidateAdornment() }
+        if result {
+            DispatchQueue.main.async { [weak self] in self?.caretOverlay?.synchronize(restart: false) }
+            if multiSelection != nil { setNeedsDisplay(visibleRect) }
+        }
         return result
     }
 
-    func updateCaretTimer() {
-        caretTimer?.invalidate()
-        caretTimer = nil
-        guard window?.firstResponder === self, sourceSettings.animations,
-              sourceSettings.caretStyle == "smooth" || sourceSettings.caretStyle == "phase" else { return }
-        let timer = Timer(timeInterval: 1.0 / 24, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { if let self { self.setNeedsDisplay(self.visibleRect) } }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        caretTimer = timer
-    }
-
     func invalidateAdornment() {
-        caretEpoch = Date.timeIntervalSinceReferenceDate
+        cachedSelectionPaint = nil
         setNeedsDisplay(visibleRect)
         adornmentChanged?()
+        caretOverlay?.synchronize(restart: true)
     }
 
     override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        let previous = selectionPaint()
         if !settingSelections {
             multiSelection = nil
             directedSelection = nil
@@ -185,15 +189,9 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
             return NSValue(range: NSRange(location: min(first, end), length: abs(end - first)))
         }
         super.setSelectedRanges(clamped, affinity: affinity, stillSelecting: stillSelecting)
-        invalidateAdornment()
-    }
-
-    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
-        guard sourceSettings.caretStyle == "blink" else { return }
-        var caret = rect
-        caret.size.width = sourceSettings.blockCaret ? spaceWidth : sourceSettings.caretWidth
-        if flag { drawSourceCaret(caret, color: sourceTheme.caret) }
-        else { setNeedsDisplay(caret) }
+        updateSelectionPaint(from: previous)
+        caretOverlay?.synchronize(restart: true)
+        if stillSelecting && !settingSelections { selectionChanged?() }
     }
 
     func updateWrapWidth(_ viewport: CGFloat) {
@@ -214,6 +212,7 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
 
     func invalidateSyntax() {
         syntax.invalidate()
+        cachedSelectionPaint = nil
         needsDisplay = true
     }
 

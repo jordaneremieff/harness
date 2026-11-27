@@ -18,6 +18,8 @@ extension CodeTextView {
     }
 
     func storageDidEdit(range: NSRange, delta: Int) {
+        selectionCharacters.invalidate()
+        cachedSelectionPaint = nil
         let oldEnd = NSMaxRange(range) - delta
         if let columnCheckpoint, range.location < columnCheckpoint.offset { self.columnCheckpoint = nil }
         lineIndex?.applyEdit(in: source, range: range, delta: delta)
@@ -225,6 +227,7 @@ extension CodeTextView {
         }
         setSelections(previous)
         invalidateSyntax()
+        invalidateAdornment()
     }
 
     private func blockOpener(on line: Int) -> Int? {

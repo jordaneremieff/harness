@@ -87,6 +87,7 @@ extension CodeTextView {
         }
         guard let top = merged.indices.max(by: { merged[$0].index < merged[$1].index }) else { return }
         let primary = merged.remove(at: top).selection
+        _ = selectionPaint()
         multiSelection = merged.isEmpty ? nil : merged.map(\.selection) + [primary]
         directedSelection = primary
         settingSelections = true
@@ -160,17 +161,27 @@ extension CodeTextView {
         return true
     }
 
+    private func isWordUnit(_ unit: unichar) -> Bool {
+        if unit < 128 { return unit == 95 || (48...57).contains(unit) || (65...90).contains(unit) || (97...122).contains(unit) }
+        return Unicode.Scalar(unit).map { wordCharacters.contains($0) } ?? false
+    }
+
+    func isWholeSourceWord(_ range: NSRange) -> Bool {
+        let source = source
+        let end = NSMaxRange(range)
+        guard range.length > 0, range.location >= 0, end <= source.length,
+              range.location == 0 || !isWordUnit(source.character(at: range.location - 1)),
+              end == source.length || !isWordUnit(source.character(at: end)) else { return false }
+        return (range.location..<end).allSatisfy { isWordUnit(source.character(at: $0)) }
+    }
+
     func word(at offset: Int) -> NSRange? {
         let source = source
         guard source.length > 0 else { return nil }
-        func isWord(_ unit: unichar) -> Bool {
-            if unit < 128 { return unit == 95 || (48...57).contains(unit) || (65...90).contains(unit) || (97...122).contains(unit) }
-            return Unicode.Scalar(unit).map { wordCharacters.contains($0) } ?? false
-        }
         var lo = min(offset, source.length)
         var hi = lo
-        while lo > 0, isWord(source.character(at: lo - 1)) { lo -= 1 }
-        while hi < source.length, isWord(source.character(at: hi)) { hi += 1 }
+        while lo > 0, isWordUnit(source.character(at: lo - 1)) { lo -= 1 }
+        while hi < source.length, isWordUnit(source.character(at: hi)) { hi += 1 }
         return lo < hi ? NSRange(location: lo, length: hi - lo) : nil
     }
 

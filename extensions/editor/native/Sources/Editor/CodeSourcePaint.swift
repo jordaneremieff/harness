@@ -6,8 +6,8 @@ extension CodeTextView {
         let rows = visibleRows(in: dirty)
         let source = source
         let settings = sourceSettings
-        let primary = selections.last?.head ?? 0
-        let activeLine = line(at: primary)
+        let paintState = selectionPaint()
+        let activeLine = paintState.line
         let startX = textContainerOrigin.x + container.lineFragmentPadding
         if settings.highlightLine {
             sourceTheme.currentLine.setFill()
@@ -22,14 +22,13 @@ extension CodeTextView {
             }
         }
         if settings.indentGuides {
-            let activeIndent = leadingIndent(on: activeLine).columns
             for row in rows {
                 let indent = leadingIndent(on: row.line)
                 let count = indent.columns / indentation.width
                 guard count > 0, row.chars.location <= contents(of: row.line).location + indent.length else { continue }
+                let active = activeGuide(for: row.line, indent: indent.columns, state: paintState)
                 for level in 0..<min(256, count) {
-                    let active = level + 1 == activeIndent / indentation.width && (row.line == activeLine || indent.columns >= activeIndent)
-                    (active ? sourceTheme.activeIndentGuide : sourceTheme.indentGuide).setFill()
+                    (active == level ? sourceTheme.activeIndentGuide : sourceTheme.indentGuide).setFill()
                     let column = level * indentation.width
                     fill(NSRect(x: floor(startX + CGFloat(column) * spaceWidth), y: row.rect.minY,
                                 width: 1, height: row.rect.height), in: dirty)
@@ -37,19 +36,9 @@ extension CodeTextView {
             }
         }
         guard let visible = paintSpan(rows), source.length > 0 else { return }
-        if settings.matchSelection, let selected = selections.last?.range,
-           (1...100).contains(selected.length), word(at: selected.location) == selected {
-            let needle = source.substring(with: selected)
-            for part in visibleParts(of: visible) {
-                var cursor = part.location
-                while cursor < NSMaxRange(part) {
-                    let range = source.range(of: needle, options: .literal, range: NSRange(location: cursor, length: NSMaxRange(part) - cursor))
-                    if range.location == NSNotFound { break }
-                    if range != selected, word(at: range.location) == range {
-                        paint(range, color: sourceTheme.selectionMatch, in: dirty)
-                    }
-                    cursor = NSMaxRange(range)
-                }
+        if let occurrence = paintState.occurrence, let span = occurrenceSpan(in: dirty) {
+            for part in visibleParts(of: span) {
+                forEachOccurrence(occurrence, in: part) { paint($0, color: sourceTheme.selectionMatch, in: dirty) }
             }
         }
         var low = 0, high = foundRanges.count
@@ -62,24 +51,25 @@ extension CodeTextView {
             paint(NSIntersectionRange(visible, match), color: match == foundCurrent ? sourceTheme.findCurrent : sourceTheme.findMatch, in: dirty)
             low += 1
         }
-        if let multiSelection {
+        if !paintState.extras.isEmpty {
             let selection = window?.firstResponder === self ? sourceTheme.selection : sourceTheme.inactiveSelection
-            for extra in multiSelection.dropLast() where NSIntersectionRange(extra.range, visible).length > 0 {
-                paint(NSIntersectionRange(extra.range, visible), color: selection, in: dirty)
+            for extra in paintState.extras {
+                paint(NSIntersectionRange(extra, visible), color: selection, in: dirty)
             }
         }
     }
 
     func drawSourceForeground(_ dirty: NSRect) {
+        let settings = sourceSettings
+        let paintState = selectionPaint()
+        guard settings.whitespace == "all" || !paintState.whitespace.isEmpty || paintState.bracket != nil || !folds.isEmpty else { return }
         let rows = visibleRows(in: dirty)
         let span = paintSpan(rows)
-        let settings = sourceSettings
         if settings.whitespace != "none", let span, span.length > 0 {
-            let ranges = settings.whitespace == "all" ? [span] : sourceSelections.map { NSIntersectionRange($0, span) }
+            let ranges = settings.whitespace == "all" ? [span] : paintState.whitespace.map { NSIntersectionRange($0, span) }
             drawWhitespace(in: ranges.filter { $0.length > 0 }.flatMap(visibleParts), dirty: dirty)
         }
-        if settings.matchBrackets, let head = selections.last?.head, let span,
-           head >= span.location, head <= NSMaxRange(span), let match = adjacentBracket(around: head, searchLimit: 8_192, viewport: true) {
+        if let match = paintState.bracket, let span {
             let colour = sourceTheme.bracket(match.mate == nil ? "unmatched" : match.kind)
             for offset in [match.offset, match.mate].compactMap({ $0 }) where NSLocationInRange(offset, span) {
                 guard let caret = caretRect(at: offset) else { continue }
@@ -99,42 +89,6 @@ extension CodeTextView {
                 let size = dots.size(withAttributes: style)
                 dots.draw(at: NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2), withAttributes: style)
             }
-        }
-        guard window?.firstResponder === self else { return }
-        let opacity = caretOpacity()
-        guard opacity > 0 else { return }
-        let color = sourceTheme.caret.withAlphaComponent(opacity)
-        let carets = settings.caretStyle == "blink" ? Array(selections.dropLast()) : selections
-        let visible = visibleRect
-        for selection in carets where selection.anchor == selection.head {
-            let head = selection.head
-            if let span, head < span.location || head > NSMaxRange(span) { continue }
-            guard let caret = caretRect(at: head), caret.intersects(visible), caret.intersects(dirty) else { continue }
-            drawSourceCaret(caret, color: color)
-        }
-    }
-
-    func drawSourceCaret(_ rect: NSRect, color: NSColor) {
-        var body = rect
-        body.size.width = sourceSettings.blockCaret ? min(max(spaceWidth, 1), max(rect.width, 1)) : sourceSettings.caretWidth
-        body.origin.x = floor(body.minX)
-        if sourceSettings.blockCaret {
-            color.withAlphaComponent(color.alphaComponent * 0.48).setFill()
-        } else {
-            color.setFill()
-        }
-        NSBezierPath(rect: body).fill()
-    }
-
-    private func caretOpacity() -> CGFloat {
-        guard sourceSettings.animations else { return 1 }
-        let elapsed = Date.timeIntervalSinceReferenceDate - caretEpoch
-        guard elapsed > 0.52 else { return 1 }
-        let cycle = (elapsed - 0.52).truncatingRemainder(dividingBy: 1.04)
-        switch sourceSettings.caretStyle {
-        case "smooth": return CGFloat((1 + cos(cycle * .pi * 2 / 1.04)) / 2)
-        case "phase": return cycle >= 0.52 ? 1 : CGFloat(exp(-7 * cycle / 0.52))
-        default: return 1
         }
     }
 

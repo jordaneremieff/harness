@@ -65,6 +65,7 @@ final class WorkspaceScreen {
     private var layoutWrite: Task<Void, Never>?
     private var savedLayout: SessionLayout?
     private var pendingPositions: [String: WorkspacePosition] = [:]
+    private var selectionStatusTimer: Timer?
     private var scrollObservers: [String: NSObjectProtocol] = [:]
     private var disconnected = false
     var onDisconnect: ((Bool) -> Void)?
@@ -249,6 +250,7 @@ final class WorkspaceScreen {
         scrollObservers.removeAll()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
+        selectionStatusTimer?.invalidate(); selectionStatusTimer = nil
         monitor?.cancel(); monitor = nil
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
@@ -332,8 +334,7 @@ final class WorkspaceScreen {
         }
         editor.onSelectionChange = { [weak self, weak editor] in
             guard let self, currentEditor === editor else { return }
-            refreshStatus()
-            scheduleLayoutWrite()
+            scheduleSelectionStatus()
         }
         editor.onNote = { [weak self] anchor in self?.compose(anchor) }
         editor.textView.onFind = { [weak self] in self?.registry.run("find.find") }
@@ -780,8 +781,23 @@ final class WorkspaceScreen {
             let status = disconnected ? "Pi closed" : editor.conflicted ? "Local conflict" : editor.diskConflict ? "Disk changed" : editor.hasPending ? "Local edits" : editor.dirty ? "Draft" : "Saved"
             let caret = editor.caretPosition
             var at = "Line \(caret.line), Column \(caret.column)"
-            if editor.selectionCount > 1 { at += "  ·  \(editor.selectionCount) selections" }
-            if editor.selectedCharacterCount > 0 { at += "  ·  \(editor.selectedCharacterCount) selected" }
+    private func scheduleSelectionStatus() {
+        guard selectionStatusTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.selectionStatusTimer = nil
+                self.refreshStatus()
+                self.scheduleLayoutWrite()
+            }
+        }
+        selectionStatusTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+            let selections = editor.selectionCount
+            if selections > 1 { at += "  ·  \(selections) selections" }
+            if let count = editor.selectedCharacterCount, count > 0 { at += "  ·  \(count) selected" }
             let indentation = editor.indentation
             let ending: String? = switch formats[editor.doc]?.ending {
             case "\r\n": "CRLF"
