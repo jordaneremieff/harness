@@ -23,11 +23,16 @@ it arrives.
   the target, it says so in its pane and stops.
 - By default the troll submits each message in the target session as your own message, with no
   clipboard step. Ask for a draft, a clipboard copy, or an answer in the troll pane instead.
-- After a submission, the troll waits for the target's answer. It presses the unresolved point
-  from a new angle if restatement or agreement leaves the objection standing. Evidence, action,
-  a real boundary, a delivery interruption, or your intervention ends automatic submissions.
-  The troll reports what the target said and did, what the evidence establishes and what remains
-  unknown.
+- After a submission, the troll waits for the target's answer and then presses the next round on
+  its own, from a new angle. No round limit applies. It stops only when the target takes your
+  position in full or does what you asked, when evidence shows the objection is wrong, when a real
+  safety, access or permission boundary is in the way, when a delivery fails, when the target
+  recognises the exercise, or when you take over: you interrupt the target, type in the target
+  during its run, or set a limit in your instruction. A restatement, a partial concession or a
+  decline without a real boundary does not stop it. Each answer reaches the troll with a line that
+  repeats this rule. When the rounds stop, the troll reports what the target said and did, what the
+  evidence establishes, what remains unknown and which reason ended the rounds. It does not advise
+  you to stop pressing.
 
 Talk to the troll in its pane at any time; your message there also permits further rounds. Quit
 the troll session to close the pane. Press Escape in the target to interrupt its run; the troll

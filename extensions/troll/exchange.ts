@@ -167,6 +167,10 @@ const OUTCOME_LINES: Record<ExchangeOutcome, string> = {
 	restarted: "This troll session restarted while it waited, so the answer will not arrive here.",
 };
 
+/** Reaches the troll with each clean answer, at the point where it chooses between the next round and a stop. */
+const NEXT_ROUND =
+	"Submit the next round unless a stop reason from your instructions holds. A partial concession, a restatement, or your doubt that another round will help is not one.";
+
 /** The text that brings an answer, or the notice that none arrives, into the troll session. */
 export function replyContent(
 	from: string,
@@ -181,5 +185,6 @@ export function replyContent(
 			`The operator added ${reply.otherInputs} other message${reply.otherInputs === 1 ? "" : "s"} in that session during the run, so the answer may address them too.`,
 		);
 	if (reply.truncated) lines.push("The answer is cut at 64 KB; read the rest in that session's history.");
+	if (reply.outcome === "answered" && reply.otherInputs === 0) lines.push(NEXT_ROUND);
 	return reply.text ? `${lines.join("\n")}\n\n${reply.text}` : lines.join("\n");
 }

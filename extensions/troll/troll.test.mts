@@ -422,10 +422,14 @@ test("round state counts submissions and retains halts until the operator writes
 	assert.match(content, /1 other message in that session/u);
 	assert.match(content, /cut at 64 KB/u);
 	assert.match(content, /\n\nBecause Y\.$/u);
+	assert.doesNotMatch(content, /Submit the next round/u, "operator input in the target ends automatic rounds");
 	assert.match(
-		replyContent("target-1", 1, { outcome: "lost", text: "", truncated: false, otherInputs: 0 }),
-		/Read the target's history/u,
+		replyContent("target-1", 3, { outcome: "answered", text: "Because Y.", truncated: false, otherInputs: 0 }),
+		/^Session target-1, troll round 3\.\nIts run ended with this answer\.\nSubmit the next round unless a stop reason from your instructions holds\.[^\n]*\n\nBecause Y\.$/u,
 	);
+	const lost = replyContent("target-1", 1, { outcome: "lost", text: "", truncated: false, otherInputs: 0 });
+	assert.match(lost, /Read the target's history/u);
+	assert.doesNotMatch(lost, /Submit the next round/u);
 });
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
