@@ -52,6 +52,19 @@ export const Feed = remote("pi.agent.feed", {
 	hostAddress: ({ serverId }) => placement({ serverId }),
 	state: { value: FeedState },
 });
+/**
+ * The peer's Chord layer refused or broke the link during connection, for example at a handshake between two
+ * Chord protocol numbers. These peers cannot exchange messages until one of them runs other code.
+ */
+export class TransportProtocolError extends Error {
+	/** Chord's own report text, such as its handshake refusal. */
+	readonly reason: string;
+	constructor(reason: string, options?: ErrorOptions) {
+		super(`The host link closed during connection: ${reason}`, options);
+		this.name = "TransportProtocolError";
+		this.reason = reason;
+	}
+}
 export interface TransportRequest {
 	readonly method: string;
 	readonly params?: unknown;
@@ -265,8 +278,7 @@ export async function connectTransport(options: {
 	} catch (error) {
 		link.close("identity handshake failed");
 		await host.close(BACKGROUND_CONTEXT);
-		if (protocolReason !== undefined)
-			throw new Error(`The host link closed during connection: ${protocolReason}`, { cause: error });
+		if (protocolReason !== undefined) throw new TransportProtocolError(protocolReason, { cause: error });
 		throw error;
 	}
 }

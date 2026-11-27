@@ -323,14 +323,14 @@ const Endpoint = remote("pi.agent.endpoint", {
   version: 1,
   params: { serverId: str() },
   hostAddress: ({ serverId }) => placement({ serverId }),
-  variants: { default: { methods: {
+  methods: {
     request: method(obj({
       method: str({ min: 1, max: 128 }),
       params: opt(unknown()),
       requestId: opt(str({ min: 1, max: 128 })),
       contract: opt(unknown()),
     }), obj({ value: opt(unknown()) })),
-  } } },
+  },
 });
 const Feed = remote("pi.agent.feed", {
   version: 1,
@@ -339,9 +339,9 @@ const Feed = remote("pi.agent.feed", {
     token: str(),
   },
   hostAddress: ({ serverId }) => placement({ serverId }),
-  variants: { default: { state: {
+  state: {
     value: obj({ ready: bool(), value: opt(unknown()) }),
-  } } },
+  },
 });
 ```
 
@@ -360,7 +360,18 @@ an accepted host before the adapter admits the identity. Old JSON-frame peers,
 unknown formats, wrong names, malformed UTF-8 and silent peers fail within a
 bound. The transport identifier is independent of Chord's protocol number:
 a matching Chord protocol number does not establish adapter compatibility.
-There is no old codec, fallback, or automatic protocol negotiation. The
+There is no old codec, fallback, or automatic protocol negotiation. Chord
+checks its own protocol number in the first message after the identity: Chord
+1.7.0 speaks protocol 2 and refuses a protocol 1 peer there, and a protocol 1
+peer refuses it in the same way. The client reports that refusal as
+`TransportProtocolError` with Chord's reason, for example
+`handshake: protocol 1, this host speaks 2`; the refusal takes milliseconds and
+admits no request. Processes of releases on either side of a Chord protocol
+change therefore share no link. The Agent's host client turns the refusal into
+an `unavailable` error that names the restart and starts no runner, and the
+manager and primary delivery identities change with the protocol, so retained
+managers and primary endpoints of the other release refuse by identity before
+a connection. The
 connection deadline applies to the initial endpoint get, not subsequent feed
 hydration. The Agent client separately bounds feed setup and most connected requests at 60 seconds. Stop, release, timer cancellation, exact run-stop and compaction waits have 90 seconds. A command or a request that creates or resolves a new agent has seven minutes, to allow nested setup and project trust. Expiry ends the wait, not admitted native work. A mutation whose reply did not arrive has an unconfirmed outcome. A hydrated feed has no age limit. Client protocol-error
 reports retain their reason in connection failures and close notifications.
@@ -423,19 +434,22 @@ public socket. Cleanup unlinks only the socket whose device and inode it
 recorded.
 
 The public `transport/index.ts` exports `connectTransport`,
-`createTransportServer`, `unixSocketPath`, and the types `TransportClient`,
-`TransportRequest`, `TransportServer`, and `TransportSubscription`. Codec
+`createTransportServer`, `unixSocketPath`, the `TransportProtocolError` class,
+and the types `TransportClient`, `TransportRequest`, `TransportServer`, and
+`TransportSubscription`. Codec
 contracts, adapter internals and tests stay in their owning modules. The client
 exposes `request`, `subscribe`, `onClose`, `connected`, and `dispose`;
 `subscribe` returns a hydrated `value` and `dispose`.
 
-Sources: `transport/{index,endpoint,unix-link}.ts`; Chord 1.5.2
+Sources: `transport/{index,endpoint,unix-link}.ts`; Chord 1.7.0
 `dist/contracts/{declare,host-kind,params}.d.ts`,
-`dist/host/{host,facet,reference,attempt}.d.ts`, and
-`dist/link/{link,message,part}.d.ts`.
+`dist/host/{host,facet,reference,attempt}.d.ts`,
+`dist/link/{link,message,part}.d.ts`, and the handshake check in
+`dist/link/channel.js`.
 
-The manager's retained-object identity is `manager/9.0.0`; ordinary primary
-channels use `primary-delivery/4.0.0`. Native tool bindings use
+The manager's retained-object identity is `manager/10.0.0`; ordinary primary
+channels use `primary-delivery/5.0.0`. Both identities include the Chord link
+protocol of the package transport. Native tool bindings use
 `native-controls/4.0.0;durable=<loaded Durable version>`.
 The primary message payload accepts optional `requireRetained:boolean`,
 defaulting to true. Source-ledger rows use `deliver` with `requireRetained:true`

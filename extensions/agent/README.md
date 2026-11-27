@@ -412,7 +412,7 @@ the open conversation again, so a retitled thread shows its new title.
 No card keeps a reference to the card of an earlier display update, and a
 collapsed call card does not serialise its arguments, so the memory of a
 transcript does not grow with the frames it draws.
-The manager contract is `manager/9.0.0`; a reload over an older retained manager
+The manager contract is `manager/10.0.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 An inspection can page the answer, final report and receipt references
 independently. Expansion shows each available continuation with the arguments
@@ -5164,7 +5164,7 @@ unplaced-input facts separately from native task state.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/9.0.0` uses the package-level Chord transport and includes
+clearance. `manager/10.0.0` uses the package-level Chord transport at Chord link protocol 2 and includes
 primary registrations that a reload suspends and replaces, primary work references,
 recipient-scoped receipt associations, paged result inspection,
 retained primary acceptance, joined communication display and awaited primary endpoint teardown,
@@ -5188,7 +5188,7 @@ for immediate state reads and recipient-scoped reference pages. Inspect requests
 `receiptCursor`; the inspect response identity is its schema hash.
 `docs/agent-host-contract.md` lists every operation identity.
 `native-controls/4.0.0` binds the native tool inputs and dispatch behavior to
-the loaded Durable release. `primary-delivery/4.0.0` requires verified retained
+the loaded Durable release. `primary-delivery/5.0.0` rides on Chord link protocol 2 and requires verified retained
 primary acceptance and carries retry notices, blocked causes, receipt
 associations and exact continuations. Delivered result references travel inside
 the unchanged notice details, so they do not change this identity.

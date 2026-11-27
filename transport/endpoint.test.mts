@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { randomUUID } from "node:crypto";
 import { Socket } from "node:net";
-import { connectTransport, createTransportServer } from "./endpoint.ts";
+import { connectTransport, createTransportServer, TransportProtocolError } from "./endpoint.ts";
 import { listenUnixLinks } from "./unix-link.ts";
 
 it("serves requests, undefined values, and owner-only sockets", { timeout: 5000 }, async (t) => {
@@ -374,7 +374,12 @@ it("retains the Chord protocol mismatch reason during connection", { timeout: 30
 	);
 	await server.start();
 	t.after(() => server.close());
-	await assert.rejects(connectTransport({ serverId, path }), /handshake: protocol 999, this host speaks/);
+	await assert.rejects(connectTransport({ serverId, path }), (error) => {
+		assert.ok(error instanceof TransportProtocolError, "a refused handshake is a protocol error, not a lost socket");
+		assert.match(error.reason, /^handshake: protocol 999, this host speaks \d+$/);
+		assert.match(error.message, /^The host link closed during connection: handshake: protocol 999/);
+		return true;
+	});
 });
 
 it("retains a live protocol error in request failures and close notifications", { timeout: 3000 }, async (t) => {

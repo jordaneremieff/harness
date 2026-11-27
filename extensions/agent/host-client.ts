@@ -18,6 +18,7 @@ import { awaitWithContext, withAbortSignal, BACKGROUND_CONTEXT } from "@earendil
 import { PluginError, isChordError } from "@earendil-works/chord";
 import {
 	connectTransport,
+	TransportProtocolError,
 	type TransportClient,
 	type TransportRequest,
 	type TransportSubscription,
@@ -787,7 +788,13 @@ async function attachLink(
 			if (signal?.aborted || attempt.state === "pending") throw error;
 		}
 	}
-	const client = await connectClient(paths.serverId, paths.socket, deadline, signal);
+	let client: TransportClient;
+	try {
+		client = await connectClient(paths.serverId, paths.socket, deadline, signal);
+	} catch (error) {
+		if (error instanceof TransportProtocolError) throw linkProtocolRefusal(metadata, error);
+		throw error;
+	}
 	try {
 		const hello = await readHostHello(client, deadline, signal);
 		return {
@@ -803,6 +810,18 @@ async function attachLink(
 	} catch (error) {
 		throw await attachFailure(client, error, deadline, signal);
 	}
+}
+
+/**
+ * The host's Chord layer refused this caller's during connection: the two processes run code from different
+ * releases. The host still holds its lease, so the caller gets this refusal and starts no runner.
+ */
+function linkProtocolRefusal(metadata: HostMetadata, error: TransportProtocolError): HostError {
+	return new HostError(
+		`The host of ${metadata.storageId} and this Pi cannot open a link (${error.reason}): they run agent code from different releases. Restart the caller to load current agent code; let an idle host retire, then use agent_attach and retry. Active work stays intact.`,
+		"unavailable",
+		{ cause: error },
+	);
 }
 
 /** Close a link whose hello failed and name the failure for the caller. */

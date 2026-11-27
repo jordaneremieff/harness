@@ -183,8 +183,8 @@ it("reload refuses a retained manager without dashboard task targets before any 
 	assert.deepEqual(calls, []);
 });
 
-// A manager/8.0.0 manager can lack members that current code calls, such as suspendPrimary.
-for (const retained of ["manager/0.0.0", "manager/8.0.0", "manager/999.0.0"])
+// An older manager can lack members that current code calls, such as suspendPrimary, or speak another link protocol.
+for (const retained of ["manager/0.0.0", "manager/9.0.0", "manager/999.0.0"])
 	it(`refuses a retained manager with a different interface (${retained}) before any control executes`, async (t) => {
 		const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-card-reload-")));
 		const previousRoot = process.env.PI_AGENT_SESSIONS_DIR;
@@ -230,7 +230,7 @@ it("keeps ordinary event handlers quiet over a retained manager with a different
 	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[
 		Symbol.for("pi.extension.agent.owners")
 	];
-	owners.managers.set(root, { managerProtocol: "manager/8.0.0" } as unknown as AgentManager);
+	owners.managers.set(root, { managerProtocol: "manager/9.0.0" } as unknown as AgentManager);
 	t.after(() => {
 		owners.managers.delete(root);
 		if (previousRoot === undefined) delete process.env.PI_AGENT_SESSIONS_DIR;
@@ -275,5 +275,5 @@ it("keeps ordinary event handlers quiet over a retained manager with a different
 	assert.deepEqual(notices, [], "events add no notice");
 	for (const handler of handlers.get("session_start") ?? []) await handler({ reason: "reload" }, ctx);
 	assert.equal(notices.length, 1, "one notice at session start");
-	assert.match(notices[0][0], /manager\/8\.0\.0.*Quit Pi and resume this session/u);
+	assert.match(notices[0][0], /manager\/9\.0\.0.*Quit Pi and resume this session/u);
 });

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { binaryCodec } from "@earendil-works/chord";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { connectTransport, createTransportServer, type TransportClient } from "../../transport/index.ts";
 import { HOST_SOCKET_PATH_LIMIT_BYTES, HostError, hostPaths } from "./host-protocol.ts";
@@ -159,6 +161,47 @@ for (const value of [
 		await assert.rejects(connectHost(peer.metadata), /current operation contract.*Restart/u);
 		assert.deepEqual(peer.calls, ["runtime-contract"]);
 	});
+
+it("refuses a host of another Chord protocol number and starts no runner", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const metadata = fixtureMetadata(root);
+	const paths = hostPaths(metadata);
+	mkdirSync(dirname(paths.socket), { recursive: true, mode: 0o700 });
+	// The documented wire form: one identity line, then length-prefixed Chord messages.
+	const hello = binaryCodec.encode({ kind: "hello", protocol: 999, incarnation: randomUUID(), calls: 1 });
+	const frame = Buffer.alloc(4 + hello.byteLength);
+	frame.writeUInt32BE(hello.byteLength, 0);
+	frame.set(hello, 4);
+	const sockets = new Set<Socket>();
+	const server = createServer((socket) => {
+		sockets.add(socket);
+		socket.on("error", () => {});
+		socket.on("close", () => sockets.delete(socket));
+		socket.write(
+			`${JSON.stringify({ transport: "harness.chord/2", kind: "host", name: `pi.agent:${paths.serverId}` })}\n`,
+		);
+		socket.write(frame);
+	});
+	await new Promise<void>((resolve) => server.listen(paths.socket, resolve));
+	t.after(
+		() =>
+			new Promise<void>((resolve) => {
+				for (const socket of sockets) socket.destroy();
+				server.close(() => resolve());
+			}),
+	);
+	for (const open of [() => connectHost(metadata), () => acquireHost(metadata, launch())])
+		await assert.rejects(open(), (error) => {
+			assert.ok(error instanceof HostError);
+			assert.equal(error.code, "unavailable");
+			assert.match(
+				error.message,
+				/cannot open a link \(handshake: protocol 999, this host speaks \d+\).*Restart the caller.*idle host retire/u,
+			);
+			return true;
+		});
+	assert.equal(existsSync(paths.claim), false, "the refused caller starts no runner");
+});
 
 it("admits unchanged operations across releases and refuses only changed contracts", async (t) => {
 	const root = fixtureRoot(t);

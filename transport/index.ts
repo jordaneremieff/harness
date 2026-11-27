@@ -2,6 +2,7 @@
 export {
 	connectTransport,
 	createTransportServer,
+	TransportProtocolError,
 	type TransportClient,
 	type TransportRequest,
 	type TransportServer,
