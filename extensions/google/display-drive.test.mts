@@ -96,8 +96,16 @@ test("Move, rename and trash outcomes require matching receipt evidence", () => 
 
 test("Drive transfers report receipts without upload content or descriptions", () => {
 	const path = "/fixture/notes.txt";
-	const upload = drivePresenters.drive_file_upload?.call({ path, description: "private", content: "file bytes" });
+	const convertToMimeType = "application/vnd.google-apps.document";
+	const upload = drivePresenters.drive_file_upload?.call({
+		path,
+		description: "private",
+		content: "file bytes",
+		mimeType: "text/plain",
+		convertToMimeType,
+	});
 	assert.equal(upload?.subject, path);
+	assert.deepEqual(upload?.facts, ["text/plain", `convert to ${convertToMimeType}`]);
 	assert.deepEqual(upload?.args, { description: "7 characters" });
 	const receipt = result("drive_file_upload", { path }, { ...file, sourceSha256: "source-checksum" });
 	assert.match(receipt?.outcome ?? "", /^Uploaded a file/);

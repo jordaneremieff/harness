@@ -63,8 +63,63 @@ test("Drive upload and export keep backend files inside its controlled working d
 		assert.equal(exported.status, "ok", JSON.stringify(exported));
 		assert.equal(await readFile(target, "utf8"), "exported text");
 		const calls = await fake.calls();
-		assert.equal(methodCalls(calls, "drive files create")[0]?.upload, "upload bytes");
+		const [create] = methodCalls(calls, "drive files create");
+		assert.equal(create.upload, "upload bytes");
+		assert.equal(create.args[create.args.indexOf("--upload-content-type") + 1], "text/plain");
+		assert.deepEqual(JSON.parse(create.args[create.args.indexOf("--json") + 1]), { name: "source.txt" });
 		assert.equal(methodCalls(calls, "drive files export").length, 1);
+	} finally {
+		await fake.cleanup();
+	}
+});
+
+test("Drive upload sends the source content type and the conversion target in separate fields", async () => {
+	const convertToMimeType = "application/vnd.google-apps.document";
+	const sourceMimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+	const fake = await createFake({ responses: { "drive files create": { stdout: { id: "converted" } } } });
+	try {
+		for (const [file, mimeType] of [
+			["letter.DOCX", undefined],
+			["letter.unknown", sourceMimeType],
+		] as const) {
+			const path = join(fake.root, file);
+			await writeFile(path, "source bytes");
+			const result = await fake.tool("drive_file_upload", {
+				path,
+				name: "renamed.txt",
+				...(mimeType ? { mimeType } : {}),
+				convertToMimeType,
+			});
+			assert.equal(result.status, "ok", JSON.stringify(result));
+		}
+		const creates = methodCalls(await fake.calls(), "drive files create");
+		assert.equal(creates.length, 2);
+		for (const { args, upload } of creates) {
+			assert.equal(upload, "source bytes");
+			assert.equal(args[args.indexOf("--upload-content-type") + 1], sourceMimeType);
+			assert.deepEqual(JSON.parse(args[args.indexOf("--json") + 1]), {
+				name: "renamed.txt",
+				mimeType: convertToMimeType,
+			});
+		}
+	} finally {
+		await fake.cleanup();
+	}
+});
+
+test("Drive upload refuses a conversion target in place of the source MIME type", async () => {
+	const fake = await createFake();
+	try {
+		const path = join(fake.root, "unknown-format");
+		await writeFile(path, "source bytes");
+		const target = "application/vnd.google-apps.document";
+		const wrongField = await fake.tool("drive_file_upload", { path, mimeType: target });
+		assert.equal(errorCode(wrongField), "INVALID_ARGUMENT");
+		assert.match((wrongField.error as { message: string }).message, /convertToMimeType/);
+		const unspecified = await fake.tool("drive_file_upload", { path, convertToMimeType: target });
+		assert.equal(errorCode(unspecified), "INVALID_ARGUMENT");
+		assert.match((unspecified.error as { message: string }).message, /source file's mimeType/);
+		assert.deepEqual(methodCalls(await fake.calls(), "drive files create"), []);
 	} finally {
 		await fake.cleanup();
 	}

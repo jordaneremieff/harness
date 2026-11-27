@@ -166,12 +166,13 @@ export const drivePresenters: Record<string, Presenter> = {
 		(args) => {
 			const path = field(args.path);
 			const name = field(args.name);
+			const target = field(args.convertToMimeType);
 			const parents = ids(args.parentIds).map(field).filter(Boolean);
 			const description =
 				typeof args.description === "string" ? count([...args.description].length, "character") : undefined;
 			return {
 				subject: path,
-				facts: [name && `as ${name}`, field(args.mimeType)].filter(Boolean),
+				facts: [name && `as ${name}`, field(args.mimeType), target && `convert to ${target}`].filter(Boolean),
 				...(parents.length || description !== undefined
 					? {
 							args: {

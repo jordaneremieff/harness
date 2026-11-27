@@ -111,6 +111,32 @@ test("slides_get renders slide text and speaker notes with the slide offsets", a
 	}
 });
 
+test("slides_get directs Office files to Drive download without changing permission errors", async () => {
+	const officeRefusal =
+		"This operation is not supported for this document. The document must not be an Office file. Please use the Drive API to access this file.";
+	const permissionRefusal = "The caller does not have permission";
+	const fake = await createFake({
+		responses: {
+			[GET]: [
+				{ exit: 1, stdout: { error: { code: 400, message: officeRefusal, reason: "failedPrecondition" } } },
+				{ exit: 1, stdout: { error: { code: 403, message: permissionRefusal } } },
+			],
+		},
+	});
+	try {
+		const office = await fake.tool("slides_get", { presentationId: "office-deck" });
+		assert.equal(errorCode(office), "UNSUPPORTED_FILE_TYPE");
+		assert.match((office.error as { message: string }).message, /Use drive_file_download with the same ID/);
+		assert.match((office.error as { message: string }).message, /drive_file_export only for native/);
+		const denied = await fake.tool("slides_get", { presentationId: "private-deck" });
+		assert.equal(errorCode(denied), "API_ERROR");
+		assert.equal((denied.error as { message: string }).message, permissionRefusal);
+		assert.deepEqual(methodCalls(await fake.calls(), "drive"), []);
+	} finally {
+		await fake.cleanup();
+	}
+});
+
 test("slides_get continues from a slide offset without repeating the slide list", async () => {
 	const fake = await createFake({ responses: { [GET]: { stdout: PRESENTATION } } });
 	try {

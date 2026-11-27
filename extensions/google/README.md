@@ -33,7 +33,12 @@ and `tasks_delete` removes one task; these tools cannot restore either.
 Downloads, exports and attachments are written to an explicit absolute path
 whose parent exists. The tools never overwrite an existing file, never follow a
 symlink at the destination, and never take a file name from Google content.
-Uploads and attachments read explicit absolute local paths once.
+Uploads and attachments read explicit absolute local paths once. For
+`drive_file_upload`, `mimeType` describes the local file bytes. If omitted, the
+tool uses the local filename extension for recognised formats and otherwise
+sends `application/octet-stream`. To import as a Google Workspace file, pass
+its native MIME type in `convertToMimeType`. If the local filename does not
+identify a recognised format, also pass its source `mimeType`.
 
 ## Results
 
@@ -71,7 +76,9 @@ agent dashboard, and attached transcript. See the
 
 ## Documents and presentations
 
-`docs_get` and `slides_get` return text inline, so a read needs no export file.
+`docs_get` and `slides_get` return native document text inline. For an Office
+presentation stored in Drive, use `drive_file_download` with the same ID.
+`drive_file_export` exports native Google Workspace files only.
 Each call fetches the current document or presentation and returns one slice of
 its markdown rendering in `externalData.content`: `text`, `truncated`,
 `nextOffset`, `totalCodePoints` and `sourceId`. Offsets count code points of

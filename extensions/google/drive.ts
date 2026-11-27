@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { arr, bool, int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import {
 	ATTACHMENT_MAX_BYTES,
@@ -19,6 +19,34 @@ const read = [SCOPES.driveRead, SCOPES.driveFile, SCOPES.drive];
 const metadataRead = [SCOPES.driveMetadataRead, ...read];
 const write = [SCOPES.driveFile, SCOPES.drive];
 const fileFields = "id,name,mimeType,size,modifiedTime,trashed,parents,description,md5Checksum";
+const googleMimePattern = "^application/vnd\\.google-apps\\.[a-z0-9-]+$";
+const googleMimeType = new RegExp(googleMimePattern, "i");
+
+const uploadMimeTypes: Readonly<Record<string, string>> = {
+	".doc": "application/msword",
+	".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	".odt": "application/vnd.oasis.opendocument.text",
+	".xls": "application/vnd.ms-excel",
+	".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	".ods": "application/vnd.oasis.opendocument.spreadsheet",
+	".ppt": "application/vnd.ms-powerpoint",
+	".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	".odp": "application/vnd.oasis.opendocument.presentation",
+	".csv": "text/csv",
+	".tsv": "text/tab-separated-values",
+	".txt": "text/plain",
+	".md": "text/markdown",
+	".htm": "text/html",
+	".html": "text/html",
+	".rtf": "application/rtf",
+	".pdf": "application/pdf",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png": "image/png",
+	".gif": "image/gif",
+	".bmp": "image/bmp",
+	".json": "application/json",
+};
 
 function object(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -47,6 +75,18 @@ function fileView(file: Record<string, unknown>, budget: TextBudget): Record<str
 function requiredName(value: string): void {
 	if (!value.trim() || /[\0]/.test(value))
 		throw new GoogleError("INVALID_ARGUMENT", "A Drive file name must be nonblank and contain no NUL.");
+}
+
+function uploadContentType(filename: string, source: string | undefined, target: string | undefined): string {
+	if (source && googleMimeType.test(source.split(";", 1)[0].trim()))
+		throw new GoogleError(
+			"INVALID_ARGUMENT",
+			"mimeType describes the local file bytes. Put the Google Workspace conversion target in convertToMimeType.",
+		);
+	const mimeType = source ?? uploadMimeTypes[extname(filename).toLowerCase()];
+	if (!mimeType && target)
+		throw new GoogleError("INVALID_ARGUMENT", "Specify the source file's mimeType to convert this file.");
+	return mimeType ?? "application/octet-stream";
 }
 
 export const driveTools: ToolSpec[] = [
@@ -154,11 +194,26 @@ export const driveTools: ToolSpec[] = [
 	{
 		name: "drive_file_upload",
 		label: "Drive upload",
-		description: "Upload one snapshotted local file into Drive.",
+		description: "Upload one snapshotted local file into Drive, with optional conversion to a Google Workspace format.",
 		parameters: obj({
 			path: Path,
 			name: opt(str({ minLength: 1, maxLength: 4096 })),
-			mimeType: opt(str({ minLength: 1, maxLength: 200 })),
+			mimeType: opt(
+				str({
+					minLength: 1,
+					maxLength: 200,
+					description:
+						"MIME type of the local file bytes, not the conversion target. Defaults from the local filename when recognised.",
+				}),
+			),
+			convertToMimeType: opt(
+				str({
+					maxLength: 200,
+					pattern: googleMimePattern,
+					description:
+						"Target Google Workspace MIME type, e.g. application/vnd.google-apps.document. Omit to keep the source format.",
+				}),
+			),
 			parentIds: opt(arr(str({ minLength: 1, maxLength: 512 }), { maxItems: 10 })),
 			description: opt(str({ maxLength: 16384 })),
 		}),
@@ -169,23 +224,26 @@ export const driveTools: ToolSpec[] = [
 					path: string;
 					name?: string;
 					mimeType?: string;
+					convertToMimeType?: string;
 					parentIds?: string[];
 					description?: string;
 				};
 				const snapshot = await readSnapshot(args.path, ATTACHMENT_MAX_BYTES);
 				const name = args.name ?? snapshot.name;
 				requiredName(name);
+				const sourceMimeType = uploadContentType(snapshot.name, args.mimeType, args.convertToMimeType);
 				const staged = await stageBytes(join(operation.stateDir, "work", "uploads"), snapshot.bytes);
 				try {
 					const response = await operation.call<Record<string, unknown>>("drive", ["files", "create"], {
 						params: { fields: fileFields },
 						body: {
 							name,
+							...(args.convertToMimeType ? { mimeType: args.convertToMimeType } : {}),
 							...(args.description !== undefined ? { description: args.description } : {}),
 							...(args.parentIds?.length ? { parents: args.parentIds } : {}),
 						},
 						upload: staged,
-						uploadContentType: args.mimeType ?? "application/octet-stream",
+						uploadContentType: sourceMimeType,
 					});
 					return ok({ ...fileView(response, new TextBudget()), sourceSha256: snapshot.sha256 });
 				} finally {

@@ -3,6 +3,7 @@ import { GRANTS, STDOUT_LIMITS } from "./gws.ts";
 import {
 	checkContinuation,
 	external,
+	GoogleError,
 	ok,
 	renderingId,
 	requireSourceId,
@@ -152,7 +153,7 @@ export const slidesTools: ToolSpec[] = [
 		name: "slides_get",
 		label: "Slides read",
 		description:
-			"Read a Google Slides presentation as a bounded markdown slice of slide text and speaker notes. The first page lists each slide's objectId and text offset. To read on, pass an offset with the sourceId of the page it came from; a changed presentation refuses with DOCUMENT_CHANGED.",
+			"Read a native Google Slides presentation as a bounded markdown slice of slide text and speaker notes. Use drive_file_download for Office presentations such as .pptx. The first page lists each slide's objectId and text offset. To read on, pass an offset with the sourceId of the page it came from; a changed presentation refuses with DOCUMENT_CHANGED.",
 		parameters: obj({
 			presentationId: PresentationId,
 			offset: opt(int({ minimum: 0, default: 0 })),
@@ -164,10 +165,23 @@ export const slidesTools: ToolSpec[] = [
 			runtime.run({ scopes: GRANTS.slidesRead }, signal, async (operation) => {
 				const args = value as { presentationId: string; offset?: number; sourceId?: string; limit?: number };
 				requireSourceId(args.offset ?? 0, args.sourceId);
-				const response = await operation.call<Json>("slides", ["presentations", "get"], {
-					params: { presentationId: args.presentationId, fields: "presentationId,title,revisionId,slides" },
-					stdoutLimit: STDOUT_LIMITS.document,
-				});
+				const response = await operation
+					.call<Json>("slides", ["presentations", "get"], {
+						params: { presentationId: args.presentationId, fields: "presentationId,title,revisionId,slides" },
+						stdoutLimit: STDOUT_LIMITS.document,
+					})
+					.catch((error: unknown) => {
+						if (
+							error instanceof GoogleError &&
+							error.code === "API_ERROR" &&
+							error.message.includes("The document must not be an Office file.")
+						)
+							throw new GoogleError(
+								"UNSUPPORTED_FILE_TYPE",
+								"This is an Office file stored in Drive, not a native Google Slides presentation. Use drive_file_download with the same ID to get the original file. Use drive_file_export only for native Google Workspace files.",
+							);
+						throw error;
+					});
 				const deck = renderDeck(records(response.slides));
 				const offset = args.offset ?? 0;
 				const sourceId = renderingId(deck.text);
