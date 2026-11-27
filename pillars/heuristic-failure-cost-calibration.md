@@ -1,6 +1,6 @@
 ---
 title: "Failure Cost Calibration"
-index: "A high-caliber pattern is proposed, or a cheap protection is skipped, without a supported cost comparison → compare concrete consequences with protection cost."
+index: "A high-caliber pattern is proposed, a protection answers a failure nothing is shown to produce, or a cheap protection is skipped, without a supported cost comparison → compare concrete consequences with protection cost."
 ---
 
 # Heuristic: Failure Cost Calibration
@@ -24,9 +24,17 @@ It also fires in the inverse case: a cheap protection is absent while a risky ch
 - The plan defers protection to a final integration step, such as one commit at the end.
 - The protection would take seconds, while reconstruction would take hours or might not succeed.
 
+It fires as well when protection of any size is proposed, requested, kept or defended against a failure that nothing is shown to produce. Cues:
+
+- The hazard is a conditional, "if some caller did X, Y would break", and no existing caller, writer, input or path is named that does X.
+- A finding reports that a failing state is possible and proposes code to prevent it.
+- An inventory of what could produce the state is already in hand, and nothing in it does.
+- A check finds no affected case and is reported as proof that the protection is safe, not as evidence about whether it is needed.
+- A challenged justification is replaced by a stronger protection for the same unshown failure.
+
 ## Move
 
-1. **Describe the failure concretely.** State the event, side effect and affected party.
+1. **Describe the failure concretely.** State the event, side effect and affected party. Name what produces the event: an existing actor, input or path, a planned one, or a binding requirement that the state be impossible. When nothing produces it, say that the hazard is hypothetical and state the condition that would make it real. Being conceivable does not justify protection, and the same search precedes removing protection that already exists.
 2. **Establish consequence at useful precision.** Use supported qualitative consequences or bounds when they settle the decision. Money, recovery time, lost work, integrity risk and irreversibility can matter without precise numbers. Measure only when the added precision could change the decision; do not require a study to price the study.
 3. **Assess frequency and detectability.** Use available evidence and supported bounds. A rare visible duplicate differs from silent repeated corruption; do not invent probabilities to complete the comparison.
 4. **Price the protection.** Count code, schema, state, execution, maintenance, operational burden, new failure modes and human attention across its lifecycle.
@@ -98,4 +106,4 @@ Under-protection has the opposite blind spot. Working state feels temporary unti
 
 ## Summary
 
-Before applying high-caliber protection or skipping a cheap one, compare concrete consequences with the protection's lifecycle cost and existing mitigation. Supported qualitative consequences can settle the decision. Measure only when added precision could change it, and choose the lowest-cost sufficient mechanism with acceptable residual risk.
+Before applying high-caliber protection, adding protection against a failure nothing is shown to produce, or skipping a cheap one, compare concrete consequences with the protection's lifecycle cost and existing mitigation. Supported qualitative consequences can settle the decision. Measure only when added precision could change it, and choose the lowest-cost sufficient mechanism with acceptable residual risk.

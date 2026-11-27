@@ -49,7 +49,7 @@ One sentence carries several propositions, and one proposition can need more tha
 
 ### 3. Hold each role to its own boundary
 
-The mapping must not change the proposition being mapped. Preserve its subject, scope, time, quantifier, modal force, and relation.
+The mapping must not change the proposition being mapped. Preserve its subject, scope, time, quantifier, modal force, and relation. The same holds when the agent passes a statement on to a party who cannot see the source. Keep the source's own qualifiers, such as severity, confidence, conditions and proposed remedy, or carry the source's words, and mark the agent's reading as the agent's.
 
 **Assertions.** Name the exact fact at issue and the source that defines that facet. A requirement defines what must hold; a record or observation shows what held within its reach. Keep a firsthand report to what the person observed, use it as attributed evidence, and do not reduce it to the fact that the person spoke. Silence supports a negative finding only when the record's scope and coverage establish that it would contain the event; otherwise the state is unknown, and "unknown" is not "no."
 
