@@ -1,6 +1,6 @@
 # Apps in panes
 
-A terminal pane can hold a real macOS application window: a browser, Slack, an editor or any other app. The window fills the pane, follows it when the layout changes and stays usable directly. Ask an agent to open an app in a pane, or choose **Pi: Show an App in a Pane…** in the Rex command palette.
+A terminal pane can hold a real macOS application window: a browser, Slack, an editor or any other app. The window fills the pane, follows it when the layout changes and stays usable directly. Ask an agent to open an app in a pane.
 
 The pane runs App Pane, a small native program. It finds its own pane on screen, moves the app's window onto it through Accessibility, and keeps it there.
 
@@ -42,8 +42,8 @@ Links follow the tab where you work in Chromium browsers, which open a link from
 
 ## Files and checks
 
-- `index.ts` registers `apps_show`, `/apps` and the palette command.
-- `show.ts` checks requests and builds the pane program's arguments; `palette-command.ts` answers the palette.
+- `index.ts` registers `apps_show` and `/apps`.
+- `show.ts` checks requests and builds the pane program's arguments.
 - `app-update.ts` and `native/build.mts` build and install App Pane.
 - `native/` holds App Pane. `AppPaneCore` parses requests and pane input, matches apps, calculates geometry and decides which browser window takes links (`LinkPolicy`). `AppPane` owns the window and sends Apple Events to its browser process; `LinkTarget` reads and changes the browser's window order for links. It uses the shared `native-pane` package to find and follow its pane.
 

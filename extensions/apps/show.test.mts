@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { paletteStep } from "./palette-command.ts";
 import { type AppEntry, outcomeText, paneLabel, runShow, type ShowContext, webAddress } from "./show.ts";
 
 const brave: AppEntry = {
@@ -104,47 +103,4 @@ test("web addresses and labels are bounded", () => {
 	assert.equal(paneLabel("A\u0007B"), "A B");
 	assert.equal(Array.from(paneLabel("x".repeat(40))).length, 32);
 	assert.equal(paneLabel("\u0007"), "App");
-});
-
-const request = (answers: unknown[]) =>
-	JSON.stringify({ version: 1, command: "apps.open", context: { session: "s", block: "b" }, answers });
-
-test("the palette command asks for an application, then shows it", async () => {
-	const list = async () => [brave, slack];
-	const first = await paletteStep(["/agent/apps/AppPane.app", request([])], list);
-	assert.ok("ask" in first && first.ask);
-	const items = (first.ask.prompt as { items: Array<{ id: string; title: string; subtitle: string }> }).items;
-	assert.deepEqual(
-		items.map(({ title, subtitle }) => [title, subtitle]),
-		[
-			["Brave Browser", "Running · /Applications/Brave Browser.app"],
-			["Slack", "/Applications/Slack.app"],
-		],
-	);
-	const second = await paletteStep(["/agent/apps/AppPane.app", request([items[1].id])], list);
-	assert.deepEqual(second, {
-		show: {
-			argv: ["/agent/apps/AppPane.app/Contents/MacOS/AppPane", "--app", "/Applications/Slack.app"],
-			label: "Slack",
-			placement: "right",
-		},
-	});
-	assert.deepEqual(await paletteStep(["/agent/apps/AppPane.app", request(["unknown"])], list), {
-		error: "That application is no longer available.",
-	});
-});
-
-test("the palette command refuses invalid requests and a missing install", async () => {
-	const list = async () => [brave];
-	for (const args of [
-		["relative", request([])],
-		["/a.app", "{"],
-		["/a.app", JSON.stringify({ version: 2, command: "apps.open", context: {}, answers: [] })],
-		["/a.app"],
-	])
-		assert.deepEqual(await paletteStep(args, list), { error: "The app pane request is invalid." });
-	const missing = await paletteStep(["/a.app", request([])], async () => {
-		throw new Error("ENOENT");
-	});
-	assert.match(String((missing as { error: string }).error), /not installed/u);
 });

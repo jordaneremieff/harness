@@ -165,8 +165,3 @@ export async function resolveWith(executable: string, text: string, signal?: Abo
 		...(Array.isArray(candidates) ? { candidates: candidates.filter(isEntry).slice(0, 8) } : {}),
 	};
 }
-
-export async function listWith(executable: string, signal?: AbortSignal): Promise<AppEntry[]> {
-	const value = await runJson(executable, ["--list"], signal);
-	return Array.isArray(value) ? value.filter(isEntry) : [];
-}

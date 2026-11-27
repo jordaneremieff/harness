@@ -4,8 +4,8 @@ Operate interactive applications and persistent terminal work through the instal
 Rex CLI. Ordinary Pi and native Durable expose the same tools and domain results.
 Rex owns terminals and their programs. This extension owns exact target resolution,
 bounded observations, caller-specific ownership claims and uncertain-effect records.
-It does not replace Bash, Jobs, Agent, Policy or Rex's skill, and it changes the Rex
-configuration only through [`/rex setup`](#set-up-palette-commands-in-rex).
+It does not replace Bash, Jobs, Agent, Policy or Rex's skill, and it never changes the Rex
+configuration.
 
 ## Tools
 
@@ -351,93 +351,6 @@ or its process ended. The
 error names the explicit remedy: select a resource, or request `source: "focus"` to use the
 operator's current focus. Inheritance never falls back to focus by itself. A standing agent keeps
 the ordinary session that created it, even when another session sends it work.
-
-## Set up palette commands in Rex
-
-Each `/rex` command ends with at most one Pi notification, which adds nothing
-to the model's context. `/rex status` shows Pi's commands in Rex itself when
-Rex can run them, as described below.
-
-Rex lets only an action that the server configuration defines show a question; a Lua script that
-`rex do` runs, including a `rex_native` Lua call, receives `unsupported`. The runtime of
-[palette commands](#palette-commands), which asks with `rex.ui`, therefore lives in a block of
-the Rex configuration that `/rex setup` writes.
-
-- `/rex setup` shows the block and asks for confirmation. It then adds the block, between two
-  marker lines, at the end of the configuration file that `rex config check` names (`REX_CONFIG`,
-  or `rex/init.lua` in the configuration directory). Every other byte stays as it was, except
-  that a last line without a line break gets one. When that path links to a file elsewhere, such
-  as a dotfiles checkout, Pi changes the linked file and keeps the link.
-- The new text waits in a file of the command's own beside the configuration, and replaces the
-  configuration in one rename only after `rex config check` accepts it. Just before the rename,
-  Pi reads the configuration again and leaves it alone when it no longer holds the text that the
-  confirmation was based on, so an edit made meanwhile stays. The replacement keeps the file's
-  permission bits; other file attributes, such as access control lists, are not carried over, and
-  a file with several hard links or a file of another kind is refused. Pi keeps the previous file
-  beside the configured path, with `.before-pi-setup` added to its name, and runs
-  `rex config reload`.
-- Setup and remove recognise the exact current block for this agent directory. A block whose
-  begin marker names an earlier version is Pi's earlier block: setup asks to update it and
-  replaces it where it stands, and remove deletes it. They refuse any other block, including a
-  partial, repeated or changed block or a block of a later version, and leave the file untouched.
-- When the file already holds the block but the server has not loaded one of its actions, such as
-  the action of a palette command recorded since the last reload, setup offers to run
-  `rex config reload`, which reads the whole file again, and runs it only after confirmation.
-- `/rex status` in interactive Pi opens **Pi: Run Command…** in Rex, as if from Pi's own pane,
-  when Rex can run Pi's commands: Rex's picker lists them, and the one you choose runs and opens
-  its pane beside Pi. Pi does not wait for the choice. Otherwise status reports one notice that
-  names the first problem and the step that fixes it: no reachable server, a server too old for
-  Pi's commands, no or an earlier Pi block, Pi's commands not loaded, no connected Rex app, or no
-  recorded command. A command that the palette does not list yet also gets a notice. Non-TUI
-  hosts report the commands in the notice instead of the picker. Setup ends with one notice.
-- `/rex remove` deletes the block the same way, with confirmation.
-
-Palette commands need API revision 17 or later on the server (Rex
-0.1.0-preview.21 has revision 18) and Rex apps as new as the server; an older app reports
-`unsupported`. After a Rex update, the server runs the new version only once it restarts.
-
-## Palette commands
-
-Extensions offer the operator commands in the Rex command palette under `Pi:`, following the
-[palette commands contract](../../docs/conventions/palette-commands.md). Each command is a program
-of its extension that answers one step at a time: it asks a question, opens a pane, or ends. The
-runtime that `/rex setup` installs asks the questions with `rex.ui` in every connected Rex app,
-runs each step with `rex.exec` on the server's machine, and opens the panes. This extension
-publishes no command of its own. The [apps extension](../apps/README.md) publishes
-**Show an App in a Pane…**.
-
-- Ordinary interactive Pi sessions record published commands in `<agentDir>/rex/palette.json`
-  at session start and when a publication arrives later. Before each record, Pi checks that its
-  global settings still load the session's package root. A trial that loads a checkout with `-e`
-  but not through those settings records nothing. A record replaces the commands of each source
-  that the session heard. It keeps an unheard command only if its program exists and any absolute
-  first argument resolves to an existing path inside the recording package's real root. A script
-  from another snapshot drops out even if that snapshot remains on disk. The update holds a lock
-  beside the file, so two sessions never merge against the same old record. A session that finds
-  the lock held skips its update. The file is written in one rename and only when it changes. RPC,
-  JSON and print sessions and native hosts record nothing. One warning per extension runtime
-  reports a failed record.
-- Each command appears as `Pi: <title>` (the action `pi_<extension>_<name>`) when Rex loads its
-  configuration. Reload the configuration after a command first appears in the registry or drops
-  out to refresh the palette. `Pi: Run Command…` (`pi_command`) lists Pi's commands in Rex's picker
-  and runs the chosen one. With an `id` argument it runs that command directly, for a key binding,
-  for example `rex.bind("cmd+shift+o", "pi_command", { id = "apps.open" })`.
-- The runtime looks up the command by ID each time an action runs. Updated arguments take effect
-  without a reload, and an action cannot run a command absent from the registry. The runtime keeps
-  only well-formed recorded commands, runs at most eight steps of 20 seconds
-  each (the time that a person takes to answer does not count), and accepts a reply of at most
-  1 MiB that holds exactly one of `ask`, `show`, `done` or `error` in the contract's shape. A
-  question without an answer ends the run quietly. A failed step, a malformed reply or an error
-  reply opens a native failure dialog with the cause on the dismiss row. The Rex app controls
-  that row's available width. A completion notice uses the native acknowledgement dialog.
-- A pane that a command opens splits the focused pane evenly to the right or below, or floats over
-  the middle of its window, without moving focus. When the tab's focused block is still zoomed
-  after a split, the runtime ends that zoom by window, so the split shows and focus stays. It receives the
-  [pane stacking feed](#pane-stacking-feed) offer that the record names, closes when its program
-  exits with status 0 and stays open after a failure.
-- Steps run under the operator's account with the Rex server's environment, not the shell's, so
-  each published command carries the values it needs in its arguments. Pi and the Rex server must
-  run on the same machine, because the runtime reads the record from Pi's agent directory.
 
 ## Pane stacking feed
 
@@ -888,9 +801,8 @@ finishes after the cutoff retains its confirmed outcome and reports deadline cov
 No background watcher exists for this capability.
 
 Pi owns OSC 7501 reports for ordinary interactive runs, compaction, and dialogs,
-including dialogs before the session starts. Rex setup and removal use Pi's
-confirmation dialogs, which report `permission` with the first line of the title.
-This extension does not emit a second ordinary report. RPC and headless sessions
+including dialogs before the session starts. This extension does not emit a second
+ordinary report. RPC and headless sessions
 do not gain an attached terminal through this extension.
 
 The inspected installed Rex catalogue and terminal schemas expose
@@ -1082,8 +994,7 @@ are findings to review, not an automatic pass or fail for the upgrade.
 ## Configuration and loading
 
 Load `extensions/rex/index.ts` through Pi's normal extension configuration.
-The factory registers ordinary tools and the `/rex` command of
-[Set up palette commands in Rex](#set-up-palette-commands-in-rex), and synchronously emits its native
+The factory registers ordinary tools and synchronously emits its native
 `durable:contribution`. Native hosts install that contribution without an ordinary
 shadow session. Active worktree routing belongs to the normal
 [worktree procedure](../../docs/conventions/worktrees.md).

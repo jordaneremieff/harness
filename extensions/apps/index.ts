@@ -1,7 +1,6 @@
 /** Real macOS application windows docked to terminal panes. */
 
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AppPaneUpdater, readAppPaneBuild } from "./app-update.ts";
 import { toolDisplay } from "./display.ts";
@@ -49,7 +48,7 @@ export default function apps(pi: ExtensionAPI): void {
 			ctx.ui.notify(
 				verb
 					? `Unknown /apps argument "${verb}". Use /apps update.`
-					: "Ask an agent to open an app in a pane, or use Pi: Show an App in a Pane… in the Rex command palette. /apps update rebuilds App Pane.",
+					: "Ask an agent to open an app in a pane. /apps update rebuilds App Pane.",
 				verb ? "warning" : "info",
 			);
 		},
@@ -83,27 +82,8 @@ export default function apps(pi: ExtensionAPI): void {
 			return { content: [{ type: "text", text: outcomeText(outcome) }], details: outcome, isError: !outcome.ok };
 		},
 	});
-	const publishPalette = () =>
-		process.platform === "darwin" &&
-		pi.events.emit("harness:palette:publish", {
-			version: 1,
-			source: "apps",
-			commands: [
-				{
-					id: "apps.open",
-					title: "Show an App in a Pane…",
-					description: "Show a Mac app window in a pane beside this one",
-					argv: [process.execPath, fileURLToPath(new URL("./palette-command.ts", import.meta.url)), app],
-				},
-			],
-		});
-	const requestPalette = pi.events.on("harness:palette:request", (value) => {
-		if (isRecord(value) && value.version === 1) publishPalette();
-	});
-	publishPalette();
 	pi.on("session_shutdown", (_event, ctx) => {
 		lifetime.abort();
-		requestPalette();
 		requestDisplay();
 		if (ctx.mode === "tui") ctx.ui.setStatus("apps", undefined);
 	});
