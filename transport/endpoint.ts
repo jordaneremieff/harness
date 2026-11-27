@@ -33,20 +33,16 @@ export const Endpoint = remote("pi.agent.endpoint", {
 	version: 1,
 	params: { serverId: str() },
 	hostAddress: ({ serverId }) => placement({ serverId }),
-	variants: {
-		default: {
-			methods: {
-				request: method(
-					obj({
-						method: str({ min: 1, max: 128 }),
-						params: opt(unknown()),
-						requestId: opt(str({ min: 1, max: 128 })),
-						contract: opt(unknown()),
-					}),
-					obj({ value: opt(unknown()) }),
-				),
-			},
-		},
+	methods: {
+		request: method(
+			obj({
+				method: str({ min: 1, max: 128 }),
+				params: opt(unknown()),
+				requestId: opt(str({ min: 1, max: 128 })),
+				contract: opt(unknown()),
+			}),
+			obj({ value: opt(unknown()) }),
+		),
 	},
 });
 const FeedState = obj({ ready: bool(), value: opt(unknown()) });
@@ -54,7 +50,7 @@ export const Feed = remote("pi.agent.feed", {
 	version: 1,
 	params: { serverId: str(), kind: oneOf("changes", "observation"), token: str() },
 	hostAddress: ({ serverId }) => placement({ serverId }),
-	variants: { default: { state: { value: FeedState } } },
+	state: { value: FeedState },
 });
 export interface TransportRequest {
 	readonly method: string;
@@ -141,11 +137,8 @@ export function createTransportServer(options: TransportServerOptions): Transpor
 		services.serve(Endpoint, ({ serverId }, value) => {
 			const peer = authorize(serverId, value);
 			return {
-				variant: "default",
-				members: {
-					request: async (request, ctx) =>
-						wrapped(await options.request(request, peer, ctx.abortSignal ?? new AbortController().signal)),
-				},
+				request: async (request, ctx) =>
+					wrapped(await options.request(request, peer, ctx.abortSignal ?? new AbortController().signal)),
 			};
 		});
 		services.serve(Feed, ({ serverId, kind, token }, value, self) => {
@@ -192,7 +185,7 @@ export function createTransportServer(options: TransportServerOptions): Transpor
 				},
 				(close) => close(),
 			);
-			return { variant: "default", members: { value: state } };
+			return { value: state };
 		});
 	});
 	const server = listenUnixLinks(
