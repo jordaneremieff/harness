@@ -48,7 +48,7 @@ final class RequestCardView: NSView, NSTextViewDelegate {
     let input: NSTextView = RequestInput(frame: .zero)
     var onSend: (() -> Void)?
     var onClose: (() -> Void)?
-    var onRecipient: ((String) -> Void)?
+    var onRecipient: ((String?) -> Void)?
     var onOpenFile: ((String) -> Void)?
 
     private let heading = NSTextField(labelWithString: "")
@@ -138,9 +138,9 @@ final class RequestCardView: NSView, NSTextViewDelegate {
             self.recipients = recipients
             self.selected = selected
             recipient.removeAllItems()
-            recipient.addItem(withTitle: "Choose a session")
+            recipient.addItem(withTitle: selected == nil ? "Choose a session" : "Clear current session")
             recipient.menu?.autoenablesItems = false
-            recipient.item(at: 0)?.isEnabled = false
+            recipient.item(at: 0)?.isEnabled = selected != nil
             let byLabel = Dictionary(grouping: recipients, by: \.label)
             for entry in recipients {
                 let title = (byLabel[entry.label]?.count ?? 0) > 1 ? "\(entry.label) · \(entry.id)" : entry.label
@@ -258,7 +258,7 @@ final class RequestCardView: NSView, NSTextViewDelegate {
     @objc private func selectRecipient() {
         let id = recipient.selectedItem?.representedObject as? String
         showConfirmedRecipient()
-        if !pending, let id, id != selected { onRecipient?(id) }
+        if !pending, id != selected { onRecipient?(id) }
     }
 
     private func showConfirmedRecipient() {
@@ -269,7 +269,8 @@ final class RequestCardView: NSView, NSTextViewDelegate {
 
     private func refreshSend() {
         hint.isHidden = !input.string.isEmpty
-        send.isEnabled = !pending && recipient.indexOfSelectedItem > 0 && !input.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        send.isEnabled = !pending && recipient.indexOfSelectedItem > 0 &&
+            !input.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func sendRequest() {

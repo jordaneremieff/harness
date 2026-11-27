@@ -61,6 +61,31 @@ struct WorkspaceRequestsTests {
         #expect(api.sent.map { $0["to"] as? String } == ["agent", "agent"])
     }
 
+    @Test func recipientChipClearsAndSelectsTheWorkspaceSession() async throws {
+        _ = NSApplication.shared
+        let api = RequestFixture()
+        let editor = CodeEditor(api: api, record: api.record)
+        let requests = WorkspaceRequests(api: api)
+        defer { requests.stop(); editor.stop() }
+        requests.bind(editor)
+        requests.state(["members": [api.agent], "currentSession": api.agent], editors: [editor])
+        editor.textView.setSelectedRange(editor.textView.source.range(of: "choice"))
+        editor.askSelection()
+        let chip = try #require(buttons(requests.view).compactMap { $0 as? NSPopUpButton }.first)
+        let action = try #require(chip.action)
+        #expect(chip.titleOfSelectedItem == "Source Agent")
+        #expect(chip.item(at: 0)?.title == "Clear current session")
+        chip.selectItem(at: 0)
+        #expect(NSApp.sendAction(action, to: chip.target, from: chip))
+        try await wait { requests.session == nil }
+        #expect(api.sessionChanges.first?["id"] is NSNull)
+        #expect(chip.titleOfSelectedItem == "Choose a session")
+        chip.selectItem(at: 1)
+        #expect(NSApp.sendAction(action, to: chip.target, from: chip))
+        try await wait { requests.session?.id == "agent" }
+        #expect(api.sessionChanges.last?["id"] as? String == "agent")
+    }
+
     private func key(_ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], window: NSWindow) throws -> NSEvent {
         try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
                                        windowNumber: window.windowNumber, context: nil, characters: characters,
@@ -90,6 +115,7 @@ private class RequestFixture: EditorAPI {
     var notes: [Fields] = []
     var sent: [Fields] = []
     var messages: [Fields] = []
+    var sessionChanges: [Fields] = []
 
     func call(_ op: String, _ fields: Fields) async throws -> Fields {
         switch op {
@@ -100,6 +126,9 @@ private class RequestFixture: EditorAPI {
             return ["id": "thread"]
         case "thread": return ["messages": messages]
         case "send": sent.append(fields); return ["accepted": true]
+        case "session":
+            sessionChanges.append(fields)
+            return ["currentSession": fields["id"] is NSNull ? NSNull() : agent as Any]
         default: throw EditorIssue(code: "test", message: "Unexpected request: \(op)")
         }
     }

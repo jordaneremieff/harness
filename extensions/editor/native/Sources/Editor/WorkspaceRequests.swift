@@ -240,7 +240,7 @@ final class WorkspaceRequests {
         onSession?()
     }
 
-    private func choose(_ id: String) {
+    private func choose(_ id: String?) {
         guard connected, !choosingSession, id != session?.id else { return }
         choosingSession = true
         paint()
@@ -248,7 +248,7 @@ final class WorkspaceRequests {
             guard let self else { return }
             defer { choosingSession = false; paint() }
             do {
-                let result = try await api.call("session", ["id": id])
+                let result = try await api.call("session", ["id": id as Any? ?? NSNull()])
                 let current = (result["currentSession"] as? Fields).flatMap(RequestParticipant.init)
                 setSession(current)
             } catch { onError?(error.localizedDescription) }
