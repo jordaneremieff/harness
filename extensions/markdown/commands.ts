@@ -54,7 +54,7 @@ export const MARKDOWN_USAGE =
 export function markdownHelp(topic = ""): string {
 	if (!topic)
 		return [
-			"/markdown reads the latest retained assistant response on this branch beside this conversation in the same Rex tab.",
+			"/markdown opens the document browser: Recent, Published, and Live panes. Press l to read the latest response, or use ctrl+alt+r to open it directly in a split on the left.",
 			...topics.map((key) => `${notes[key].usage}\n  ${notes[key].description}`),
 			`/markdown help <${topics.join("|")}> shows one command's usage.`,
 		].join("\n");

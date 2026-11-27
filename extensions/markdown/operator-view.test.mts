@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { Frame, type View, type ViewHost } from "./frame.ts";
+import { PANE_PROTOCOL, type LivePane } from "./live-protocol.ts";
 import { markdownView, type MarkdownOperations, type MarkdownRow } from "./operator-view.ts";
 
 initTheme("dark");
@@ -118,6 +119,87 @@ test("selection change and view close abort acquisition and drop late outcomes",
 	await tick();
 	assert.ok(!f.notices.includes("late reveal notice"));
 });
+test("Enter checks the exact live pane without opening a stored copy or showing a draft title", async () => {
+	const base: LivePane = {
+		handle: "workspace:document",
+		workspace: "workspace",
+		document: "document",
+		live: PANE_PROTOCOL,
+		launchId: "original-launch",
+		pid: 42,
+		origin: "operator",
+		reportedAt: Date.now(),
+		view: {
+			kind: "published",
+			title: "Saved title",
+			mode: "reading",
+			dirty: false,
+			conflict: false,
+			documentId: "md-0123456789abcdef0123",
+			revision: 2,
+		},
+	};
+	let panes = [base];
+	const calls: string[] = [];
+	const frame = new Frame({
+		theme,
+		target: { id: "session", label: "This session" },
+		expandKey: "ctrl+o",
+		rows: () => 18,
+		requestRender: () => {},
+		close: () => {},
+		open: (host) =>
+			markdownView(host, {
+				load: async () => ({ rows: [row("response")], coverage: "1 response" }),
+				listLive: async () => {
+					calls.push("list");
+					return panes;
+				},
+				read: async () => assert.fail("Live inspection must not open any document"),
+				edit: async () => assert.fail("Live inspection must not edit any document"),
+				newScratchpad: async () => "new",
+				latest: async () => {
+					calls.push("latest");
+					return "latest";
+				},
+			}),
+	});
+	const screen = () => frame.render(120).join("\n");
+	try {
+		assert.match(screen(), /l latest/u);
+		frame.handleInput("v");
+		await tick();
+		assert.match(screen(), /1 connected pane/u);
+		assert.match(screen(), /Saved title/u);
+		assert.deepEqual(calls, ["list"]);
+		panes = [
+			{
+				...base,
+				view: { ...base.view, title: "Private draft title", revision: 3, mode: "writing", dirty: true, conflict: true },
+			},
+		];
+		frame.handleInput("\r");
+		await tick();
+		assert.match(screen(), /Live pane details/u);
+		assert.match(screen(), /base revision 3/u);
+		assert.match(screen(), /unsaved changes.*save conflict/u);
+		assert.doesNotMatch(screen(), /Saved title|Private draft title/u);
+		assert.deepEqual(calls, ["list", "list"]);
+		frame.handleInput("\x1b");
+		panes = [{ ...base, launchId: "replacement", view: { ...base.view, title: "Other pane" } }];
+		frame.handleInput("\r");
+		await tick();
+		assert.match(screen(), /pane changed documents or disconnected/u);
+		assert.doesNotMatch(screen(), /Other pane/u);
+		frame.handleInput("\x1b");
+		frame.handleInput("l");
+		await tick();
+		assert.deepEqual(calls, ["list", "list", "list", "latest"]);
+	} finally {
+		frame.dispose();
+	}
+});
+
 test("a published row shows the full stable ID, the revision and the age of its last change", async () => {
 	const document: MarkdownRow = {
 		kind: "document",

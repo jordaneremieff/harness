@@ -8,7 +8,7 @@ import { toolDisplay } from "./display.ts";
 import { markdownContribution } from "./durable.ts";
 import type { Frame } from "./frame.ts";
 import { ordinaryLive } from "./live-host.ts";
-import type { LiveConfig } from "./live-protocol.ts";
+import type { LiveConfig, LivePane } from "./live-protocol.ts";
 import { createLiveTool, createLocalShow } from "./live-tool.ts";
 import type { MarkdownOperations, MarkdownScope, MarkdownViewState } from "./operator-view.ts";
 import { paneInventory } from "./pane-state.ts";
@@ -56,6 +56,7 @@ export function ordinaryOperations(
 	connection?: Connection,
 	level?: (level: RevealLevel) => void,
 	used?: (document: { id: string; title: string }) => void,
+	findLive?: () => Promise<{ list(): LivePane[] } | undefined>,
 ): MarkdownOperations {
 	const source = ctx.sessionManager;
 	const sessionId = source.getSessionId();
@@ -66,6 +67,15 @@ export function ordinaryOperations(
 		if (source.getSessionId() !== sessionId) throw new Error("The current session changed.");
 	};
 	return {
+		...(findLive && {
+			listLive: async (viewSignal: AbortSignal) => {
+				const signal = AbortSignal.any([viewSignal, lifecycle()]);
+				check(signal);
+				const bridge = await findLive();
+				check(signal);
+				return bridge?.list() ?? [];
+			},
+		}),
 		load: async (scope, viewSignal) => {
 			const signal = AbortSignal.any([viewSignal, lifecycle()]);
 			check(signal);
@@ -393,12 +403,12 @@ export default function markdown(pi: ExtensionAPI): void {
 		return state;
 	};
 	const browse = async (
-		scope: MarkdownScope,
+		scope: MarkdownScope | undefined,
 		ctx: ExtensionContext,
 		operations: MarkdownOperations,
 		signal: AbortSignal,
 	) => {
-		if (ctx.mode !== "tui") {
+		if (ctx.mode !== "tui" && scope) {
 			stateFor(ctx).scope = scope;
 			const list = await operations.load(scope, signal);
 			notice(
@@ -416,23 +426,31 @@ export default function markdown(pi: ExtensionAPI): void {
 		}
 		if (opening || signal.aborted) return;
 		opening = true;
+		let browser: Frame | undefined;
+		const close = () => browser?.close();
+		signal.addEventListener("abort", close, { once: true });
 		try {
 			const [{ openFrame }, module] = await Promise.all([import("./frame.ts"), import("./operator-view.ts")]);
 			if (signal.aborted) return;
 			const state = stateFor(ctx);
-			state.scope = scope;
+			if (scope && state.scope !== scope) {
+				state.scope = scope;
+				state.selected = undefined;
+			}
 			await openFrame(
 				ctx,
 				(host) => module.markdownView(host, operations, state),
 				(current) => {
+					browser = current;
 					frame = current;
 				},
 			);
 		} finally {
+			signal.removeEventListener("abort", close);
 			opening = false;
 		}
 	};
-	const runSelection = async (input: string, ctx: ExtensionContext, signal: AbortSignal) => {
+	const runSelection = async (input: string, ctx: ExtensionContext, signal: AbortSignal, directLatest: boolean) => {
 		const { value, presentation } = readPresentation(input);
 		const connection = connectionFor(ctx, presentation);
 		let level: RevealLevel = "info";
@@ -442,15 +460,24 @@ export default function markdown(pi: ExtensionAPI): void {
 		// Other extensions learn which stored documents this session opened.
 		const sessionId = ctx.sessionManager.getSessionId();
 		const used = (document: { id: string; title: string }) => workReference(sessionId, document);
-		const operations = ordinaryOperations(ctx, lifecycle, presentation, connection, observe, used);
-		if (presentation === "pane" && ["recent", "published"].includes(value)) {
-			await browse(value as MarkdownScope, ctx, operations, signal);
+		const operations = ordinaryOperations(
+			ctx,
+			lifecycle,
+			presentation,
+			connection,
+			observe,
+			used,
+			ctx.mode === "tui" ? () => live.find(ctx) : undefined,
+		);
+		const scope = value === "recent" || value === "published" ? value : undefined;
+		if (presentation === "pane" && (scope || (!input && ctx.mode === "tui" && !directLatest))) {
+			await browse(scope, ctx, operations, signal);
 			return;
 		}
 		const result = await readSelection(value, ctx, signal, operations, presentation, connection, observe, used);
 		if (!signal.aborted) notice(ctx, result, level);
 	};
-	const action = async (args: string, ctx: ExtensionContext) => {
+	const action = async (args: string, ctx: ExtensionContext, directLatest = false) => {
 		const signal = lifecycle();
 		try {
 			const input = args.trim();
@@ -464,7 +491,7 @@ export default function markdown(pi: ExtensionAPI): void {
 				await updateReader(ctx);
 				return;
 			}
-			await runSelection(input, ctx, signal);
+			await runSelection(input, ctx, signal, directLatest);
 		} catch (error) {
 			if (signal.aborted) return;
 			await noticeError(ctx, error, (current) => {
@@ -473,14 +500,13 @@ export default function markdown(pi: ExtensionAPI): void {
 		}
 	};
 	pi.registerCommand("markdown", {
-		description:
-			"Read or write beside this conversation; use new, edit, copy, recent, published, file, window, update or help",
+		description: "Browse responses, publications and live panes; use new, edit, copy, file, window, update or help",
 		getArgumentCompletions: markdownCompletions,
 		handler: action,
 	});
 	pi.registerShortcut("ctrl+alt+r", {
 		description: "Read the latest assistant response in Markdown",
-		handler: (ctx) => action("", ctx),
+		handler: (ctx) => action("", ctx, true),
 	});
 	const agentDir = getAgentDir();
 	const snapshot = readSettings({ agentDir });

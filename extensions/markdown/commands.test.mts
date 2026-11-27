@@ -36,6 +36,8 @@ test("file and ID usage preserve the complete typed argument", () => {
 		assert.equal(item.value, prefix);
 		assert.ok(item.description);
 	}
+	assert.match(markdownHelp(), /opens the document browser.*Live panes.*Press l.*ctrl\+alt\+r/u);
+	assert.match(markdownHelp("window"), /No argument reads the latest retained response/u);
 	assert.match(markdownHelp("file"), /session directory; expand a leading ~/u);
 	assert.match(markdownHelp("id"), /unique prefix needs at least six characters/u);
 	assert.throws(() => markdownHelp("missing"), /help new \| recent/u);

@@ -186,7 +186,7 @@ test("headless commands notify without session messages or stdout and resolve bo
 				() => {},
 			);
 			assert.match(frame.render(100).join("\n"), /Markdown help/u);
-			assert.match(frame.render(100).join("\n"), /reads the latest retained assistant response/u);
+			assert.match(frame.render(100).join("\n"), /opens the document browser/u);
 			for (let index = 0; index < 8; index++) {
 				frame.handleInput("\x1b[6~");
 				frame.render(100);
@@ -203,6 +203,65 @@ test("headless commands notify without session messages or stdout and resolve bo
 			else process.env[key] = value;
 		}
 		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("bare Markdown opens one browser while the shortcut and window still go straight to latest", async (t) => {
+	let handler: ((args: string, ctx: ExtensionContext) => Promise<void>) | undefined;
+	let shortcut: ((ctx: ExtensionContext) => Promise<void>) | undefined;
+	const pi = {
+		events: createEventBus(),
+		on: () => {},
+		registerTool: () => {},
+		registerCommand: (_name: string, command: { handler: typeof handler }) => {
+			handler = command.handler;
+		},
+		registerShortcut: (key: string, action: { handler: typeof shortcut }) => {
+			assert.equal(key, "ctrl+alt+r");
+			shortcut = action.handler;
+		},
+	} as unknown as ExtensionAPI;
+	markdown(pi);
+	assert.ok(handler && shortcut);
+	const notify = t.mock.fn();
+	let opened: Frame | undefined;
+	let ready!: () => void;
+	const readyToRender = new Promise<void>((resolve) => {
+		ready = resolve;
+	});
+	const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text };
+	const custom = t.mock.fn(
+		(factory: (tui: unknown, theme: unknown, keys: unknown, done: () => void) => Frame) =>
+			new Promise<void>((resolve) => {
+				opened = factory({ terminal: { rows: 24 }, requestRender() {} }, theme, { getKeys: () => ["ctrl+o"] }, resolve);
+				ready();
+			}),
+	);
+	const source = { getSessionId: () => "session", getLeafId: () => null };
+	const ctx = {
+		mode: "tui",
+		cwd: process.cwd(),
+		sessionManager: source,
+		ui: { notify, custom },
+	} as unknown as ExtensionContext;
+	const browsing = handler("", ctx);
+	await readyToRender;
+	try {
+		assert.ok(opened);
+		const screen = opened.render(100).join("\n");
+		assert.match(screen, /Recent +Published +Live panes/u);
+		assert.match(screen, /l latest/u);
+		assert.equal(notify.mock.callCount(), 0);
+		await handler("published", ctx);
+		assert.equal(custom.mock.callCount(), 1);
+	} finally {
+		opened?.close();
+		await browsing;
+	}
+	for (const readLatest of [() => shortcut(ctx), () => handler("window", ctx)]) {
+		await readLatest();
+		assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", /No retained assistant response/u);
+		assert.equal(custom.mock.callCount(), 1);
 	}
 });
 
