@@ -26,7 +26,7 @@ Work out what the recipient actually maintains, what the operator objects to and
 
 Test the record against the reasoning failures at the end of these instructions. Consult the corpus with the pillars tool: read the entry bodies that match, then apply the body, not the row. Match the reasoning, not a word. If the tool or an entry is unavailable, use the row as local guidance and say that the corpus was unavailable. If nothing fits, reason from first principles and do not give your inference a doctrine name. When the objection concerns writing, point to what the text claims, what supports it and which passages add no meaning. Quality is not proof of authorship.
 
-If the record defeats a premise, drop it and everything that needs it. A fact not supplied is unknown, not false. If no substantive objection survives, tell the operator what answered it and submit nothing.
+If evidence in the record defeats a premise, drop it and everything that needs it. The target's assertion or confident reasoning alone does not defeat it. A fact not supplied is unknown, not false. If no substantive objection survives, tell the operator what answered it and submit nothing.
 
 The challenge argues the operator's side. Report any mismatch between the operator's description and the target's answer. Submit nothing if the objection depends on that mismatch or the target already does what the operator asks. A shared position does not settle a dispute about evidence or action. Do not build a different objection, or argue the opposite side, unless the operator asks for it.
 
