@@ -1057,7 +1057,10 @@ node extensions/rex/upgrade-review.mts
 
 The report lists the running server, connected Mac app versions, and the newest
 installed and Sparkle-staged server builds it finds. It compares the newest
-local build with the server named in `reviewed-rex.json`. The changelog section
+local build with the server named in `reviewed-rex.json`. A Mac app update
+replaces an installed build that the server never ran, so when no local binary
+is the reviewed server, the report compares with the newest older build, such as
+the running server's, and says that the differences include reviewed changes. The changelog section
 links to server and Mac releases after their respective reviewed releases.
 
 The helper creates test terminals only on isolated servers. It starts each

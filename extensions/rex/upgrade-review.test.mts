@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	baselineBuild,
 	changes,
 	compareVersions,
 	parseSurface,
@@ -12,6 +13,15 @@ import {
 test("orders server builds by version, not directory name or string order", () => {
 	const versions = ["0.1.0", "0.1.0-preview.9", "0.1.0-preview.10", "0.2.0-preview.1"];
 	assert.deepEqual(versions.sort(compareVersions), ["0.1.0-preview.9", "0.1.0-preview.10", "0.1.0", "0.2.0-preview.1"]);
+});
+
+test("compares with the reviewed build, or else the newest older build, never a newer one", () => {
+	const build = (version: string) => ({ version });
+	const reviewed = "0.1.0-preview.23";
+	const local = [build("0.1.0-preview.21"), build("0.1.0-preview.25"), build("0.1.0-preview.19")];
+	assert.deepEqual(baselineBuild([...local, build(reviewed)], reviewed), build(reviewed));
+	assert.deepEqual(baselineBuild(local, reviewed), build("0.1.0-preview.21"));
+	assert.equal(baselineBuild([build("0.1.0-preview.24"), build("0.1.0-preview.25")], reviewed), undefined);
 });
 
 test("selects Mac and server releases after each platform's reviewed release", () => {

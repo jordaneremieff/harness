@@ -47,6 +47,19 @@ export function compareVersions(a: string, b: string): number {
 	return 0;
 }
 
+/**
+ * The build to compare the candidate with: the reviewed server, or else the newest older build, whose differences
+ * include every change since the reviewed server. A Mac app update replaces the installed build that it reviewed when
+ * the server never ran it. A newer build would hide changes, so it never serves.
+ */
+export function baselineBuild<T extends { version: string }>(builds: readonly T[], reviewed: string): T | undefined {
+	const sorted = [...builds].sort((a, b) => compareVersions(b.version, a.version));
+	return (
+		sorted.find((build) => build.version === reviewed) ??
+		sorted.find((build) => compareVersions(build.version, reviewed) < 0)
+	);
+}
+
 function identity(value: unknown): Identity {
 	const { rex_version, api_revision } = row(value);
 	if (typeof api_revision !== "number" || !Number.isSafeInteger(api_revision)) throw new Error("Invalid API revision.");
@@ -436,12 +449,12 @@ async function review(baselinePath: URL | string, signal: AbortSignal) {
 	const installed = builds.find((build) => build.source === "installed");
 	const staged = builds.find((build) => build.source === "staged");
 	const candidate = builds[0];
-	const previous = builds.find((build) => build.version === baseline.server);
+	const previous = baselineBuild(builds, baseline.server);
 	const { candidateProbe, previousProbe } = await probePair(candidate, previous, signal, attempt);
 	if (!candidate) issues.push("- No installed or staged Rex binary was available to probe.");
 	if (!previous)
 		issues.push(
-			`- No local Rex binary matched the reviewed server ${baseline.server}. The API and environment comparisons lack a baseline.`,
+			`- No local Rex binary matched or preceded the reviewed server ${baseline.server}. The API and environment comparisons lack a baseline.`,
 		);
 	const names = sourceNames(
 		sources ?? [],
@@ -458,6 +471,7 @@ async function review(baselinePath: URL | string, signal: AbortSignal) {
 		`- Newest installed server: ${showInfo(installed)}`,
 		`- Newest staged server: ${staged ? showInfo(staged) : "none found"}`,
 		`- Candidate: ${showInfo(candidate)}${candidate ? ` (${candidate.source})` : ""}`,
+		baselineLine(previous, baseline.server),
 		"",
 		"## Terminal environment",
 		"",
@@ -477,6 +491,14 @@ async function review(baselinePath: URL | string, signal: AbortSignal) {
 	);
 	if (issues.length) output.push("", "## Incomplete evidence", "", ...issues.sort());
 	return { report: `${output.join("\n")}\n`, incomplete: issues.length > 0 };
+}
+
+function baselineLine(previous: Binary | undefined, reviewed: string): string {
+	if (!previous) return "- Comparison baseline: none";
+	const line = `- Comparison baseline: ${showInfo(previous)} (${previous.source})`;
+	return previous.version === reviewed
+		? line
+		: `${line}. No local binary is the reviewed ${reviewed}, so the comparison also shows changes that were reviewed.`;
 }
 
 function environmentReport(candidate: Probe | undefined, baseline: Probe | undefined, names: string[] | undefined) {
