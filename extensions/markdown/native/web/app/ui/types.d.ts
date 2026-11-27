@@ -261,8 +261,6 @@ declare global {
 		clearSelection?(): void;
 		/** Shows the document text that holds a node before a find match there comes into view. */
 		reveal?(node: Node): void;
-		/** Opens an agent's answer, rendered as Markdown, as a view of its own. */
-		showAnswer?(html: string): void;
 		/** The kind of mark at a point of the page, if a comment or a question marks the text there. */
 		annotationAt?(x: number, y: number): "comment" | "question" | null;
 	}

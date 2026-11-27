@@ -951,6 +951,20 @@ struct Context {
             let first = await send("Summarise the document.")
             _ = await wait(seconds: 3) { prompts.count == 1 }
             if prompts.count == 1 { try await answer(0, long) }
+            let expanded = await js(model, """
+            const card = document.querySelector('[data-role="ask-card"]');
+            const log = card.querySelector('.ask-messages');
+            const compactHeight = log.clientHeight;
+            const field = card.querySelector('textarea');
+            field.value = 'A follow-up draft'; field.dispatchEvent(new Event('input', { bubbles:true }));
+            card.querySelector('button[aria-label="Expand discussion"]')?.click();
+            if (!card.hasAttribute('data-expanded') || log.clientHeight <= compactHeight ||
+                !log.textContent.includes('End of the long answer.') || card.querySelector('textarea') !== field) return false;
+            card.querySelector('button[aria-label="Back to passage"]')?.click();
+            if (card.hasAttribute('data-expanded') || field.value !== 'A follow-up draft') return false;
+            card.querySelector('button[aria-label="Expand discussion"]')?.click();
+            return card.hasAttribute('data-expanded');
+            """) as? Bool == true
             let second = await send("Shorter, please.")
             _ = await wait(seconds: 3) { prompts.count == 2 }
             if prompts.count == 2 { try await answer(1, "Follow-up answer: two lines at most.") }
@@ -969,8 +983,8 @@ struct Context {
             return r.top >= top - 0.5 && r.bottom <= Math.min(limit, view.bottom) + 0.5 ? 'visible' : `answer ${Math.round(r.top)}-${Math.round(r.bottom)}, visible area ${Math.round(top)}-${Math.round(Math.min(limit, view.bottom))}`;
             """) as? String ?? "unavailable"
             await model.close()
-            return .init(name: name, pass: opened && first && second && prompts.count == 2 && geometry == "visible",
-                         detail: "card open \(opened); question sent \(first); follow-up sent \(second); prompts \(prompts.count); newest answer \(geometry)")
+            return .init(name: name, pass: opened && first && expanded && second && prompts.count == 2 && geometry == "visible",
+                         detail: "card open \(opened); discussion expanded and draft preserved \(expanded); question sent \(first); follow-up sent \(second); prompts \(prompts.count); newest answer \(geometry)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
@@ -989,7 +1003,7 @@ struct Context {
             let answer = (1...50).map { "Paragraph \($0) of an answer long enough to require scrolling." }.joined(separator: "\n\n")
             try await CheckRunner.showAnswer(answer, model: model) { prompts.first }
             let added = await js(model, """
-            document.querySelector('.ask-card .ask-head button').click();
+            document.querySelector('.ask-card button[data-key=esc]').click();
             const passage = document.querySelector('[data-role="document"] p');
             const range = document.createRange(); range.selectNodeContents(passage);
             getSelection().removeAllRanges(); getSelection().addRange(range);
@@ -1034,7 +1048,7 @@ struct Context {
                 const controls = [
                     ['composer', card.querySelector('.composer'), card], ['field', field, card],
                     ['card Send', card.querySelector('.send'), card],
-                    ['card Close', card.querySelector('.ask-head button'), card],
+                    ['card Close', card.querySelector('button[data-key=esc]'), card],
                     ['tray Open', document.getElementById('ask-batch-open'), tray],
                     ['tray Send', document.getElementById('ask-batch-send'), tray],
                 ];
@@ -1271,7 +1285,7 @@ struct Context {
             const questions = card ? [...card.querySelectorAll('.ask-question')] : [];
             return card ? [card.querySelector('.ask-head .who')?.textContent ?? '', card.querySelector('.quote')?.textContent ?? '', field?.value ?? '', String(document.activeElement === field), card.querySelector('.reply')?.textContent ?? '', questions.at(-1)?.textContent ?? ''] : [];
             """
-            let closeCard = "document.querySelector('.ask-card[data-open] .ask-head button')?.click(); return !document.querySelector('.ask-card[data-open]');"
+            let closeCard = "document.querySelector('.ask-card[data-open] button[data-key=esc]')?.click(); return !document.querySelector('.ask-card[data-open]');"
             /// Command-D on a selection, then a message and a press of one of the card's buttons.
             func ask(_ text: String, occurrence: Int = 1, message: String, button: String) async -> (selected: Bool, card: [String], done: Bool) {
                 let selected = await select(text, occurrence: occurrence)
@@ -1329,7 +1343,7 @@ struct Context {
             document.getElementById('b-ask').click();
             document.querySelector('#activity:popover-open .item')?.click();
             if (!document.querySelector('.ask-card[data-open]')) return [];
-            document.querySelector('.ask-card[data-open] .ask-head button')?.click();
+            document.querySelector('.ask-card[data-open] button[data-key=esc]')?.click();
             document.getElementById('b-ask').click();
             const menu = document.querySelector('#activity:popover-open');
             const titles = [...(menu?.querySelectorAll('.thread b') ?? [])].map(b => b.textContent);

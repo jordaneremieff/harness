@@ -365,22 +365,6 @@
 			}
 			await load();
 		}
-		// An agent's answer as a page of its own, in the document's type and measure.
-		function answerContent(body: HTMLElement, html: string) {
-			const answer = el("div", { class: "doc answer-doc", "data-reader-view": "" });
-			api.setRenderedHTML(answer, html);
-			for (const node of answer.querySelectorAll("[id]")) node.removeAttribute("id");
-			api.highlightCode?.(answer);
-			answer.addEventListener("click", (event) => {
-				const link = (event.target as Element).closest("a[href]");
-				if (!link) return;
-				event.preventDefault();
-				const href = link.getAttribute("href") ?? "";
-				if (!href.startsWith("#")) void ctx.hostCommand("openLink", { href });
-			});
-			body.append(answer);
-			return body;
-		}
 		async function content(view: string, args: Record<string, unknown>) {
 			const body = el("div", { class: `overlay-body ${view}-view` });
 			if (view === "source") {
@@ -391,7 +375,6 @@
 				void libraryView(body);
 				return body;
 			}
-			if (view === "answer") return answerContent(body, typeof args.html === "string" ? args.html : "");
 			const result = (await host.request("query", { kind: view, ...args })) as Record<string, unknown>;
 			return resultContent(view, body, result, args);
 		}
@@ -741,7 +724,6 @@
 									image: "Image",
 									source: "Markdown source",
 									library: "Library",
-									answer: "Agent answer",
 								}[view] ?? view,
 							),
 							body,

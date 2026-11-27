@@ -200,7 +200,6 @@
 			views = api.createViewsUI(context, navigation),
 			contextMenu = api.createContextMenu(context, (id, c) => runMenu(id, c));
 		context.reveal = (node) => codeViews.reveal(node);
-		context.showAnswer = (html) => views.show("answer", { html });
 		context.annotationAt = (x, y) => ask.annotationAt(x, y);
 		const findbar = get(".find");
 		bar.insertBefore(findbar, bar.querySelector(".spacer"));

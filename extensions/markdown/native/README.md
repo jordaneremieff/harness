@@ -48,8 +48,7 @@ The chrome shares one scale in `tokens.css`: control heights (`--ctl`, `--ctl-s`
 (`--sp-*`), nested radii (`--r-s`, `--r`, `--r-l`, `--r-xl`) and one icon line weight
 (`--icon-stroke`, drawn at the same width at every icon size).
 An agent's answer in an Ask card is Markdown rendered with the document's renderer, as text that
-belongs to no file: no raw HTML, and images as placeholders. A long answer also opens as a page of
-its own in the document's type and measure.
+belongs to no file: no raw HTML, and images as placeholders. Expand discussion gives the whole exchange the document's reading measure and keeps the follow-up field in view.
 Code blocks whose language label the page knows, such as TypeScript, Swift, JSON, shell, Python,
 YAML, CSS, HTML, SQL, Rust, Go and diff, take the style guide's syntax colours by role: keywords,
 strings with their escapes and interpolated code, numbers, comments, types, functions, parameters,

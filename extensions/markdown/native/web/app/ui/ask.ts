@@ -324,15 +324,27 @@
 			const anchor = rangeFor(threadRange());
 			return anchor?.getBoundingClientRect() ?? get("#b-ask").getBoundingClientRect();
 		}
+		function placeExpanded(box: DOMRect, top: number, bottom: number) {
+			card.style.top = `${top}px`;
+			card.style.left = `${Math.max(0, (box.width - card.offsetWidth) / 2)}px`;
+			card.style.height = `${Math.max(0, bottom - top - 6)}px`;
+			card.style.maxHeight = "";
+			delete card.dataset.side;
+		}
 		function position() {
 			if (!session.visible) return;
 			const body = card.querySelector<HTMLElement>(".ask-body");
-			if (!body) return;
+			if (body) positionBody(body);
+		}
+		function positionBody(body: HTMLElement) {
 			const box = app.getBoundingClientRect(),
-				bar = get(".bar").getBoundingClientRect(),
-				log = body.querySelector<HTMLElement>(".ask-messages"),
+				top = get(".bar").getBoundingClientRect().bottom - box.top,
+				bottom = tray.hidden ? box.height : tray.getBoundingClientRect().top - box.top;
+			if (card.hasAttribute("data-expanded")) return placeExpanded(box, top + 6, bottom);
+			const log = body.querySelector<HTMLElement>(".ask-messages"),
 				bodyScroll = body.scrollTop,
 				logScroll = log?.scrollTop ?? 0;
+			card.style.height = "";
 			const rect = cardAnchorRect();
 			// Measure before the placement cap shrinks the body. Restore its scroll offsets after layout.
 			card.style.maxHeight = "";
@@ -340,11 +352,7 @@
 			const place = api.uiLogic.cardPlacement(
 				{ top: rect.top - box.top, bottom: rect.bottom - box.top, left: rect.left - box.left },
 				{ width: card.offsetWidth, height, minHeight: height - Math.max(0, body.offsetHeight - 64) },
-				{
-					width: box.width,
-					height: tray.hidden ? box.height : tray.getBoundingClientRect().top - box.top,
-					top: bar.bottom - box.top,
-				},
+				{ width: box.width, height: bottom, top },
 			);
 			card.style.maxHeight = `${place.maxHeight}px`;
 			card.style.left = `${place.left}px`;
@@ -756,12 +764,30 @@
 			if (thread.pendingComment) return "Edit batch comment";
 			return thread.quote ? "Ask about this passage" : "Ask about this document";
 		}
+		function discussionSize() {
+			const expanded = card.hasAttribute("data-expanded");
+			const control = button(
+				expanded ? "Back to passage" : "Expand discussion",
+				expanded ? "back" : "expand",
+				() => {
+					card.toggleAttribute("data-expanded", !expanded);
+					const next = discussionSize();
+					control.replaceWith(next);
+					position();
+					next.focus({ preventScroll: true });
+				},
+				{ className: "link" },
+			);
+			control.setAttribute("aria-expanded", String(expanded));
+			return control;
+		}
 		function drawHead(thread: ReaderThread) {
 			return el(
 				"div",
 				{ class: "ask-head" },
 				el("span", { class: "kind" }, icon("spark")),
 				el("span", { class: "who" }, threadTitle(thread)),
+				thread.messages.length ? discussionSize() : null,
 				button("Dismiss card", "x", () => ask.close(), { iconOnly: true, key: "esc" }),
 			);
 		}
@@ -1323,36 +1349,11 @@
 			});
 			return body;
 		}
-		// The page takes the card's place; the answer stays in the card for the next opening.
-		async function openAnswerPage(text: string) {
-			let html = renderedAnswers.get(text);
-			if (html === undefined) {
-				const reply = (await host.request("query", { kind: "markdown", text })) as { html?: unknown } | undefined;
-				if (typeof reply?.html !== "string") throw new Error("the reply held no HTML");
-				html = reply.html;
-				rememberAnswer(text, html);
-			}
-			ask.close();
-			ctx.showAnswer?.(html);
-		}
-		function answerHead(text: string) {
-			const head = el("div", { class: "from" }, el("span", {}, "Agent"));
-			// A long answer also opens as a page of its own, at the document's width and type.
-			if (text.length > 480 || /\n(#|```|\||\s*[-*] |\s*\d+\. )/.test(text))
-				head.append(
-					button(
-						"Open answer as a page",
-						"expand",
-						() => void openAnswerPage(text).catch(() => ctx.notice("The reader did not render this answer.", "warn")),
-						{ iconOnly: true },
-					),
-				);
-			return head;
-		}
+
 		function promptAnswer(message: ReaderAskMessage) {
 			if (!message.detail) return null;
 			if (message.state === "answered")
-				return el("div", { class: "reply" }, answerHead(message.detail), answerBody(message.detail));
+				return el("div", { class: "reply" }, el("div", { class: "from" }, "Agent"), answerBody(message.detail));
 			if (message.state === "unanswered") return el("p", { class: "send-failure" }, message.detail);
 			return null;
 		}
@@ -1465,6 +1466,7 @@
 		}
 		function renderCard(thread: ReaderThread) {
 			const message = activeMessage(thread);
+			if (!message) card.removeAttribute("data-expanded");
 			const body = drawCardBody(thread);
 			card.dataset.state = message?.state ?? "draft";
 			card.setAttribute("data-open", "");
@@ -1672,6 +1674,7 @@
 		}
 		const selectionByThread = new WeakMap<ReaderThread, number>();
 		function openThread(thread: ReaderThread, focus = true, ordinal?: number) {
+			card.removeAttribute("data-expanded");
 			if (ordinal === undefined) selectionByThread.delete(thread);
 			else selectionByThread.set(thread, ordinal);
 			closeReview();
@@ -1981,6 +1984,7 @@
 			ask.refresh();
 		}
 		function clearOwnerControls() {
+			card.removeAttribute("data-expanded");
 			inspected = null;
 			collection = "open";
 			ctx.removeNotice("batch-recovery");
