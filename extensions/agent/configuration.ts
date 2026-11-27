@@ -68,9 +68,20 @@ export function boundedConfigurationResult(result: ConfigurationResult): Configu
 
 const fields = ["name", "model", "thinkingLevel"] as const;
 const invalidText = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ud800-\udfff]/u;
+const blankRun = /[\s\u0000-\u001f\u007f-\u009f\u2028\u2029]+/gu;
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
 	return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
+}
+
+/**
+ * The refusal for a model that the catalogue lacks. An invalid models.json removes every model it defines, so the
+ * refusal carries the catalogue's load error when there is one.
+ */
+export function missingModelMessage(model: ConfigurationModel, catalogError: string | undefined): string {
+	const missing = `Model is not in the configured catalog: ${model.provider}/${model.modelId}`;
+	const reason = catalogError?.replace(blankRun, " ").trim().slice(0, 240);
+	return reason ? `${missing}. models.json has an error, so the models it defines are missing: ${reason}` : missing;
 }
 
 function boundedText(value: unknown, field: keyof typeof CONFIGURATION_LIMITS): string {

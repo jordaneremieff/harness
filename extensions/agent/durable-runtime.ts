@@ -63,7 +63,7 @@ import type { ChangesView } from "./live-activity.ts";
 import { publishAgentControlDispatch, type AgentControlDispatch } from "./durable-agents.ts";
 import { projectConversationIntents } from "./durable-controls.ts";
 import { deliveryPendingCount, migrateDeliveryStore, pendingDeliveryPage } from "./delivery-store.ts";
-import { isThinkingLevel } from "./configuration.ts";
+import { isThinkingLevel, missingModelMessage } from "./configuration.ts";
 import type { ModelChoicesSchema } from "./observation-schema.ts";
 import type { Static } from "@earendil-works/pi-schema";
 import { AgentManager } from "./manager.ts";
@@ -433,7 +433,7 @@ function validateModel(
 	level: string,
 ): ModelThinkingLevel {
 	const selected = services.services.modelRuntime.getModel(model.provider, model.modelId);
-	if (!selected) throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`);
+	if (!selected) throw new Error(missingModelMessage(model, services.services.modelRuntime.getError()));
 	if (!isThinkingLevel(level)) throw new Error("Unknown reasoning level");
 	return clampThinkingLevel(selected, level);
 }

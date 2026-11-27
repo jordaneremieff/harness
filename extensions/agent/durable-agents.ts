@@ -125,7 +125,7 @@ import type * as Durable from "@earendil-works/pi-durable";
 import { inputEntry, sentInputClass } from "./input-entry.ts";
 import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
-import { THINKING_LEVELS } from "./configuration.ts";
+import { THINKING_LEVELS, missingModelMessage } from "./configuration.ts";
 import {
 	ABORT_BACKGROUND_DESCRIPTION,
 	ABORT_DESCRIPTION,
@@ -276,6 +276,8 @@ export interface AgentContributionHost {
 		readonly modelRuntime: {
 			getModel(provider: string, modelId: string): Model<Api> | undefined;
 			getModels?(): readonly Model<Api>[];
+			/** The load error of the configured models.json, when the catalogue has one. */
+			getError?(): string | undefined;
 		};
 	};
 }
@@ -1471,7 +1473,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const requested = thinkingLevelOverride ?? parent.thinkingLevel;
 		const catalog = host.services.modelRuntime.getModel(model.provider, model.modelId);
 		if (catalog === undefined)
-			return { kind: "error", message: `Model is not in the configured catalog: ${model.provider}/${model.modelId}` };
+			return { kind: "error", message: missingModelMessage(model, host.services.modelRuntime.getError?.()) };
 		const effective = clampThinkingLevel(catalog, requested);
 		return {
 			kind: "ok",

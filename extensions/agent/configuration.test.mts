@@ -7,6 +7,7 @@ import {
 	configurationModel,
 	configurationThinkingLevel,
 	isThinkingLevel,
+	missingModelMessage,
 	parseConfigurationArguments,
 	THINKING_LEVELS,
 	validateConfigurationPatch,
@@ -199,4 +200,20 @@ test("configuration results bound older native values and identify every clipped
 	assert.doesNotMatch(bounded.before.name, /[\uD800-\uDFFF]/u);
 	assert.doesNotMatch(bounded.before.model ?? "", /[\uD800-\uDFFF]/u);
 	assert.deepEqual(result, copy);
+});
+
+test("a missing model names the catalogue load error on one bounded line", () => {
+	const model = { provider: "acme", modelId: "fast/1" };
+	assert.equal(missingModelMessage(model, undefined), "Model is not in the configured catalog: acme/fast/1");
+	assert.equal(missingModelMessage(model, " \n "), "Model is not in the configured catalog: acme/fast/1");
+	const message = missingModelMessage(
+		model,
+		`Invalid models.json:\n  providers.acme.models.0.contextWindow: ${"x".repeat(400)}`,
+	);
+	assert.match(
+		message,
+		/^Model is not in the configured catalog: acme\/fast\/1\. models\.json has an error, so the models it defines are missing: Invalid models\.json: providers\.acme/u,
+	);
+	assert.doesNotMatch(message, /[\u0000-\u001f]/u);
+	assert.ok(message.length <= 360);
 });

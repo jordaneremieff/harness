@@ -36,7 +36,7 @@ import { appendProviderBlockReceipt, ProviderBlockNotes, renderProviderBlockSect
 import { checkInMinutes } from "./check-in-options.ts";
 import { CollaborationParams } from "./collaboration-contract.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
-import { THINKING_LEVELS, isThinkingLevel, parseConfigurationArguments } from "./configuration.ts";
+import { THINKING_LEVELS, isThinkingLevel, missingModelMessage, parseConfigurationArguments } from "./configuration.ts";
 import {
 	ABORT_BACKGROUND_DESCRIPTION,
 	ABORT_DESCRIPTION,
@@ -394,7 +394,7 @@ const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 	},
 	validateModel: (model, level) => {
 		const selected = ctx.modelRegistry.find(model.provider, model.modelId);
-		if (!selected) throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`);
+		if (!selected) throw new Error(missingModelMessage(model, ctx.modelRegistry.getError()));
 		if (!isThinkingLevel(level)) throw new Error("Unknown reasoning level");
 		return clampThinkingLevel(selected, level);
 	},

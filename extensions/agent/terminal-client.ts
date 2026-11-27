@@ -55,7 +55,7 @@ import { readAgentBranch } from "./agent-git.ts";
 import { admittedResult } from "./result-reference.ts";
 import { agentDisplayName } from "./action-outcome.ts";
 import { presetChoices, readAgentPreferences, type PreferenceCatalog } from "./agent-preferences.ts";
-import { isThinkingLevel, type ConfigurationPatch } from "./configuration.ts";
+import { isThinkingLevel, missingModelMessage, type ConfigurationPatch } from "./configuration.ts";
 import {
 	cancelAgentTimer,
 	readAgentTimerRows,
@@ -832,7 +832,7 @@ async function creationServices(agentDir: string): Promise<TerminalCreation | un
 			catalog: runtime,
 			validateModel: (model, level) => {
 				const selected = runtime.getModel(model.provider, model.modelId);
-				if (!selected) throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`);
+				if (!selected) throw new Error(missingModelMessage(model, runtime.getError()));
 				if (!isThinkingLevel(level)) throw new Error("Unknown reasoning level");
 				return clampThinkingLevel(selected, level);
 			},
