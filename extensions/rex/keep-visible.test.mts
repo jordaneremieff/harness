@@ -84,6 +84,23 @@ test("panes that cover too little of the conversation, or only its neighbour, le
 	assert.equal(stateOf(layers, "block:neighbour-only").kind, "clear");
 });
 
+test("a zoom of the tiled layer behind a focused floating pane leaves the window to the operator", () => {
+	// The shape of an observed Rex 0.1.0-preview.25 view: another floating pane took focus, so `zoomed_block_id`
+	// is null, and a pane moved into the layout would stay hidden behind the zoomed conversation.
+	const layers = [
+		{ kind: "tiled", layout: SPLIT_LAYOUT },
+		floating("block:reader", CREATED),
+		floating("block:other", [0.6, 0.6, 0.3, 0.3]),
+	];
+	const shown = view(layers, { focus: "block:other" });
+	assert.ok(conversationWindow(shown, CONVERSATION), "without a zoom the window allows a move");
+	const zoomed = {
+		...shown,
+		windows: shown.windows.map((window) => ({ ...window, tiled_zoomed_block_id: CONVERSATION })),
+	};
+	assert.equal(conversationWindow(zoomed, CONVERSATION), undefined);
+});
+
 test("a zoom anywhere in the window and a conversation outside the tiled layout leave the window to the operator", () => {
 	const layers = [{ kind: "tiled", layout: SPLIT_LAYOUT }, floating("block:reader", [0, 0, 1, 1])];
 	assert.equal(conversationWindow(view(layers, { zoomed: "block:neighbour" }), CONVERSATION), undefined);

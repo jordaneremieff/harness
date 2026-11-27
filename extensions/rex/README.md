@@ -266,8 +266,11 @@ At such a moment the extension decides each waiting pane from the latest
 - The pane that has the focus of its window is the one that somebody works in. It
   waits for a later moment.
 
-While any block of the window is zoomed, because a move ends the zoom, and while the
-conversation is not in its window's tiled layout, every pane waits. The first moved
+While the window has a zoom, and while the conversation is not in its window's tiled
+layout, every pane waits. A zoom of the tiled layout stays on while a floating pane has
+focus (`tiled_zoomed_block_id`), so a pane moved into the layout would hide behind the
+zoomed block; a server that reports only `zoomed_block_id`, such as Rex
+0.1.0-preview.21, ends the zoom with the move. The first moved
 pane takes half of the conversation's space, beside it when the conversation's pixels
 are at least as wide as tall and below it otherwise. Later panes, also at later
 moments, stack in the space of the last moved pane while it stays tiled in the window,
@@ -461,11 +464,15 @@ above it, or a null pane when the block is in no window, for example while it
 is detached or no session holds it. Reports use window fractions and change only
 when the geometry changes. They describe the session's layout, not one client's
 screen: a pane in a background tab still has its geometry. A minimized floating
-layer is not drawn, so it covers nothing. Zoom follows `zoomed_block_id`: Rex
-draws the zoomed block over the whole window, behind the floating layers when it
-is a tiled block and in front of everything when it is a floating block, so the
-zoomed block reports the whole window and the blocks that it hides report full
-cover.
+layer is not drawn, so it covers nothing. Rex draws a zoomed block over the
+whole window. A window has two zooms, which can be on at once. The zoomed block
+of the tiled layer (`tiled_zoomed_block_id`) is drawn behind the floating layers
+and stays zoomed while a floating layer has focus. A zoomed floating block
+(`zoomed_block_id` when it names a floating block) is drawn in front of
+everything and keeps its zoom only while it has focus. A server that reports no
+`tiled_zoomed_block_id`, such as Rex 0.1.0-preview.21, names its one zoom in
+`zoomed_block_id`. A zoomed block reports the whole window, and the blocks that
+it hides report full cover.
 
 Each consumer costs one Rex events stream, one `target.resolve` call per
 connection and one initial `session.view` call.

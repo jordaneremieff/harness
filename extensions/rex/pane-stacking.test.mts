@@ -97,6 +97,30 @@ test("a zoomed floating block fills the window in front of everything and covers
 	const restored = { windows: [{ ...layout.windows[0], zoomed_block_id: undefined }] };
 	assert.deepEqual(paneStacking(restored, "tile"), { version: 1, pane: full, above: [float, overlap] });
 });
+test("a zoomed tiled block stays zoomed behind a floating layer that has focus", () => {
+	// The shape of an observed Rex 0.1.0-preview.25 view: focus moved to the float, so `zoomed_block_id` is absent.
+	const right = [0.5, 0, 0.5, 1];
+	const tiled = {
+		kind: "tiled",
+		bounds: full,
+		layout: {
+			rect: full,
+			split: { before: { block_id: "pane", rect: half }, after: { block_id: "other", rect: right } },
+		},
+	};
+	const both = (zoomed: string | null) => ({
+		windows: [{ zoomed_block_id: zoomed, tiled_zoomed_block_id: "pane", layers: [tiled, layer("float", overlap)] }],
+	});
+	for (const layout of [both(null), both("pane")]) {
+		assert.deepEqual(paneStacking(layout, "pane"), { version: 1, pane: full, above: [overlap] });
+		assert.deepEqual(paneStacking(layout, "other"), { version: 1, pane: right, above: [full] });
+		assert.deepEqual(paneStacking(layout, "float"), { version: 1, pane: overlap, above: [] });
+	}
+	const floatZoomed = both("float");
+	assert.deepEqual(paneStacking(floatZoomed, "float"), { version: 1, pane: full, above: [] });
+	assert.deepEqual(paneStacking(floatZoomed, "pane"), { version: 1, pane: full, above: [full] });
+	assert.deepEqual(paneStacking(floatZoomed, "other"), { version: 1, pane: right, above: [full] });
+});
 test("a minimized floating layer is not drawn, so it covers nothing", () => {
 	const minimized = { ...layer("hidden", overlap), state: "minimized" };
 	const layout = view([layer("pane", half, "tiled"), minimized, layer("float", overlap)]);

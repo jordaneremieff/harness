@@ -105,12 +105,15 @@ function holds(window: Record<string, unknown>, blockId: string): boolean {
 
 /**
  * The conversation's window when a move may happen there. Undefined when the view does not hold the
- * conversation, when any block of its window is zoomed (a move ends every zoom in the window), and when
- * the conversation is not in the window's tiled layer: then the operator's arrangement decides what shows.
+ * conversation, when its window has a zoom, and when the conversation is not in the window's tiled layer:
+ * then the operator's arrangement decides what shows. A zoom of the tiled layer stays on behind a floating
+ * layer that has focus (`tiled_zoomed_block_id`), and a pane moved into the layout would hide behind it;
+ * a server that reports only `zoomed_block_id` ends the zoom with the move.
  */
 export function conversationWindow(view: unknown, conversationBlockId: string): ConversationWindow | undefined {
 	const window = windows(view).find((candidate) => holds(candidate, conversationBlockId));
-	if (!window || (typeof window.zoomed_block_id === "string" && window.zoomed_block_id)) return undefined;
+	const zoomed = (id: unknown) => typeof id === "string" && id.length > 0;
+	if (!window || zoomed(window.zoomed_block_id) || zoomed(window.tiled_zoomed_block_id)) return undefined;
 	const layers = layersOf(window);
 	const tiledLayer = layers.map(object).find((layer) => layer.kind === "tiled");
 	const tiled = leaves(tiledLayer?.layout);

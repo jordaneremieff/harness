@@ -58,25 +58,41 @@ function frontRects(layers: Record<string, unknown>[], index: number, pane: Pane
 }
 
 /**
- * Rex draws a zoomed block over the whole window while every layout keeps its normal sizes: a zoomed block of the
- * tiled layer behind the floating layers, a zoomed block of a floating layer in front of everything.
+ * The zooms of a window. Rex draws a zoomed block over the whole window while every layout keeps its normal sizes. A
+ * zoomed block of the tiled layer is drawn behind the floating layers and stays zoomed while a floating layer has
+ * focus; `tiled_zoomed_block_id` names it. A zoomed block of a floating layer is drawn in front of everything and
+ * keeps its zoom only while it has focus; `zoomed_block_id` names the focused block when it is zoomed. Both zooms can
+ * be on at once. A server without `tiled_zoomed_block_id` has one zoom, which `zoomed_block_id` names in either layer.
  */
+export function windowZooms(window: Record<string, unknown>): { tiled?: string; floating?: string } {
+	const layers = Array.isArray(window.layers) ? window.layers.map(object) : [];
+	const layerOf = (id: unknown) =>
+		typeof id === "string" ? layers.find((layer) => leafRect(layer.layout, id)) : undefined;
+	const zoomed = layerOf(window.zoomed_block_id);
+	const tiledZoomed = layerOf(window.tiled_zoomed_block_id);
+	const tiled =
+		tiledZoomed?.kind === "tiled"
+			? (window.tiled_zoomed_block_id as string)
+			: zoomed?.kind === "tiled"
+				? (window.zoomed_block_id as string)
+				: undefined;
+	const floating = zoomed && zoomed.kind !== "tiled" ? (window.zoomed_block_id as string) : undefined;
+	return { ...(tiled === undefined ? {} : { tiled }), ...(floating === undefined ? {} : { floating }) };
+}
+
 function windowReport(value: unknown, blockId: string): PaneStackingReport | undefined {
 	const window = object(value);
 	if (!Array.isArray(window.layers)) return undefined;
 	const layers = window.layers.map(object);
-	const holding = (id: string) => layers.findIndex((layer) => leafRect(layer.layout, id));
-	const index = holding(blockId);
+	const index = layers.findIndex((layer) => leafRect(layer.layout, blockId));
 	if (index < 0) return undefined;
 	const layer = layers[index];
-	const pane = leafRect(layer.layout, blockId) as PaneRect;
-	const zoomed = typeof window.zoomed_block_id === "string" ? window.zoomed_block_id : undefined;
-	const zoomedLayer = zoomed === undefined ? undefined : layers[holding(zoomed)];
-	if (zoomedLayer) {
-		const floating = zoomedLayer.kind !== "tiled";
-		if (zoomed === blockId) return { version: 1, pane: WHOLE, above: floating ? [] : frontRects(layers, index, WHOLE) };
-		if (floating || layer.kind === "tiled") return { version: 1, pane, above: [WHOLE] };
-	}
+	const zooms = windowZooms(window);
+	const pane = zooms.tiled === blockId ? WHOLE : (leafRect(layer.layout, blockId) as PaneRect);
+	if (zooms.floating !== undefined)
+		return zooms.floating === blockId ? { version: 1, pane: WHOLE, above: [] } : { version: 1, pane, above: [WHOLE] };
+	if (zooms.tiled !== undefined && zooms.tiled !== blockId && layer.kind === "tiled")
+		return { version: 1, pane, above: [WHOLE] };
 	return { version: 1, pane, above: frontRects(layers, index, pane) };
 }
 
