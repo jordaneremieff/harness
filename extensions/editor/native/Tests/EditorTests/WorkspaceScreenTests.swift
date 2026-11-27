@@ -3,6 +3,22 @@ import Testing
 @testable import Editor
 
 @MainActor
+private final class SavePanelFixture: WorkspaceSaveChoosing {
+    var target: WorkspaceSaveTarget?
+    var requests: [(root: String, doc: String, title: String)] = []
+
+    init(target: WorkspaceSaveTarget?) { self.target = target }
+
+    func make(_ root: String, _ doc: String, _ title: String) -> any WorkspaceSaveChoosing {
+        requests.append((root, doc, title))
+        return self
+    }
+
+    func choose(in window: NSWindow) async throws -> WorkspaceSaveTarget? { target }
+    func cancel() {}
+}
+
+@MainActor
 @Suite(.serialized)
 struct WorkspaceScreenTests {
     private func children<T: NSView>(_ root: NSView, _ type: T.Type) -> [T] {
@@ -258,10 +274,11 @@ struct WorkspaceScreenTests {
         #expect(await screen.prepareToClose())
     }
 
-    @Test func newScratchSavesToANamedFileThroughThePathPanel() async throws {
+    @Test func newScratchSavesToThePathChosenInTheSavePanel() async throws {
         _ = NSApplication.shared
         let api = WorkspaceFixture()
-        let screen = WorkspaceScreen(api: api, root: "/project")
+        let panel = SavePanelFixture(target: .init(path: "Notes/greeting.txt", replacement: nil))
+        let screen = WorkspaceScreen(api: api, root: "/project", makeSavePanel: panel.make)
         let window = window(screen, width: 400)
         defer { screen.stop(); window.orderOut(nil) }
         try await screen.start(file: nil)
@@ -273,18 +290,33 @@ struct WorkspaceScreenTests {
         screen.view.layoutSubtreeIfNeeded()
         let top = text.convert(text.bounds, to: screen.view).minY
         #expect(screen.registry.run("file.save"))
-        let panel = try #require(children(screen.view, QuickPanel.self).first)
-        #expect(panel.field.accessibilityLabel() == "Project-relative file path")
-        panel.replaceInput("Notes/greeting.txt")
-        panel.onAccept?(nil)
         try await eventually { api.savedPath == "Notes/greeting.txt" && self.children(screen.view, NSButton.self).contains { $0.accessibilityLabel() == "Notes/greeting.txt" } }
         #expect(api.savedText == "A native draft")
-        try await eventually { panel.superview == nil }
+        #expect(panel.requests.first?.root == "/project")
+        #expect(panel.requests.first?.doc.hasPrefix("scratch:") == true)
         // The confirmation takes the status line; the source keeps its place.
         screen.view.layoutSubtreeIfNeeded()
         #expect(children(screen.view, NSTextField.self).contains { $0.stringValue == "Saved Notes/greeting.txt." })
         #expect(text.convert(text.bounds, to: screen.view).minY == top)
         #expect(await screen.prepareToClose())
+    }
+
+    @Test func saveAsReplacesAnOpenCleanDestinationWithoutADuplicateTab() async throws {
+        _ = NSApplication.shared
+        let api = WorkspaceFixture()
+        let panel = SavePanelFixture(target: .init(path: "destination.swift", replacement: "confirmed"))
+        let screen = WorkspaceScreen(api: api, root: "/project", makeSavePanel: panel.make)
+        let window = window(screen, width: 850)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "destination.swift")
+        try await screen.open("sample.swift")
+        let editor = try #require(screen.currentEditor)
+        #expect(screen.registry.run("file.saveAs"))
+        try await eventually { screen.openDocuments == ["destination.swift"] }
+        #expect(screen.currentEditor === editor)
+        #expect(panel.requests.first?.doc == "sample.swift")
+        #expect(api.savedReplacement == "confirmed")
+        #expect(api.savedText == api.text)
     }
 
     @Test func editedPreviewStaysWhenAnotherPreviewOpens() async throws {
@@ -401,7 +433,8 @@ struct WorkspaceScreenTests {
     @Test func closingWithSaveWritesTheRevisionBeforeRemovingTheTab() async throws {
         _ = NSApplication.shared
         let api = WorkspaceFixture()
-        let screen = WorkspaceScreen(api: api, root: "/project")
+        let panel = SavePanelFixture(target: .init(path: "sample.swift", replacement: "confirmed"))
+        let screen = WorkspaceScreen(api: api, root: "/project", makeSavePanel: panel.make)
         let window = window(screen, width: 850)
         defer { screen.stop(); window.orderOut(nil) }
         try await screen.start(file: "sample.swift")
@@ -412,6 +445,51 @@ struct WorkspaceScreenTests {
         try click(screen.view, label: "Save")
         try await eventually { screen.openDocuments.isEmpty }
         #expect(api.onDisk.hasPrefix("// save"))
+        #expect(api.savedPath == "sample.swift")
+        #expect(panel.requests.isEmpty)
+    }
+
+    @Test func savingANamedFileWritesInPlaceWithoutTheSavePanel() async throws {
+        _ = NSApplication.shared
+        let api = WorkspaceFixture()
+        let panel = SavePanelFixture(target: .init(path: "elsewhere.swift", replacement: nil))
+        let screen = WorkspaceScreen(api: api, root: "/project", makeSavePanel: panel.make)
+        let window = window(screen, width: 850)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "sample.swift")
+        let editor = try #require(screen.currentEditor)
+        editor.textView.insertText("// kept\n", replacementRange: NSRange(location: 0, length: 0))
+        #expect(screen.registry.run("file.save"))
+        try await eventually { api.onDisk.hasPrefix("// kept") }
+        #expect(api.savedPath == "sample.swift")
+        #expect(panel.requests.isEmpty)
+    }
+
+    @Test func closingAScratchKeepsItOnPanelCancelAndClosesItAfterSave() async throws {
+        _ = NSApplication.shared
+        let api = WorkspaceFixture()
+        let panel = SavePanelFixture(target: nil)
+        let screen = WorkspaceScreen(api: api, root: "/project", makeSavePanel: panel.make)
+        let window = window(screen, width: 850)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: nil)
+        #expect(screen.registry.run("file.newScratch"))
+        try await eventually { screen.currentEditor != nil }
+        let editor = try #require(screen.currentEditor)
+        editor.textView.insertText("Keep me", replacementRange: NSRange(location: 0, length: 0))
+        #expect(screen.registry.run("file.closeTab"))
+        try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
+        try click(screen.view, label: "Save")
+        try await eventually { panel.requests.count == 1 }
+        #expect(screen.currentEditor === editor)
+        #expect(api.savedPath == nil)
+
+        panel.target = .init(path: "sample.swift", replacement: "confirmed")
+        #expect(screen.registry.run("file.closeTab"))
+        try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
+        try click(screen.view, label: "Save")
+        try await eventually { screen.openDocuments.isEmpty }
+        #expect(api.savedText == "Keep me")
         #expect(api.savedPath == "sample.swift")
     }
 
@@ -429,13 +507,17 @@ struct WorkspaceScreenTests {
         api.diskChanged = true
         try await screen.synchronise()
         #expect(editor.diskConflict)
-        #expect(screen.registry.run("file.save"))
+        try click(screen.view, label: "Review changes…")
         try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
         #expect(self.children(screen.view, NSButton.self).contains { $0.title == "Save as…" })
         try click(screen.view, label: "Keep my draft")
         try await eventually { self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
         #expect(editor.textView.string.hasPrefix("// my draft"))
-        #expect(screen.registry.run("file.save"))
+        api.diskChanged = false
+        try await screen.synchronise()
+        api.diskChanged = true
+        try await screen.synchronise()
+        try click(screen.view, label: "Review changes…")
         try await eventually { !self.children(screen.view, WorkspaceConfirmation.self).isEmpty }
         try click(screen.view, label: "Reload from disk")
         try await eventually { editor.textView.string == api.onDisk }
@@ -583,6 +665,7 @@ private final class WorkspaceFixture: EditorAPI {
     var treeReads = 0
     var savedPath: String?
     var savedText: String?
+    var savedReplacement: String?
 
     func publishTab() { composed = true; seq += 1 }
     func agentUpdate() {
@@ -651,9 +734,10 @@ private final class WorkspaceFixture: EditorAPI {
                 onDisk = text; savedPath = primary; savedText = text
                 return ["doc": primary, "rev": rev, "title": primary, "dirty": false, "text": text]
             }
-            let doc = try #require(fields["path"] as? String), text = try #require(scratchText)
-            savedPath = doc; savedText = text
-            return ["doc":doc,"rev":2,"title":(doc as NSString).lastPathComponent,"dirty":false,"text":text]
+            let doc = try #require(fields["path"] as? String)
+            let saved = try #require(fields["doc"] as? String == primary ? text : scratchText)
+            savedPath = doc; savedText = saved; savedReplacement = fields["replace"] as? String
+            return ["doc":doc,"rev":2,"title":(doc as NSString).lastPathComponent,"dirty":false,"text":saved]
         case "members": return ["members":[["id":member,"label":"Agent","kind":"durable"]]]
         case "note":
             guard fields["rev"] as? Int == rev else { throw EditorIssue(code:"conflict",message:"Selection changed.") }

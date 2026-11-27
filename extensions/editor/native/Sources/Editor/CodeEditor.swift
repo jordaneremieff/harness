@@ -317,7 +317,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         try await exclusively { try await flushDraft() }
     }
 
-    func save(path: String?) async throws {
+    func save(path: String?, replacement: String? = nil) async throws {
         try await exclusively {
             try requireCommittedInput()
             if conflicted { throw Self.draftChangedIssue }
@@ -333,6 +333,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
             try await flushDraft()
             var fields: Fields = ["doc": doc, "rev": revision]
             fields["path"] = path
+            fields["replace"] = replacement
             let result: Fields
             do {
                 result = try await request("save", fields)

@@ -3,8 +3,9 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { EditorRoom } from "./room.ts";
 import type { Invitation, Participant } from "./participants.ts";
+import { EditorRoom } from "./room.ts";
+import { signature } from "./store-files.ts";
 
 test("a native pane hands a folder thread to one participant, which edits its shared draft and publishes a linked tab", async (t) => {
 	const base = await realpath(await mkdtemp(join(tmpdir(), "editor-room-")));
@@ -180,6 +181,14 @@ test("pane file receipts report the save encoding and discard draft-only documen
 	});
 	const cleanSave = await pane("save", { doc, rev: restored.rev });
 	assert.deepEqual(cleanSave, restored);
+	const destination = "destination.txt";
+	const target = join(root, destination);
+	await writeFile(target, "old contents\n");
+	const replace = signature(await stat(target, { bigint: true }));
+	const choice = { doc, rev: restored.rev, path: destination, replace };
+	await assert.rejects(room.tool({ op: "save", ...choice }), /requires approval/);
+	assert.equal((await pane("save", choice)).doc, destination);
+	assert.equal(await readFile(target, "utf8"), "different\n");
 	for (const result of [
 		await room.tool({ op: "read", doc }),
 		await room.tool({ op: "revert", doc, rev: restored.rev }),

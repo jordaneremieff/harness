@@ -7,17 +7,18 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	rmSync,
 	statSync,
 	symlinkSync,
 	truncateSync,
 	unlinkSync,
 	writeFileSync,
-	rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { Workspace } from "./store.ts";
+import { signature } from "./store-files.ts";
 
 function fixture(t: TestContext) {
 	const base = mkdtempSync(join(tmpdir(), "editor-store-"));
@@ -215,6 +216,61 @@ test("scratch conversion preserves exact and tab anchors and only creates new pa
 		/folder-relative/,
 	);
 	assert.throws(() => call(other, "note", { target: { kind: "pane", key: "p" }, start: 0, text: "Both" }), /not both/);
+});
+
+test("a pane replacement updates the destination revision and keeps the original file and draft", (t) => {
+	const { root, open } = fixture(t);
+	const store = open();
+	const original = join(root, "original.txt");
+	const path = "destination.txt";
+	const file = join(root, path);
+	writeFileSync(original, "\uFEFFsource\r\n");
+	writeFileSync(file, "destination\n", { mode: 0o640 });
+	const destination = call(store, "read", { doc: path });
+	const note = call(store, "note", { doc: path, rev: destination.rev, start: 0, end: 11, text: "Old destination" });
+	const source = call(store, "read", { doc: "original.txt" });
+	const edited = call(store, "patch", { doc: source.doc, rev: source.rev, start: 0, end: 6, text: "replacement" });
+	const replace = signature(statSync(file, { bigint: true }));
+	const input = { op: "save", doc: source.doc, rev: edited.rev, path, replace };
+	assert.throws(() => store.run(input, "Agent"), /requires approval/);
+	const saved = store.run(input, "You", true);
+	assert.equal(saved.rev, Number(destination.rev) + 1);
+	assert.equal(call(open(), "read", { doc: path, ifRev: destination.rev }).text, "replacement\n");
+	assert.equal(call(store, "thread", note).rev, destination.rev);
+	assert.equal(readFileSync(file, "utf8"), "\uFEFFreplacement\r\n");
+	assert.equal(statSync(file).mode & 0o777, 0o640);
+	assert.equal(readFileSync(original, "utf8"), "\uFEFFsource\r\n");
+	assert.equal(call(store, "read", { doc: source.doc }).dirty, true);
+});
+
+test("a pane replacement keeps dirty or changed destinations and moves scratch anchors only on success", (t) => {
+	const { root, open } = fixture(t);
+	const store = open();
+	const path = "target.txt";
+	const file = join(root, path);
+	writeFileSync(file, "original\n");
+	const { doc, rev } = call(store, "new");
+	const draft = call(store, "patch", { doc, rev, start: 0, end: 0, text: "scratch\n" });
+	const note = call(store, "note", { doc, rev: draft.rev, start: 0, end: 7, text: "Scratch text" });
+	const tab = call(store, "note", { target: { kind: "tab", key: doc }, text: "Scratch tab" });
+	const replace = signature(statSync(file, { bigint: true }));
+	const input = { op: "save", doc, rev: draft.rev, path, replace };
+	writeFileSync(file, "external writer\n");
+	assert.throws(() => store.run(input, "You", true), /destination changed/);
+	assert.equal(readFileSync(file, "utf8"), "external writer\n");
+	const destination = call(store, "read", { doc: path });
+	const dirty = call(store, "patch", { doc: path, rev: destination.rev, start: 0, end: 0, text: "draft " });
+	const fresh = { ...input, replace: signature(statSync(file, { bigint: true })) };
+	assert.throws(() => store.run(fresh, "You", true), /destination has unsaved changes/);
+	assert.equal(call(store, "read", { doc: path }).text, "draft external writer\n");
+	assert.equal(call(store, "read", { doc }).text, "scratch\n");
+	call(store, "revert", { doc: path, rev: dirty.rev });
+	const saved = store.run(fresh, "You", true);
+	assert.equal(readFileSync(file, "utf8"), "scratch\n");
+	assert.throws(() => call(store, "read", { doc }), /Draft not found/);
+	assert.equal(call(store, "thread", note).doc, path);
+	assert.equal(call(store, "thread", note).rev, saved.rev);
+	assert.deepEqual(call(store, "thread", tab).target, { kind: "tab", key: path });
 });
 
 test("canonical roots isolate private state and reject symlinks, internals and non-text", (t) => {

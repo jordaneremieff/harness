@@ -12,7 +12,7 @@ struct WorkspaceFiles {
 final class WorkspaceScreen {
     private enum Panel: String { case files, search, git, notes }
     private enum PathRequest {
-        case newFile, newProjectFile, saveAs(CodeEditor)
+        case newFile, newProjectFile
     }
     /// The tabs on one side of the stage, in the order a person gave them. The arrangement
     /// belongs to this pane: it changes no draft, thread or other participant's view.
@@ -60,19 +60,23 @@ final class WorkspaceScreen {
     private var expectedGitBases: [String: UUID] = [:]
     private var diskConflictAcknowledged: Set<String> = []
     private var confirmation: WorkspaceConfirmation?
+    private let makeSavePanel: (String, String, String) -> any WorkspaceSaveChoosing
+    private var savePanel: (any WorkspaceSaveChoosing)?
     private weak var pathPrompt: QuickPanel?
     private var layoutReady = false
     private var layoutWrite: Task<Void, Never>?
+    private var selectionStatusTimer: Timer?
     private var savedLayout: SessionLayout?
     private var pendingPositions: [String: WorkspacePosition] = [:]
-    private var selectionStatusTimer: Timer?
     private var scrollObservers: [String: NSObjectProtocol] = [:]
     private var disconnected = false
     var onDisconnect: ((Bool) -> Void)?
     var isDisconnected: Bool { disconnected }
 
     /// `defaults` keeps the layout a person chose for this pane between launches.
-    init(api: any EditorAPI, root: String, defaults: UserDefaults = .standard, files: WorkspaceFiles = WorkspaceFiles()) {
+    init(api: any EditorAPI, root: String, defaults: UserDefaults = .standard, files: WorkspaceFiles = WorkspaceFiles(),
+         makeSavePanel: @escaping (String, String, String) -> any WorkspaceSaveChoosing = { WorkspaceSavePanel(root: $0, doc: $1, title: $2) }) {
+        self.makeSavePanel = makeSavePanel
         self.api = api
         self.root = root
         self.files = files
@@ -243,14 +247,15 @@ final class WorkspaceScreen {
     func stop() {
         writeLayout()
         stopped = true
+        savePanel?.cancel()
         confirmation?.resolve(nil)
         layoutWrite?.cancel(); layoutWrite = nil
+        selectionStatusTimer?.invalidate(); selectionStatusTimer = nil
         previewChain?.cancel(); previewChain = nil
         for observer in scrollObservers.values { NotificationCenter.default.removeObserver(observer) }
         scrollObservers.removeAll()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
-        selectionStatusTimer?.invalidate(); selectionStatusTimer = nil
         monitor?.cancel(); monitor = nil
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
@@ -776,11 +781,6 @@ final class WorkspaceScreen {
         }
     }
 
-    private func refreshStatus() {
-        if let editor = currentEditor {
-            let status = disconnected ? "Pi closed" : editor.conflicted ? "Local conflict" : editor.diskConflict ? "Disk changed" : editor.hasPending ? "Local edits" : editor.dirty ? "Draft" : "Saved"
-            let caret = editor.caretPosition
-            var at = "Line \(caret.line), Column \(caret.column)"
     private func scheduleSelectionStatus() {
         guard selectionStatusTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 60, repeats: false) { [weak self] _ in
@@ -795,6 +795,11 @@ final class WorkspaceScreen {
         RunLoop.main.add(timer, forMode: .common)
     }
 
+    private func refreshStatus() {
+        if let editor = currentEditor {
+            let status = disconnected ? "Pi closed" : editor.conflicted ? "Local conflict" : editor.diskConflict ? "Disk changed" : editor.hasPending ? "Local edits" : editor.dirty ? "Draft" : "Saved"
+            let caret = editor.caretPosition
+            var at = "Line \(caret.line), Column \(caret.column)"
             let selections = editor.selectionCount
             if selections > 1 { at += "  ·  \(selections) selections" }
             if let count = editor.selectedCharacterCount, count > 0 { at += "  ·  \(count) selected" }
@@ -903,7 +908,7 @@ final class WorkspaceScreen {
         case "notes": toggle(.notes)
         case "scratch": mutate { try await $0.create(nil) }
         case "newFile": requestPath(.newFile)
-        case "saveAs": if let e = currentEditor, !e.conflicted { requestPath(.saveAs(e)) }
+        case "saveAs": if let e = currentEditor, !e.conflicted { requestSave(e) }
         case "saveAll":
             mutate { screen in
                 let editors = screen.openDocuments.compactMap { screen.buffers[$0] }.filter(\.dirty)
@@ -917,7 +922,7 @@ final class WorkspaceScreen {
             guard let e = currentEditor else { return }
             if e.conflicted { conflictMessage(e) }
             else if e.diskConflict { act { try await $0.resolveDiskChange(e) } }
-            else if e.doc.hasPrefix("scratch:") { requestPath(.saveAs(e)) }
+            else if e.doc.hasPrefix("scratch:") { requestSave(e) }
             else { mutate { try await $0.save(e, to: nil) } }
         case "next", "previous":
             let keys = groups[activeIndex].keys
@@ -941,13 +946,35 @@ final class WorkspaceScreen {
             let disk: Bool
             if case .newProjectFile = request { disk = true } else { disk = false }
             promptPath(action: "Create file", start: start) { [weak self] path in try await self?.create(path, publish: disk) }
-        case .saveAs(let editor):
-            let parent = (editor.doc as NSString).deletingLastPathComponent
-            promptPath(action: "Save as", start: parent.isEmpty ? "" : parent + "/") { [weak self, weak editor] path in
-                guard let self, let editor, buffers[editor.doc] === editor else { return }
-                try await save(editor, to: path)
+        }
+    }
+
+    private func requestSave(_ editor: CodeEditor) {
+        mutate { _ = try await $0.saveWithPanel(editor) }
+    }
+
+    private func saveWithPanel(_ editor: CodeEditor) async throws -> Bool {
+        guard savePanel == nil, buffers[editor.doc] === editor, let window = chrome.window else { return false }
+        let panel = makeSavePanel(root, editor.doc, editor.title)
+        savePanel = panel
+        defer {
+            savePanel = nil
+            if currentEditor === editor, !stopped, !disconnected { editor.focus() }
+        }
+        guard let target = try await panel.choose(in: window), !stopped, !disconnected else { return false }
+        savePanel = nil
+        if target.path == editor.doc {
+            try await save(editor, to: nil)
+        } else {
+            let other = buffers[target.path]
+            if let other, other.dirty || other.conflicted {
+                throw EditorIssue(code: "conflict", message: "The destination has unsaved changes. Both drafts are intact.")
+            }
+            try await withFrozenInput(other.map { [$0] } ?? []) {
+                try await save(editor, to: target.path, replacement: target.replacement)
             }
         }
+        return true
     }
 
     func promptPath(action: String, start: String = "", run: @escaping @MainActor (String) async throws -> Void) {
@@ -1074,12 +1101,13 @@ final class WorkspaceScreen {
         if publish { try await save(b, to: nil) }
         if path != nil { navigator.refreshFiles() }
     }
-    private func save(_ editor: CodeEditor, to path: String?) async throws {
+    private func save(_ editor: CodeEditor, to path: String?, replacement: String? = nil) async throws {
         let previous = editor.doc
-        try await editor.save(path: path)
-        if editor.doc != previous { remapDocument(previous, to: editor.doc, editor: editor) }
-        // Save preserves the disk representation; a newly named scratch defaults to UTF-8 and LF.
-        if previous.hasPrefix("scratch:"), !editor.doc.hasPrefix("scratch:") { formats[editor.doc] = ("\n", false) }
+        try await editor.save(path: path, replacement: replacement)
+        if editor.doc != previous {
+            if let other = buffers[editor.doc], other !== editor { removeTab(fileKey(editor.doc), remember: false) }
+            remapDocument(previous, to: editor.doc, editor: editor)
+        }
         refreshGitBase(editor)
         refreshFormat(of: editor)
         navigator.refreshFiles()
@@ -1111,6 +1139,7 @@ final class WorkspaceScreen {
         guard !disconnected else { return }
         disconnected = true
         monitor?.cancel(); monitor = nil
+        savePanel?.cancel()
         confirmation?.resolve(nil)
         let unsent = collaboration.hasUnpostedText || buffers.values.contains(where: \.hasPending)
         writeLayout()
@@ -1151,7 +1180,7 @@ final class WorkspaceScreen {
             screen.chrome.clearMessage()
             screen.currentEditor?.focus()
         }
-        case 1: requestPath(.saveAs(editor))
+        case 1: requestSave(editor)
         case 2: diskConflictAcknowledged.insert(editor.doc); chrome.clearMessage(); editor.focus()
         default: editor.focus()
         }
@@ -1201,20 +1230,16 @@ final class WorkspaceScreen {
             case 1: try await editor.flush()
             case 2:
                 if editor.doc.hasPrefix("scratch:") || editor.diskConflict {
-                    promptPath(action: "Save and close") { [weak self, weak editor] path in
-                        guard let self, let editor else { return }
-                        try await save(editor, to: path)
-                        removeTab(fileKey(editor.doc)); present()
-                    }
-                    return false
+                    guard try await saveWithPanel(editor) else { return false }
+                } else {
+                    try await save(editor, to: nil)
                 }
-                try await save(editor, to: nil)
             default: currentEditor?.focus(); return false
             }
             guard !editor.hasPending else {
                 chrome.setMessage("The tab changed during close. Your edits are still here."); return false
             }
-            removeTab(key, remember: !discarded)
+            removeTab(fileKey(editor.doc), remember: !discarded)
         } else { removeTab(key) }
         if groups.allSatisfy({ $0.keys.isEmpty }), !fixedLayout { showNavigator(.files) }
         present()

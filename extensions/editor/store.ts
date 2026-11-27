@@ -16,8 +16,8 @@ import {
 	assertFileSize,
 	decode,
 	digest,
-	type Eol,
 	EditorError,
+	type Eol,
 	encode,
 	fileName,
 	folderRoot,
@@ -42,8 +42,8 @@ import {
 	moveEntry,
 	sourceEntry,
 	systemTrash,
-	targetEntry,
 	type Trash,
+	targetEntry,
 	trashEntry,
 } from "./workspace-files.ts";
 
@@ -617,27 +617,6 @@ export class Workspace {
 		});
 	}
 
-	#saveTarget(row: Document, path: string | undefined): Location {
-		if (path === undefined && SCRATCH.test(row.doc)) {
-			throw new EditorError("Choose a new file path for this scratch draft.", "invalid");
-		}
-		const target = locate(this.root, path ?? row.doc);
-		if (path !== undefined) {
-			if (target.stat || this.#get(target.doc)) {
-				throw new EditorError(`File or draft already exists: ${target.doc}`, "conflict");
-			}
-			return target;
-		}
-		const base = target.stat ? digest(readBytes(target)) : null;
-		if (base !== row.base) {
-			throw new EditorError("Disk contents changed. The disk file and the draft were both kept.", "conflict");
-		}
-		if (target.doc !== row.doc && this.#get(target.doc)) {
-			throw new EditorError(`A draft already uses the current file name: ${target.doc}`, "conflict");
-		}
-		return target;
-	}
-
 	#markSaved(previous: string, row: Document): void {
 		this.#sql("UPDATE documents SET doc = ?, dirty = 0, base = ?, stamp = NULL, seq = ? WHERE doc = ?").run(
 			row.doc,
@@ -653,28 +632,90 @@ export class Workspace {
 		}
 	}
 
-	#save(doc: string, expected: number, path: string | undefined): Record<string, unknown> {
-		return this.#transaction(true, () => {
-			const row = this.#need(doc);
-			revision(row, expected);
-			const target = this.#saveTarget(row, path);
-			if (path === undefined && !row.dirty) return this.#readResult(row, undefined);
-			const text = this.#body(doc);
-			const bytes = encode(text, row.eol, row.bom === 1);
-			const copy = path !== undefined && !SCRATCH.test(doc);
-			const saved: Document = {
-				...row,
-				doc: target.doc,
-				rev: copy ? 1 : row.rev,
-				dirty: 0,
-				base: digest(bytes),
-				stamp: null,
-			};
-			if (copy) this.#add(saved, text);
-			else this.#markSaved(doc, saved);
-			publish(this.root, target, bytes);
-			return { ...describe(saved), ...diskFormat(saved), text };
-		});
+	#replaceSavedDraft(source: Document, saved: Document, text: string): void {
+		this.#sql("UPDATE bodies SET text = ? WHERE doc = ?").run(text, saved.doc);
+		this.#sql(
+			"UPDATE documents SET rev = ?, dirty = 0, base = ?, stamp = NULL, eol = ?, bom = ?, seq = ? WHERE doc = ?",
+		).run(saved.rev, saved.base, saved.eol, saved.bom, this.#bump(), saved.doc);
+		if (SCRATCH.test(source.doc)) {
+			this.#sql("UPDATE threads SET doc = ?, rev = CASE WHEN rev = ? THEN ? ELSE rev END WHERE doc = ?").run(
+				saved.doc,
+				source.rev,
+				saved.rev,
+				source.doc,
+			);
+			this.#sql("UPDATE threads SET target_key = ? WHERE target_kind = 'tab' AND target_key = ?").run(
+				saved.doc,
+				source.doc,
+			);
+			this.#dropDraft(source.doc);
+		}
+	}
+
+	#validateSave(
+		row: Document,
+		target: Location,
+		destination: Document | undefined,
+		inPlace: boolean,
+		approval?: string,
+	) {
+		if (approval !== undefined && (!target.stat || signature(target.stat) !== approval)) {
+			throw new EditorError("The destination changed after the save dialog. Your draft is intact.", "conflict");
+		}
+		if (inPlace) {
+			const base = target.stat ? digest(readBytes(target)) : null;
+			if (base !== row.base) {
+				throw new EditorError("Disk contents changed. The disk file and the draft were both kept.", "conflict");
+			}
+			if (destination) throw new EditorError(`A draft already uses the current file name: ${target.doc}`, "conflict");
+			return;
+		}
+		if (approval === undefined && (target.stat || destination || target.doc === row.doc)) {
+			throw new EditorError(`File or draft already exists: ${target.doc}`, "conflict");
+		}
+		if (destination?.dirty) {
+			throw new EditorError("The destination has unsaved changes. Both drafts are intact.", "conflict");
+		}
+	}
+
+	#publishDraft(doc: string, expected: number, path?: string, approval?: string): Record<string, unknown> {
+		const row = this.#need(doc);
+		revision(row, expected);
+		const scratch = SCRATCH.test(doc);
+		if (path === undefined && scratch) throw new EditorError("Choose a file path for this scratch draft.", "invalid");
+		const target = locate(this.root, path ?? doc);
+		const inPlace = path === undefined || (approval !== undefined && target.doc === doc);
+		const destination = target.doc === doc ? undefined : this.#get(target.doc);
+		this.#validateSave(row, target, destination, inPlace, approval);
+		if (inPlace && !row.dirty) return this.#readResult(row, undefined);
+		const text = this.#body(doc);
+		const bytes = encode(text, row.eol, row.bom === 1);
+		const copy = !inPlace && !scratch;
+		const rev = copy ? 1 : row.rev;
+		const saved: Document = {
+			...row,
+			doc: target.doc,
+			rev: destination ? Math.max(destination.rev, rev) + 1 : rev,
+			dirty: 0,
+			base: digest(bytes),
+			stamp: null,
+		};
+		if (destination) this.#replaceSavedDraft(row, saved, text);
+		else if (copy) this.#add(saved, text);
+		else this.#markSaved(doc, saved);
+		publish(this.root, target, bytes);
+		return { ...describe(saved), ...diskFormat(saved), text };
+	}
+
+	#save(input: Record<string, unknown>, pane: boolean): Record<string, unknown> {
+		const doc = docField(input);
+		const rev = number(input, "rev");
+		const path = input.path === undefined ? undefined : field(input, "path");
+		const approval = input.replace === undefined ? undefined : field(input, "replace");
+		if (approval !== undefined && (!pane || path === undefined)) {
+			throw new EditorError("Replacement requires approval in the save dialog.", "invalid");
+		}
+		return this.#transaction(true, () => this.#publishDraft(doc, rev, path, approval));
 	}
 
 	#below(doc: string) {
@@ -890,11 +931,7 @@ export class Workspace {
 			case "copy":
 				return fileAction(() => this.#copy(field(input, "from"), field(input, "to")));
 			case "save":
-				return this.#save(
-					docField(input),
-					number(input, "rev"),
-					input.path === undefined ? undefined : field(input, "path"),
-				);
+				return this.#save(input, pane);
 			case "thread":
 				return this.#thread(field(input, "id"));
 			case "view":
