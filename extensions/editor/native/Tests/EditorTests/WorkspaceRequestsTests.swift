@@ -91,6 +91,30 @@ struct WorkspaceRequestsTests {
         #expect(api.sessionChanges.last?["id"] as? String == "agent")
     }
 
+    @Test func cardLayerUsesItsEffectiveSystemAppearance() throws {
+        _ = NSApplication.shared
+        let old = WorkspaceStyle.theme
+        defer { WorkspaceStyle.theme = old }
+        let card = RequestCardView()
+        let dark = try #require(NSAppearance(named: .darkAqua))
+        let light = try #require(NSAppearance(named: .aqua))
+        WorkspaceStyle.theme = EditorTheme(palette: nil, flavour: "frappe")
+        card.appearance = dark
+        light.performAsCurrentDrawingAppearance { card.applyLook() }
+        let darkColour = try #require(card.layer?.backgroundColor)
+        WorkspaceStyle.theme = EditorTheme(palette: nil, flavour: "latte")
+        card.appearance = light
+        dark.performAsCurrentDrawingAppearance { card.applyLook() }
+        let lightColour = try #require(card.layer?.backgroundColor)
+        #expect(darkColour != lightColour)
+        dark.performAsCurrentDrawingAppearance {
+            #expect(darkColour == NSColor.windowBackgroundColor.cgColor)
+        }
+        light.performAsCurrentDrawingAppearance {
+            #expect(lightColour == NSColor.windowBackgroundColor.cgColor)
+        }
+    }
+
     @Test func requestInputKeepsNativeTextCommandsAndSourceUndoSeparate() async throws {
         _ = NSApplication.shared
         let api = RequestFixture()

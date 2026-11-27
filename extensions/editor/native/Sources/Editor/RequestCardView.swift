@@ -168,10 +168,22 @@ final class RequestCardView: NSView, NSTextViewDelegate {
 
     func focusInput() { window?.makeFirstResponder(input) }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyPanelColours()
+    }
+
+    private func applyPanelColours() {
+        let theme = WorkspaceStyle.theme
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = theme.panel.cgColor
+            layer?.borderColor = theme.panelBorder.cgColor
+        }
+    }
+
     func applyLook() {
         let theme = WorkspaceStyle.theme
-        layer?.backgroundColor = theme.panel.cgColor
-        layer?.borderColor = theme.panelBorder.cgColor
+        applyPanelColours()
         inputWell.needsDisplay = true
         hint.font = WorkspaceStyle.interfaceFont()
         hint.textColor = theme.secondaryText
