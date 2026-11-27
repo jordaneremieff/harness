@@ -142,6 +142,14 @@ final class WindowLock {
         return WindowLock(descriptor: descriptor)
     }
 
+    /// Whether a pane holds the window now. Unlike `take`, it creates no lock file.
+    static func held(pid: pid_t, number: CGWindowID) -> Bool {
+        let descriptor = open(path(pid: pid, number: number), O_RDWR | O_CLOEXEC)
+        guard descriptor >= 0 else { return false }
+        defer { close(descriptor) }
+        return flock(descriptor, LOCK_EX | LOCK_NB) != 0
+    }
+
     @MainActor
     static func taken(pid: pid_t, window: AXUIElement) -> Bool {
         guard let frame = DockedWindow.frame(of: window),

@@ -128,6 +128,35 @@ enum BrowserEvents {
         return id
     }
 
+    /// The browser's windows in its own order, first to last, with their frames. The browser
+    /// opens a link from another application in the first one. One request reads every
+    /// window's properties, so each ID stays with its own frame.
+    static func windowOrder(pid: pid_t) throws -> [(id: String, frame: CGRect)] {
+        let allWindows = NSAppleEventDescriptor(enumCode: UInt32(kAEAll))
+        let ordinal = NSAppleEventDescriptor(descriptorType: DescType(typeAbsoluteOrdinal), data: allWindows.data)!
+        let all = specifier(cWindow, formAbsolutePosition, ordinal)
+        guard let list = try send(pid: pid, event: kAEGetData, parameters: [keyDirectObject: property(0x70414C4C, of: all)], timeout: 1), // pALL
+              list.descriptorType == typeAEList else {
+            throw Opening.Failure(text: "The browser did not report its windows.")
+        }
+        guard list.numberOfItems > 0 else { return [] }
+        return (1...list.numberOfItems).compactMap { index in
+            guard let record = list.atIndex(index)?.coerce(toDescriptorType: typeAERecord),
+                  let id = record.forKeyword(pID)?.stringValue,
+                  let rectangle = record.forKeyword(pBounds)?.coerce(toDescriptorType: typeQDRectangle),
+                  let frame = Geometry.quickDrawFrame(rectangle.data) else { return nil }
+            return (id, frame)
+        }
+    }
+
+    /// Puts the window first in the browser's own order. The browser does not become active, and
+    /// the window moves only among the browser's windows.
+    static func raise(pid: pid_t, scripting: BrowserScripting, id: String) throws {
+        guard let window = window(id: id, scripting: scripting) else { return }
+        _ = try send(pid: pid, event: kAESetData,
+                     parameters: [keyDirectObject: property(pIndex, of: window), keyAEData: .init(int32: 1)], timeout: 1)
+    }
+
     static func windowIDs(pid: pid_t) throws -> Set<String> {
         let allWindows = NSAppleEventDescriptor(enumCode: UInt32(kAEAll))
         let ordinal = NSAppleEventDescriptor(descriptorType: DescType(typeAbsoluteOrdinal), data: allWindows.data)!

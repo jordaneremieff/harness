@@ -13,6 +13,7 @@ When the pane's tab is hidden, the window waits just outside a bottom corner of 
 The window follows the pane as Rex moves and resizes it. If the app does not take the pane's size at once, the pane asks again. While the app does not answer, the pane waits for it without holding up the terminal.
 
 - A browser (Brave, Chrome, Edge, Vivaldi, Chromium or Safari) gets a new window for the pane, at an address when one is given. `:tab` followed by Enter in the pane's terminal opens a tab in that window; `:tab https://example.com` opens it at an address. Neither command targets the front window. When the browser opens the window or a tab, it does not keep the keyboard. Closing the pane closes the window it created, even when the pane's tab is hidden. Before it asks a parked window to close, the pane returns it to its original position so you can answer any browser prompt.
+- A link that another app sends to that browser, such as a link you click in Slack or in a terminal, opens in the browser pane of the tab where you work: the tab under the pointer, or in Rex's front window. In a tab without a browser pane, the link opens in a browser window outside the panes, as it would without them, and never in a window that waits for a hidden tab. With two browser panes in one tab, the one you used last takes the links. While the browser itself is the active app, you choose its windows as usual.
 - Another app shows its main window, or the window whose title contains the requested text. Closing the pane puts the window back where it was.
 - Closing the window, or quitting the app, closes the pane.
 - `q` in the pane closes it.
@@ -23,7 +24,7 @@ A window that another pane already shows stays in that pane. An app that is not 
 
 `apps_show` takes `app` (a name such as `brave`, `slack` or `notes`, a bundle identifier, or an absolute `.app` path) and optionally `url` for a new browser window or `window` for text in an existing window's title. It checks the app and returns `show`, the program and arguments of the pane. The agent runs `show` as the program of a new split on the right of its own pane, without taking focus, and with the pane set to close when its program ends. The tool opens no pane itself.
 
-Keep the block ID returned when the app pane opens. To open a new browser tab, send the text `:tab https://example.com` and the Enter key to **that block**, not to the focused pane or the browser application. The pane accepts one HTTP or HTTPS address, or no address for a blank tab. Read its reply before sending another request. If the pane or its window is gone, do not retry in the front window. System URL openers and global keyboard shortcuts still follow system focus.
+Keep the block ID returned when the app pane opens. To open a new browser tab, send the text `:tab https://example.com` and the Enter key to **that block**, not to the focused pane or the browser application. The pane accepts one HTTP or HTTPS address, or no address for a blank tab. Read its reply before sending another request. If the pane or its window is gone, do not retry in the front window. A system URL opener sends an address to the browser pane of the tab where the operator works, which need not be yours, and global keyboard shortcuts follow system focus.
 
 The pane's first lines identify the browser process and scripting window when the pane created one. To inspect a page or act on it, use the browser tools on a tab in that process and window, within the browser access that the operator configured. Attaching an existing window by title does not give the pane ownership of it or a `:tab` target.
 
@@ -37,11 +38,13 @@ App Pane uses the Accessibility and Screen Recording access of the terminal appl
 
 The window is the app's own window placed over the pane; the terminal does not embed it. Content that the terminal draws over the pane, such as a floating pane, is visible only while the terminal is in front. The first click on the live image activates the app and does not reach the page. An app in full screen, or a minimised window, stays as it is until it returns. Windows live on one desktop: a window on another desktop does not move to the pane.
 
+Links follow the tab where you work in browsers that open a link in their first window: the Chromium browsers above and Safari. A window attached by title takes no part. If every window of the browser is in a pane, a link from a tab without a browser pane opens in one of them; keep one browser window outside the panes for such links.
+
 ## Files and checks
 
 - `index.ts` registers `apps_show`, `/apps` and the palette command.
 - `show.ts` checks requests and builds the pane program's arguments; `palette-command.ts` answers the palette.
 - `app-update.ts` and `native/build.mts` build and install App Pane.
-- `native/` holds App Pane. `AppPaneCore` parses requests and pane input, matches apps and calculates geometry. `AppPane` owns the window and sends Apple Events to its browser process. It uses the shared `native-pane` package to find and follow its pane.
+- `native/` holds App Pane. `AppPaneCore` parses requests and pane input, matches apps, calculates geometry and decides which browser window takes links (`LinkPolicy`). `AppPane` owns the window and sends Apple Events to its browser process; `LinkTarget` reads and changes the browser's window order for links. It uses the shared `native-pane` package to find and follow its pane.
 
 Run `node --test extensions/apps/*.test.mts` and `node extensions/apps/native/build.mts test`.

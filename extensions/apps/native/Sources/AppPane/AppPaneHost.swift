@@ -27,6 +27,11 @@ final class AppPaneHost {
     private var entry: AppEntry?
     private var window: DockedWindow?
     private var lock: WindowLock?
+    /// Failed attempts to take the window's lock. Another pane's check of the window holds the
+    /// lock for an instant, while a pane that shows the window holds it until it ends.
+    private var lockMisses = 0
+    /// For a browser window: keeps links from other applications on the operator's pane.
+    private var links: LinkTarget?
     /// The last place where the pane was on screen, with the title of its terminal window then.
     private var lastPlaced: (placement: TerminalAnchor.Placement, title: String?)?
     /// While the anchor searches again for a pane that was just on screen, the window stays in
@@ -148,6 +153,7 @@ final class AppPaneHost {
             let docked = DockedWindow(pid: pid, element: element, created: created)
             known = DockedWindow.windows(of: pid)
             window = docked
+            if let ownedBrowser { links = LinkTarget(pid: pid, scripting: ownedBrowser.scripting, ownID: ownedBrowser.id) }
             shownTitle = docked.title
             let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.tick() }
@@ -190,13 +196,15 @@ final class AppPaneHost {
     }
 
     /// Takes the window's lock once its window-server number is known. A window that another pane
-    /// holds ends this pane.
+    /// still holds after several attempts ends this pane.
     private func claim() -> Bool {
         guard lock == nil, let window, let number = window.number else { return true }
         if let lock = WindowLock.take(pid: window.pid, number: number) {
             self.lock = lock
             return true
         }
+        lockMisses += 1
+        if lockMisses < 4 { return true }
         self.window = nil
         fail("This window of \(entry?.name ?? request.app) is already in another pane.")
         return false
@@ -215,6 +223,7 @@ final class AppPaneHost {
             window.dock(to: placement.frame, primaryHeight: primaryHeight)
             guard claim() else { return }
             showMirror(placement)
+            links?.shown(placement)
         case .searching where holds(primaryHeight: primaryHeight):
             break
         default:
@@ -223,6 +232,7 @@ final class AppPaneHost {
             window.park(primaryHeight: primaryHeight)
             mirror.stop()
             mirrorChanged()
+            links?.hidden()
         }
         draw()
     }
@@ -280,6 +290,7 @@ final class AppPaneHost {
         case .frame(let frame): current = frame
         }
         if window.number == nil, window.findNumber() { return follow() }
+        if lock == nil, window.number != nil, !window.parked { return follow() }
         if window.parked {
             window.keepParked(current)
         } else if window.keepDocked(current) {
@@ -313,6 +324,7 @@ final class AppPaneHost {
         if let fresh {
             replacing = nil
             lock = nil
+            lockMisses = 0
             known = DockedWindow.windows(of: closed.pid)
             // The new window takes over before the panel hides, whose change docks the window.
             window = DockedWindow(pid: closed.pid, element: fresh, created: false)
@@ -388,6 +400,7 @@ final class AppPaneHost {
             Opening.restoreFrontmost(previous, browser: pid)
             guard !ending else { return }
             tabPending = false
+            links?.apply()
             draw()
             await Opening.returnFocus(to: previous, from: pid, handed: { [weak self] in (self?.handedAt ?? .distantPast) > requested })
         }
@@ -448,6 +461,7 @@ final class AppPaneHost {
         exitStatus = status
         timer?.invalidate()
         release()
+        links?.stop()
         mirror.stop()
         overlay.stop()
         if !terminalGone { terminal.leave(before: .now() + 0.2) }
