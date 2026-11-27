@@ -93,6 +93,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 		on(name: string, handler: StartHandler) {
 			if (name === "before_agent_start") startHandlers.push(handler);
 		},
+		registerFlag() {},
 		registerTool(tool: RegisteredTool) {
 			tools.set(tool.name, tool);
 		},
@@ -864,6 +865,7 @@ it("keeps the ordinary preference section bytes when a provider's model list cha
 		on(name: string, handler: StartHandler) {
 			if (name === "before_agent_start") startHandlers.push(handler);
 		},
+		registerFlag() {},
 		registerTool() {},
 		registerCommand() {},
 		registerShortcut() {},

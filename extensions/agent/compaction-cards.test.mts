@@ -43,6 +43,7 @@ it("captures self context once at execution and keeps it stable through native r
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 		registerCommand() {},
 		registerShortcut() {},

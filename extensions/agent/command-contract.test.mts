@@ -54,6 +54,7 @@ it("the production observation adapter forwards cancellation and releases late a
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
@@ -120,6 +121,7 @@ it("the registered /agent opens native reports locally and preserves read and co
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
@@ -230,6 +232,7 @@ it("preserves optional command inputs and resolves directory commands at the pri
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool() {},
 		registerCommand: (name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) =>
 			commands.set(name, command),

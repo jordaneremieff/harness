@@ -10,12 +10,14 @@ import {
 	type AgentBeforeSettleEvent,
 	type AgentToolResult,
 	type ContextEvent,
+	type SessionStartEvent,
 	type TurnEndEvent,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { bool, int, map, num, obj, opt, str, unknown, type Schema, type Static } from "@earendil-works/pi-schema";
 import { storageStatusPageInput, validateStatusSelectors } from "./storage-status.ts";
+import { isPassiveHostOperation } from "./host-passive.ts";
 import { createAgentObservationSource } from "./agent-observation.ts";
 import {
 	PresetParameter,
@@ -147,6 +149,8 @@ import { collectToolDisplay, publishToolDisplay } from "./tool-display.ts";
 import { promptProjectTrust } from "./trust-support.ts";
 
 const defaultOriginalEntrypoint = fileURLToPath(new URL("./index.ts", import.meta.url));
+const UNREGISTERED_FLAG = "unregistered";
+const UNREGISTERED_ENTRY = "agent.unregistered";
 
 let nativeAgentPromise: Promise<typeof import("./durable-agents.ts")> | undefined;
 function loadAgentNative(): Promise<typeof import("./durable-agents.ts")> {
@@ -508,6 +512,15 @@ function sessionsRoot(): string {
 }
 
 export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypoint = defaultOriginalEntrypoint): void {
+	pi.registerFlag(UNREGISTERED_FLAG, {
+		description: "Start an ordinary session without Agent presence or delivery; keep its normal transcript.",
+		type: "boolean",
+	});
+	let unregistered = false;
+	const requireRegistration = () => {
+		if (unregistered)
+			throw new Error("This session started without Agent registration; this operation is unavailable.");
+	};
 	const settingsAgentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
 	const disposeFactorySettings = publishSettings(pi.events, { agentDir: settingsAgentDir });
 	const toolDisplay = collectToolDisplay(pi.events);
@@ -721,6 +734,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	 * protocol gives undefined: session start reports it once, and events change nothing until Pi restarts.
 	 */
 	const eventManager = (): AgentManager | undefined => {
+		if (unregistered) return undefined;
 		const root = sessionsRoot();
 		const existing = owners.managers.get(root);
 		return existing !== undefined && existing.managerProtocol !== MANAGER_PROTOCOL ? undefined : getManager(root);
@@ -769,6 +783,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	 * session has agents or work out; only the interactive terminal draws colour.
 	 */
 	const showAgentCell = (ctx: ExtensionContext) => {
+		if (unregistered) return;
 		// Over a retained manager of another protocol, agent events change nothing, the footer included.
 		const retained = owners.managers.get(sessionsRoot());
 		if (retained !== undefined && retained.managerProtocol !== MANAGER_PROTOCOL) return;
@@ -838,8 +853,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		ctx: ExtensionContext,
 		signal?: AbortSignal,
 	) => {
-		const manager = getManager();
-		return manager.control(method, input, caller(ctx, pi), signal ? { signal } : undefined);
+		if (!isPassiveHostOperation(method)) requireRegistration();
+		return getManager().control(method, input, caller(ctx, pi), signal ? { signal } : undefined);
+	};
+	const collaborate = (input: Record<string, unknown>, ctx: ExtensionContext) => {
+		if (input.action !== "list" && input.action !== "read") requireRegistration();
+		return getManager().collaborate(input, caller(ctx, pi));
 	};
 	const prepareInput = (
 		name: AgentControlToolName,
@@ -847,6 +866,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		ctx: ExtensionContext,
 		callId: string,
 	) => {
+		requireRegistration();
 		refreshPreferences(ctx);
 		return admitExecutionInput(pi, ctx, name, callId, input);
 	};
@@ -886,6 +906,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const self = ctx.sessionManager.getSessionId();
 		const refusal = questionInputRefusal(input, self);
 		if (refusal !== undefined) throw new Error(refusal);
+		requireRegistration();
 		const { questions, notices } = questionState(ctx);
 		const message = String(input.message ?? "");
 		if (input.inReplyTo !== undefined) {
@@ -980,6 +1001,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			const { action, ...fields } = input;
 			const ownerId = ctx.sessionManager.getSessionId();
 			if (action === "read") return result({ awareness: await getManager().awareness(ownerId, ctx.cwd) });
+			requireRegistration();
 			return result(
 				await getManager().publishIntent(
 					ownerId,
@@ -995,12 +1017,13 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		"Create, join, read or contribute to a shared thread. Reads start no host; follow the returned next call unchanged. Only explicit notify recipients wake.",
 		CollaborationParams,
 		(input, ctx, callId) =>
-			getManager().collaborate(
+			collaborate(
 				{ ...input, origin: "model", requestId: `collaboration:${ctx.sessionManager.getSessionId()}:${callId}` },
-				caller(ctx, pi),
+				ctx,
 			),
 	);
 	registerOrdinaryWork(pi, yieldCard, {
+		assertAvailable: requireRegistration,
 		waiting: (sessionId) => continuity.open(sessionId),
 		prepareQuestions: (sessionId) => verifyAskedSessions(peerQuestions.get(sessionId)?.questions),
 		questions: (sessionId) => {
@@ -1066,6 +1089,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		});
 		const rendered = renderBrief(input);
 		if (input.preview === true) return briefPreview(rendered, [...inputProblems, ...sourceProblems]);
+		requireRegistration();
 		if (inputProblems.length || sourceProblems.length) throw new Error(briefRefusal(inputProblems, sourceProblems));
 
 		let value: unknown;
@@ -1332,6 +1356,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			args: [{ name: "task", rest: true, optional: true }],
 			help: "Describe the task in your own words. The agent uses your current directory and machine default preset. Its host survives this primary process; advanced overrides use agent_spawn.",
 			run: async (args, ctx, onCreated) => {
+				requireRegistration();
 				const prompt = args.join(" ") || undefined;
 				const created = (await getManager().spawn({ prompt, origin: "operator" }, caller(ctx, pi), onCreated)) as {
 					sessionId: string;
@@ -1568,6 +1593,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				{ name: "task", optional: true, rest: true },
 			],
 			run: async ([area, ...words], ctx) => {
+				requireRegistration();
 				const prompt = words.join(" ") || undefined;
 				const resolved = area ? resolve(ctx.cwd, area) : ctx.cwd;
 				const result = (await getManager().place({ area: resolved, prompt, origin: "operator" }, caller(ctx, pi))) as {
@@ -1597,6 +1623,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			help: "Use an exact directory from /agent places.",
 			args: [{ name: "area" }],
 			run: async ([area], ctx) => {
+				requireRegistration();
 				const resolved = resolve(ctx.cwd, area);
 				const removed = getManager().places.unbind(resolved);
 				return outcome(
@@ -1634,6 +1661,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				scheduleAgentInput({ control: (method, params) => control(method, params, ctx), label: agentLabel }, input),
 			control,
 			newAgent: async ({ prompt, preset, cwd }, ctx, onCreated) => {
+				requireRegistration();
 				const created = (await getManager().spawn(
 					{ prompt, preset, cwd, origin: "operator" },
 					caller(ctx, pi),
@@ -1656,7 +1684,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				};
 			},
 		},
-		(input, ctx) => getManager().collaborate({ ...input, origin: "operator" }, caller(ctx, pi)),
+		(input, ctx) => collaborate({ ...input, origin: "operator" }, ctx),
 		async (ctx, page) => getManager().sessionFigures(ctx.sessionManager.getSessionId(), page),
 		{
 			efforts: (ctx) => getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd),
@@ -1684,12 +1712,20 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	pi.registerMessageRenderer("application-message", renderAgentApplicationMessage);
 	pi.registerMessageRenderer(SELF_COMPACTION_NOTICE, renderAgentCompactionMessage);
 	pi.registerMessageRenderer(PLANNING_BUDGET_NOTICE, renderAgentPlanningBudgetMessage);
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		resetThreadNotices();
 		selfCompaction.clear();
 		refreshPreferences(ctx);
 		agentFigures = "";
 		stuckAgents = new Set();
+		const retained = ctx.sessionManager.getEntries();
+		const optedOut = retained.some((entry) => entry.type === "custom" && entry.customType === UNREGISTERED_ENTRY);
+		unregistered = optedOut || pi.getFlag(UNREGISTERED_FLAG) === true;
+		if (unregistered) {
+			if (!optedOut) pi.appendEntry(UNREGISTERED_ENTRY);
+			ctx.ui.setStatus("agent", undefined);
+			return;
+		}
 		const retainedProtocol = owners.managers.get(sessionsRoot())?.managerProtocol;
 		if (retainedProtocol !== undefined && retainedProtocol !== MANAGER_PROTOCOL) {
 			ctx.ui.notify(
@@ -1698,12 +1734,19 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			);
 			return;
 		}
+		await startPrimary(ctx, event.reason, retained);
+	});
+	async function startPrimary(
+		ctx: ExtensionContext,
+		reason: SessionStartEvent["reason"],
+		retained: ReturnType<ExtensionContext["sessionManager"]["getEntries"]>,
+	) {
 		const sessionId = ctx.sessionManager.getSessionId();
 		primaries.get(sessionId)?.abort();
 		primaryDeliveries.get(sessionId)?.inbox.close();
 		const abort = new AbortController();
 		primaries.set(sessionId, abort);
-		const purpose = retainedPurpose(ctx.sessionManager, _event.reason);
+		const purpose = retainedPurpose(ctx.sessionManager, reason);
 		firstRequestOpen.set(sessionId, purpose.complete && purpose.canCapture && purpose.text === undefined);
 		const workRefs = retainedWorkReferences(ctx.sessionManager);
 		workReferences.set(sessionId, workRefs);
@@ -1770,7 +1813,6 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		};
 		heldPlacements.set(sessionId, []);
 		endQuestions(sessionId);
-		const retained = ctx.sessionManager.getEntries();
 		const restored = questionsOf(ctx, retained);
 		await verifyAskedSessions(restored);
 		const ended = restored.reconcile(sessionEnded);
@@ -1785,7 +1827,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		else unsavedSessions.delete(sessionId);
 		await getManager().registerPrimary(sessionId, {
 			liveActivity: (replacement) => pi.events.emit("harness:live-activity", replacement),
-			freshSession: isFreshPrimary(_event.reason, ctx, retained),
+			freshSession: isFreshPrimary(reason, ctx, retained),
 			sentWork: retainedSentWork(retained),
 			retainSentWork: (sessionId) => pi.appendEntry(SENT_WORK_ENTRY, { sessionId }),
 			retainContinuity: (fact) => {
@@ -1833,11 +1875,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			},
 			promptTrust: (cwd) => (ctx.hasUI ? promptProjectTrust(cwd, ctx.ui) : Promise.resolve(undefined)),
 		});
+		if (abort.signal.aborted) return;
 		// A received question still open at start lost its run with the earlier process, so its notice is due.
-		if (!abort.signal.aborted) noticeUnanswered(ctx);
+		noticeUnanswered(ctx);
 		// A message can reach the file while the registration opens its channel.
-		if (!abort.signal.aborted) observeSaved(ctx);
-	});
+		observeSaved(ctx);
+	}
 	pi.on("model_select", (event, ctx) => {
 		eventManager()?.updatePrimary(ctx.sessionManager.getSessionId(), {
 			model: { provider: event.model.provider, modelId: event.model.id },

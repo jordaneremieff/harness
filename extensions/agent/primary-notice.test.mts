@@ -611,6 +611,8 @@ it("refreshes the registered primary identity on model, thinking, and name chang
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	await registerAgentExtension({
 		events: { emit() {}, on: () => () => {} },
+		registerFlag() {},
+		getFlag: () => undefined,
 		registerTool() {},
 		registerMessageRenderer() {},
 		registerToolRenderer() {},

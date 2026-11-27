@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
-import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	SessionManager,
+	type AgentToolResult,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { AgentManager } from "./manager.ts";
 import register from "./ordinary-entry.ts";
+import { createPrimaryChannel } from "./primary-channel.ts";
 import { matchesSchema } from "./schema-check.ts";
 
 interface RegisteredTool {
@@ -21,30 +27,51 @@ interface RegisteredTool {
 	): Promise<AgentToolResult<unknown>>;
 }
 function fixture(t: TestContext) {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "ordinary-adapter-")));
+	const root = realpathSync(mkdtempSync("/tmp/pi-oa-"));
 	const saved = new Map(["PI_AGENT_DIR", "PI_AGENT_SESSIONS_DIR"].map((key) => [key, process.env[key]]));
 	process.env.PI_AGENT_DIR = root;
 	process.env.PI_AGENT_SESSIONS_DIR = root;
-	const tools: RegisteredTool[] = [];
-	register({
-		events: { on: () => () => {}, emit() {} },
-		on() {},
-		getThinkingLevel: () => "off",
-		registerTool: (tool: RegisteredTool) => tools.push(tool),
-		registerCommand() {},
-		registerShortcut() {},
-		registerMessageRenderer() {},
-		registerToolRenderer() {},
-	} as unknown as ExtensionAPI);
-	const ctx = {
-		cwd: root,
-		sessionManager: {
-			getSessionId: () => "00000000-0000-4000-8000-000000000002",
-			getSessionName: () => "primary",
-			getEntries: () => [],
-		},
-		modelRegistry: { find: () => undefined, getAll: () => [] },
-	} as unknown as ExtensionContext;
+	function session(manager?: SessionManager, unregistered = false) {
+		const tools: RegisteredTool[] = [];
+		const starts: Array<(event: { reason: "startup" }, ctx: ExtensionContext) => unknown> = [];
+		const flags = new Map<string, { type: string }>();
+		register({
+			events: { on: () => () => {}, emit() {} },
+			on(event: string, handler: (typeof starts)[number]) {
+				if (event === "session_start") starts.push(handler);
+			},
+			getThinkingLevel: () => "off",
+			registerTool: (tool: RegisteredTool) => tools.push(tool),
+			registerCommand() {},
+			registerShortcut() {},
+			registerMessageRenderer() {},
+			registerToolRenderer() {},
+			registerFlag: (name: string, options: { type: string }) => flags.set(name, options),
+			getFlag: (name: string) => name === "unregistered" && flags.get(name)?.type === "boolean" && unregistered,
+			appendEntry: (type: string, data: unknown) => manager?.appendCustomEntry(type, data),
+		} as unknown as ExtensionAPI);
+		const ctx = {
+			cwd: root,
+			sessionManager: manager ?? {
+				getSessionId: () => "00000000-0000-4000-8000-000000000002",
+				getSessionName: () => "primary",
+				getEntries: () => [],
+			},
+			modelRegistry: { find: () => undefined, getAll: () => [] },
+			ui: { setStatus() {} },
+		} as unknown as ExtensionContext;
+		return {
+			tools,
+			start: async () => {
+				for (const handler of starts) await handler({ reason: "startup" }, ctx);
+			},
+			execute: (name: string, input: Record<string, unknown>) => {
+				const tool = tools.find((item) => item.name === name);
+				assert.ok(tool);
+				return tool.execute("exact-call", input, undefined, undefined, ctx);
+			},
+		};
+	}
 	t.after(async () => {
 		const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[
 			Symbol.for("pi.extension.agent.owners")
@@ -57,15 +84,63 @@ function fixture(t: TestContext) {
 		}
 		rmSync(root, { recursive: true, force: true });
 	});
-	return {
-		tools,
-		execute: (name: string, input: Record<string, unknown>) => {
-			const tool = tools.find((item) => item.name === name);
-			assert.ok(tool);
-			return tool.execute("exact-call", input, undefined, undefined, ctx);
-		},
-	};
+	return { ...session(), root, session };
 }
+
+it("unregistered sessions keep their transcript and peer reads without publishing presence or admitting writes", async (t) => {
+	const f = fixture(t);
+	const peer = SessionManager.create(f.root, f.root);
+	peer.appendMessage({ role: "user", content: "Check the index", timestamp: Date.now() });
+	const peerId = peer.getSessionId();
+	const channel = await createPrimaryChannel({
+		id: peerId,
+		cwd: f.root,
+		sessionFile: peer.getSessionFile(),
+		sessionsRoot: f.root,
+		deliver: () => assert.fail("An unregistered sender must not deliver"),
+		promptTrust: async () => undefined,
+	});
+	try {
+		const own = SessionManager.create(f.root, f.root);
+		own.appendSessionInfo("Observation session");
+		const sessionId = own.getSessionId();
+		const unregistered = f.session(own, true);
+		await unregistered.start();
+		own.appendMessage({ role: "user", content: "Read the peer's answer", timestamp: Date.now() });
+		const path = own.getSessionFile();
+		assert.ok(path && existsSync(path));
+		const saved = SessionManager.open(path, f.root);
+		const resumed = f.session(saved);
+		await resumed.start();
+		assert.equal(saved.getSessionName(), "Observation session");
+		assert.ok(saved.getEntries().some((entry) => entry.type === "message" && entry.message.role === "user"));
+		const present = (value: AgentToolResult<unknown>) =>
+			(value.details as { awareness: { presence: { efforts: Array<{ id: string }> } } }).awareness.presence.efforts.map(
+				({ id }) => id,
+			);
+		assert.equal(existsSync(join(f.root, ".primaries", `${sessionId}.json`)), false);
+		assert.ok(existsSync(join(f.root, ".primaries", `${peerId}.json`)));
+		assert.ok(!present(await f.execute("agent_intent", { action: "read" })).includes(sessionId));
+		for (const current of [unregistered, resumed]) {
+			assert.ok(present(await current.execute("agent_intent", { action: "read" })).includes(peerId));
+			const inspected = await current.execute("agent_inspect", { sessionId: peerId, view: "history" });
+			assert.match(JSON.stringify(inspected.structuredContent), /Check the index/u);
+			for (const [tool, input] of [
+				["agent_spawn", {}],
+				["agent_send", { sessionId: peerId, message: "Send a question", expectReply: true }],
+				["agent_send", { sessionId: peerId, message: "Send a report", mode: "report" }],
+				["agent_intent", { action: "clear" }],
+				["agent_collaborate", { action: "join", threadId: "thread" }],
+				["agent_yield", { note: "The task is open." }],
+			] as const) {
+				await assert.rejects(current.execute(tool, input), /This session started without Agent registration/u);
+			}
+		}
+	} finally {
+		await channel.close();
+	}
+});
+
 const conversation = {
 	conversationId: 1,
 	identity: "producer",

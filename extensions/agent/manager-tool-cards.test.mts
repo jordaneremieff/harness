@@ -138,6 +138,7 @@ it("reload refuses a retained manager without dashboard task targets before any 
 	const pi = {
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool() {},
 		registerCommand: (name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) => {
 			commands.set(name, command);
@@ -202,6 +203,7 @@ for (const retained of ["manager/0.0.0", "manager/8.0.0", "manager/999.0.0"])
 		const pi = {
 			events: { emit: () => {}, on: () => () => {} },
 			on: () => {},
+			registerFlag() {},
 			registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 			registerCommand: () => {},
 			registerShortcut: () => {},
@@ -242,6 +244,8 @@ it("keeps ordinary event handlers quiet over a retained manager with a different
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 			return () => {};
 		},
+		registerFlag() {},
+		getFlag: () => undefined,
 		registerTool: () => {},
 		registerCommand: () => {},
 		registerShortcut: () => {},
@@ -254,7 +258,7 @@ it("keeps ordinary event handlers quiet over a retained manager with a different
 	const ctx = {
 		cwd: root,
 		hasUI: true,
-		sessionManager: { getSessionId: () => "reloaded-primary", getSessionName: () => undefined },
+		sessionManager: { getSessionId: () => "reloaded-primary", getSessionName: () => undefined, getEntries: () => [] },
 		ui: { notify: (text: string, level: string) => notices.push([text, level]) },
 	};
 	const events: Array<[string, unknown]> = [

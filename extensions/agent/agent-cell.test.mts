@@ -124,6 +124,8 @@ async function cellFixture(t: TestContext, providerBlocked = false) {
 			events.set(name, [...(events.get(name) ?? []), handler]);
 			return () => {};
 		},
+		registerFlag() {},
+		getFlag: () => undefined,
 		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 		registerCommand() {},
 		registerShortcut() {},

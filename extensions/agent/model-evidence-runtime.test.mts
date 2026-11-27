@@ -39,6 +39,7 @@ async function primaryTools(): Promise<Map<string, ToolDefinition>> {
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 		registerCommand() {},
 		registerShortcut() {},

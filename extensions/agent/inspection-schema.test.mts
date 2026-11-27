@@ -21,6 +21,7 @@ async function declarations(): Promise<Map<string, ToolDeclaration>> {
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool: (tool: ToolDeclaration) => tools.set(tool.name, tool),
 		registerCommand() {},
 		registerShortcut() {},

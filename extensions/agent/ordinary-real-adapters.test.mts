@@ -24,6 +24,7 @@ function toolsFor(root: string, agentDir: string, cwd: string, env: Record<strin
 		on() {},
 		getThinkingLevel: () => "off",
 		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
+		registerFlag() {},
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},

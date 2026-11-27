@@ -31,6 +31,7 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 	await registerAgentExtension({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},

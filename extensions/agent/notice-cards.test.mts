@@ -73,6 +73,7 @@ async function registeredRenderers(): Promise<Map<string, MessageRenderer>> {
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool() {},
 		registerCommand() {},
 		registerShortcut() {},

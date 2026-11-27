@@ -929,6 +929,7 @@ it("saves an explicit handle-less creation role and documents it in both schemas
 	await registerAgentExtension({
 		events: { on: () => () => {}, emit() {} },
 		on() {},
+		registerFlag() {},
 		registerTool(tool: (typeof ordinary)[number]) {
 			ordinary.push(tool);
 		},
@@ -971,6 +972,7 @@ it("preserves closed control objects, optional fields, enums and inspect cursors
 	await registerAgentExtension({
 		events: { on: () => () => {}, emit() {} },
 		on() {},
+		registerFlag() {},
 		registerTool(tool: (typeof ordinary)[number]) {
 			ordinary.push(tool);
 		},

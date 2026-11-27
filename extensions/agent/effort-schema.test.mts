@@ -9,6 +9,7 @@ it("registers every ordinary agent tool with a plain object parameter schema", a
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool: (tool: (typeof tools)[number]) => tools.push(tool),
 		registerShortcut() {},
 		registerMessageRenderer() {},

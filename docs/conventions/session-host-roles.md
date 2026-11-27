@@ -107,3 +107,13 @@ The agent dashboard observes native agent conversations. The real ordinary
 primary remains outside Durable storage; the dashboard does not create a
 lookalike conversation to claim equal-peer terminal support. See the
 [agent extension](../../extensions/agent/README.md) for controls and limits.
+
+## Ordinary session without Agent registration
+
+A launcher that needs an ordinary Pi session for observation but not Agent
+presence or peer delivery passes `--unregistered` before Pi's `--` separator.
+The Agent extension owns the flag and retains the opt-out in each session the
+flagged process opens. Such a session can observe others through Agent read
+controls, but Agent
+publishes no primary endpoint for it. The flag does not change ordinary Pi
+transcripts, names, or audit hooks.

@@ -188,6 +188,7 @@ for (const route of ["connected", "cold"] as const)
 		await register({
 			events: { emit() {}, on: () => () => {} },
 			on() {},
+			registerFlag() {},
 			registerTool: (tool: ToolDefinition) => ordinaryTools.set(tool.name, tool),
 			registerCommand() {},
 			registerShortcut() {},

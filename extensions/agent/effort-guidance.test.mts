@@ -12,6 +12,7 @@ it("gives ordinary coordination tools completion and low-message guidance", asyn
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool: (tool: {
 			name: string;
 			description: string;
@@ -37,6 +38,7 @@ it("omits held-await controls from ordinary primaries and retains background spa
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool: (tool: { name: string }) => {
 			tools.add(tool.name);
 		},

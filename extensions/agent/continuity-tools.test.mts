@@ -45,6 +45,7 @@ function fixture() {
 		registerShortcut() {},
 		registerMessageRenderer() {},
 		registerToolRenderer() {},
+		registerFlag() {},
 		registerTool(tool: { name: string }) {
 			tools.push(tool.name);
 		},

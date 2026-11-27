@@ -113,6 +113,8 @@ test("ordinary shutdown awaits close even when the status callback throws", asyn
 			events.set(name, handler);
 			return () => {};
 		},
+		registerFlag() {},
+		getFlag: () => undefined,
 		registerTool() {},
 		registerCommand() {},
 		registerShortcut() {},
@@ -471,6 +473,8 @@ test("an ordinary registration that its extension shut down for a reload refuses
 			events.set(name, handler);
 			return () => {};
 		},
+		registerFlag() {},
+		getFlag: () => undefined,
 		registerTool() {},
 		registerCommand() {},
 		registerShortcut() {},

@@ -60,6 +60,7 @@ export type OrdinaryWorkDetails = Static<typeof OrdinaryWorkOutputSchema>;
 export type OrdinaryWaitingRow = Static<typeof WaitingRowSchema>;
 
 export interface OrdinaryWorkOptions {
+	readonly assertAvailable?: () => void;
 	/** The open requests of one session, as the continuity facts of this session hold them. */
 	readonly waiting?: (sessionId: string) => readonly ContinuityFact[];
 	/** The questions this session asked other ordinary sessions with no reply or non-reply notice yet. */
@@ -231,6 +232,7 @@ export function registerOrdinaryWork(
 		// continue the turn while its result reads as a yield. Only the model's own batch can end the turn.
 		exposure: "model-only",
 		async execute(_callId, input: Static<typeof OrdinaryWorkParams>, _signal, _update, ctx) {
+			options.assertAvailable?.();
 			if (!matchesSchema(OrdinaryWorkParams, input)) throw new Error(`${ORDINARY_YIELD_TOOL} takes a note`);
 			const details: OrdinaryWorkDetails = { note: input.note };
 			if (machineMode(ctx.mode)) {

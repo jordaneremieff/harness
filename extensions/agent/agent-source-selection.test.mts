@@ -620,6 +620,7 @@ test("entry dispatcher selects native or ordinary registration, preserves origin
 			on: () => () => {},
 		},
 		on: () => () => {},
+		registerFlag() {},
 		registerTool(tool: { name: string }) {
 			ordinaryTools.push(tool.name);
 		},

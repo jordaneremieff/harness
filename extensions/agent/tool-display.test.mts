@@ -274,6 +274,7 @@ it("agent factory collects before requests and publishes actual registered card 
 		registerShortcut() {},
 		registerMessageRenderer() {},
 		registerCommand() {},
+		registerFlag() {},
 		registerTool: (definition: ToolDefinition) => definitions.push(definition),
 	} as unknown as ExtensionAPI);
 	assert.deepEqual(

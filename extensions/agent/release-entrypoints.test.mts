@@ -49,6 +49,7 @@ it("the ordinary abort tool dispatches release and rejects timer combinations", 
 			if (name === "agent") command = value;
 		},
 		getThinkingLevel: () => "off",
+		registerFlag() {},
 		registerTool(tool: { name: string }) {
 			tools.set(tool.name, tool as never);
 		},

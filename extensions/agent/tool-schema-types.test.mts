@@ -62,6 +62,7 @@ it("declares an explicit JSON Schema type on every agent tool parameter, ordinar
 	await registerAgentExtension({
 		events: { on: () => () => {}, emit() {} },
 		on() {},
+		registerFlag() {},
 		registerTool(tool: DeclaredTool) {
 			ordinary.push(tool);
 		},

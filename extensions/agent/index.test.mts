@@ -113,6 +113,8 @@ test("ordinary shutdown preserves primary and roster owners and awaits final col
 			on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => {
 				events.set(name, handler);
 			},
+			registerFlag() {},
+			getFlag: () => undefined,
 			registerTool() {},
 			registerCommand() {},
 			registerShortcut() {},
@@ -241,6 +243,7 @@ test("ordinary fleet calls forward exact selection and reject incompatible query
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on() {},
+		registerFlag() {},
 		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 		registerCommand() {},
 		registerShortcut() {},
@@ -402,6 +405,8 @@ test("session start restores sent-work figures in a fresh manager and admissions
 				events.set(name, handler);
 				return () => {};
 			},
+			registerFlag() {},
+			getFlag: () => undefined,
 			registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 			registerCommand() {},
 			registerShortcut() {},
@@ -477,6 +482,8 @@ test("session start restores sent-work figures in a fresh manager and admissions
 			if (name === "session_start") startHandler = handler;
 			return () => {};
 		},
+		registerFlag() {},
+		getFlag: () => undefined,
 		registerTool() {},
 		registerCommand() {},
 		registerShortcut() {},

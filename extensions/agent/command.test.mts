@@ -47,6 +47,7 @@ async function registration() {
 	await registerAgentExtension({
 		events: { emit() {}, on: () => () => {} },
 		registerShortcut() {},
+		registerFlag() {},
 		registerTool() {},
 		registerMessageRenderer() {},
 		registerToolRenderer() {},
@@ -387,6 +388,7 @@ describe("agent command discovery and help", () => {
 		await registerAgentExtension({
 			events: { emit() {}, on: () => () => {} },
 			registerShortcut() {},
+			registerFlag() {},
 			registerTool() {},
 			registerMessageRenderer() {},
 			registerToolRenderer() {},

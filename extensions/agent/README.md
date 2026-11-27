@@ -3192,6 +3192,15 @@ that efforts use, such as a repository, cwd, or the machine for a full-gate run.
 These observations expose opportunities for cooperation; they do not grant
 control over another effort or authority to act outside the operator's direction.
 
+Start ordinary Pi with `--unregistered` to opt sessions in that process out of
+Agent presence and delivery. Agent publishes no primary endpoint for such a
+session and does not announce it as a live effort. The opt-out is retained in
+the Pi session and applies when you resume it. Pi keeps its normal session
+name, transcript, and audit records.
+The session can still read other agents and efforts; Agent operations that need
+participation, such as delegation, messaging, intent, thread writes, and yield,
+refuse without registration.
+
 Strict descriptor observation of an ordinary endpoint record (presence reads and
 parked-wake availability) reuses the same revision rule: at most 512 parsed
 descriptors and 4 MiB of retained payload, keyed by the opened file's revision,

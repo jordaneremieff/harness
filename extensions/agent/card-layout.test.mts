@@ -76,6 +76,7 @@ async function registeredTools(): Promise<Map<string, ToolDefinition>> {
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool: (tool: ToolDefinition) => {
 			assert.equal(tools.has(tool.name), false, tool.name);
 			tools.set(tool.name, tool);

@@ -20,6 +20,7 @@ it("ordinary delegation guidance names only registered controls and native guida
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
+		registerFlag() {},
 		registerTool: (tool: { name: string; description: string; promptGuidelines?: string[] }) =>
 			tools.set(tool.name, tool),
 		registerShortcut() {},

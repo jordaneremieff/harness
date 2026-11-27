@@ -23,6 +23,7 @@ function fixture(manager?: SessionManager) {
 		},
 		getThinkingLevel: () => "off",
 		registerTool() {},
+		registerFlag() {},
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},

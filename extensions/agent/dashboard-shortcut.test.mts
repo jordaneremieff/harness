@@ -80,6 +80,7 @@ it("the sole entry shortcut names the dashboard and registers no primary observe
 	const events: string[] = [];
 	await register({
 		events: { emit() {}, on: () => () => {} },
+		registerFlag() {},
 		registerTool() {},
 		registerMessageRenderer() {},
 		registerToolRenderer() {},

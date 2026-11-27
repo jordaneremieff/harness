@@ -300,6 +300,7 @@ it("replaces the factory publisher with the native host directory and keeps clea
 		on(name: string, handler: (event: unknown, ctx: unknown) => void) {
 			handlers.set(name, handler);
 		},
+		registerFlag() {},
 		registerTool() {},
 		registerCommand() {},
 		registerShortcut() {},
