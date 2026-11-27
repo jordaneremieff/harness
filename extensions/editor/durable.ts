@@ -40,6 +40,7 @@ export function contribution(source: string) {
 	return {
 		name: "editor",
 		source,
+		display: { version: 1, entry: "./display.ts", export: "toolDisplay" } as const,
 		create(host: EditorHost): Durable.Extension {
 			const { defineExtension, defineTool, section } = host.durable;
 			const rooms = new Map<Durable.ConversationId, EditorRoom>();

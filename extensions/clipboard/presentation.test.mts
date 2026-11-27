@@ -57,19 +57,19 @@ function result(text: string, details?: unknown, isError = false) {
 it("discloses only the size of a copy argument before and after expansion", (t) => {
 	theme(t);
 	const component = card("clipboard_copy", { content: `${privateText}😀`, label: "archive this" }, false);
-	assert.equal(screen(component), "clipboard_copy archive this\ncontent still arriving");
+	assert.match(screen(component), /^clipboard_copy archive this\n\.\.\. \(ctrl\+g to expand\)$/);
 	component.setArgsComplete();
-	assert.match(screen(component), /26 characters/);
-	assert.doesNotMatch(screen(component), /expand/);
+	assert.doesNotMatch(screen(component), /26 characters|private clipboard fixture/);
 	component.setExpanded(true);
 	assert.match(screen(component), /content: 26 characters/);
 	assert.doesNotMatch(screen(component), /private clipboard fixture|😀/);
 	component.setExpanded(false);
 	component.updateResult(result(`Preview: ${privateText}`, { lines: 1, chars: 26, id: "archive-id" }));
-	assert.match(screen(component), /Copied to the clipboard \(26 characters · 1 line\)\. Archive entry archive-id\./);
+	assert.match(screen(component), /Copied and archived 26 characters · 1 line\./);
 	assert.doesNotMatch(screen(component), /private clipboard fixture|more lines/);
 	assert.match(screen(component), /\.\.\. \(ctrl\+g to expand\)$/);
 	component.setExpanded(true);
+	assert.match(screen(component), /Archive entry archive-id\./);
 	assert.match(screen(component), /Preview: private clipboard fixture/);
 	assert.doesNotMatch(screen(component), /content: private|to expand/);
 });
@@ -80,13 +80,13 @@ it("keeps the confirmed clipboard write separate from an archive failure or opt-
 	component.updateResult(
 		result(`Preview: ${privateText}`, { chars: 25, lines: 1, id: "not-archived", archiveError: "Permission denied" }),
 	);
-	assert.match(
-		screen(component),
-		/Copied to the clipboard \(25 characters · 1 line\)\.\n\[Clipboard history write failed: Permission denied\]/,
-	);
-	assert.doesNotMatch(screen(component), /Archive entry not-archived|private clipboard fixture/);
+	assert.match(screen(component), /Copied 25 characters · 1 line, but the archive write failed\./);
+	assert.doesNotMatch(screen(component), /Archive entry not-archived|private clipboard fixture|Permission denied/);
+	component.setExpanded(true);
+	assert.match(screen(component), /Clipboard history write failed: Permission denied/);
+	component.setExpanded(false);
 	component.updateResult(result("Receipt", { chars: 25, lines: 1, archived: false }));
-	assert.match(screen(component), /Copied to the clipboard .* without archiving\./);
+	assert.match(screen(component), /Copied .* without archiving\./);
 	assert.doesNotMatch(screen(component), /write failed/);
 });
 
@@ -146,14 +146,14 @@ it("distinguishes empty clipboard, empty history, partial archive page and throw
 		),
 	);
 	assert.match(screen(list), /No matches on this clipboard archive page; the scan has more pages\./);
-	assert.match(screen(list), /\[Partial coverage: archive records skipped\]/);
+	assert.match(screen(list), /Archive records skipped\./);
 	assert.doesNotMatch(screen(list), /Model guidance|full-cursor/);
 	list.setExpanded(true);
 	assert.match(screen(list), /clipboard_list \{"query":"example","date":"2026-01-02","cursor":"full-cursor"\}/);
 	list.setExpanded(false);
 	list.updateResult(result("clipboard_list cancelled", { count: 0 }, true));
 	assert.match(screen(list), /clipboard_list cancelled/);
-	assert.doesNotMatch(screen(list), /No matches|to expand/);
+	assert.doesNotMatch(screen(list), /No matches|Model guidance/);
 });
 
 it("keeps stable IDs until width clips them and hands off a single hint after a result", (t) => {
@@ -161,8 +161,8 @@ it("keeps stable IDs until width clips them and hands off a single hint after a 
 	const id = `entry-${"界".repeat(105)}`;
 	const component = card("clipboard_restore", { id, date: "2026-01-02" });
 	assert.ok(screen(component, 300).includes(id));
-	assert.doesNotMatch(screen(component, 300), /expand/);
-	assert.match(screen(component, 60), /clipboard_restore .*…\ndate .*\n\.\.\. \(ctrl\+g to expand\)$/);
+	assert.match(screen(component, 300), /ctrl\+g to expand/);
+	assert.match(screen(component, 60), /clipboard_restore .*…\n\.\.\. \(ctrl\+g to expand\)$/);
 	component.updateResult(result("", undefined), true);
 	assert.match(screen(component, 60), /Restoring to the clipboard…\n\.\.\. \(ctrl\+g to expand\)$/);
 	component.updateResult(result("Restored", { id, chars: 1, lines: 1 }));
@@ -171,7 +171,8 @@ it("keeps stable IDs until width clips them and hands off a single hint after a 
 		/Restored to the clipboard \(1 character · 1 line\)\.\n\.\.\. \(ctrl\+g to expand\)$/,
 	);
 	assert.equal(screen(component, 60).match(/to expand/g)?.length, 1);
-	assert.doesNotMatch(screen(component, 300), /expand/);
+	component.setExpanded(true);
+	assert.match(screen(component, 300), /date: 2026-01-02/);
 	for (const raw of component.render(60)) {
 		assert.ok(visibleWidth(raw) <= 60);
 		assert.doesNotMatch(raw, /\x1b\[0m/);

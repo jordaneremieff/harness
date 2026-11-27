@@ -271,7 +271,14 @@ describe("the jobs_yield card", () => {
 		const state: Record<string, unknown> = {};
 		const call = f.tool.renderCall?.({ note: "The suite\nruns." } as never, theme, { ...base, state } as never);
 		const streaming = call?.render(60) ?? [];
-		assert.deepEqual(plain(streaming), ["", " jobs_yield Ending turn", "", " The suite", " runs.", ""]);
+		assert.deepEqual(plain(streaming), [
+			"",
+			" jobs_yield Ending turn",
+			"",
+			" The suite",
+			" ... (1 more line, ctrl+o to expand)",
+			"",
+		]);
 		assert.ok(streaming.every((line) => line.startsWith("<customMessageBg>")));
 		assert.ok(
 			streaming.every((line) => stripVTControlCharacters(line).replace(/<[A-Za-z]+>/gu, "").length === 60),
@@ -286,13 +293,12 @@ describe("the jobs_yield card", () => {
 		assert.deepEqual(call?.render(60), [], "the result slot draws the settled card");
 	});
 
-	it("shows the title, three note lines and Pi's expansion hint when collapsed", () => {
+	it("shows the turn outcome, one note line and Pi's expansion hint when collapsed", () => {
 		const lines = plain(row({}).result?.render(100));
-		assert.equal(lines[1], " jobs_yield Turn ended");
-		assert.equal(lines[2], " 1 job still runs · 1 job completion pending · 9:05 AM");
-		assert.equal(lines.length, 9, "padding, title, facts, blank, three note lines, hint, padding");
-		assert.match(lines[7] ?? "", /^ \.\.\. \(\d+ more lines?, ctrl\+o to expand\)$/u);
-		assert.doesNotMatch(lines.join("\n"), /npm test|starts the next turn/u, "details wait for expansion");
+		assert.equal(lines[1], " jobs_yield Turn ended · 1 job still runs · 1 job completion pending");
+		assert.equal(lines.length, 6, "padding, title, blank, note, hint, padding");
+		assert.match(lines[4] ?? "", /^ \.\.\. \(\d+ more lines?, ctrl\+o to expand\)$/u);
+		assert.doesNotMatch(lines.join("\n"), /9:05 AM|npm test|starts the next turn/u, "details wait for expansion");
 		assert.equal(
 			plain(row({}, { ...details, note: "Short note." }).result?.render(100)).at(-2),
 			" ... (ctrl+o to expand)",
@@ -300,7 +306,7 @@ describe("the jobs_yield card", () => {
 		const hinted = plain(
 			row({ keyHint: (id: string, description: string) => `[${id}] ${description}` }).result?.render(100),
 		);
-		assert.match(hinted[7] ?? "", /^ \.\.\. \(\d+ more lines?, \[app\.tools\.expand\] to expand\)$/u);
+		assert.match(hinted[4] ?? "", /^ \.\.\. \(\d+ more lines?, \[app\.tools\.expand\] to expand\)$/u);
 	});
 
 	it("expands to the whole note, the jobs and what starts the next turn", () => {

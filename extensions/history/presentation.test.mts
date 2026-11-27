@@ -65,13 +65,16 @@ describe("history_search cards", () => {
 			offset: 40,
 		};
 		const shown = screen(renderSearchCall(args, theme, { argsComplete: true }));
-		assert.match(shown, /history_search "amber decision"/u);
-		assert.match(shown, /filter toolResult\(bash\) errors only · from entry-1 · continuation slot 2 offset 40/u);
+		assert.equal(shown, 'history_search "amber decision"');
+		assert.match(
+			screen(renderSearchCall(args, theme, { argsComplete: true, expanded: true })),
+			/filter toolResult\(bash\) errors only · from entry-1 · continuation slot 2 offset 40/u,
+		);
 		assert.equal(screen(renderSearchCall({}, theme, { argsComplete: true })), "history_search listing");
 		assert.equal(screen(renderSearchCall({}, theme, { argsComplete: false })), "history_search");
 		const native = { query: "x", fromId: 42, position: { message: 1, block: -1 }, offset: 0 };
 		assert.match(
-			screen(renderSearchCall(native, theme, { argsComplete: true })),
+			screen(renderSearchCall(native, theme, { argsComplete: true, expanded: true })),
 			/from 42 · continuation message 1 block -1 offset 0/u,
 		);
 	});
@@ -82,15 +85,15 @@ describe("history_search cards", () => {
 		const recent = sessionUser(sm, "recent amber");
 		const show = (args: Record<string, unknown>) =>
 			screen(renderSearchResult(toolResult(searchHistory(sm, args)), collapsed, theme, { ...context, args }));
-		assert.match(show({ query: "amber" }), /2 matches; 2 entries visited; reached the end of the selected ancestry/u);
-		assert.match(show({ query: "amber" }), /Retained excerpt offsets \d+\.\.\d+:\namber/u);
-		assert.match(show({ query: "none" }), /0 matches; 2 entries visited; reached the end of the selected ancestry/u);
+		assert.match(show({ query: "amber" }), /2 matches; reached the end of the selected ancestry; 2 entries visited/u);
+		assert.doesNotMatch(show({ query: "amber" }), /Retained excerpt/u);
+		assert.match(show({ query: "none" }), /0 matches; reached the end of the selected ancestry; 2 entries visited/u);
 		assert.match(show({ fromId: "missing-entry" }), /start entry not found/u);
-		assert.match(show({}), /2 entries returned; 2 entries visited/u);
+		assert.match(show({}), /2 entries returned; .*; 2 entries visited/u);
 		const args = { query: "amber", maxMatches: 1, maxVisits: 8 };
 		const value = searchHistory(sm, args);
 		const page = show(args);
-		assert.match(page, /1 match; 1 entry visited; match limit; continuation available/u);
+		assert.match(page, /1 match; continuation available; match limit; 1 entry visited/u);
 		assert.doesNotMatch(page, /\[Truncated:/u);
 		const open = screen(renderSearchResult(toolResult(value), expanded, theme, { ...context, args }));
 		const cursor = open.match(/Continue with history_search:\n(\{[\s\S]*?\n\})/u)?.[1];
@@ -133,11 +136,12 @@ describe("history_search cards", () => {
 		};
 		const result = { ...emptyResult("typed details win"), details: value };
 		const view = screen(renderSearchResult(result, collapsed, theme, { ...context, args }));
-		assert.match(view, /physical candidate limit; continuation available/u);
-		assert.match(view, /42 · message · assistant · call edit/u);
-		assert.match(view, /\[2 argument values skipped\]/u);
-		assert.doesNotMatch(view, /more lines|#42|typed details win|\u202E/u);
+		assert.match(view, /continuation available; physical candidate limit/u);
+		assert.match(view, /2 argument values skipped\./u);
+		assert.doesNotMatch(view, /call edit|more lines|#42|typed details win|\u202E/u);
 		const open = screen(renderSearchResult(result, expanded, theme, { ...context, args }));
+		assert.match(open, /42 · message · assistant · call edit/u);
+		assert.match(open, /\[2 argument values skipped\]/u);
 		const cursor = open.match(/Continue with history_search:\n(\{[\s\S]*?\n\})/u)?.[1];
 		assert.ok(cursor);
 		assert.deepEqual(JSON.parse(cursor), { ...args, ...next });
@@ -149,9 +153,12 @@ describe("history_search cards", () => {
 			screen(renderSearchResult(emptyResult(value), collapsed, theme, { isError }));
 		assert.equal(outcome('{"status":"ancestry_exhausted"}').trim(), "Reached the end of the selected ancestry.");
 		const gap = '{"status":"missing_parent","next":null,"gap":{"entryId":"e","action":"Use a known ID."}}';
-		assert.match(outcome(gap), /parent entry missing\.\ne\n/iu);
+		assert.match(outcome(gap), /parent entry missing\.\n\.\.\. \(click to expand\)/iu);
 		assert.doesNotMatch(outcome(gap), /Use a known ID/u);
-		assert.match(screen(renderSearchResult(emptyResult(gap), expanded, theme, { isError: false })), /Use a known ID/u);
+		assert.match(
+			screen(renderSearchResult(emptyResult(gap), expanded, theme, { isError: false })),
+			/\ne\n[\s\S]*Use a known ID/u,
+		);
 		assert.match(outcome('{"status":"cycle","next":null}'), /Parent cycle/u);
 		assert.doesNotMatch(outcome('{"status":"cycle","next":null}'), /continuation|to expand/u);
 		assert.match(
@@ -177,8 +184,15 @@ describe("history_read cards", () => {
 				argsComplete: true,
 			}),
 		);
-		assert.match(shown, /history_read entry-9/);
-		assert.match(shown, /\/message\/content\/0\/text · offset 12/);
+		assert.equal(shown, "history_read entry-9 /message/content/0/text");
+		assert.match(
+			screen(
+				renderReadCall({ entryId: "entry-9", pointer: "/message/content/0/text", offset: 12 }, theme, {
+					expanded: true,
+				}),
+			),
+			/offset 12/u,
+		);
 		assert.equal(screen(renderReadCall({}, theme, { argsComplete: true })), "history_read");
 	});
 
@@ -190,12 +204,13 @@ describe("history_read cards", () => {
 		const view = renderReadResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false });
 		const shown = screen(view);
 		assert.match(shown, /Read the field: \d+ of \d+ code units\./);
-		assert.match(shown, /the exact stored sentence/);
+		assert.doesNotMatch(shown, /the exact stored sentence/);
 		assert.doesNotMatch(shown, new RegExp(id));
-		assert.equal(rows(view).length, 3);
+		assert.equal(rows(view).length, 2);
 		const expanded = screen(
 			renderReadResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }),
 		);
+		assert.match(expanded, /the exact stored sentence/);
 		assert.match(expanded, /Result details:/);
 		assert.match(expanded, /"totalCodeUnits"/);
 	});
@@ -223,7 +238,7 @@ describe("history_read cards", () => {
 		assert.match(shown, /Image payloads are not exposed/);
 		assert.match(shown, /\.\.\. \(click to expand\)/);
 		assert.doesNotMatch(shown, /more lines/);
-		assert.equal(rows(view).length, 3);
+		assert.equal(rows(view).length, 2);
 	});
 
 	it("reports a bounded string page with continuation", () => {
@@ -331,11 +346,18 @@ describe("history_search in Pi's tool card", () => {
 			isError: false,
 		});
 		const shown = screen(card);
-		assert.match(shown, /history_search "needle"\n\s+from 42/u);
-		assert.match(shown, /42 · pi.user/u);
+		assert.deepEqual(
+			rows(card)
+				.map((line) => line.trim())
+				.slice(0, 2),
+			['history_search "needle"', "1 match; continuation available; match limit; 1 entry visited."],
+		);
+		assert.doesNotMatch(shown, /from 42|42 · pi.user/u);
 		assert.equal(shown.match(/to expand/gu)?.length, 1);
 		assert.doesNotMatch(shown, /#42|more lines/u);
 		card.setExpanded(true);
+		assert.match(screen(card), /from 42/u);
+		assert.match(screen(card), /42 · pi.user/u);
 		assert.match(screen(card), /Continue with history_search:[\s\S]*"maxMatches": 1,[\s\S]*"fromId": 41/u);
 		assert.doesNotMatch(screen(card), /to expand/u);
 	});
@@ -399,17 +421,16 @@ describe("history_read in Pi's tool card", () => {
 		card.updateResult(result);
 		const width = 170;
 		const collapsed = rows(card, width);
-		assert.match(collapsed[0], /history_read 42/u);
-		assert.equal(collapsed[1]?.trim(), args.pointer);
-		assert.equal(collapsed[2]?.trim(), "Read the field.");
-		assert.equal(collapsed[7]?.trim(), "(line 5)");
-		assert.equal(collapsed[8]?.trim(), "... (2 more lines, click to expand)");
-		assert.doesNotMatch(collapsed.join("\n"), /TEXT SHOULD NOT WIN|line [67]|maxBytes/u);
+		assert.deepEqual(
+			collapsed.map((line) => line.trim()),
+			[`history_read 42 ${args.pointer}`, "Read the field.", "... (click to expand)"],
+		);
+		assert.doesNotMatch(collapsed.join("\n"), /TEXT SHOULD NOT WIN|line \d|maxBytes/u);
 		assert.deepEqual([...roles].sort(), ["accent", "muted", "toolOutput", "toolTitle"]);
 
 		const narrow = card.render(38);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 38));
-		assert.doesNotMatch(rows(card, 38).join("\n"), /\(line 2\)/u, "one wide logical line fills the visual preview");
+		assert.doesNotMatch(rows(card, 38).join("\n"), /一|\(line 2\)/u);
 		const clickRow = card.render(width).findIndex((line) => line.includes("click to expand"));
 		assert.ok(clickRow > 0);
 		assert.equal(
@@ -436,7 +457,7 @@ describe("history_read in Pi's tool card", () => {
 
 		bindings(["ctrl+shift+p"]);
 		card.setExpanded(false);
-		assert.equal(rows(card, width).at(-1)?.trim(), "... (2 more lines, ctrl+shift+p to expand)");
+		assert.equal(rows(card, width).at(-1)?.trim(), "... (ctrl+shift+p to expand)");
 		assert.equal(screen(card, width).match(/to expand/gu)?.length, 1);
 		roles.clear();
 		card.updateResult({
@@ -487,27 +508,25 @@ describe("history_read in Pi's tool card", () => {
 		assert.deepEqual(JSON.parse(cursor), { maxBytes: 4, ...next });
 	});
 
-	it("adds no hint for a short result and counts visually hidden descriptor lines", () => {
+	it("reveals short content and descriptors on demand but needs no hint for an outcome alone", () => {
 		const options = { expanded: false, isPartial: false };
 		const context = { isError: false, args: { entryId: 42 } };
-		const noDetails = renderReadResult(
-			{ ...emptyResult(""), details: { status: "complete", text: "Short." } },
-			options,
-			theme,
-			context,
-		);
-		assert.deepEqual(rows(noDetails), ["Read the field.", "Short."]);
+		const short = { ...emptyResult(""), details: { status: "complete", text: "Short." } };
+		assert.deepEqual(rows(renderReadResult(short, options, theme, context)), [
+			"Read the field.",
+			"... (click to expand)",
+		]);
+		assert.match(screen(renderReadResult(short, { ...options, expanded: true }, theme, context)), /Short\./u);
+		const noDetails = { ...emptyResult(""), details: { status: "complete" } };
+		assert.deepEqual(rows(renderReadResult(noDetails, options, theme, context)), ["Read the field."]);
 		const descriptors = Array.from({ length: 7 }, (_, index) => ({
 			pointer: `/field${index}`,
 			kind: "scalar",
 			value: index,
 		}));
 		const manifest = { ...emptyResult(""), details: { status: "complete", items: descriptors } };
-		assert.match(
-			screen(renderReadResult(manifest, options, theme, context)),
-			/\.\.\. \(2 more lines, click to expand\)$/u,
-		);
-		assert.doesNotMatch(screen(renderReadResult(manifest, options, theme, context)), /\/field5/u);
+		assert.match(screen(renderReadResult(manifest, options, theme, context)), /\.\.\. \(click to expand\)$/u);
+		assert.doesNotMatch(screen(renderReadResult(manifest, options, theme, context)), /\/field[0-6]/u);
 		assert.match(
 			screen(renderReadResult(manifest, { ...options, expanded: true }, theme, context)),
 			/\/field6 · scalar · 6/u,
@@ -530,7 +549,7 @@ describe("history_read in Pi's tool card", () => {
 			details: { status: "complete", text: 17 },
 		};
 		assert.match(
-			screen(renderReadResult(sameSlice, { expanded: false, isPartial: false }, theme, context)),
+			screen(renderReadResult(sameSlice, { expanded: true, isPartial: false }, theme, context)),
 			/Retained JSON evidence/u,
 		);
 	});
@@ -554,7 +573,7 @@ describe("expanded history cards", () => {
 		const result = emptyResult(JSON.stringify(value));
 		const view = screen(renderSearchResult(result, { expanded: false, isPartial: false }, theme, { isError: false }));
 		assert.doesNotMatch(view, /retained tail/u);
-		assert.match(view, /\.\.\. \(\d+ more lines, click to expand\)/u);
+		assert.match(view, /\.\.\. \(click to expand\)/u);
 		const open = screen(
 			renderSearchResult(result, { expanded: true, isPartial: false }, theme, { isError: false }),
 			400,

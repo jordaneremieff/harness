@@ -1,14 +1,7 @@
-import {
-	type AgentToolResult,
-	type KeybindingHints,
-	type Theme,
-	type ToolRenderResultOptions,
-	truncateToVisualLines,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const DISPLAY_LIMIT = 32_000;
-const PREVIEW_LINES = 5;
 
 type RecordValue = Record<string, unknown>;
 type Hints = Partial<Pick<KeybindingHints, "keyText" | "keyHint">>;
@@ -124,13 +117,18 @@ function parts(values: string[]): string {
 	return values.filter(Boolean).join(" · ");
 }
 
-function hintLine(theme: Theme, context: Hints, width: number, skipped = 0): string {
+function clipLine(text: string, width: number): string {
+	return stripTerminalSequences(truncateToWidth(text, width, "…"));
+}
+
+function hintLine(theme: Theme, context: Hints, width: number): string {
 	const key = context.keyText?.("app.tools.expand");
+	const plain = `... (${key ? `${key} to expand` : "click to expand"})`;
+	if (visibleWidth(plain) > width) return theme.fg("muted", clipLine(plain, width));
 	const action = key
 		? (context.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
 		: theme.fg("muted", "click to expand");
-	const lead = skipped ? `... (${countNoun(skipped, "more line", "more lines")}, ` : "... (";
-	return truncateToWidth(theme.fg("muted", lead) + action + theme.fg("muted", ")"), width, "…");
+	return theme.fg("muted", "... (") + action + theme.fg("muted", ")");
 }
 
 function limitRows(theme: Theme, width: number, limit: string): string[] {
@@ -146,14 +144,13 @@ interface Request {
 
 function requestHasMore({ name, subject, facts, extra }: Request, width: number): boolean {
 	return (
-		Object.keys(extra).length > 0 ||
-		(subject !== "" && name.length + 1 + visibleWidth(subject) > width) ||
-		visibleWidth(facts) > width
+		Object.keys(extra).length > 0 || (subject !== "" && name.length + 1 + visibleWidth(subject) > width) || facts !== ""
 	);
 }
 
 function renderCall(request: Request, theme: Theme, context: CallContext): Component {
 	const { name, subject, facts, extra } = request;
+	if (context.state) context.state.resultArrived = false;
 	const title = theme.fg("toolTitle", theme.bold(name));
 	if (context.expanded) {
 		const heading = title + (subject ? ` ${theme.fg("accent", subject)}` : "");
@@ -176,9 +173,8 @@ function renderCall(request: Request, theme: Theme, context: CallContext): Compo
 			context.keyText?.("app.tools.expand");
 		return [
 			width < name.length
-				? theme.fg("toolTitle", theme.bold(truncateToWidth(name, width, "…")))
-				: title + (subject && room > 0 ? ` ${theme.fg("accent", truncateToWidth(subject, room, "…"))}` : ""),
-			...(facts ? [theme.fg("muted", truncateToWidth(facts, width, "…"))] : []),
+				? theme.fg("toolTitle", theme.bold(clipLine(name, width)))
+				: title + (subject && room > 0 ? ` ${theme.fg("accent", clipLine(subject, room))}` : ""),
 			...(hint ? [hintLine(theme, context, width)] : []),
 		];
 	});
@@ -188,11 +184,8 @@ function readRequest(input: unknown): Request {
 	const { entryId: id, pointer, offset, ...extra } = asRecord(input) ?? {};
 	return {
 		name: "history_read",
-		subject: entryId(id),
-		facts: parts([
-			typeof pointer === "string" ? exactLine(pointer) : "",
-			typeof offset === "number" && offset > 0 ? `offset ${offset}` : "",
-		]),
+		subject: [entryId(id), typeof pointer === "string" ? exactLine(pointer) : ""].filter(Boolean).join(" "),
+		facts: typeof offset === "number" && offset > 0 ? `offset ${offset}` : "",
 		extra,
 	};
 }
@@ -251,7 +244,7 @@ interface ResultView {
 	details: string;
 	literalOutcome?: string;
 	continuation?: string;
-	limit?: string;
+	coverage?: string;
 }
 
 function textContent(result: AgentToolResult<unknown>): string {
@@ -309,35 +302,30 @@ function renderResult(
 	const shownOutcome = clip(outcome, DISPLAY_LIMIT - shownContinuation.length);
 	const shownBody = clip(body, DISPLAY_LIMIT - shownContinuation.length - shownOutcome.length);
 	const shownDetails = clip(details, DISPLAY_LIMIT - shownContinuation.length - shownOutcome.length - shownBody.length);
-	const limit =
-		displayLimit(
-			shownOutcome + shownBody + shownContinuation + shownDetails,
-			outcome + body + continuation + details,
-		) ||
-		view.limit ||
-		"";
+	const limit = displayLimit(
+		shownOutcome + shownBody + shownContinuation + shownDetails,
+		outcome + body + continuation + details,
+	);
 	if (options.expanded) {
 		const expanded = [shownOutcome, shownBody, shownContinuation, shownDetails].filter(Boolean).join("\n");
 		const text = new Text(theme.fg(color, expanded), 0, 0);
-		return card(context.lastComponent, (width) => ["", ...text.render(width), ...limitRows(theme, width, limit)]);
+		return card(context.lastComponent, (width) => [
+			"",
+			...text.render(width),
+			...limitRows(theme, width, view.coverage ? `[${view.coverage}]` : ""),
+			...limitRows(theme, width, limit),
+		]);
 	}
-	const collapsedOutcome = oneLine(shownOutcome);
+	const collapsedOutcome = oneLine(view.coverage ? `${outcome} ${view.coverage}.` : outcome);
 	return card(context.lastComponent, (width) => {
-		const preview = shownBody
-			? truncateToVisualLines(theme.fg(color, shownBody), PREVIEW_LINES, width, 0, "start")
-			: { visualLines: [], skippedCount: 0 };
 		const hidden =
-			preview.skippedCount > 0 ||
-			shownContinuation !== "" ||
-			shownDetails.trim() !== "" ||
+			Boolean(body.trim() || continuation || details.trim() || limit) ||
 			visibleWidth(collapsedOutcome) > width ||
 			requestHasMore(request, width);
 		return [
 			"",
-			theme.fg(color, truncateToWidth(collapsedOutcome, width, "…")),
-			...preview.visualLines,
-			...limitRows(theme, width, limit),
-			...(hidden ? [hintLine(theme, context, width, preview.skippedCount)] : []),
+			theme.fg(color, clipLine(collapsedOutcome, width)),
+			...(hidden ? [hintLine(theme, context, width)] : []),
 		];
 	});
 }
@@ -408,6 +396,10 @@ function readItem(item: unknown) {
 	};
 }
 
+function readExplanation(status: unknown, reason: unknown): string {
+	return status === "withheld" && typeof reason === "string" ? oneLine(reason) : "";
+}
+
 function readView(value: RecordValue, args: unknown): ResultView {
 	const { status, text, items, action, reason, value: scalar, next, ...metadata } = value;
 	const cursor = asRecord(next);
@@ -419,13 +411,14 @@ function readView(value: RecordValue, args: unknown): ResultView {
 		Object.keys(details).length ? [{ item: index + 1, ...details }] : [],
 	);
 	const guide = typeof action === "string" ? action : "";
+	const explanation = readExplanation(status, reason);
 	return {
-		outcome: `${READ_STATUS[String(status)]}${count ? `: ${count}` : ""}${continued}.`,
+		outcome: `${READ_STATUS[String(status)]}${count ? `: ${count}` : ""}${continued}.${explanation ? ` ${explanation}` : ""}`,
 		body: [
 			typeof text === "string" ? text : "",
 			...entries.map(({ body }) => body),
 			scalar === undefined ? "" : json(scalar),
-			typeof reason === "string" ? reason : "",
+			typeof reason === "string" && !explanation ? reason : "",
 		]
 			.filter(Boolean)
 			.join("\n"),
@@ -435,7 +428,7 @@ function readView(value: RecordValue, args: unknown): ResultView {
 			...(itemDetails.length ? { items: itemDetails } : {}),
 			...(guide ? { action: guide } : {}),
 		}),
-		limit: asRecord(value.entry)?.truncated === true ? "[Stored source was truncated]" : undefined,
+		coverage: asRecord(value.entry)?.truncated === true ? "Stored source was truncated" : undefined,
 	};
 }
 
@@ -492,7 +485,7 @@ function searchOutcome(value: RecordValue, args: unknown): string {
 				: countNoun(count, "match", "matches");
 	const scope = visited === undefined ? "" : countNoun(visited, "entry visited", "entries visited");
 	const stop = SEARCH_STATUS[status];
-	const fields = [returned, scope, stop, asRecord(value.next) ? "continuation available" : ""]
+	const fields = [returned, asRecord(value.next) ? "continuation available" : "", stop, scope]
 		.filter(Boolean)
 		.join("; ");
 	return `${fields.charAt(0).toUpperCase()}${fields.slice(1)}.`;
@@ -541,7 +534,7 @@ function skippedValues(skipped: unknown): string {
 	const counts = asRecord(skipped);
 	if (!counts) return "";
 	const count = (numberField(counts, "depth") ?? 0) + (numberField(counts, "pointerLength") ?? 0);
-	return count > 0 ? `[${countNoun(count, "argument value skipped", "argument values skipped")}]` : "";
+	return count > 0 ? countNoun(count, "argument value skipped", "argument values skipped") : "";
 }
 
 function searchView(value: RecordValue, args: unknown): ResultView {
@@ -565,7 +558,7 @@ function searchView(value: RecordValue, args: unknown): ResultView {
 			"maxMatches",
 			"maxOutputBytes",
 		]),
-		limit: skippedValues(value.skipped),
+		coverage: skippedValues(value.skipped),
 		details: resultDetails({
 			...metadata,
 			...(gapAction ? { action: gapAction } : {}),

@@ -86,11 +86,8 @@ function settle(component: ToolExecutionComponent, result: Awaited<ReturnType<ty
 test("Pi draws a single hint after the call, then after the result, and none when expanded", async () => {
 	const component = card();
 	const call = screen(component);
-	assert.deepEqual(call.filter(Boolean), [
-		"config_edit pi:/hideThinkingBlock",
-		"save · 1 change · global",
-		"... (ctrl+o to expand)",
-	]);
+	assert.deepEqual(call.filter(Boolean), ["config_edit save pi:/hideThinkingBlock", "... (ctrl+o to expand)"]);
+
 	component.updateResult({ content: [], isError: false }, true);
 	const partial = screen(component);
 	assert.deepEqual(hints(partial), ["... (ctrl+o to expand)"]);
@@ -101,21 +98,17 @@ test("Pi draws a single hint after the call, then after the result, and none whe
 	settle(component, result);
 	const settled = screen(component);
 	assert.deepEqual(hints(settled), ["... (ctrl+o to expand)"]);
-	assert.equal(settled[settled.indexOf("Saved the settings.") - 1], "");
-	assert.ok(
-		settled.includes(
-			"pi:/hideThinkingBlock: This session still uses its loaded value. /reload loads the saved settings.",
-		),
-	);
-	assert.equal(
-		settled.some((row) => row.includes('"outcome"')),
-		false,
-	);
-	assert.equal(settled.filter(Boolean).at(-1), hints(settled)[0]);
+	assert.equal(settled[settled.indexOf("Saved the settings. Reload required.") - 1], "");
+	assert.deepEqual(settled.filter(Boolean), [
+		"config_edit save pi:/hideThinkingBlock",
+		"Saved the settings. Reload required.",
+		"... (ctrl+o to expand)",
+	]);
 
 	component.setExpanded(true);
 	const expanded = screen(component);
 	assert.deepEqual(hints(expanded), []);
+	assert.ok(expanded.includes("1 change · global"));
 	assert.ok(expanded.includes("mode: commit"));
 	assert.ok(expanded.includes("global: settings.json (committed)"));
 	assert.ok(expanded.some((row) => row.includes("[withheld]")));
@@ -133,7 +126,21 @@ test("preview, partial save, and racing readback do not claim a live effect", as
 			"Preview passed validation; no settings were saved.",
 			/\/reload/,
 		],
-		[{ ...receipt, outcome: "partial" }, "Saved only some of the changes.", /Saved the settings\./],
+		[{ ...receipt, outcome: "partial" }, "Saved only some of the changes. Reload required.", /Saved the settings\./],
+		[
+			{
+				...receipt,
+				documents: [
+					{
+						...receipt.documents[0],
+						changes: [{ ...receipt.documents[0].changes[0], apply: { state: "applied", text: "Loaded." } }],
+					},
+				],
+			},
+			"Saved the settings. Loaded value matches.",
+			/Reload required|Takes effect/,
+		],
+		[{ ...receipt, outcome: "unchanged", documents: [] }, "No changes were saved.", /Reload required/],
 		[
 			{
 				...receipt,
@@ -141,8 +148,8 @@ test("preview, partial save, and racing readback do not claim a live effect", as
 					{ ...receipt.documents[0], error: "Another writer changed the file right after this write; read it again." },
 				],
 			},
-			"Another writer changed the file right after this write; read it again.",
-			/\/reload/,
+			"Saved the settings. Saved value not verified.",
+			/\/reload|Another writer/,
 		],
 	] satisfies [EditResult, string, RegExp][]) {
 		const component = card({ ...args, mode: value.mode });
@@ -153,14 +160,18 @@ test("preview, partial save, and racing readback do not claim a live effect", as
 	}
 });
 
-test("preview caps a single long body line at five visual rows and reports the rest", async () => {
+test("one hint reveals a long body without adding rows to the collapsed card", async () => {
 	const component = card({ ...args, changes: [{ ...args.changes[0], id: `pi:/${"long".repeat(55)}` }] });
 	settle(component, await executeEdit({ ...receipt, summary: `\x1b[31m${"x".repeat(700)}\x1b[0m` }));
 	const narrow = screen(component, 48).filter(Boolean);
-	assert.match(narrow[0], /^config_edit pi:\/long.*…$/);
-	assert.equal(narrow.filter((row) => /^x+$/.test(row)).length, 5);
-	assert.equal(narrow.at(-1), "... (14 more lines, ctrl+o to expand)");
-	assert.doesNotMatch(narrow.join("\n"), /\[31m/);
+	assert.match(narrow[0], /^config_edit save pi:\/long.*…$/);
+	assert.equal(narrow.length, 3);
+	assert.equal(narrow.at(-1), "... (ctrl+o to expand)");
+	assert.doesNotMatch(narrow.join("\n"), /\[31m|x{10}/);
+	component.setExpanded(true);
+	const open = screen(component, 48);
+	assert.equal(open.filter((row) => /^x+$/.test(row)).join("").length, 700);
+	assert.doesNotMatch(open.join("\n"), /\[31m/);
 });
 
 test("a missing key omits the pre-result hint and offers a click after settlement", async (t) => {
@@ -209,9 +220,11 @@ test("an error preserves its cause; a lost edit receipt preserves the known outc
 	]);
 	settle(component, oversized);
 	const oversizeRows = screen(component);
-	assert.ok(oversizeRows.includes("The edit receipt exceeds 98304 bytes. Read the settings before another edit."));
-	assert.ok(oversizeRows.includes("Saved the settings."));
-	assert.ok(oversizeRows.includes("[Result exceeded the output limit; complete details were not retained.]"));
+	assert.ok(oversizeRows.includes("Saved the settings. Receipt exceeded the output limit."));
+	assert.deepEqual(hints(oversizeRows), ["... (ctrl+o to expand)"]);
+	component.setExpanded(true);
+	assert.ok(screen(component).includes("The edit receipt exceeds 98304 bytes. Read the settings before another edit."));
+	assert.ok(screen(component).includes("[Result exceeded the output limit; complete details were not retained.]"));
 });
 
 test("the edit card withholds bare Pi diagnostics that include supplied values", () => {
@@ -261,19 +274,20 @@ test("retained edit envelopes recover the same outcome without echoing withheld 
 	const component = card(input);
 	receiptOnly(component, receipt);
 	const collapsed = screen(component);
-	assert.ok(collapsed.includes("Saved the settings."));
-	assert.ok(collapsed.some((row) => row.includes("/reload")));
+	assert.ok(collapsed.includes("Saved the settings. Reload required."));
+	assert.doesNotMatch(collapsed.join("\n"), /\/reload/);
 	component.setExpanded(true);
+	assert.match(screen(component).join("\n"), /\/reload/);
 	assert.doesNotMatch(screen(component).join("\n"), new RegExp(sentinel));
 
 	receiptOnly(component, { mode: "commit", outcome: "committed", documents: "not a receipt" });
 	assert.ok(screen(component).includes("Config returned an unrecognised receipt."));
 });
 
-test("config_find states coverage, keeps at most five match rows and gives the exact continuation", () => {
+test("config_find states coverage and gives the exact continuation when expanded", () => {
 	const input = { query: "thinking", group: "pi", limit: 8 };
 	const component = card(input, "config_find");
-	assert.deepEqual(hints(screen(component)), []);
+	assert.deepEqual(screen(component).filter(Boolean), ["config_find thinking", "... (ctrl+o to expand)"]);
 	receiptOnly(component, {
 		total: 9,
 		offset: 0,
@@ -282,11 +296,14 @@ test("config_find states coverage, keeps at most five match rows and gives the e
 		rows: Array.from({ length: 8 }, (_, i) => ({ id: `pi:/setting${i}`, label: `Setting ${i}`, source: "global" })),
 	});
 	const collapsed = screen(component);
-	assert.ok(collapsed.includes("Returned matches 1–8 of 9. More matches are available."));
-	assert.ok(collapsed.includes("[Discovery coverage is partial.]"));
-	assert.equal(collapsed.filter((row) => row.startsWith("pi:/setting")).length, 5);
-	assert.deepEqual(hints(collapsed), ["... (3 more lines, ctrl+o to expand)"]);
+	assert.deepEqual(collapsed.filter(Boolean), [
+		"config_find thinking",
+		"Returned matches 1–8 of 9. More matches are available. Coverage is partial.",
+		"... (ctrl+o to expand)",
+	]);
 	component.setExpanded(true);
+	assert.equal(screen(component).filter((row) => row.startsWith("pi:/setting")).length, 8);
+	assert.ok(screen(component).includes("[Discovery coverage is partial.]"));
 	assert.ok(
 		screen(component).includes('Next call: config_find {"query":"thinking","group":"pi","limit":8,"offset":8}'),
 	);
@@ -316,11 +333,12 @@ test("config_get shows secret set-state, reports absent IDs, and distinguishes s
 		missing: ["pi:/missing"],
 	});
 	const collapsed = screen(component);
-	assert.ok(collapsed.includes("Read 2 settings. 1 requested ID not found."));
-	assert.ok(collapsed.includes("harness:/demo/secret: set in the environment; value withheld."));
-	assert.ok(collapsed.includes("pi:/theme: resolved from global; loaded value differs."));
+	assert.ok(collapsed.includes("Read 2 settings. 1 requested ID not found. 1 loaded value differs."));
+	assert.doesNotMatch(collapsed.join("\n"), /set in the environment|resolved from global/);
 	component.setExpanded(true);
 	const expanded = screen(component);
+	assert.ok(expanded.includes("harness:/demo/secret: set in the environment; value withheld."));
+	assert.ok(expanded.includes("pi:/theme: resolved from global; loaded value differs."));
 	assert.ok(expanded.includes('global: "light"'));
 	assert.ok(expanded.includes('loaded: "dark"'));
 	assert.doesNotMatch(expanded.join("\n"), new RegExp(secret));
@@ -343,9 +361,9 @@ test("config_get identifies an individually omitted value without reporting a fa
 		missing: [],
 	});
 	const collapsed = screen(component);
-	assert.ok(collapsed.includes("Read 1 setting."));
-	assert.ok(collapsed.includes("[Values over 32768 bytes were not retained. Open them in /config.]"));
+	assert.ok(collapsed.includes("Read 1 setting. Large values omitted."));
 	component.setExpanded(true);
+	assert.ok(screen(component).includes("[Values over 32768 bytes were not retained. Open them in /config.]"));
 	assert.ok(screen(component).includes("resolved: [Value not retained]"));
 });
 
@@ -368,8 +386,13 @@ test("config_tools separates the session selection, configured defaults, and ref
 			rejected: [{ name: "absent", reason: "Tool not found." }],
 		},
 	});
+	assert.deepEqual(screen(component).filter(Boolean), [
+		"config_tools activate grep, absent",
+		"Pi activated 1 tool and deactivated 2 tools; rejected 1 tool name.",
+		"... (ctrl+o to expand)",
+	]);
+	component.setExpanded(true);
 	const rows = screen(component);
-	assert.ok(rows.includes("Pi activated 1 tool and deactivated 2 tools; rejected 1 tool name."));
 	assert.ok(rows.includes("Pi activated grep."));
 	assert.ok(rows.includes("Pi deactivated bash, ls."));
 	assert.ok(rows.includes("Pi rejected absent. Tool not found."));
@@ -379,17 +402,26 @@ test("config_tools separates the session selection, configured defaults, and ref
 		rows.join("\n"),
 		/(?:Activated|Deactivated|Selected in this session|Configured for new sessions):/u,
 	);
+	component.setExpanded(false);
 	receiptOnly(component, { ...ordinary, change: { applied: false, activated: ["grep"] } });
 	assert.ok(screen(component).includes("Pi did not confirm the full session selection."));
+	assert.doesNotMatch(screen(component).join("\n"), /Pi activated grep/);
+	component.setExpanded(true);
 	assert.ok(screen(component).includes("[Some requested effects were not confirmed.]"));
+	component.setExpanded(false);
+	receiptOnly(component, { ...ordinary, change: { applied: true } });
+	assert.ok(screen(component).includes("The session tool selection already matched the request."));
 	const empty = { ...ordinary, active: [], tools: [] };
 	receiptOnly(component, { ...empty, defaults: { resolved: [] } });
 	assert.ok(screen(component).includes("This session selects no tools."));
+	component.setExpanded(true);
 	assert.ok(screen(component).includes("No tools are configured for new sessions."));
+	component.setExpanded(false);
 	receiptOnly(component, { ...empty, session: false });
 	const unavailable = screen(component);
 	assert.ok(unavailable.includes("This host exposes no current-session tool controls."));
-	assert.ok(unavailable.includes("New sessions default to read."));
-	assert.ok(!unavailable.includes("This session selects no tools."));
-	assert.deepEqual(hints(unavailable), []);
+	assert.doesNotMatch(unavailable.join("\n"), /This session selects no tools|New sessions default/);
+	assert.deepEqual(hints(unavailable), ["... (ctrl+o to expand)"]);
+	component.setExpanded(true);
+	assert.ok(screen(component).includes("New sessions default to read."));
 });

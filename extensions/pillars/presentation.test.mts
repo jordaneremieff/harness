@@ -58,11 +58,11 @@ test("operator pages preserve evidence meaning, continuation, and narrow termina
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
 	}
 	const card = component("pillars_usage", { view: "revisions", windowDays: 7 });
-	assert.match(render(card), /pillars_usage revisions +\n +7 days/);
+	assert.match(render(card), /pillars_usage revisions \(7 days\)/);
 	card.updateResult({ content: textBlock(JSON.stringify(page)), details: page, isError: false });
 	const collapsed = render(card);
-	assert.match(collapsed, /Read page 1 of .* of the revisions.*continuation available\./);
-	assert.match(collapsed, /Pillars access evidence/);
+	assert.match(collapsed, /25 retained reads from .* \(page 1 of \d+\)\./);
+	assert.doesNotMatch(collapsed, /Pillars access evidence/);
 	assert.doesNotMatch(collapsed, /Continue:|Truncated/);
 	card.setExpanded(true);
 	const cursor = page.pagination.nextCursor;
@@ -120,7 +120,7 @@ const sourcePage: AccessPage = {
 	nextOffset: 48,
 };
 
-test("the host tool shell shows visual previews, hands off one hint and keeps exact continuation arguments", (t) => {
+test("the host tool shell hides visual previews, hands off one hint and keeps exact continuation arguments", (t) => {
 	initTheme("dark", false);
 	const prior = getKeybindings();
 	t.after(() => setKeybindings(prior));
@@ -128,13 +128,13 @@ test("the host tool shell shows visual previews, hands off one hint and keeps ex
 	assert.equal(keyText("app.tools.expand"), "ctrl+p");
 	const args = { resource: "governance", offset: 16, draft: "sensitive draft prose" };
 	const card = component("pillars", args);
-	assert.match(render(card), /pillars governance +\n +offset 16 · draft assessment/);
+	assert.match(render(card), /pillars assess draft \(offset 16\)/);
 	assert.match(render(card), /\.\.\. \(ctrl\+p to expand\)/);
 	card.updateResult({ content: textBlock(JSON.stringify(sourcePage)), details: sourcePage, isError: false });
 	const collapsed = render(card);
-	assert.match(collapsed, /Read 32 of 64 bytes from governance; continuation available\./);
-	assert.match(collapsed, /one +\n +two +\n +three +\n +four +\n +five/);
-	assert.match(collapsed, /\.\.\. \(2 more lines, ctrl\+p to expand\)/);
+	assert.match(collapsed, /Read 32 of 64 bytes from governance; more content follows\./);
+	assert.doesNotMatch(collapsed, /\bone\b|\btwo\b|\bthree\b|\bfour\b|\bfive\b/);
+	assert.match(collapsed, /\.\.\. \(7 more lines, ctrl\+p to expand\)/);
 	assert.equal(collapsed.match(/to expand/g)?.length, 1);
 	assert.doesNotMatch(collapsed, /six|seven|Continue:|sensitive draft prose/);
 	card.setExpanded(true);
@@ -149,7 +149,7 @@ test("the host tool shell shows visual previews, hands off one hint and keeps ex
 	assert.doesNotMatch(expanded, /to expand|sensitive draft prose/);
 	binding([]);
 	card.setExpanded(false);
-	assert.match(render(card), /2 more lines, click to expand/);
+	assert.match(render(card), /7 more lines, click to expand/);
 	assert.doesNotMatch(render(component("pillars", args)), /expand/);
 });
 
@@ -192,7 +192,7 @@ test("the source preview counts wrapped visual rows rather than logical lines", 
 	card.updateResult({ content: textBlock(JSON.stringify(page)), details: page, isError: false });
 	const width = 48;
 	const collapsed = render(card, width);
-	assert.equal(collapsed.split("\n").filter((row) => /segment/.test(row)).length, 5);
+	assert.equal(collapsed.split("\n").filter((row) => /segment/.test(row)).length, 0);
 	assert.doesNotMatch(collapsed, /END/u);
 	assert.match(collapsed, /\d+ more lines/u);
 	card.setExpanded(true);
@@ -235,7 +235,7 @@ test("call disclosure adds only evidence that the collapsed header withheld", (t
 	const mixed = component("pillars", { draft: "synthetic", offset: -9007199254740991 });
 	assert.doesNotMatch(render(mixed, width), /draft assessment/);
 	mixed.setExpanded(true);
-	assert.match(render(mixed, width), /draft\s+assessment/);
+	assert.match(render(mixed, width), /assess draft/);
 });
 
 test("fallback errors show one safe outcome row and keep the full diagnostic for expansion", (t) => {

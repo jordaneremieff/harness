@@ -28,7 +28,6 @@ type RenderContext = Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
 type NativeBashContext = Parameters<NonNullable<ReturnType<typeof createBashToolDefinition>["renderCall"]>>[2];
 type Options = { expanded: boolean; isPartial?: boolean };
 type Hidden = number | "details";
-const BODY_ROWS = 5;
 
 function record(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -90,18 +89,22 @@ function jobOutcome(job: JobView, admitted: boolean): string {
 	const id = lineOf(job.id);
 	if (admitted) return id ? `Accepted job ${id}.` : "Accepted a background job.";
 	switch (jobState(job)) {
-		case "running":
-			return "Job recorded as running at observation.";
+		case "running": {
+			const elapsed = jobDuration(job);
+			return elapsed ? `Job still running; ${elapsed}.` : "Job still running at observation.";
+		}
 		case "cancellation requested":
 			return "Cancellation requested.";
 		case "cancelled":
 			return "Cancelled";
 		case "succeeded":
 			return "Job succeeded.";
-		case "failed":
-			return "Job failed.";
+		case "failed": {
+			const reason = knownNumber(job.exitCode) ? `exit ${job.exitCode}` : lineOf(job.error);
+			return reason ? `Job failed (${reason}).` : "Job failed.";
+		}
 		case "timed out":
-			return "Job timed out.";
+			return knownNumber(job.timeoutSeconds) ? `Job timed out after ${job.timeoutSeconds}s.` : "Job timed out.";
 		case "host lost":
 			return "Job lost its host.";
 		default:
@@ -147,8 +150,10 @@ function expansionHint(theme: Theme, context: RenderContext, width: number, hidd
 	const action = key
 		? (context.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
 		: theme.fg("muted", "click to expand");
+	const close = theme.fg("muted", ")");
 	const prefix = hidden === "details" ? "" : `${count(hidden, "more line", "more lines")}, `;
-	return [clipRow(theme.fg("muted", `... (${prefix}`) + action + theme.fg("muted", ")"), width)];
+	const hint = theme.fg("muted", `... (${prefix}`) + action + close;
+	return [clipRow(visibleWidth(hint) <= width ? hint : theme.fg("muted", "... (") + action + close, width)];
 }
 
 function wrapped(text: string, width: number): string[] {
@@ -203,17 +208,19 @@ function callRows(copy: CallCopy, width: number, theme: Theme, expanded: boolean
 	const title = theme.fg("toolTitle", theme.bold(name)) + (subject ? ` ${theme.fg("accent", subject)}` : "");
 	const fact = facts?.length ? theme.fg("muted", facts.join(" · ")) : "";
 	const headings = [title, ...(fact ? [fact] : [])];
-	const rows = expanded
-		? headings.flatMap((line) => wrapped(line, width))
-		: headings.map((line) => clipRow(line, width));
-	const visual = wrapped(body ?? "", width);
-	const shown = expanded ? visual : visual.slice(0, BODY_ROWS);
-	rows.push(...shown.map((line) => theme.fg("toolOutput", line)));
-	if (expanded && cursor) rows.push(...wrapped(cursor, width).map((line) => theme.fg("muted", line)));
-	const hidden =
-		visual.length - shown.length ||
-		(cursor || headings.some((line) => visibleWidth(line) > width) ? "details" : undefined);
-	return { rows, hidden };
+	if (!expanded) {
+		const command = lineOf(body?.split("\n", 1)[0]);
+		const compact = command ? `${title} ${theme.fg("toolOutput", command)}` : title;
+		return {
+			rows: [clipRow(compact, width)],
+			hidden:
+				cursor || fact || (body && body.trim() !== command) || visibleWidth(compact) > width ? "details" : undefined,
+		};
+	}
+	const rows = headings.flatMap((line) => wrapped(line, width));
+	rows.push(...wrapped(body ?? "", width).map((line) => theme.fg("toolOutput", line)));
+	if (cursor) rows.push(...wrapped(cursor, width).map((line) => theme.fg("muted", line)));
+	return { rows };
 }
 
 function renderCall(copy: CallCopy, theme: Theme, context: RenderContext): Component {
@@ -247,9 +254,8 @@ function logPageOutcome(logs: Record<string, unknown>, start: number | undefined
 	const pending = knownNumber(logs.pendingBytes) && logs.pendingBytes > 0 ? logs.pendingBytes : undefined;
 	const coverage =
 		logs.more === true ? "more output is available" : logs.more === false ? "reached the readable end" : undefined;
-	const pendingFact =
-		pending === undefined ? undefined : `${count(pending, "byte", "bytes")} in an incomplete UTF-8 suffix`;
-	return `${[page, coverage, pendingFact].filter(Boolean).join("; ")}.`;
+	const pendingFact = pending === undefined ? undefined : `${count(pending, "byte", "bytes")} of unfinished UTF-8`;
+	return `${[page, logs.gap === true ? "earlier output discarded" : undefined, coverage, pendingFact].filter(Boolean).join("; ")}.`;
 }
 
 function logsCopy(logs: Record<string, unknown>, earliest: number, args: unknown): ResultCopy {
@@ -344,24 +350,22 @@ function resultHidden(
 	theme: Theme,
 	bodyHidden: number,
 ): Hidden | undefined {
-	const callHidden = callRows(call, width, theme, false).hidden;
-	if (typeof callHidden === "number") return callHidden + bodyHidden;
 	return (
 		bodyHidden ||
-		callHidden ||
-		(copy.details?.length || (copy.limit && visibleWidth(copy.limit) > width) ? "details" : undefined)
+		callRows(call, width, theme, false).hidden ||
+		(copy.details?.length || copy.limit || visibleWidth(copy.outcome) > width ? "details" : undefined)
 	);
 }
 
-function resultEvidence(copy: ResultCopy, expanded: boolean, width: number, theme: Theme): string[] {
+function resultEvidence(copy: ResultCopy, width: number, theme: Theme): string[] {
 	const rows: string[] = [];
-	if (expanded && copy.details?.length) {
+	if (copy.details?.length) {
 		const color = copy.color ?? "toolOutput";
 		rows.push("", ...copy.details.flatMap((line) => wrapped(line, width).map((row) => theme.fg(color, row))));
 	}
 	if (copy.limit) {
 		const limit = theme.fg("warning", copy.limit);
-		rows.push(...(expanded ? wrapped(limit, width) : [clipRow(limit, width)]));
+		rows.push(...wrapped(limit, width));
 	}
 	return rows;
 }
@@ -377,17 +381,16 @@ function renderResult(
 	return component((width) => {
 		const expanded = options.expanded;
 		const bodyColor = copy.color ?? "toolOutput";
-		const [outcome = "", ...overflow] = wrapped(copy.outcome, width);
-		const body = [...overflow, ...wrapped(copy.body ?? "", width)];
-		const shown = expanded ? body : body.slice(0, BODY_ROWS);
+		const body = wrapped(copy.body ?? "", width);
+		const outcomeRows = expanded ? wrapped(copy.outcome, width) : [copy.outcome];
 		const rows = [
 			"",
-			theme.fg(copy.color ?? (options.isPartial ? "muted" : "toolOutput"), outcome),
-			...shown.map((row) => theme.fg(bodyColor, row)),
+			...outcomeRows.map((row) => theme.fg(copy.color ?? (options.isPartial ? "muted" : "toolOutput"), row)),
+			...(expanded ? body.map((row) => theme.fg(bodyColor, row)) : []),
 		];
-		rows.push(...resultEvidence(copy, expanded, width, theme));
-		if (!expanded) {
-			const hidden = resultHidden(copy, call, width, theme, body.length - shown.length);
+		if (expanded) rows.push(...resultEvidence(copy, width, theme));
+		else {
+			const hidden = resultHidden(copy, call, width, theme, body.length);
 			if (hidden) rows.push(...expansionHint(theme, context, width, hidden));
 		}
 		return rows.map((row) => clipRow(row, width));
@@ -416,8 +419,72 @@ function nativeRenderers() {
 
 export function renderBashCall(args: unknown, theme: Theme, context: RenderContext): Component {
 	const native = nativeRenderers().renderCall;
-	if (record(args)?.background !== true && native) return native(args as never, theme, context as NativeBashContext);
-	return renderCall(bashCall(args), theme, context);
+	if (record(args)?.background === true || !native) return renderCall(bashCall(args), theme, context);
+	const child = native(args as never, theme, {
+		...context,
+		lastComponent: context.state.foregroundBashCall,
+	} as NativeBashContext);
+	context.state.foregroundBashCall = child;
+	if (context.expanded) return child;
+	return component((width) => {
+		const rows = child.render(width);
+		return rows.length > 1 ? [clipRow(`${(rows[0] ?? "").trimEnd()}…`, width)] : [...rows];
+	});
+}
+
+function foregroundOutcome(text: string, partial: boolean, error: boolean, truncated: boolean): string {
+	if (partial) return "Command running.";
+	const lines = text ? text.split("\n") : [];
+	if (!error) {
+		if (truncated) return "Command finished; output truncated.";
+		return lines.length
+			? `Command finished; ${count(lines.length, "output line", "output lines")}.`
+			: "Command finished without output.";
+	}
+	// Pi appends its command status after captured output, with a blank line between them.
+	const tail = lines.at(-1) ?? "";
+	const status =
+		/^Command (exited with code -?\d+|timed out after \d+ seconds\b.*|aborted|terminated without an exit code)$/u;
+	if (lines.at(-2) === "" && status.test(tail)) return `${tail.replace(/\.$/u, "")}.`;
+	return lines.length === 1 ? tail : "Command failed.";
+}
+
+function foregroundResult(
+	result: AgentToolResult<unknown>,
+	options: { expanded: boolean; isPartial: boolean },
+	theme: Theme,
+	context: RenderContext,
+	native: NonNullable<ReturnType<typeof createBashToolDefinition>["renderResult"]>,
+): Component {
+	const child = native(result as never, { ...options, expanded: true }, theme, {
+		...context,
+		lastComponent: context.state.foregroundBashResult,
+	} as NativeBashContext);
+	context.state.foregroundBashResult = child;
+	if (options.expanded) return child;
+	const text = resultText(result);
+	const details = record(result.details);
+	const outcome = foregroundOutcome(
+		text,
+		options.isPartial,
+		context.isError,
+		record(details?.truncation)?.truncated === true,
+	);
+	const duration =
+		!options.isPartial && knownNumber(context.durationMs) ? ` · Took ${formatDuration(context.durationMs)}` : "";
+	const copy =
+		theme.fg(options.isPartial ? "muted" : context.isError ? "error" : "toolOutput", outcome) +
+		theme.fg("muted", duration);
+	const evidence =
+		Boolean(text && text !== outcome) ||
+		Boolean(details?.truncation || details?.fullOutputPath || details?.fullOutputError);
+	return component((width) => {
+		const rows = ["", clipRow(copy, width)];
+		const call = context.state.foregroundBashCall as Component | undefined;
+		if (evidence || visibleWidth(copy) > width || (call?.render(width).length ?? 0) > 1)
+			rows.push(...expansionHint(theme, context, width, "details"));
+		return rows;
+	});
 }
 
 export function renderBashResult(
@@ -429,7 +496,7 @@ export function renderBashResult(
 	const admitted = Boolean(record(record(result.details)?.job));
 	const native = nativeRenderers().renderResult;
 	if (!admitted && record(context.args)?.background !== true && native)
-		return native(result as never, options, theme, context as NativeBashContext);
+		return foregroundResult(result, options, theme, context, native);
 	const call =
 		record(context.args)?.background === true || !nativeRenderers().renderCall
 			? bashCall(context.args)
@@ -437,8 +504,7 @@ export function renderBashResult(
 	return renderResult(resultCopy(result, context, admitted), call, options, theme, context);
 }
 
-/** Collapsed state notes use the message preview height in the self-drawn shell. */
-export const YIELD_NOTE_LINES = 3;
+const YIELD_NOTE_LINES = 1;
 
 interface YieldFacts {
 	note: string;
@@ -472,11 +538,12 @@ export function yieldSummary(jobs: readonly { state: string }[], omitted: number
 	];
 }
 
-function yieldHeadings(facts: YieldFacts, theme: Theme): string[] {
+function yieldHeadings(facts: YieldFacts, theme: Theme, expanded: boolean): string[] {
 	const error = facts.error !== undefined;
 	const status = error ? "Could not end the turn" : facts.settled ? "Turn ended" : "Ending turn";
 	const title = `${theme.fg("toolTitle", theme.bold("jobs_yield"))} ${theme.fg("accent", status)}`;
 	const secondary = error ? [] : yieldSummary(facts.jobs, facts.omitted);
+	if (!expanded) return [title + (secondary.length ? theme.fg("muted", ` · ${secondary.join(" · ")}`) : "")];
 	if (facts.at !== undefined) secondary.push(yieldClock(facts.at));
 	return [title, ...(secondary.length ? [theme.fg("muted", secondary.join(" · "))] : [])];
 }
@@ -517,12 +584,19 @@ function yieldBody(facts: YieldFacts, expanded: boolean, width: number, theme: T
 	const note = wrapped(facts.note, width);
 	const shown = expanded ? note : note.slice(0, YIELD_NOTE_LINES);
 	const diagnostic = wrapped(facts.error ?? "", width);
-	const errorRows = expanded ? diagnostic : diagnostic.slice(0, BODY_ROWS);
+	const errorRows = expanded ? diagnostic : diagnostic.slice(0, 1);
 	const rows = [
 		...(shown.length ? ["", ...shown.map((row) => theme.fg("toolOutput", row))] : []),
 		...(errorRows.length ? ["", ...errorRows.map((row) => theme.fg("error", row))] : []),
 	];
 	return { rows, noteHidden: note.length - shown.length, errorHidden: diagnostic.length - errorRows.length };
+}
+
+function yieldEvidence(facts: YieldFacts, width: number, theme: Theme): string[] {
+	const rows = facts.settled && facts.error === undefined ? yieldDetails(facts.jobs, width, theme) : [];
+	if (facts.omitted > 0)
+		rows.push(clipRow(theme.fg("warning", `[Excerpt: ${count(facts.omitted, "job", "jobs")} not listed]`), width));
+	return rows;
 }
 
 function yieldCard(facts: YieldFacts, theme: Theme, context: RenderContext): Component {
@@ -533,14 +607,12 @@ function yieldCard(facts: YieldFacts, theme: Theme, context: RenderContext): Com
 		const inner = Math.max(1, width - pad * 2);
 		const expanded = context.expanded;
 		const error = facts.error !== undefined;
-		const headings = yieldHeadings(facts, theme);
+		const headings = yieldHeadings(facts, theme, expanded);
 		const rows = headings.flatMap((line) => (expanded ? wrapped(line, inner) : [clipRow(line, inner)]));
 		const body = yieldBody(facts, expanded, inner, theme);
 		rows.push(...body.rows);
-		if (expanded && facts.settled && !error) rows.push(...yieldDetails(facts.jobs, inner, theme));
-		if (facts.omitted > 0)
-			rows.push(clipRow(theme.fg("warning", `[Excerpt: ${count(facts.omitted, "job", "jobs")} not listed]`), inner));
-		if (!expanded) {
+		if (expanded) rows.push(...yieldEvidence(facts, inner, theme));
+		else {
 			const hidden = yieldDisclosure(facts, headings, inner, body.noteHidden, body.errorHidden);
 			if (hidden) rows.push(...expansionHint(theme, context, inner, hidden, !facts.settled));
 		}

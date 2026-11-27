@@ -113,11 +113,11 @@ function callCard(
 	theme: Theme,
 	context: RenderContext,
 ): Component {
-	const header = theme.fg("toolTitle", theme.bold(name)) + (subject ? ` ${theme.fg("accent", subject)}` : "");
-	const rows = [header];
-	if (facts.length) rows.push(theme.fg("muted", facts.join(" · ")));
-	const widest = Math.max(...rows.map((row) => visibleWidth(row)));
-	const addsContent = (width: number) => args.length > 0 || widest > width;
+	const header =
+		theme.fg("toolTitle", theme.bold(name)) +
+		(subject ? ` ${theme.fg("accent", subject)}` : "") +
+		(facts.length ? theme.fg("muted", ` (${facts.join(", ")})`) : "");
+	const addsContent = (width: number) => args.length > 0 || visibleWidth(header) > width;
 	if (context.state) {
 		context.state.callAddsContent = addsContent;
 		context.state.withholdsInput = withholdsInput;
@@ -127,10 +127,10 @@ function callCard(
 		render(width) {
 			if (context.expanded)
 				return [
-					...rows.flatMap((row) => wrapTextWithAnsi(row, Math.max(1, width))),
+					...wrapTextWithAnsi(header, Math.max(1, width)),
 					...args.flatMap((arg) => wrap(arg, width)).map((line) => theme.fg("muted", line)),
 				];
-			const lines = rows.map((row) => clipRow(row, width));
+			const lines = [clipRow(header, width)];
 			if (addsContent(width) && !context.state?.hasResult) {
 				const hint = disclosureHint(theme, context, 0, false);
 				if (hint) lines.push(clipRow(hint, width));
@@ -158,13 +158,15 @@ function resultCard(
 				return ["", ...paint(copy.diagnostic ?? copy.outcome), ...body, ...details];
 			}
 			const outcome = theme.fg(color, copy.outcome);
-			const rows = context.isError ? [clipRow(outcome, width)] : paint(copy.outcome);
-			const preview = body.slice(0, 5);
-			const lines = ["", ...rows, ...preview];
-			const hidden = body.length - preview.length;
-			const clippedError = context.isError && visibleWidth(outcome) > width;
-			if (hidden || copy.extra || copy.diagnostic || clippedError || context.state?.callAddsContent?.(width))
-				lines.push(clipRow(disclosureHint(theme, context, hidden), width));
+			const lines = ["", clipRow(outcome, width)];
+			if (
+				body.length ||
+				copy.extra ||
+				copy.diagnostic ||
+				visibleWidth(outcome) > width ||
+				context.state?.callAddsContent?.(width)
+			)
+				lines.push(clipRow(disclosureHint(theme, context, body.length), width));
 			return lines;
 		},
 	};
@@ -206,12 +208,12 @@ function sourceCall(input: unknown, theme: Theme, context: RenderContext): Compo
 	const facts: string[] = [];
 	const expanded: string[] = [];
 	if (offset !== undefined) facts.push(`offset ${offset}`);
-	if (args.draft !== undefined) facts.push("draft assessment");
+
 	if (digest) expanded.push(withheldArgument("referenceBodyDigest", digest.length));
 	if (typeof args.draft === "string") expanded.push(withheldArgument("draft", characterCount(args.draft)));
 	return callCard(
 		"pillars",
-		resource ?? (args.resource === undefined ? "inventory" : ""),
+		args.draft !== undefined ? "assess draft" : (resource ?? (args.resource === undefined ? "inventory" : "")),
 		facts,
 		expanded,
 		args.draft !== undefined || args.referenceBodyDigest !== undefined,
@@ -265,6 +267,15 @@ function fallbackCopy(result: AgentToolResult<unknown>, context: RenderContext, 
 	return { outcome, diagnostic: context.isError && text.trim() && text !== outcome ? text : undefined };
 }
 
+function sourceOutcome(page: AccessPage): string {
+	const bytes = page.endOffset - page.offset;
+	const continuation = page.nextOffset !== undefined ? "; more content follows" : "";
+	const summary = Array.isArray(page.resources)
+		? `Inventory lists ${page.resources.length} ${page.resources.length === 1 ? "resource" : "resources"}`
+		: `Read ${bytes}${bytes !== page.bodyBytes ? ` of ${page.bodyBytes}` : ""} bytes from ${oneLine(page.resource)}`;
+	return `${summary}${continuation}.`;
+}
+
 /** Terminal rendering for the source page; continuation stays within the source revision. */
 export function accessRenderers() {
 	return {
@@ -282,10 +293,8 @@ export function accessRenderers() {
 			const page = result.details;
 			if (context.isError || !isSourcePage(page))
 				return card(fallbackCopy(result, context, "The Pillars source read did not complete."));
-			const bytes = page.endOffset - page.offset;
-			const continuation = page.nextOffset !== undefined ? "; continuation available" : "";
 			return card({
-				outcome: `Read ${bytes} of ${page.bodyBytes} bytes from ${oneLine(page.resource)}${continuation}.`,
+				outcome: sourceOutcome(page),
 				body: page.text,
 				extra: sourcePageFacts(page),
 			});
@@ -322,9 +331,8 @@ function usagePageCopy(page: Extract<Response, { kind: "page" }>): ResultCopy | 
 			(nextCursor !== undefined && !matchingString(nextCursor, cursorPattern))
 		)
 			return undefined;
-		const continuation = nextCursor ? "; continuation available" : "";
 		return {
-			outcome: `Read page ${pageNumber} of ${pageCount} of the ${page.view} (${fromDay} through ${toDay}; ${n} read ${n === 1 ? "request" : "requests"})${continuation}.`,
+			outcome: `${n} retained ${n === 1 ? "read" : "reads"} from ${fromDay} to ${toDay}${pageCount > 1 ? ` (page ${pageNumber} of ${pageCount})` : ""}.`,
 			body: usageMarkdown(page, "card"),
 			extra: nextCursor ? `Continue: pillars_usage ${quoted({ cursor: nextCursor })}` : undefined,
 		};

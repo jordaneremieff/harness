@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, type TestContext } from "node:test";
+import { type TestContext, test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { CustomMessageComponent, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { type KeyId, type TUI, type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui";
@@ -91,9 +91,9 @@ test("Slop calls name real operations and keep arbitrary argument values out of 
 	assert.ok(rendered(tool("slop", { entry: "field-note", starter: true })).includes("slop read field-note"));
 	assert.ok(rendered(tool("slop", { starter: true })).includes("slop compare starter set"));
 	const query = tool("slop", { scope: "code", query: "private search text" });
-	assert.match(rendered(query).join("\n"), /slop search catalog\ncode\n\.\.\. \(ctrl\+e to expand\)/);
+	assert.deepEqual(rendered(query).filter(Boolean), ["slop search catalog", "... (ctrl+e to expand)"]);
 	query.setExpanded(true);
-	assert.match(rendered(query).join("\n"), /query: 19 characters/);
+	assert.match(rendered(query).join("\n"), /code\nquery: 19 characters/);
 	assert.doesNotMatch(rendered(query).join("\n"), /private search text/);
 	assert.ok(rendered(tool("slop_check", { path: "src/notes.ts" })).includes("slop_check check src/notes.ts"));
 	assert.ok(rendered(tool("slop_check", { diff: { staged: true } })).includes("slop_check check staged diff"));
@@ -101,9 +101,9 @@ test("Slop calls name real operations and keep arbitrary argument values out of 
 		diff: { range: "main..HEAD", paths: ["src/x.ts", "src/y.ts"] },
 		entries: ["plain-language"],
 	});
-	assert.match(rendered(diff).join("\n"), /slop_check check main\.\.HEAD\n2 paths · entries plain-language/);
+	assert.deepEqual(rendered(diff).filter(Boolean), ["slop_check check main..HEAD", "... (ctrl+e to expand)"]);
 	diff.setExpanded(true);
-	assert.match(rendered(diff).join("\n"), /paths: \["src\/x.ts","src\/y.ts"\]/);
+	assert.match(rendered(diff).join("\n"), /2 paths · entries plain-language\npaths: \["src\/x.ts","src\/y.ts"\]/);
 	const save = tool("slop_record", {
 		action: "save",
 		id: "field-note",
@@ -131,12 +131,18 @@ test("one binding-aware hint moves from the call to the result and expands on a 
 		isError: false,
 	});
 	lines = rendered(card, width);
-	assert.ok(lines.includes("1 slop detector finding."));
-	assert.ok(lines.includes("[2 inputs skipped; 8 KiB report limit reached; at most 20 locations per detector]"));
-	assert.deepEqual(
-		lines.filter((line) => line.includes("to expand")),
-		["... (click to expand)"],
-	);
+	const limits = "[2 inputs skipped; 8 KiB report limit reached; at most 20 locations per detector]";
+	assert.deepEqual(lines.filter(Boolean), [
+		"slop_check check text",
+		"1 slop detector finding in checked inputs.",
+		limits,
+		"... (click to expand)",
+	]);
+	assert.deepEqual(rendered(card, 160).filter(Boolean), [
+		"slop_check check text",
+		`1 slop detector finding in checked inputs. ${limits}`,
+		"... (click to expand)",
+	]);
 	assert.doesNotMatch(lines.join("\n"), /failed|source excerpt/);
 	assert.equal(card.handleMouse(click(titleRow, width, lines.length))?.handled, true);
 	assert.match(rendered(card).join("\n"), /text: 20 characters/);
@@ -174,7 +180,28 @@ test("safe errors show the cause; errors that can quote withheld arguments discl
 	assert.doesNotMatch(rendered(corrupt).join("\n"), /operator quote|to expand/);
 });
 
-test("catalog result counts hidden visual lines and never applies an independent character cut", (t) => {
+test("a check reports zero findings without a hint when it has no details to disclose", (t) => {
+	binding(t, "ctrl+o");
+	const card = tool("slop_check", { path: "readme.md" });
+	card.updateResult({
+		content: blocks("No slop detector findings."),
+		details: { ok: true, findingCount: 0, skippedCount: 0, reportLimited: false, locationsLimited: false },
+		isError: false,
+	});
+	assert.deepEqual(rendered(card).filter(Boolean), ["slop_check check readme.md", "No slop detector findings."]);
+	card.updateResult({
+		content: blocks("No slop detector findings.\nSkipped a long line."),
+		details: { ok: true, findingCount: 0, skippedCount: 1 },
+		isError: false,
+	});
+	assert.deepEqual(rendered(card).filter(Boolean), [
+		"slop_check check readme.md",
+		"No slop detector findings in checked inputs. [1 input skipped]",
+		"... (ctrl+o to expand)",
+	]);
+});
+
+test("catalog details stay behind one hint without a separate character cut", (t) => {
 	binding(t, "ctrl+o");
 	const long = "entry-name ".repeat(20).trim();
 	const rows = Array.from({ length: 8 }, (_, i) => `Item ${i + 1}`);
@@ -182,12 +209,11 @@ test("catalog result counts hidden visual lines and never applies an independent
 	card.updateResult({ content: blocks(rows.join("\n")), details: { summary: long }, isError: false });
 	const wide = rendered(card, 300);
 	assert.ok(wide.includes(long));
-	assert.ok(wide.includes("Item 5"));
-	assert.ok(!wide.includes("Item 6"));
-	assert.ok(wide.includes("... (3 more lines, ctrl+o to expand)"));
+	assert.doesNotMatch(wide.join("\n"), /Item /);
+	assert.ok(wide.includes("... (ctrl+o to expand)"));
 	const narrow = rendered(card, 65);
 	assert.ok(narrow.some((line) => line.endsWith("…")));
-	assert.ok(narrow.includes("... (3 more lines, ctrl+o to expand)"));
+	assert.ok(narrow.includes("... (ctrl+o to expand)"));
 	for (const row of card.render(65)) assert.ok(visibleWidth(row) <= 65);
 	card.setExpanded(true);
 	assert.ok(rendered(card, 65).includes("Item 8"));
@@ -254,11 +280,7 @@ test("catalog inventory shows judgment-only entries but keeps starter guidance o
 	card.updateResult({ ...result, isError: false });
 	const compact = rendered(card, 180).join("\n");
 	assert.match(compact, /1 slop entry; [1-9]\d* new starter entr/u);
-	assert.match(
-		compact,
-		/field-note · Field note · prose · starter · active · judgment only · The title replaces the result\./u,
-	);
-	assert.doesNotMatch(compact, /Read with slop|detector|0 updated|more lines/u);
+	assert.doesNotMatch(compact, /Field note|Read with slop|detector|0 updated|more lines/u);
 	assert.match(compact, /\.\.\. \(ctrl\+o to expand\)/u);
 	card.setExpanded(true);
 	assert.equal(rendered(card, 180).filter(Boolean).slice(1).join("\n"), modelText);
@@ -280,7 +302,7 @@ test("starter comparisons hide import guidance, even when no entry compares", (t
 		card.updateResult({ ...result, isError: false });
 		const compact = rendered(card, 180).filter(Boolean);
 		assert.ok(compact.includes(outcome));
-		assert.equal(compact.length, 3 + comparison.length);
+		assert.equal(compact.length, 3);
 		assert.doesNotMatch(compact.join("\n"), /Import new entries|0 starter entries|more lines/u);
 		assert.ok(compact.includes("... (ctrl+o to expand)"));
 		card.setExpanded(true);
@@ -288,7 +310,7 @@ test("starter comparisons hide import guidance, even when no entry compares", (t
 	}
 });
 
-test("a complete compact catalog page does not offer expansion for cosmetic differences", (t) => {
+test("a catalog without guidance still offers expansion for its entries", (t) => {
 	binding(t, "ctrl+o");
 	const { dir, options } = catalogFixture(t);
 	for (const id of importEntries(dir)) removeEntry(dir, id, { session: "fixture", model: null });
@@ -299,8 +321,10 @@ test("a complete compact catalog page does not offer expansion for cosmetic diff
 	assert.deepEqual(rendered(card, 180).filter(Boolean), [
 		"slop list catalog",
 		"1 slop entry.",
-		"- field-note · Field note · prose · starter · active · judgment only · The title replaces the result.",
+		"... (ctrl+o to expand)",
 	]);
+	card.setExpanded(true);
+	assert.equal(rendered(card, 180).filter(Boolean).slice(1).join("\n"), result.content[0].text);
 });
 
 test("ordinary request shows at most three wrapped rows of the hint, then reveals the full instructions on click", (t) => {

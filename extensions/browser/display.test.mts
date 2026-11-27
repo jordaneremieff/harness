@@ -66,11 +66,11 @@ function result(name: Name, status: string, report: Record<string, unknown>, tra
 	};
 }
 
-it("shows tab rows and coverage ahead of profile notes, without treating a cap as a continuation", (t) => {
+it("summarises tab coverage without treating a cap as a continuation", (t) => {
 	keys(t);
 	const component = card("browser_tabs", { browser: "brave", pid: 42, match: "guide" });
 	assert.match(screen(component), /browser_tabs guide/);
-	assert.doesNotMatch(screen(component), /to expand/);
+	assert.match(screen(component), /browser_tabs guide\n ... \(ctrl\+g to expand\)/);
 	component.updateResult(
 		result("browser_tabs", "ok", {
 			windows: [
@@ -81,12 +81,12 @@ it("shows tab rows and coverage ahead of profile notes, without treating a cap a
 			profile: "One process; multiple profiles",
 		}),
 	);
-	assert.match(
-		screen(component),
-		/Returned 1 of 2 matching tabs\.\n .*tab tab-id · Guide · https:\/\/example.test · window 902/,
+	assert.deepEqual(
+		rows(component).filter((row) => row.trim()),
+		[" browser_tabs guide", " Returned 1 of 2 matching tabs.", " ... (ctrl+g to expand)"],
 	);
-	assert.doesNotMatch(screen(component), /Model heading|Page-derived|profiles|more lines/);
 	component.setExpanded(true);
+	assert.match(screen(component), /tab tab-id · Guide · https:\/\/example.test · window 902/);
 	assert.match(screen(component), /One process; multiple profiles/);
 	assert.doesNotMatch(screen(component), /to expand|offset/);
 });
@@ -111,11 +111,14 @@ it("puts text and HTML trailers before header facts, and replays the exact conti
 		const run = result("browser_inspect", "ok", report, `\n--- ${view} (untrusted page content) ---\n${pageText}`);
 		component.updateResult({ ...run, details: undefined });
 		const compact = rows(component, 92);
-		assert.match(compact.join("\n"), /Read 700 characters \(900 total\); more text follows\.\n Primary page contents/);
-		assert.doesNotMatch(compact.join("\n"), /Page title|Model heading|untrusted|"window"/);
-		assert.equal(compact.filter((row) => /to expand/.test(row)).length, 1);
-		assert.match(compact.filter((row) => row.trim()).at(-1) ?? "", /\d+ more lines, ctrl\+g to expand/);
-		assert.equal(compact.filter((row) => /Primary page|unbroken/.test(row)).length, 5);
+		assert.deepEqual(
+			compact.filter((row) => row.trim()),
+			[
+				` browser_inspect ${view} · main · brave · pid 42 · tab tab-0123456789`,
+				" Read 700 characters (900 total); more text follows.",
+				" ... (ctrl+g to expand)",
+			],
+		);
 		assert.ok(component.render(39).every((row) => visibleWidth(row) <= 39));
 		component.setExpanded(true);
 		const full = screen(component, 220);
@@ -139,10 +142,10 @@ it("shows summary text, usable element references, and the scope of recent resou
 			},
 		}),
 	);
-	assert.match(screen(component), /Summary page contents/);
-	assert.doesNotMatch(screen(component), /"links"|internal-document-token/);
+	assert.match(screen(component), /Read 21 characters \(21 total\)/);
+	assert.doesNotMatch(screen(component), /Summary page contents|"links"|internal-document-token/);
 	component.setExpanded(true);
-	assert.match(screen(component), /"links": 3/);
+	assert.match(screen(component), /Summary page contents[\s\S]*"links": 3/);
 	assert.doesNotMatch(screen(component), /internal-document-token/);
 
 	component.setExpanded(false);
@@ -160,8 +163,11 @@ it("shows summary text, usable element references, and the scope of recent resou
 		}),
 	);
 	assert.match(screen(component), /Read 1 element from offset 2 \(3 total\)/);
+	assert.doesNotMatch(screen(component), new RegExp(ref));
+	component.setExpanded(true);
 	assert.match(screen(component), new RegExp(`Continue · ${ref} · #continue`));
 
+	component.setExpanded(false);
 	component.updateResult(
 		result("browser_inspect", "ok", {
 			view: "network",
@@ -172,7 +178,10 @@ it("shows summary text, usable element references, and the scope of recent resou
 			},
 		}),
 	);
-	assert.match(screen(component), /Read the last 1 of 4 resources\.\n .*resource · HTTP 404/);
+	assert.match(screen(component), /Read the last 1 of 4 resources\.\n ... \(ctrl\+g to expand\)/);
+	assert.doesNotMatch(screen(component), /HTTP 404/);
+	component.setExpanded(true);
+	assert.match(screen(component), /resource · HTTP 404/);
 });
 
 it("states empty results without redundant zero counts", (t) => {
@@ -195,7 +204,12 @@ it("uses click disclosure only after a result without an expand key, and omits e
 	const short = card("browser_evaluate", { ...target, expression: "2 + 2" });
 	assert.doesNotMatch(screen(short), /to expand/);
 	short.updateResult(result("browser_evaluate", "fulfilled", { execution: { status: "fulfilled", value: 4 } }));
-	assert.doesNotMatch(screen(short), /to expand/);
+	assert.match(screen(short), /Expression returned a value\.\n ... \(click to expand\)/);
+	short.updateResult({ content: [{ type: "text", text: "Short diagnostic" }], isError: true });
+	assert.match(screen(short), /click to expand/);
+	const noEvidence = card("browser_evaluate");
+	noEvidence.updateResult({ content: [{ type: "text", text: "Short diagnostic" }], isError: true });
+	assert.doesNotMatch(screen(noEvidence), /to expand/);
 	const long = card("browser_evaluate", { ...target, expression: `${"source".repeat(90)}source_end` });
 	assert.doesNotMatch(screen(long, 48), /source_end|to expand/);
 	long.updateResult(
@@ -203,12 +217,11 @@ it("uses click disclosure only after a result without an expand key, and omits e
 			execution: { status: "fulfilled", elapsedMs: 4200, value: Array.from({ length: 9 }, (_, i) => `value${i}`) },
 		}),
 	);
-	assert.match(screen(long, 78), /value8/);
-	assert.doesNotMatch(screen(long, 78), /value0|source_end/);
-	assert.match(screen(long, 78), /Took 4\.2s\n .*more lines, click to expand/);
+	assert.doesNotMatch(screen(long, 78), /value8|value0|source_end/);
+	assert.match(screen(long, 78), /Expression returned a value\. · Took 4\.2s\n ... \(click to expand\)/);
 	long.setExpanded(true);
 	assert.match(screen(long, 78), /source_end/);
-	assert.match(screen(long, 78), /value0/);
+	assert.match(screen(long, 78), /value0[\s\S]*value8/);
 	assert.doesNotMatch(screen(long, 78), /to expand/);
 });
 
@@ -228,8 +241,10 @@ it("names a display bound separately from an evaluation return budget", (t) => {
 	);
 	const rendered = screen(component, 100);
 	assert.match(rendered, /only a prefix arrived/);
-	assert.match(rendered, /\[Truncated: showing 32000 of 33000 characters\]/);
-	assert.match(rendered, /more lines, ctrl\+g to expand/);
+	assert.match(rendered, /\.\.\. \(ctrl\+g to expand\)/);
+	assert.doesNotMatch(rendered, /Truncated|xxxxxxxx/);
+	component.setExpanded(true);
+	assert.match(screen(component), /\[Truncated: showing 32000 of 33000 characters\]/);
 });
 
 it("shows navigation dispatch separately from observation, refusals and an operation error", (t) => {
@@ -266,7 +281,10 @@ it("shows navigation dispatch separately from observation, refusals and an opera
 				status === "transport-failed",
 			),
 		);
-		assert.match(screen(nav), expected);
+		const compact = rows(nav).filter((row) => row.trim());
+		assert.equal(compact.length, 3);
+		assert.match(compact[1] ?? "", expected);
+		assert.equal(compact[2], " ... (ctrl+g to expand)");
 	}
 	const element = card("browser_act", {
 		...target,
@@ -389,8 +407,9 @@ it("reports structured cancellation without losing dispatch evidence", (t) => {
 		screen(component, 175),
 		/Navigation sent; document replacement observed; observation cancelled; condition not observed/,
 	);
+	assert.doesNotMatch(screen(component), /Page title|Observed page:/);
+	component.setExpanded(true);
 	assert.match(screen(component), /\n Page title · https:\/\/example.test/);
-	assert.doesNotMatch(screen(component), /Observed page:/);
 	const tabs = card("browser_tabs");
 	tabs.updateResult(result("browser_tabs", "cancelled", { transport }, "", true));
 	assert.match(screen(tabs), /Cancelled\. Request stopped before delivery/);
@@ -407,13 +426,14 @@ it("separates the optional save error from the capture and keeps the native inli
 	});
 	const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 	component.updateResult({ ...run, content: [...run.content, { type: "image", mimeType: "image/png", data }] });
-	assert.match(screen(component), /Captured the window \(1 × 1\)\.\n Optional save failed\. The file exists/);
+	assert.match(screen(component), /Captured the window \(1 × 1\)\. Optional save failed\. The file exists/);
 	assert.doesNotMatch(screen(component), /\[image/i);
 	assert.ok(
 		component.render(100).some((row) => row.includes("\x1b_G")),
 		"Pi renders the image in its native region",
 	);
 	component.setShowImages(false);
-	assert.match(screen(component), /\[image/i);
+	assert.match(screen(component, 160), /The file exists; nothing was overwritten\. · \[image/i);
+	assert.equal(rows(component, 160).filter((row) => row.trim()).length, 3);
 	assert.ok(!component.render(100).some((row) => row.includes("\x1b_G")));
 });

@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { stripVTControlCharacters } from "node:util";
+import { parseToolCallArguments, validateToolArguments } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
 	type ExtensionToolContext,
@@ -12,7 +13,6 @@ import {
 	type ToolDefinition,
 	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
-import { parseToolCallArguments, validateToolArguments } from "@earendil-works/pi-ai";
 import { type KeyId, stripTerminalSequences, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { controlResult } from "./control.ts";
 import { toolDisplay } from "./display.ts";
@@ -113,9 +113,9 @@ async function fixture(t: TestContext) {
 it("retains one live key hint before execution and then moves it after progress and settled evidence", (t) => {
 	keys(t);
 	const component = card("policy_propose", draft);
-	assert.match(
-		screen(component),
-		/policy_propose add local\.scan\n.*authority steer-or-block · sample-scan command match/,
+	assert.deepEqual(
+		rows(component).map((row) => row.trimStart()),
+		["policy_propose add local.scan", "... (ctrl+g to expand)"],
 	);
 	assert.match(rows(component).at(-1) ?? "", /\.\.\. \(ctrl\+g to expand\)$/);
 	assert.doesNotMatch(screen(component), /Preserve the task|Use a bounded scan/);
@@ -127,11 +127,17 @@ it("retains one live key hint before execution and then moves it after progress 
 	component.updateResult(
 		text("Pending proposal. Model-only instructions.", { proposalId, proposalRevision: revision, state: "pending" }),
 	);
-	assert.match(screen(component), /Proposal is pending and inert until operator approval\./);
-	assert.match(screen(component), new RegExp(`${proposalId} · revision ${revision}`));
-	assert.doesNotMatch(screen(component), /Model-only instructions/);
-	assert.equal(screen(component).match(/to expand/g)?.length, 1);
+	assert.deepEqual(
+		rows(component).map((row) => row.trimStart()),
+		[
+			"policy_propose add local.scan",
+			`Staged inert proposal ${proposalId} for operator approval.`,
+			"... (ctrl+g to expand)",
+		],
+	);
 	component.setExpanded(true);
+	assert.match(screen(component), /authority steer-or-block · sample-scan command match/);
+	assert.match(screen(component), new RegExp(`revision ${revision}`));
 	assert.match(screen(component), /reason: Preserve the task's output bound\./);
 	assert.match(screen(component), /Model-only instructions/);
 	assert.doesNotMatch(screen(component), /to expand/);
@@ -193,6 +199,8 @@ it("omits streaming placeholders and does not leak simulated input or operator e
 		expectedRevision: revision,
 		predicate: "fixed.example",
 	});
+	assert.equal(screen(replacement).trim(), "policy_propose replace local.rule");
+	replacement.setExpanded(true);
 	assert.match(screen(replacement), /authority exact · predicate fixed\.example · expected revision 0123456789ab/);
 	const program = card("policy_propose", {
 		operation: "add",
@@ -200,8 +208,9 @@ it("omits streaming placeholders and does not leak simulated input or operator e
 		authority: "exact",
 		program: { note: "expanded only" },
 	});
+	assert.doesNotMatch(screen(program), /facts\/v1 program|expanded only/);
+	program.setExpanded(true);
 	assert.match(screen(program), /facts\/v1 program/);
-	assert.doesNotMatch(screen(program), /expanded only/);
 });
 
 it("renders actual policy tool returns without confusing durable decisions with session enforcement", async (t) => {
@@ -209,7 +218,7 @@ it("renders actual policy tool returns without confusing durable decisions with 
 	const { show } = await fixture(t);
 	const submitted = await show("policy_propose", draft);
 	const pending = submitted.result?.details as { proposalId: string; proposalRevision: string };
-	assert.match(screen(submitted.component), /pending and inert/);
+	assert.match(screen(submitted.component), /Staged inert proposal/);
 	assert.ok(screen(submitted.component).includes(pending.proposalId));
 	const lookup = await show("policy_rules", { id: pending.proposalId });
 	assert.match(screen(lookup.component), /pending and inert/);
@@ -221,10 +230,11 @@ it("renders actual policy tool returns without confusing durable decisions with 
 		effect: "block",
 		authorization: "Approved this exact draft as a block.",
 	});
-	assert.match(screen(approval.component), /Approved the proposal\. Enforcement is not established by approval\./);
+	assert.match(screen(approval.component), /Approved the proposal for local\.scan; enforcement is not confirmed\./);
+	assert.doesNotMatch(screen(approval.component), /effect block|Session is in observe mode|Approved this exact draft/);
+	approval.component.setExpanded(true);
 	assert.match(screen(approval.component), /local\.scan · active · effect block/);
 	assert.match(screen(approval.component), /Session is in observe mode\./);
-	assert.doesNotMatch(screen(approval.component), /Approved this exact draft/);
 	const active = await show("policy_rules", { id: draft.id });
 	assert.match(screen(active.component), /Rule local\.scan is active \(block\)\./);
 	const readback = await show("policy_control", { operation: "inspect", id: draft.id });
@@ -259,8 +269,10 @@ it("keeps dry-run allow, deny and corrections distinct from real execution", (t)
 			),
 		);
 		assert.ok(screen(component).includes(`Dry run would ${expected} in enforce mode. No simulated tool ran.`));
+		assert.doesNotMatch(screen(component), /matched local\.scan|extended-only/);
+		component.setExpanded(true);
 		assert.match(screen(component), /matched local\.scan/);
-		assert.doesNotMatch(screen(component), /extended-only/);
+		component.setExpanded(false);
 	}
 	component.updateResult(text("[bad JSON]"));
 	assert.match(screen(component), /Dry-run decision not established\./);
@@ -288,7 +300,9 @@ it("distinguishes control read progress, partial artifacts, and an armed retry f
 		...controlResult({ complete: false, path: "/project/sample.json", revision, boundary: "Review the source first." }),
 		isError: false,
 	});
-	assert.match(screen(preview), /Previewed data metadata only\. Read the complete source before authorization\./);
+	assert.match(screen(preview), /Previewed data metadata only; no data changed\./);
+	assert.doesNotMatch(screen(preview), /Review the source|\[Complete artifact/);
+	preview.setExpanded(true);
 	assert.match(screen(preview), /\[Complete artifact exceeds the preview output bound\]/);
 	const approve = card("policy_control", { operation: "action-approve", actionId: proposalId });
 	approve.updateResult({
@@ -296,6 +310,8 @@ it("distinguishes control read progress, partial artifacts, and an armed retry f
 		isError: false,
 	});
 	assert.match(screen(approve), /Approved one unchanged retry\. This did not run the action\./);
+	assert.doesNotMatch(screen(approve), /Session is in enforce mode\./);
+	approve.setExpanded(true);
 	assert.match(screen(approve), /Session is in enforce mode\./);
 });
 
@@ -323,9 +339,9 @@ it("reports page scope and preserves the exact cursor and request selection on e
 			recording: { status: "unknown" },
 		}),
 	);
-	assert.match(screen(telemetry), /Read 3 records on this telemetry page; more records can be read/);
-	assert.match(screen(telemetry), /\[Telemetry coverage is partial\]/);
+	assert.match(screen(telemetry), /Read 3 records on this telemetry page; more follow\. Coverage is partial\./);
 	telemetry.setExpanded(true);
+	assert.match(screen(telemetry), /\[Telemetry coverage is partial\]/);
 	assert.ok(screen(telemetry, 330).includes(`Next call: policy_control ${JSON.stringify({ ...range, cursor })}`));
 });
 
@@ -334,21 +350,24 @@ it("does not treat missing bounded telemetry as proof of no decision", (t) => {
 	const component = card("policy_rules", { view: "explain", id: "call:fixture" });
 	component.updateResult(text(JSON.stringify({ callId: "fixture", records: [], partial: true })));
 	assert.match(screen(component), /No observation found in the bounded read; the call decision is not established/);
+	assert.match(screen(component), /Evidence is partial\./);
+	component.setExpanded(true);
 	assert.match(screen(component), /\[Recorded evidence is partial\]/);
+	component.setExpanded(false);
 	component.updateResult(text(JSON.stringify({ callId: "fixture", records: [{ decision: "deny" }], partial: false })));
 	assert.match(screen(component), /Found 1 recorded observation for the call\./);
 	assert.doesNotMatch(screen(component), /partial/);
 });
 
-it("limits a single long diagnostic to five visual body rows and discloses only actual hidden text", (t) => {
+it("keeps a long diagnostic behind one hint and clips a long first line", (t) => {
 	keys(t);
 	const component = card("policy_rules", { view: "health" });
 	component.updateResult(text(`Could not read\n${"界".repeat(180)} tail`, undefined, true));
 	const narrow = rows(component, 42);
-	assert.equal(narrow.slice(2, -1).length, 5);
-	assert.match(narrow[2] ?? "", /界/);
-	assert.match(narrow.at(-1) ?? "", /\d+ more lines, ctrl\+g to expand/);
-	assert.doesNotMatch(screen(component, 42), /tail/);
+	assert.equal(narrow.length, 3);
+	assert.match(narrow[1] ?? "", /Could not read/);
+	assert.match(narrow.at(-1) ?? "", /\.\.\. \(ctrl\+g to expand\)$/);
+	assert.doesNotMatch(screen(component, 42), /界|tail/);
 	component.setExpanded(true);
 	assert.match(screen(component, 42), /tail/);
 	assert.doesNotMatch(screen(component, 42), /expand/);
@@ -407,11 +426,12 @@ it("strips terminal sequences and names a character cap independently of the pro
 	const component = card("policy_rules", { view: "authoring" });
 	component.updateResult(text(`No \x1b[31mcontrol\u202e\x07 marks\n${"界".repeat(33_000)}\n[policy text truncated]`));
 	const collapsed = screen(component, 160);
-	assert.match(collapsed, /Policy output was truncated by the producer/);
-	assert.match(collapsed, /Truncated: showing 32000 of 33017 characters/);
-	assert.doesNotMatch(collapsed, /No control marks/);
+	assert.match(collapsed, /Read the policy authoring guide\. Output truncated\./);
+	assert.doesNotMatch(collapsed, /No control marks|33017/);
 	component.setExpanded(true);
 	assert.match(screen(component, 160), /No control marks/);
+	assert.match(screen(component, 160), /Policy output was truncated by the producer/);
+	assert.match(screen(component, 160), /Truncated: showing 32000 of 33017 characters/);
 	const raw = component.render(160).join("\n");
 	assert.doesNotMatch(stripTerminalSequences(raw), /\u202e|\u0007/);
 });

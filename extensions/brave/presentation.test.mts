@@ -53,11 +53,11 @@ function result(text: string, details?: unknown, isError = false) {
 	return { content: [{ type: "text" as const, text }], details, isError };
 }
 
-it("previews ranked search records, not request boilerplate or paging instructions", (t) => {
+it("summarises the search page and discloses ranked records, correction and continuation", (t) => {
 	theme(t);
 	const request = { query: "parsers", count: 2, offset: 1, country: "US", spellcheck: false };
 	const component = card(request);
-	assert.equal(screen(component), "web_search parsers\ncount 2 · offset 1 · country US · spellcheck off");
+	assert.equal(screen(component), "web_search parsers\n... (ctrl+g to expand)");
 	const formatted = formatSearchResults(
 		{
 			originalQuery: "parsers",
@@ -72,23 +72,25 @@ it("previews ranked search records, not request boilerplate or paging instructio
 	);
 	component.updateResult(result(formatted.text, { ...request, resultCount: 2, alteredQuery: "parser", nextOffset: 2 }));
 	const collapsed = screen(component);
-	assert.match(collapsed, /corrected query parser/);
-	assert.match(collapsed, /Found 2 matches on search page 2; more results follow\./);
-	assert.match(collapsed, /1\. Ranked first[\s\S]*First snippet[\s\S]*2\. Ranked second/);
-	assert.doesNotMatch(collapsed, /Brave Search used|Repeat the search|Second snippet/);
-	assert.equal(collapsed.match(/to expand/g)?.length, 1);
+	assert.equal(
+		collapsed,
+		"web_search parsers\nFound 2 matches on search page 2; more results follow.\n... (ctrl+g to expand)",
+	);
 	component.setExpanded(true);
 	const expanded = screen(component, 160);
-	assert.match(expanded, /Second snippet/);
+	assert.match(expanded, /corrected query parser · count 2 · offset 1 · country US · spellcheck off/);
+	assert.match(expanded, /1\. Ranked first[\s\S]*First snippet[\s\S]*2\. Ranked second[\s\S]*Second snippet/);
 	assert.ok(expanded.includes(`web_search ${JSON.stringify({ ...request, offset: 2 })}`));
 	assert.doesNotMatch(expanded, /to expand/);
 	component.setExpanded(false);
 	component.updateResult(result(formatted.text));
-	assert.match(screen(component), /Search records are available\.\n1\. Ranked first/);
-	assert.doesNotMatch(screen(component), /Brave Search used|Repeat the search/);
+	assert.match(screen(component), /Search records are available\.\n\.\.\. \(ctrl\+g to expand\)$/);
+	assert.doesNotMatch(screen(component), /Brave Search used|Repeat the search|Ranked first/);
+	component.setExpanded(true);
+	assert.match(screen(component), /1\. Ranked first/);
 });
 
-it("removes formatter labels only from the collapsed ranked match preview", (t) => {
+it("preserves the formatter's labels and page wording in expanded results", (t) => {
 	theme(t);
 	const request = { query: "railway maps", count: 3 };
 	const component = card(request);
@@ -113,30 +115,17 @@ it("removes formatter labels only from the collapsed ranked match preview", (t) 
 	);
 	const retained = result(formatted.text, { ...request, resultCount: 2, offset: 0, nextOffset: 1 });
 	component.updateResult(retained);
-	assert.ok(screen(component, 100).includes(`1. ${title}\n${url}\n${description}\n2. URL: a page title`));
-	assert.doesNotMatch(screen(component, 100), /URL: https|Snippet: A collection/);
-	assert.match(screen(component, 60), /\(\d+ more lines, ctrl\+g to expand\)/);
+	assert.doesNotMatch(screen(component, 100), /1\. Railway maps|example\.org|Snippet:/);
+	assert.match(screen(component, 60), /\(ctrl\+g to expand\)/);
 	component.setExpanded(true);
 	const expanded = screen(component);
 	assert.ok(expanded.includes(`1. ${title}\nURL: ${url}\nSnippet: ${description}`));
 	assert.match(expanded, /URL: https:\/\/example\.org\/Snippet:%20archive/);
 	assert.match(expanded, /Snippet: Snippet: page-origin copy with URL: inside it/);
 	assert.equal(retained.content[0].text, formatted.text);
-
-	const second = card(request);
-	const single = formatSearchResults(
-		{
-			originalQuery: request.query,
-			moreResultsAvailable: false,
-			results: [{ title: "Snippet: a title", url, description: "Snippet: page text", extraSnippets: [] }],
-		},
-		request,
-	);
-	second.updateResult(result(single.text, { resultCount: 1 }));
-	assert.ok(screen(second).includes(`1. Snippet: a title\n${url}\nSnippet: page text`));
 });
 
-it("shows optional match evidence directly and counts only hidden evidence", (t) => {
+it("adds optional match evidence only in the expanded view", (t) => {
 	theme(t);
 	const request = { query: "parsers", extra_snippets: true };
 	const component = card(request);
@@ -160,15 +149,9 @@ it("shows optional match evidence directly and counts only hidden evidence", (t)
 		component.updateResult(result(text, { resultCount: 1, offset: 0 }));
 	};
 	const excerpt = "Additional excerpts: wording from the source";
-	update([excerpt]);
-	assert.match(
-		screen(component),
-		/1\. Ranked first\nhttps:\/\/example\.org\/source\n2 days ago\nPublished: wording from the source\n- Additional excerpts: wording from the source$/,
-	);
-	assert.doesNotMatch(screen(component), /^Additional excerpts:$|to expand/m);
 	update([excerpt, "Second excerpt"]);
-	assert.match(screen(component), /\.\.\. \(1 more line, ctrl\+g to expand\)$/);
-	assert.doesNotMatch(screen(component), /Second excerpt/);
+	assert.match(screen(component), /\.\.\. \(ctrl\+g to expand\)$/);
+	assert.doesNotMatch(screen(component), /Ranked first|2 days ago|Additional excerpts|Second excerpt/);
 	component.setExpanded(true);
 	assert.match(screen(component), /^Published: 2 days ago$/m);
 	assert.match(
@@ -190,7 +173,10 @@ it("distinguishes no matches, exhausted search pages, and actual producer errors
 		result("Brave Search results:\n\n1. Match", { resultCount: 1, offset: 9, moreResultsAvailable: true }),
 	);
 	assert.match(screen(component), /Found 1 match on search page 10; search page limit reached\./);
-	assert.doesNotMatch(screen(component), /more results follow|to expand/);
+	assert.doesNotMatch(screen(component), /more results follow|1\. Match/);
+	assert.match(screen(component), /\.\.\. \(ctrl\+g to expand\)$/);
+	component.updateResult(result("1. Evidence", { resultCount: 1, offset: 0, outputTruncated: true }));
+	assert.match(screen(component), /Found 1 match on search page 1\. · search output shortened/);
 	component.updateResult(result("Brave Search returned HTTP 429", { resultCount: 0 }, true));
 	assert.match(screen(component), /Brave Search returned HTTP 429/);
 	assert.doesNotMatch(screen(component), /No matches|to expand/);
@@ -204,17 +190,13 @@ it("clips to Pi width, uses one hint after progress, and bounds a single long bo
 		freshness: "2025-01-01to2026-01-01",
 		extra_snippets: true,
 	});
-	assert.match(screen(component, 55), /…\n\.\.\. \(ctrl\+g to expand\)$/);
+	assert.equal(screen(component, 55), "web_search parsers\n... (ctrl+g to expand)");
 	component.updateResult(result(""), true);
 	assert.match(screen(component, 55), /Searching the web…\n\.\.\. \(ctrl\+g to expand\)$/);
 	assert.equal(screen(component, 55).match(/to expand/g)?.length, 1);
 	component.updateResult(result(`Search header\n\n1. ${"X".repeat(32_001)}\u202e\x1b[31mTAIL`, { resultCount: 1 }));
-	assert.equal(
-		screen(component, 50)
-			.split("\n")
-			.filter((line) => /^(?:1\.(?: |$)|X)/.test(line)).length,
-		5,
-	);
+	assert.equal(screen(component, 50).split("\n").length, 3);
+	assert.doesNotMatch(screen(component, 50), /XXX|Truncated/);
 	for (const row of component.render(50)) {
 		assert.ok(visibleWidth(row) <= 50);
 		assert.doesNotMatch(row, /\x1b\[0m/);

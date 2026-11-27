@@ -421,16 +421,15 @@ on a redirect. The outcome states what the retained page returned, whether
 more records follow, and any budget needed for the next complete link record. No match
 in retained excerpts or links does not establish absence from the whole page.
 
-The collapsed result previews the returned excerpts or links, not the fetch
-preamble. The reader records an offset into the retained text without copying
-the records. Expansion restores the fetch and coverage context, the bounded
-retained text, the exact continuation call, and counts for the bytes downloaded
-and redirects followed.
+Expansion shows the returned excerpts or links, fetch and coverage context,
+the exact continuation call, and counts for bytes downloaded and redirects
+followed. The reader records an offset into the retained text without copying
+the records.
 
-The `web_search` card shows the query, search controls, corrected query when
-reported, and the match count for the current page. Its preview starts at the
-first ranked match. Expansion carries the retained search text, the exact next
-call when available, and the diagnostic for a failed request.
+The `web_search` card shows the query and the match count for the current page.
+Expansion shows search controls, the corrected query if reported, the retained
+search text, the exact next call when available, and the diagnostic for a
+failed request.
 
 ## Dependencies
 

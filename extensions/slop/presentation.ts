@@ -1,11 +1,11 @@
 import { homedir } from "node:os";
 import { sep } from "node:path";
-import { type Theme, type ToolDefinition, truncateToVisualLines } from "@earendil-works/pi-coding-agent";
+import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { compile } from "@earendil-works/pi-schema";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { catalogPreviewRows, CheckParams, RecordParams, ViewParams } from "./tool-contract.ts";
-import { idPattern, proseKinds, scopes } from "./vocabulary.ts";
 import { bodyText, singleLine } from "./presentation-text.ts";
+import { CheckParams, RecordParams, ViewParams } from "./tool-contract.ts";
+import { idPattern, proseKinds, scopes } from "./vocabulary.ts";
 
 export type SlopTool = "slop" | "slop_check" | "slop_record";
 type Call = NonNullable<ToolDefinition["renderCall"]>;
@@ -112,16 +112,11 @@ export function clipRow(line: string, width: number): string {
 	);
 }
 
-export function expansionHint(theme: Theme, context: Hints, width: number, clickable: boolean, hidden = 0): string[] {
+export function expansionHint(theme: Theme, context: Hints, width: number, clickable: boolean): string[] {
 	const hasKey = Boolean(context.keyText?.(expand));
 	if (!hasKey && !clickable) return [];
 	const action = hasKey ? context.keyHint(expand, "to expand") : theme.fg("muted", "click to expand");
-	return [
-		clipRow(
-			theme.fg("muted", `... (${hidden ? `${count(hidden, "more line")}, ` : ""}`) + action + theme.fg("muted", ")"),
-			width,
-		),
-	];
+	return [clipRow(theme.fg("muted", "... (") + action + theme.fg("muted", ")"), width)];
 }
 
 function rows(render: (width: number) => string[]) {
@@ -137,17 +132,16 @@ function rows(render: (width: number) => string[]) {
 	};
 }
 
-const callLines = (name: SlopTool, target: Target, theme: Theme) => [
-	theme.fg("toolTitle", theme.bold(name)) + (target.subject ? ` ${theme.fg("accent", target.subject)}` : ""),
-	...(target.facts?.length ? [theme.fg("muted", target.facts.join(" · "))] : []),
-];
+const callLine = (name: SlopTool, target: Target, theme: Theme) =>
+	theme.fg("toolTitle", theme.bold(name)) + (target.subject ? ` ${theme.fg("accent", target.subject)}` : "");
 
-function callAddsDetail(target: Target, lines: string[], width: number): boolean {
-	return Boolean(target.more?.length) || lines.some((line) => visibleWidth(line) > width);
+function callAddsDetail(target: Target, line: string, width: number): boolean {
+	return Boolean(target.more?.length || target.facts?.length) || visibleWidth(line) > width;
 }
 
-function expandedCall(lines: string[], target: Target, theme: Theme, width: number): string[] {
-	const output = lines.flatMap((line) => wrapTextWithAnsi(line, width));
+function expandedCall(line: string, target: Target, theme: Theme, width: number): string[] {
+	const output = wrapTextWithAnsi(line, width);
+	if (target.facts?.length) output.push(...wrapTextWithAnsi(theme.fg("muted", target.facts.join(" · ")), width));
 	for (const field of target.more ?? []) output.push(...wrapTextWithAnsi(theme.fg("muted", `  ${field()}`), width));
 	return output;
 }
@@ -157,12 +151,12 @@ export function callCard(name: SlopTool): Call {
 		const state = context.state as { hasResult?: boolean };
 		state.hasResult = false;
 		const target = targets[name](object(args));
-		const lines = callLines(name, target, theme);
+		const line = callLine(name, target, theme);
 		return rows((width) => {
 			if (width <= 0) return [];
-			if (context.expanded) return expandedCall(lines, target, theme, width);
-			const display = lines.map((line) => clipRow(line, width));
-			if (!state.hasResult && callAddsDetail(target, lines, width)) {
+			if (context.expanded) return expandedCall(line, target, theme, width);
+			const display = [clipRow(line, width)];
+			if (!state.hasResult && callAddsDetail(target, line, width)) {
 				display.push(...expansionHint(theme, context, width, false));
 			}
 			return display;
@@ -199,7 +193,8 @@ function checkOutcome(details: Record<string, unknown>) {
 	const findings = nonnegative(details.findingCount);
 	const skipped = nonnegative(details.skippedCount);
 	if (findings === undefined || skipped === undefined) return undefined;
-	const outcome = `${findings ? count(findings, "slop detector finding") : "No slop detector findings"}.`;
+	const summary = findings ? count(findings, "slop detector finding") : "No slop detector findings";
+	const outcome = `${summary}${skipped ? " in checked inputs" : ""}.`;
 	const limits: string[] = [];
 	if (skipped) limits.push(`${count(skipped, "input")} skipped`);
 	if (details.reportLimited === true) limits.push("8 KiB report limit reached");
@@ -234,18 +229,10 @@ function catalogOutcome(kind: "catalog" | "starter", total: number, list: Record
 	return `${[entries, ...availability].join("; ")}.`;
 }
 
-function catalogListView(list: Record<string, unknown>) {
-	const { kind, rows, hasGuidance } = list;
+function catalogListOutcome(list: Record<string, unknown>): string {
+	const kind = list.kind;
 	const total = nonnegative(list.count);
-	if (kind !== "catalog" && kind !== "starter") return undefined;
-	if (total === undefined || typeof hasGuidance !== "boolean" || !Array.isArray(rows)) return undefined;
-	if (rows.length !== Math.min(total, catalogPreviewRows) || !rows.every((row) => typeof row === "string"))
-		return undefined;
-	return {
-		outcome: catalogOutcome(kind, total, list),
-		preview: bodyText(rows.join("\n")),
-		hasMore: hasGuidance || total > rows.length,
-	};
+	return (kind === "catalog" || kind === "starter") && total !== undefined ? catalogOutcome(kind, total, list) : "";
 }
 
 function withoutDuplicateOutcome(body: string, outcome: string): string {
@@ -253,51 +240,28 @@ function withoutDuplicateOutcome(body: string, outcome: string): string {
 	return body.startsWith(`${outcome}\n`) ? body.slice(outcome.length + 1) : body;
 }
 
-interface ResultRows {
+interface ResultView {
 	outcome: string;
-	body: string;
-	rest: string;
+	expanded: string;
 	limit: string;
-	error: boolean;
-	preview: string;
-	hasMore: boolean;
-	catalogList: boolean;
 }
 
-function expandedResult(result: ResultRows, theme: Theme, width: number): string[] {
-	const { outcome, body, rest, limit, error, catalogList } = result;
-	if (error) return ["", ...styledBody(body || outcome, width, (line) => theme.fg("error", line))];
-	if (catalogList && body) return ["", ...styledBody(body, width, (line) => theme.fg("toolOutput", line))];
-	return [
-		"",
-		...styledBody(outcome, width, (line) => theme.fg("toolOutput", line)),
-		...styledBody(rest, width, (line) => theme.fg("toolOutput", line)),
-		...(limit ? wrapTextWithAnsi(limit, width) : []),
-	];
-}
-
-function styledBody(text: string, width: number, style: (line: string) => string): string[] {
-	return text ? wrapTextWithAnsi(text, width).map(style) : [];
-}
-
-function collapsedResult(
-	result: ResultRows,
-	theme: Theme,
-	context: Hints,
-	width: number,
-	extraCall: boolean,
-): string[] {
-	const { outcome, limit, error, hasMore, catalogList } = result;
-	const preview = truncateToVisualLines(result.preview, catalogPreviewRows, width, 0, "start");
-	const lines = [""];
-	if (outcome) lines.push(clipRow(theme.fg(error ? "error" : "toolOutput", outcome), width));
-	for (const line of preview.visualLines) lines.push(theme.fg("toolOutput", line));
-	if (limit) lines.push(clipRow(limit, width));
-	const clipped = visibleWidth(outcome) > width || visibleWidth(limit) > width;
-	if (extraCall || hasMore || clipped || preview.skippedCount) {
-		lines.push(...expansionHint(theme, context, width, true, catalogList ? 0 : preview.skippedCount));
+function resultLines(view: ResultView, theme: Theme, width: number, expanded: boolean, error: boolean): string[] {
+	const color = error ? "error" : "toolOutput";
+	const { outcome, limit } = view;
+	const warning = limit ? theme.fg("warning", limit) : "";
+	if (expanded) {
+		return [
+			"",
+			...wrapTextWithAnsi(view.expanded, width).map((line) => theme.fg(color, line)),
+			...(warning ? wrapTextWithAnsi(warning, width) : []),
+		];
 	}
-	return lines;
+	const lead = theme.fg(color, outcome);
+	if (warning && visibleWidth(`${lead} ${warning}`) > width) {
+		return ["", clipRow(lead, width), clipRow(warning, width)];
+	}
+	return ["", warning ? `${lead} ${warning}` : clipRow(lead, width)];
 }
 
 export function resultCard(name: SlopTool): Result {
@@ -307,55 +271,50 @@ export function resultCard(name: SlopTool): Result {
 			result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n"),
 		).trimEnd();
 		const args = object(context.args);
-		const display = resultRows(name, context.args, object(result.details), body, context.isError, theme);
+		const view = resultView(name, context.args, object(result.details), body, context.isError);
 		const target = targets[name](args);
-		const header = callLines(name, target, theme);
+		const header = callLine(name, target, theme);
 		return rows((width) => {
 			if (width <= 0) return [];
-			if (options.expanded) return expandedResult(display, theme, width);
-			return collapsedResult(display, theme, context, width, callAddsDetail(target, header, width));
+			const output = resultLines(view, theme, width, options.expanded, context.isError);
+			if (
+				!options.expanded &&
+				(view.expanded !== view.outcome ||
+					visibleWidth(view.outcome) > width ||
+					visibleWidth(view.limit) > width ||
+					callAddsDetail(target, header, width))
+			) {
+				output.push(...expansionHint(theme, context, width, true));
+			}
+			return output;
 		});
 	};
 }
 
-function resultRows(
+function resultView(
 	name: SlopTool,
 	args: unknown,
 	details: Record<string, unknown>,
 	body: string,
 	error: boolean,
-	theme: Theme,
-): ResultRows {
+): ResultView {
 	if (name === "slop" && !error && !id(object(args).entry)) {
-		const list = catalogListView(object(details.list));
-		return {
-			outcome:
-				list?.outcome ??
-				(summaryOf(details).replace(/^1 (slop|starter) entries$/u, "1 $1 entry.") || "Catalog list returned."),
-			body,
-			rest: "",
-			limit: "",
-			error: false,
-			preview: list?.preview ?? "",
-			hasMore: list?.hasMore ?? Boolean(body),
-			catalogList: true,
-		};
+		const outcome =
+			catalogListOutcome(object(details.list)) ||
+			summaryOf(details).replace(/^1 (slop|starter) entries$/u, "1 $1 entry.") ||
+			"Catalog list returned.";
+		return { outcome, expanded: body || outcome, limit: "" };
 	}
 	const firstLine = body.split("\n").map(singleLine).find(Boolean) ?? "";
-	const { outcome, limits } = error
-		? { outcome: errorOutcome(name, args, firstLine), limits: [] }
-		: outcomeOf(name, details, firstLine);
-	const rest = withoutDuplicateOutcome(body, outcome);
-	const previewEntry = name === "slop" && !error;
+	if (error) {
+		const outcome = errorOutcome(name, args, firstLine);
+		return { outcome, expanded: body || outcome, limit: "" };
+	}
+	const { outcome, limits } = outcomeOf(name, details, firstLine || "No result text.");
 	return {
 		outcome,
-		body,
-		rest,
-		limit: limits.length ? theme.fg("warning", `[${limits.join("; ")}]`) : "",
-		error,
-		preview: previewEntry ? rest : "",
-		hasMore: !previewEntry && Boolean(rest),
-		catalogList: false,
+		expanded: [outcome, withoutDuplicateOutcome(body, outcome)].filter(Boolean).join("\n"),
+		limit: limits.length ? `[${limits.join("; ")}]` : "",
 	};
 }
 

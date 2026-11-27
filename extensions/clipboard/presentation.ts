@@ -129,9 +129,7 @@ function callFacts(tool: Tool, args: Fields, copySize: string): string {
 }
 
 function hiddenCall(tool: Tool, subject: string, facts: string, args: Fields, width: number): boolean {
-	return (
-		visibleWidth(`${tool} ${subject}`.trimEnd()) > width || visibleWidth(facts) > width || Boolean(oneLine(args.cursor))
-	);
+	return Boolean(visibleWidth(`${tool} ${subject}`.trimEnd()) > width || facts || oneLine(args.cursor));
 }
 
 function expandedArguments(args: Fields, copySize: string): string {
@@ -153,9 +151,9 @@ function renderCall(tool: Tool, value: unknown, theme: Theme, context: CardConte
 	const title = theme.fg("toolTitle", theme.bold(tool));
 	const heading = subject ? `${title} ${theme.fg("accent", subject)}` : title;
 	return atWidth((width) => {
-		const body = [clip(heading, width), ...rows(facts, width, context.expanded).map((row) => theme.fg("muted", row))];
+		const body = [...rows(heading, width, context.expanded)];
 		const hidden = hiddenCall(tool, subject, facts, args, width);
-		if (context.expanded && (hidden || copySize))
+		if (context.expanded && hidden)
 			body.push(...rows(expandedArguments(args, copySize), width, true).map((row) => theme.fg("muted", row)));
 		if (!context.expanded && hidden && !context.state?.hasClipboardResult && context.keyText?.("app.tools.expand"))
 			body.push(clip(hint(theme, context), width));
@@ -197,6 +195,13 @@ export function restoreOutcome(details: Fields): string {
 	return amount ? `Restored to the clipboard (${amount}).` : "Clipboard restore details are not available.";
 }
 
+function copyOutcome(details: Fields, amount: string): string {
+	if (!amount) return "Clipboard copy details are not available.";
+	if (oneLine(details.archiveError)) return `Copied ${amount}, but the archive write failed.`;
+	if (oneLine(details.id)) return `Copied and archived ${amount}.`;
+	return `Copied ${amount}${details.archived === false ? " without archiving" : ""}.`;
+}
+
 function outcome(tool: Tool, details: Fields, args: Fields): string {
 	const amount = size(details);
 	const more = count(details, "nextOffset") === undefined ? "" : "; more content follows";
@@ -204,8 +209,7 @@ function outcome(tool: Tool, details: Fields, args: Fields): string {
 		case "clipboard_list":
 			return listOutcome(details, args) ?? "Clipboard history details are not available.";
 		case "clipboard_copy":
-			if (!amount) return "Clipboard copy details are not available.";
-			return `Copied to the clipboard (${amount})${details.archived === false ? " without archiving" : ""}.`;
+			return copyOutcome(details, amount);
 		case "clipboard_restore":
 			return restoreOutcome(details);
 		case "clipboard_paste":
@@ -260,22 +264,31 @@ function receipt(tool: Tool, details: Fields, args: Fields, text: string, isErro
 	if (isError) return errorReceipt(tool, text);
 	const archiveError = tool === "clipboard_copy" ? oneLine(details.archiveError) : "";
 	const scan = record(details.scan);
+	const skipped = (count(scan, "malformed") ?? 0) + (count(scan, "oversized") ?? 0);
 	const warnings = [
 		archiveError && `Clipboard history write failed: ${archiveError}`,
 		details.retainedTruncated === true && "Retained result was truncated",
-		(count(scan, "malformed") ?? 0) + (count(scan, "oversized") ?? 0) > 0 &&
-			"Partial coverage: archive records skipped",
+		skipped > 0 && "Partial coverage: archive records skipped",
 	].filter(Boolean);
 	const id = !archiveError && tool === "clipboard_copy" ? oneLine(details.id) : "";
-	const facts = [
-		id && `Archive entry ${id}.`,
-		details.controlsEscaped === true && "Terminal controls were escaped.",
-	].filter(Boolean);
-	const lead = [outcome(tool, details, args), ...facts].join(" ");
+	const lead = [
+		outcome(tool, details, args),
+		details.retainedTruncated === true ? "Result truncated." : "",
+		skipped > 0 ? "Archive records skipped." : "",
+	]
+		.filter(Boolean)
+		.join(" ");
 	const body = repeatsOutcome(tool, details, args) ? "" : text;
 	return {
 		outcome: lead,
-		body: [body, nextCall(tool, args, details)].filter(Boolean).join("\n"),
+		body: [
+			id && `Archive entry ${id}.`,
+			details.controlsEscaped === true && "Terminal controls were escaped.",
+			body,
+			nextCall(tool, args, details),
+		]
+			.filter(Boolean)
+			.join("\n"),
 		warning: warnings.join("; "),
 	};
 }
@@ -346,10 +359,10 @@ function renderResult(
 			"",
 			...rows(view.outcome, width, options.expanded).map((row) => theme.fg(color, row)),
 			...body.map((row) => theme.fg(color, row)),
-			...rows(warning, width, options.expanded).map((row) => theme.fg("warning", row)),
+			...(options.expanded ? rows(warning, width, true).map((row) => theme.fg("warning", row)) : []),
 		];
 		if (options.expanded) return lines;
-		if (view.body || discloseCall(width) || visibleWidth(view.outcome) > width || visibleWidth(warning) > width)
+		if (view.body || warning || discloseCall(width) || visibleWidth(view.outcome) > width)
 			lines.push(clip(hint(theme, context), width));
 		return lines;
 	});

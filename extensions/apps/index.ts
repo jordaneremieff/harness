@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AppPaneUpdater, readAppPaneBuild } from "./app-update.ts";
+import { toolDisplay } from "./display.ts";
 import {
 	outcomeText,
 	resolveWith,
@@ -53,7 +54,14 @@ export default function apps(pi: ExtensionAPI): void {
 			);
 		},
 	});
+	const display = toolDisplay();
+	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
+	const requestDisplay = pi.events.on("harness:tool-display:request", (value) => {
+		if (isRecord(value) && value.version === 1) publishDisplay();
+	});
+	publishDisplay();
 	pi.registerTool({
+		...display.tools[0],
 		name: "apps_show",
 		label: "App pane",
 		description: SHOW_DESCRIPTION,
@@ -96,6 +104,7 @@ export default function apps(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", (_event, ctx) => {
 		lifetime.abort();
 		requestPalette();
+		requestDisplay();
 		if (ctx.mode === "tui") ctx.ui.setStatus("apps", undefined);
 	});
 }

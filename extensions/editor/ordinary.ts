@@ -9,6 +9,7 @@ import {
 	type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { Static } from "@earendil-works/pi-schema";
+import { toolDisplay } from "./display.ts";
 import {
 	addEditorApplicationContext,
 	editorApplicationMessage,
@@ -155,7 +156,14 @@ export function registerOrdinary(pi: ExtensionAPI): void {
 			}
 		},
 	});
+	const [display] = toolDisplay().tools;
+	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
+	const requestDisplay = pi.events.on("harness:tool-display:request", (value) => {
+		if (value && typeof value === "object" && "version" in value && value.version === 1) publishDisplay();
+	});
+	publishDisplay();
 	pi.registerTool({
+		...display,
 		name: "editor",
 		label: "Editor",
 		description: editorToolDescription,
@@ -270,6 +278,7 @@ export function registerOrdinary(pi: ExtensionAPI): void {
 	});
 	pi.on("session_tree", async (_event, ctx) => await closeRoom(ctx));
 	pi.on("session_shutdown", async (_event, ctx) => {
+		requestDisplay();
 		shuttingDown = true;
 		await closeRoom(ctx);
 	});

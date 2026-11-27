@@ -12,14 +12,20 @@ export type ConfigDisplayDetails = {
 
 const TOOL_NAMES = ["config_find", "config_get", EDIT_TOOL_NAME, "config_tools"] as const;
 type ToolName = (typeof TOOL_NAMES)[number];
-type Readback = { outcome: string; lines?: string[]; extra?: string[]; continuation?: string; warning?: string };
+type Readback = {
+	outcome: string;
+	lines?: string[];
+	extra?: string[];
+	continuation?: string;
+	qualifier?: string;
+	warning?: string;
+};
 
 type DisplayRecord = Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">;
 type Color = Parameters<Theme["fg"]>[0];
 type CardState = { hasResult?: boolean; hasArguments?: boolean };
 type CardContext = Parameters<NonNullable<ToolDefinition["renderCall"]>>[2] & { state: CardState };
 const EXPAND = "app.tools.expand";
-const BODY_LINES = 5;
 const DISPLAY_LIMIT = 32_000;
 
 const outcomes: Record<EditResult["outcome"], string> = {
@@ -66,8 +72,8 @@ function sized(draw: (width: number) => string[]): Component {
 	};
 }
 
-function hint(theme: Theme, context: CardContext, width: number, hidden = 0): string {
-	const prefix = hidden ? `... (${hidden} more lines, ` : "... (";
+function hint(theme: Theme, context: CardContext, width: number): string {
+	const prefix = "... (";
 	const key = context.keyText(EXPAND);
 	const plain = `${prefix}${key ? `${key} to expand` : "click to expand"})`;
 	if (!key || visibleWidth(plain) > width) return theme.fg("muted", clipLine(plain, width));
@@ -121,7 +127,7 @@ function editCall(args: Record<string, unknown>) {
 	const ids = settingIds(changes);
 	const mode = args.mode === "commit" || args.mode === "preview" ? args.mode : "";
 	const count = changes.length;
-	const subject = ids.join(", ");
+	const subject = [mode === "commit" ? "save" : mode, ids.join(", ")].filter(Boolean).join(" ");
 	const scopes = [
 		...new Set(
 			changes.flatMap((change) => {
@@ -130,13 +136,7 @@ function editCall(args: Record<string, unknown>) {
 			}),
 		),
 	];
-	const facts = [
-		mode === "commit" ? "save" : mode,
-		count ? `${count} ${count === 1 ? "change" : "changes"}` : "",
-		...scopes,
-	]
-		.filter(Boolean)
-		.join(" · ");
+	const facts = [count ? `${count} ${count === 1 ? "change" : "changes"}` : "", ...scopes].filter(Boolean).join(" · ");
 	const safeChanges = changes.map((value) => {
 		const change = record(value);
 		const allowed = ["id", "action", "scope", "schema", "type"].filter((key) => typeof change[key] === "string");
@@ -208,14 +208,18 @@ function callRenderer(name: ToolName): NonNullable<ToolDefinition["renderCall"]>
 		context.state.hasResult = false;
 		return sized((width) => {
 			const subjectClipped = Object.keys(fullArgs).length > 0 && visibleWidth(`${name} ${subject}`) > width;
-			const factsClipped = visibleWidth(facts) > width;
-			context.state.hasArguments = Boolean(hiddenArgs || subjectClipped || factsClipped);
-			const rows = [callHeading(name, theme, subject, width)];
-			if (facts) rows.push(theme.fg("muted", clipLine(facts, width)));
-			if (context.expanded && context.state.hasArguments) rows.push(...paintArguments(theme, width, fullArgs));
-			if (!context.expanded && context.state.hasArguments && !context.state.hasResult && context.keyText(EXPAND))
-				rows.push(hint(theme, context, width));
-			return rows;
+			context.state.hasArguments = Boolean(hiddenArgs || subjectClipped || facts);
+			const heading = callHeading(name, theme, subject, width);
+			if (context.expanded) {
+				return [
+					heading,
+					...wrapped(facts, width).map((line) => theme.fg("muted", line)),
+					...(hiddenArgs || subjectClipped ? paintArguments(theme, width, fullArgs) : []),
+				];
+			}
+			return context.state.hasArguments && !context.state.hasResult && context.keyText(EXPAND)
+				? [heading, hint(theme, context, width)]
+				: [heading];
 		});
 	};
 }
@@ -282,6 +286,38 @@ export function describeConfigEdit(result: EditResult): NonNullable<ConfigDispla
 	return { mode: result.mode, outcome: result.outcome, lines: editLines(result.summary, docs) };
 }
 
+function editApplication(documents: unknown): string {
+	const saved = list(documents)
+		.map(record)
+		.filter((doc) => doc.outcome === "committed");
+	if (saved.some((doc) => string(doc.error))) return "Saved value not verified.";
+	const states = new Set(
+		saved.flatMap((doc) =>
+			list(doc.changes)
+				.map(record)
+				.filter((change) => change.status === "ok")
+				.map((change) => record(change.apply).state ?? "unknown"),
+		),
+	);
+	if (states.size > 1) return "Session effect varies by setting.";
+	switch (states.values().next().value) {
+		case "applied":
+			return "Loaded value matches.";
+		case "next-use":
+			return "Takes effect on next use.";
+		case "pending-reload":
+			return "Reload required.";
+		case "pending-restart":
+			return "Restart required.";
+		case "masked":
+			return "An override masks the saved value here.";
+		case "unknown":
+			return "Session effect not verified.";
+		default:
+			return "";
+	}
+}
+
 function editReadback(details: Record<string, unknown>, value: Record<string, unknown>): Readback | undefined {
 	const edit = record(details.edit);
 	const envelope = typeof value.summary === "string" && Array.isArray(value.documents) ? value : {};
@@ -289,7 +325,12 @@ function editReadback(details: Record<string, unknown>, value: Record<string, un
 	if (!outcome) return undefined;
 	const docs = list(envelope.documents).map((document) => editDocument(document, envelope.mode));
 	const lines = strings(edit.lines) && editOutcome(edit) ? edit.lines : editLines(envelope.summary, docs);
-	return { outcome, lines, extra: docs.flatMap((doc) => doc.extra) };
+	return {
+		outcome,
+		lines,
+		extra: docs.flatMap((doc) => doc.extra),
+		qualifier: envelope.mode === "commit" ? editApplication(envelope.documents) : "",
+	};
 }
 
 function findReadback(value: Record<string, unknown>, args: Record<string, unknown>): Readback | undefined {
@@ -314,7 +355,7 @@ function findReadback(value: Record<string, unknown>, args: Record<string, unkno
 		...(continued
 			? { continuation: `Next call: config_find ${JSON.stringify({ query, group, limit, offset: next })}` }
 			: {}),
-		...(limitations.length ? { warning: "[Discovery coverage is partial.]" } : {}),
+		...(limitations.length ? { qualifier: "Coverage is partial.", warning: "[Discovery coverage is partial.]" } : {}),
 	};
 }
 
@@ -365,6 +406,12 @@ function settingDetails(entry: Record<string, unknown>): string[] {
 	return [...base, ...[resolved.note, entry.readOnly, ...list(entry.diagnostics)].map(string).filter(Boolean)];
 }
 
+function getQualifier(entries: Record<string, unknown>[], notRetained: boolean): string {
+	if (notRetained) return "Large values omitted.";
+	const different = entries.filter((entry) => record(entry.session).differs === true).length;
+	return different ? `${countOf(different, "loaded value")} ${different === 1 ? "differs" : "differ"}.` : "";
+}
+
 function getReadback(value: Record<string, unknown>): Readback | undefined {
 	if (!Array.isArray(value.entries) || !strings(value.missing)) return undefined;
 	const entries = value.entries.map(record).filter((entry) => typeof entry.id === "string");
@@ -388,14 +435,14 @@ function getReadback(value: Record<string, unknown>): Readback | undefined {
 	const matched = entries.length
 		? `Read ${countOf(entries.length, "setting")}.`
 		: "None of the requested settings were found.";
+	const notRetained = extra.some((line) => line.endsWith(": [Value not retained]"));
 	return {
 		outcome:
 			missing.length && entries.length ? `${matched} ${countOf(missing.length, "requested ID")} not found.` : matched,
 		lines,
 		extra,
-		...(extra.some((line) => line.endsWith(": [Value not retained]"))
-			? { warning: "[Values over 32768 bytes were not retained. Open them in /config.]" }
-			: {}),
+		qualifier: getQualifier(entries, notRetained),
+		warning: notRetained ? "[Values over 32768 bytes were not retained. Open them in /config.]" : "",
 	};
 }
 
@@ -441,7 +488,9 @@ function toolsReadback(value: Record<string, unknown>): Readback | undefined {
 	});
 	const outcome = value.session
 		? (toolChangeOutcome(change, rejected.length) ??
-			`This session selects ${active.length} of ${value.tools.length} available tools.`)
+			(active.length
+				? `This session selects ${active.length} of ${value.tools.length} available tools.`
+				: "This session selects no tools."))
 		: string(value.reason) || "This host exposes no current-session tool controls.";
 	return {
 		outcome,
@@ -518,9 +567,14 @@ function errorReadback(name: ToolName, details: Record<string, unknown>, error: 
 	const limited = details.outputLimited === true;
 	const effect = limited && name === EDIT_TOOL_NAME ? editOutcome(record(details.edit)) : undefined;
 	return {
-		outcome: oneLine(first) || "Config did not return an error message.",
-		lines: [...(effect ? [effect] : []), ...tail],
-		...(limited ? { warning: "[Result exceeded the output limit; complete details were not retained.]" } : {}),
+		outcome: effect || oneLine(first) || "Config did not return an error message.",
+		lines: [...(effect ? [first] : []), ...tail],
+		...(limited
+			? {
+					qualifier: "Receipt exceeded the output limit.",
+					warning: "[Result exceeded the output limit; complete details were not retained.]",
+				}
+			: {}),
 	};
 }
 
@@ -531,30 +585,32 @@ function paintResult(
 	color: Color,
 	readback: Readback,
 ): Component {
-	const outcome = bounded(oneLine(readback.outcome));
-	const text = bodyText((readback.lines ?? []).join("\n"));
-	const preview = bounded(text);
-	const extra = bodyText((readback.extra ?? []).join("\n"));
-	const full = bounded([readback.continuation, text, extra].filter(Boolean).join("\n"));
-	const bodyColor = color === "error" && !readback.warning ? "error" : "toolOutput";
+	const outcome = bounded(oneLine([readback.outcome, readback.qualifier].filter(Boolean).join(" ")));
+	const full = bounded(
+		bodyText([readback.continuation, ...(readback.lines ?? []), ...(readback.extra ?? [])].filter(Boolean).join("\n")),
+	);
 	return sized((width) => {
-		const outcomeRows = expanded ? wrapped(outcome.body, width) : [clipLine(outcome.body, width)];
-		const rows = ["", ...outcomeRows.map((line) => theme.fg(color, line))];
-		const body = expanded ? full : preview;
-		const shown = expanded
-			? { visualLines: wrapped(body.body, width), skippedCount: 0 }
-			: truncateToVisualLines(body.body, BODY_LINES, width, 0, "start");
-		rows.push(...shown.visualLines.map((line) => theme.fg(bodyColor, line)));
-		const limit = outcome.limit ?? body.limit ?? readback.warning;
-		if (limit) rows.push(theme.fg("warning", clipLine(limit, width)));
-		if (
-			!expanded &&
-			(shown.skippedCount ||
-				full.body !== preview.body ||
-				visibleWidth(outcome.body) > width ||
-				context.state.hasArguments)
-		)
-			rows.push(hint(theme, context, width, shown.skippedCount));
+		const rows = [
+			"",
+			...(expanded ? wrapped(outcome.body, width) : [clipLine(outcome.body, width)]).map((line) =>
+				theme.fg(color, line),
+			),
+		];
+		if (expanded) {
+			rows.push(...wrapped(full.body, width).map((line) => theme.fg(color, line)));
+			for (const limit of [outcome.limit, full.limit, readback.warning]) {
+				if (limit) rows.push(...wrapped(limit, width).map((line) => theme.fg("warning", line)));
+			}
+		} else if (
+			full.body.trim() ||
+			full.limit ||
+			outcome.limit ||
+			readback.warning ||
+			visibleWidth(outcome.body) > width ||
+			context.state.hasArguments
+		) {
+			rows.push(hint(theme, context, width));
+		}
 		return rows;
 	});
 }

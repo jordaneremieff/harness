@@ -89,11 +89,10 @@ test("Pi shows a managed status with full identity and a bounded snapshot clock"
 	assert.deepEqual(status.rows().slice(2, 6), [
 		`jobs status ${fullId}`,
 		"",
-		"Job recorded as running at observation.",
-		"elapsed 1.5s at observation",
+		"Job still running; elapsed 1.5s at observation.",
+		"... (4 more lines, click to expand)",
 	]);
-	assert.match(status.text(), /elapsed 1\.5s at observation\n~\/work\nsession\ncommand preview npm test/u);
-	assert.doesNotMatch(status.text(), /unknown|to expand|Do not poll/u);
+	assert.doesNotMatch(status.text(), /unknown|command preview|Do not poll/u);
 	const narrow = status.rows(32);
 	assert.match(narrow[2] ?? "", /^jobs status .+…$/u);
 	assert.ok(status.component.render(32).every((row) => visibleWidth(row) <= 32));
@@ -101,6 +100,7 @@ test("Pi shows a managed status with full identity and a bounded snapshot clock"
 	assert.equal(status.click(2, 32)?.handled, true);
 	assert.match(status.text(32).replace(/\n/gu, ""), new RegExp(fullId, "u"));
 	assert.doesNotMatch(status.text(32), /to expand/u);
+	assert.match(status.text(), /~\/work\nsession\ncommand preview npm test/u);
 });
 
 test("Pi supplies the error bit separately and the card shows the original diagnostic without guessing cancellation", () => {
@@ -118,7 +118,7 @@ test("Pi supplies the error bit separately and the card shows the original diagn
 	failed.result(undefined, errorRows.join("\n"), true);
 	assert.match(failed.text(), /jobs cancel 27\n\nCancelled was not confirmed\./u);
 	assert.doesNotMatch(failed.text(), /\nCancelled\n|Last diagnostic|unknown/u);
-	assertHintAtEnd(failed.rows(), /^\.\.\. \(1 more line, ctrl\+p to expand\)$/u);
+	assertHintAtEnd(failed.rows(), /^\.\.\. \(6 more lines, ctrl\+p to expand\)$/u);
 	assert.doesNotMatch(failed.component.render(100).join("\n"), /\x1b\[2J/u);
 	assert.equal(failed.click(4)?.handled, true);
 	assert.match(failed.text(), /Last diagnostic/u);
@@ -138,6 +138,8 @@ test("Pi supplies the error bit separately and the card shows the original diagn
 		},
 	});
 	assert.match(cancelled.text(), /^Cancelled$/mu);
+	assert.doesNotMatch(cancelled.text(), /Backend error/);
+	cancelled.component.setExpanded(true);
 	assert.match(cancelled.text(), /final 1m 30s/u);
 	assert.match(cancelled.text(), /Backend error after cancellation: non-abort diagnostic/u);
 	assert.doesNotMatch(cancelled.text(), /unknown|not retained/u);
@@ -145,20 +147,29 @@ test("Pi supplies the error bit separately and the card shows the original diagn
 
 test("known failure, timeout and host loss facts stay distinct without synthesising an exit or clock", () => {
 	setExpandKeys([]);
-	for (const [job, expected] of [
-		[{ status: "failed", exitCode: 2, error: "bad\x1b[2J thing" }, /Job failed\.\nexit 2\nExecution error: bad thing/u],
+	for (const [job, expected, evidence] of [
+		[
+			{ status: "failed", exitCode: 2, error: "bad\x1b[2J thing" },
+			/Job failed \(exit 2\)\./u,
+			/Execution error: bad thing/u,
+		],
 		[
 			{ status: "timed_out", exitCode: null, timeoutSeconds: 5, error: "backend stopped" },
-			/Job timed out\.\ntimeout 5s\nBackend error after timeout: backend stopped/u,
+			/Job timed out after 5s\./u,
+			/Backend error after timeout: backend stopped/u,
 		],
 		[
 			{ status: "lost", observedAt: 1000, startedAt: 0 },
-			/Job lost its host\.\nOutput is unavailable after host loss; the command was not run again\./u,
+			/Job lost its host\./u,
+			/Output is unavailable after host loss; the command was not run again\./u,
 		],
 	] as const) {
 		const status = card("jobs", { action: "status" });
 		status.result({ job });
 		assert.match(status.text(), expected);
+		assert.doesNotMatch(status.text(), evidence);
+		status.component.setExpanded(true);
+		assert.match(status.text(), evidence);
 		assert.doesNotMatch(status.text(), /unknown|at observation/u);
 	}
 });
@@ -187,11 +198,11 @@ test("list pages distinguish an empty list, an empty partial page and the exact 
 		status: "succeeded",
 	}));
 	complete.result({ jobs });
-	assert.match(complete.text(), /Listed 6 jobs\.\nsucceeded · job 0 · command preview fixture 0/u);
+	assert.match(complete.text(), /Listed 6 jobs\./u);
 	assert.doesNotMatch(complete.text(), /fixture 5/u);
-	assertHintAtEnd(complete.rows(), /1 more line, ctrl\+p to expand/u);
+	assertHintAtEnd(complete.rows(), /6 more lines, ctrl\+p to expand/u);
 	complete.result({ jobs, nextTaskCursor: cursor });
-	assertHintAtEnd(complete.rows(), /1 more line, ctrl\+p to expand/u);
+	assertHintAtEnd(complete.rows(), /6 more lines, ctrl\+p to expand/u);
 	complete.component.setExpanded(true);
 	assert.equal(complete.rows().filter((row) => row.startsWith("Listed 6 jobs")).length, 1);
 	assert.match(complete.text(), /fixture 5/u);
@@ -215,51 +226,49 @@ test("log pages show retained bytes, a real gap, pending UTF-8 and the full cont
 		},
 		"Do not poll for completion.",
 	);
-	assert.match(
-		logs.text(),
-		/Read 50 bytes from retained logs; more output is available; 2 bytes in an incomplete UTF-8 suffix\./u,
-	);
-	assert.match(logs.text(), /\*\*literal\*\*\nline {3}red!\n\[Excerpt: earlier output was discarded\]/u);
-	assert.match(logs.text(), /^cursor 25$/mu);
+	assert.match(logs.text(), /Read 50 bytes from retained logs; earlier output discarded; more output is available/u);
+	assert.doesNotMatch(logs.text(), /literal|cursor 25/);
 	assert.doesNotMatch(logs.text(), /backend detail|Do not poll|cursor:|cursor":150/u);
-	assertHintAtEnd(logs.rows(), /^\.\.\. \(click to expand\)$/u);
+	assertHintAtEnd(logs.rows(), /^\.\.\. \(2 more lines, click to expand\)$/u);
 	logs.component.setExpanded(true);
+	assert.match(logs.text(), /unfinished UTF-8/);
+	assert.match(logs.text(), /\*\*literal\*\*\nline {3}red!/u);
+	assert.match(logs.text(), /^cursor 25$/mu);
 	assert.match(logs.text(), /directory: \/work\/logs\ncommand preview: printf out/u);
 	assert.match(logs.text(), /earliest byte: 100\nnext byte: 150\nend byte: 170\nExecution error: backend detail/u);
 	assert.ok(logs.text().includes(`Continue with jobs ${JSON.stringify({ action: "logs", id: fullId, cursor: 150 })}`));
 	assert.doesNotMatch(logs.text(), /Truncated|to expand/u);
 });
 
-test("the settled Bash card counts hidden visual rows from both the command and the receipt", () => {
+test("the settled Bash card keeps the clipped command and receipt evidence behind one hint", () => {
 	setExpandKeys(["ctrl+p"]);
 	const width = 60;
 	const files = Array.from({ length: 6 }, (_, i) => `section-${i + 1}-${"x".repeat(20)}.log`);
 	const command = `wc -l ${files.join(" ")}`;
 	const launch = card("bash", { background: true, command });
-	assertHintAtEnd(launch.rows(width), /^\.\.\. \(1 more line, ctrl\+p to expand\)$/u);
+	assertHintAtEnd(launch.rows(width), /^\.\.\. \(ctrl\+p to expand\)$/u);
 	launch.result({ job: { id: fullId, status: "running", cwd: "/work", owner: "session", commandPreview: command } });
 	const compact = launch.rows(width);
-	assertHintAtEnd(compact, /^\.\.\. \(4 more lines, ctrl\+p to expand\)$/u);
+	assertHintAtEnd(compact, /^\.\.\. \(8 more lines, ctrl\+p to expand\)$/u);
 	launch.component.setExpanded(true);
-	const full = launch.rows(width).filter(Boolean);
-	const shown = compact.filter((row) => row && !row.includes("to expand"));
-	assert.equal(full.length - shown.length, 4);
+	assert.match(launch.text(width), /section-6/u);
+	assert.doesNotMatch(launch.text(width), /to expand/u);
 });
 
 test("managed Bash distinguishes the launch command, admission and an actual launch error", () => {
 	setExpandKeys([]);
 	const args = { background: true, timeout: 10, command: "one\ntwo\nthree\nfour\nfive\nsix" };
 	const pending = card("bash", args);
-	assert.match(pending.text(), /bash launch\ntimeout 10s\none\ntwo\nthree\nfour\nfive/u);
+	assert.match(pending.text(), /^bash launch one$/mu);
 	assert.doesNotMatch(pending.text(), /six|expand/u);
 	setExpandKeys(["ctrl+p"]);
 	const launch = card("bash", args);
-	assertHintAtEnd(launch.rows(), /^\.\.\. \(1 more line, ctrl\+p to expand\)$/u);
+	assertHintAtEnd(launch.rows(), /^\.\.\. \(ctrl\+p to expand\)$/u);
 	const receipt = { job: { id: fullId, status: "running", startedAt: 0, observedAt: 0 } };
 	launch.result(receipt, "Do not poll for completion.");
 	assert.match(launch.text(), new RegExp(`Accepted job ${fullId}\\.`, "u"));
 	assert.doesNotMatch(launch.text(), /ready|succeeded|elapsed|Do not poll|^six$/mu);
-	assertHintAtEnd(launch.rows(), /^\.\.\. \(1 more line, ctrl\+p to expand\)$/u);
+	assertHintAtEnd(launch.rows(), /^\.\.\. \(ctrl\+p to expand\)$/u);
 	launch.component.setExpanded(true);
 	assert.match(launch.text(), /^six$/mu);
 	assert.doesNotMatch(launch.text(), /expand/u);
@@ -277,7 +286,7 @@ test("managed Bash distinguishes the launch command, admission and an actual lau
 	assert.doesNotMatch(retained.text(), /Do not poll/u);
 });
 
-test("foreground Bash keeps its native prompt, output and measured time", () => {
+test("foreground Bash summarises the exit, leaves the output behind expansion, and keeps the measured time", () => {
 	setExpandKeys(["ctrl+p"]);
 	const shell = card("bash", { command: "printf hello" });
 	shell.component.updateResult({
@@ -287,9 +296,25 @@ test("foreground Bash keeps its native prompt, output and measured time", () => 
 		durationMs: 4200,
 	});
 	assert.match(shell.text(), /^\$ printf hello$/mu);
+	assert.match(shell.text(), /^Command finished; 1 output line\. · Took 4\.2s$/mu);
+	assert.doesNotMatch(shell.text(), /^hello$|launch|Accepted job/mu);
+	assertHintAtEnd(shell.rows(), /^\.\.\. \(ctrl\+p to expand\)$/u);
+	shell.component.setExpanded(true);
 	assert.match(shell.text(), /^hello$/mu);
-	assert.match(shell.text(), /^Took 4.2s$/mu);
-	assert.doesNotMatch(shell.text(), /launch|Accepted job/u);
+	assert.match(shell.text(), /^Took 4\.2s$/mu);
+	assert.doesNotMatch(shell.text(), /to expand/u);
+
+	const empty = card("bash", { command: "true" });
+	empty.result(undefined, "");
+	assert.match(empty.text(), /^Command finished without output\.$/mu);
+	assert.doesNotMatch(empty.text(), /to expand/u);
+
+	const failed = card("bash", { command: "exit 3" });
+	failed.result(undefined, "Diagnostic from process\n\nCommand exited with code 3", true);
+	assert.match(failed.text(), /^Command exited with code 3\.$/mu);
+	assert.doesNotMatch(failed.text(), /Diagnostic from process/u);
+	failed.component.setExpanded(true);
+	assert.match(failed.text(), /Diagnostic from process/u);
 });
 
 test("ordinary snapshots carry bounded command identity and omit a missing owner", async () => {

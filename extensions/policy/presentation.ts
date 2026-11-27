@@ -20,7 +20,6 @@ interface CardContext extends Partial<KeybindingHints> {
 
 const EXPAND = "app.tools.expand";
 const DISPLAY_LIMIT = 32_000;
-const PREVIEW_ROWS = 5;
 const HOME = homedir();
 const PRODUCER_TRUNCATION = "\n[policy text truncated]";
 
@@ -89,9 +88,9 @@ function heading(name: Name, subject: string, width: number, theme: Theme): stri
 	return room > 0 && subject ? `${title} ${row(subject, room, theme, "accent")}` : title;
 }
 
-function hint(theme: Theme, context: CardContext, width: number, skipped = 0): string {
+function hint(theme: Theme, context: CardContext, width: number): string {
 	const key = context.keyText?.(EXPAND);
-	const prefix = skipped > 0 ? `... (${skipped} more lines, ` : "... (";
+	const prefix = "... (";
 	const plain = `${prefix}${key ? `${key} to expand` : "click to expand"})`;
 	if (!key || !context.keyHint || visibleWidth(plain) > width) return row(plain, width, theme, "muted");
 	return theme.fg("muted", prefix) + context.keyHint(EXPAND, "to expand") + theme.fg("muted", ")");
@@ -225,11 +224,10 @@ function describeCall(name: Name, args: Fields): Call {
 	};
 }
 
-function callHides(name: Name, call: Call, args: Fields, width: number): boolean {
+function hasExtraArguments(name: Name, call: Call, args: Fields, width: number): boolean {
 	return (
 		Object.keys(args).some((key) => !call.visible.includes(key)) ||
-		visibleWidth(call.facts) > width ||
-		visibleWidth([name, call.subject].filter(Boolean).join(" ")) > width
+		(call.subject !== "" && name.length + 1 + visibleWidth(call.subject) > width)
 	);
 }
 
@@ -240,12 +238,14 @@ function renderCall(name: Name, value: unknown, theme: Theme, context: CardConte
 	const expanded = context.expanded ? bound(argumentText(args)) : undefined;
 	return renderAtWidth((width) => {
 		const rows = [heading(name, call.subject, width, theme)];
-		if (call.facts) rows.push(row(call.facts, width, theme, "muted"));
-		if (!callHides(name, call, args, width)) return rows;
+		const hiddenArgs = hasExtraArguments(name, call, args, width);
 		if (expanded) {
-			rows.push(...wrap(expanded.text, width, theme, "muted"));
-			if (expanded.limit) rows.push(...wrap(expanded.limit, width, theme, "warning"));
-		} else if (!context.state?.hasResult && context.keyText?.(EXPAND)) {
+			rows.push(...wrap(call.facts, width, theme, "muted"));
+			if (hiddenArgs) {
+				rows.push(...wrap(expanded.text, width, theme, "muted"));
+				if (expanded.limit) rows.push(...wrap(expanded.limit, width, theme, "warning"));
+			}
+		} else if ((call.facts || hiddenArgs) && !context.state?.hasResult && context.keyText?.(EXPAND)) {
 			rows.push(hint(theme, context, width));
 		}
 		return rows;
@@ -269,7 +269,7 @@ interface Receipt {
 	outcome: string;
 	extra?: string;
 	limit?: string;
-	preview?: boolean;
+	qualifier?: string;
 	summary?: string;
 	omitRaw?: boolean;
 }
@@ -354,6 +354,7 @@ function checkReceipt(details: Fields): Receipt {
 	].filter(Boolean);
 	return {
 		outcome: `Draft ${details.admitted ? "admitted" : "not admitted"}${diagnostics.length ? ` (${diagnostics.join(", ")})` : ""}. No authority changed.`,
+		qualifier: details.caseOutputLimited === true ? "Case output is incomplete." : "",
 		limit: details.caseOutputLimited === true ? "[Draft case output reached the aggregate bound]" : "",
 	};
 }
@@ -397,6 +398,7 @@ function explainReceipt(json: Fields): Receipt {
 			outcome: json.records.length
 				? `Found ${count(json.records.length, "recorded observation")} for the call.`
 				: "No observation found in the bounded read; the call decision is not established.",
+			qualifier: json.partial === true ? "Evidence is partial." : "",
 			limit: json.partial === true ? "[Recorded evidence is partial]" : "",
 		};
 	}
@@ -492,15 +494,14 @@ function telemetryReceipt(args: Fields, details: Fields): Receipt {
 			: typeof details.records === "number"
 				? `Read ${count(details.records, "record")} on this telemetry page`
 				: "Telemetry page not established";
+	const partial =
+		coverage.status === "partial" || coverage.pageStatus === "partial" || next.olderSegments === "removed";
+	const incomplete = recording === "incomplete" || recording === "unknown";
 	return {
-		outcome: `${scope}${extra ? "; more records can be read" : ""}.`,
+		outcome: `${scope}${extra ? "; more follow" : ""}.`,
 		extra,
-		limit:
-			coverage.status === "partial" || coverage.pageStatus === "partial" || next.olderSegments === "removed"
-				? "[Telemetry coverage is partial]"
-				: recording === "incomplete" || recording === "unknown"
-					? "[Complete recording is not established]"
-					: "",
+		qualifier: partial ? "Coverage is partial." : incomplete ? "Recording may be incomplete." : "",
+		limit: partial ? "[Telemetry coverage is partial]" : incomplete ? "[Complete recording is not established]" : "",
 	};
 }
 
@@ -563,7 +564,7 @@ function controlReceipt(args: Fields, details: Fields): Receipt {
 	if (op === "mode") return { outcome: modeFact(details) || "Session mode not established." };
 	if (op === "data-preview" && details.complete === false) {
 		return {
-			outcome: "Previewed data metadata only. Read the complete source before authorization.",
+			outcome: "Previewed data metadata only; no data changed.",
 			limit: "[Complete artifact exceeds the preview output bound]",
 		};
 	}
@@ -585,8 +586,8 @@ function receiptFor(name: Name, args: Fields, details: Fields, output: string): 
 		const revision = line(details.proposalRevision);
 		return id && details.state === "pending"
 			? {
-					outcome: "Proposal is pending and inert until operator approval.",
-					summary: facts(id, named("revision", revision)),
+					outcome: `Staged inert proposal ${id} for operator approval.`,
+					summary: named("revision", revision),
 				}
 			: { outcome: "Proposal state not established." };
 	}
@@ -597,9 +598,10 @@ function receiptFor(name: Name, args: Fields, details: Fields, output: string): 
 	return {
 		outcome:
 			details.decision === "approved" && id
-				? "Approved the proposal. Enforcement is not established by approval."
+				? `Approved the proposal for ${id}; enforcement is not confirmed.`
 				: "Approval not established.",
 		summary: [id ? facts(id, state, effect) : "", mode].filter(Boolean).join("\n"),
+		qualifier: details.matcherAvailable === false ? "Matcher unavailable." : "",
 		limit: details.matcherAvailable === false ? "[The rule matcher is unavailable]" : "",
 	};
 }
@@ -622,7 +624,7 @@ function errorResult(name: Name, args: Fields, body: ReturnType<typeof bound>): 
 	// Pi validation diagnostics can quote the full input. Empty args can mean an unparseable call.
 	const keys = Object.keys(args);
 	const shown = describeCall(name, args).visible;
-	const privateInput = keys.length === 0 || keys.some((key) => !shown.includes(key));
+	const privateInput = keys.length === 0 || keys.some((key) => !shown.includes(key) || typeof args[key] !== "string");
 	if (privateInput) {
 		return {
 			receipt: {
@@ -636,7 +638,7 @@ function errorResult(name: Name, args: Fields, body: ReturnType<typeof bound>): 
 	const retained = body.text.trimStart();
 	const first = retained.split("\n", 1)[0];
 	return {
-		receipt: { outcome: line(first) || "No diagnostic returned.", preview: true },
+		receipt: { outcome: line(first) || "No diagnostic returned." },
 		body: retained.slice(first.length).replace(/^\n/u, ""),
 		limit: body.limit,
 		color: "error",
@@ -659,14 +661,17 @@ function prepareResult(
 		return { receipt: { outcome: progress(name, args) }, body: body.text, limit: body.limit, color: "muted" };
 	const details = object(result.details ?? jsonObject(retained));
 	const receipt = receiptFor(name, args, details, retained);
+	const degraded = details.ruleStoreDegraded === true || details.registryHealth === "degraded";
 	const limit = facts(
 		receipt.limit ?? "",
-		details.ruleStoreDegraded === true || details.registryHealth === "degraded" ? "[Rule store is degraded]" : "",
+		degraded ? "[Rule store is degraded]" : "",
 		producerLimited ? "[Policy output was truncated by the producer]" : "",
 		body.limit,
 	);
+	const qualifier =
+		receipt.qualifier || (degraded ? "Rule store is degraded." : producerLimited ? "Output truncated." : "");
 	return {
-		receipt,
+		receipt: { ...receipt, qualifier },
 		body: receipt.omitRaw || body.text.trim() === receipt.outcome ? "" : body.text,
 		limit,
 		color: "toolOutput",
@@ -693,16 +698,12 @@ function collapsedRows(
 	hiddenCall: boolean,
 ): string[] {
 	const { receipt, body, color, limit } = model;
-	const { outcome, extra, summary, preview } = receipt;
-	const shown = truncateToVisualLines(preview ? body : (summary ?? ""), PREVIEW_ROWS, width, 0, "start");
-	const rows = ["", row(outcome, width, theme, color)];
-	for (const value of shown.visualLines) {
-		if (value) rows.push(theme.fg(color, value));
+	const { outcome, qualifier, extra, summary } = receipt;
+	const statement = [outcome, qualifier].filter(Boolean).join(" ");
+	const rows = ["", row(statement, width, theme, color)];
+	if (hiddenCall || extra || summary || body.trim() || limit || visibleWidth(statement) > width) {
+		rows.push(hint(theme, context, width));
 	}
-	if (limit) rows.push(row(limit, width, theme, "warning"));
-	const hidden =
-		hiddenCall || extra || (!preview && body) || visibleWidth(outcome) > width || visibleWidth(limit) > width;
-	if (hidden || shown.skippedCount) rows.push(hint(theme, context, width, hidden ? 0 : shown.skippedCount));
 	return rows;
 }
 
@@ -720,7 +721,7 @@ function renderResult(
 	return renderAtWidth((width) =>
 		options.expanded
 			? expandedRows(model, width, theme)
-			: collapsedRows(model, width, theme, context, callHides(name, call, args, width)),
+			: collapsedRows(model, width, theme, context, Boolean(call.facts || hasExtraArguments(name, call, args, width))),
 	);
 }
 

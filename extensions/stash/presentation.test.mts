@@ -68,17 +68,18 @@ it("hands a call-only hint to the result slot and only accepts clicks after a re
 	});
 	const rows = screen(card).split("\n");
 	assert.match(rows[2] ?? "", /stash_write Release notes/u);
-	assert.match(rows[3] ?? "", /summary 30 characters/u);
-	assert.match(rows[4] ?? "", /\.\.\. \((?:alt|option)\+e to expand\)/u);
+	assert.doesNotMatch(rows[3] ?? "", /summary/u);
+	assert.match(rows[3] ?? "", /\.\.\. \((?:alt|option)\+e to expand\)/u);
 	assert.equal(click(card)?.handled, undefined);
 	card.updateResult(text("model instructions", { id: "saved-id", state: "open" }));
 	const collapsed = screen(card);
 	assert.equal(collapsed.match(/to expand/gu)?.length, 1);
 	assert.match(
 		collapsed,
-		/summary 30 characters · tags 1\n\n\s+Saved open stash saved-id\.\n\s+\.\.\. \((?:alt|option)\+e to expand\)/u,
+		/stash_write Release notes\n\n\s+Saved open stash saved-id\.\n\s+\.\.\. \((?:alt|option)\+e to expand\)/u,
 	);
 	assert.equal(click(card)?.handled, true);
+	assert.match(screen(card), /summary 30 characters · tags 1/u);
 	assert.match(screen(card), /4 characters/u);
 	assert.doesNotMatch(screen(card), /keep this content|model instructions|to expand/u);
 });
@@ -88,7 +89,7 @@ it("omits a pre-result hint without a key and omits placeholders in partial or m
 	const card = view("stash_complete", { outcome: "one\ntwo\nthree\nfour\nfive\nsix" });
 	assert.doesNotMatch(screen(card), /to expand|pending|six/u);
 	card.updateResult(text("Closed.", { id: "closed-id", state: "closed" }));
-	assert.match(screen(card), /\.\.\. \(1 more line, click to expand\)/u);
+	assert.match(screen(card), /\.\.\. \(6 more lines, click to expand\)/u);
 	const empty = view("stash_read", undefined);
 	assert.match(screen(empty), /stash_read/u);
 	assert.doesNotMatch(screen(empty), /pending|unknown|expand/u);
@@ -102,7 +103,7 @@ it("reports a producer page and expands to an exact continuation, including on a
 	card.updateResult(
 		text("{}", { matches: [], skipped: [], coverage: { from: 12, next: 24, complete: false }, nextCursor: cursor }),
 	);
-	assert.match(screen(card), /Found 0 matches on this page, candidates \[12, 24\); continuation available\./u);
+	assert.match(screen(card), /No matches on this page; more to scan\./u);
 	assert.doesNotMatch(screen(card), /(?:Partial coverage|Excerpt|Truncated|more lines)/u);
 	assert.equal(screen(card).match(/to expand/gu)?.length, 1);
 	card.setExpanded(true);
@@ -115,15 +116,15 @@ it("reports a producer page and expands to an exact continuation, including on a
 	assert.doesNotMatch(expanded, /to expand/u);
 });
 
-it("shows first visual rows of read results and counts exactly what is hidden", (t) => {
+it("keeps read results behind a hint that counts visual rows", (t) => {
 	keys(t, ["ctrl+o"]);
 	const card = view("stash_read", { id: "full-id" });
 	const body = "0123456789".repeat(42);
 	card.updateResult(text(body, { id: "full-id", totalLines: 1 }));
 	const collapsed = screen(card, 62);
 	assert.match(collapsed, /Read stash \(1 line\)\./u);
-	assert.equal(collapsed.split("\n").filter((row) => /^\s*[0-9]+$/u.test(row)).length, 5);
-	assert.match(collapsed, /\.\.\. \(2 more lines, ctrl\+o to expand\)/u);
+	assert.equal(collapsed.split("\n").filter((row) => /^\s*[0-9]+$/u.test(row)).length, 0);
+	assert.match(collapsed, /\.\.\. \(7 more lines, ctrl\+o to expand\)/u);
 	assert.equal(click(card, 62)?.handled, true);
 	assert.equal(
 		screen(card, 62)
@@ -143,7 +144,9 @@ it("reports a recent selection without absent states or provenance", () => {
 			omittedRecords: 2,
 		}),
 	);
-	assert.match(screen(card), /3 recent checkpoints listed/u);
+	assert.match(screen(card), /3 recent checkpoints listed\. · bounded output/u);
+	assert.doesNotMatch(screen(card), /checkpoint:one|unknown/u);
+	card.setExpanded(true);
 	assert.match(screen(card), /checkpoint:one\n\s+Start/u);
 	assert.match(screen(card), /\[Excerpt: 2 selected records not retained in the list\]/u);
 	assert.doesNotMatch(screen(card), /null|unknown|pending/u);
@@ -188,8 +191,9 @@ it("reports unchanged lifecycle on edit and expands sizes and digest instead of 
 	});
 	card.updateResult(text("Unchanged.", { id: "one", state: "active", changed: false, digest: "result-digest" }));
 	assert.match(screen(card), /The stash did not change; state remains active\./u);
-	assert.match(screen(card), /1 replacement · active edit acknowledged/u);
+	assert.doesNotMatch(screen(card), /1 replacement · active edit acknowledged/u);
 	card.setExpanded(true);
+	assert.match(screen(card), /1 replacement · active edit acknowledged/u);
 	assert.match(screen(card), /oldText.*13 characters/u);
 	assert.match(screen(card), /Digest: result-digest/u);
 	assert.doesNotMatch(screen(card), /original body|private replacement/u);

@@ -88,11 +88,11 @@ completion is still to arrive), and the count of jobs not listed. The model
 receives only a short text that the turn ends here.
 
 `jobs_yield` uses a state-note card with its own message background. The result
-replaces the call in that card. A separate facts line reports the jobs still
-running, the completions still due, and the local time. The card shows up to
-three visual lines of the note before expansion. Expansion shows the rest of
-the note, the full retained job IDs and their states, and what starts the next
-turn. A failed call shows its diagnostic and does not claim the turn ended.
+replaces the call in that card. The outcome line reports the jobs still
+running and the completions still due. The card previews one line of the note.
+Expansion shows the full note, local time, retained job IDs and states, and
+what starts the next turn. A failed call shows its diagnostic and does not
+claim the turn ended.
 
 Print and JSON runs (`ctx.mode` `print` or `json`) have no operator view and
 answer with their last text message, so they do not offer `jobs_yield`: a
@@ -446,17 +446,18 @@ interactive terminal, `/jobs` answers with the counts and one line per job.
 ## Tool cards
 
 Jobs follows the [emission grammar](../../docs/conventions/emissions.md).
-Foreground `bash` keeps Pi's native renderer. A managed `bash` call shows
-`bash launch` and previews the command. Its result reports job admission,
-not process readiness or completion. A failed launch shows the diagnostic.
+Foreground `bash` reports the command's outcome. Expansion uses Pi's native
+renderer for the output, timing and any truncation warning. A managed `bash`
+call previews the command. Its result reports job admission, not process
+readiness or completion. A failed launch shows the diagnostic.
 
 `jobs status` and `jobs cancel` report the observed state and the known job
 facts. A cancellation request is distinct from a settled cancellation.
 `jobs list` reports the number of jobs on the current page. `jobs logs` reports
 the retained byte range by size, any discarded earlier output, and whether an
-incomplete UTF-8 suffix remains. Its preview uses the retained page, not the
-model's next-step guidance. If another page exists, expansion shows the exact
-continuation call. Pagination is distinct from discarded output.
+incomplete UTF-8 suffix remains. Expansion shows the retained page and, when
+available, the exact continuation call. Pagination is distinct from discarded
+output.
 
 A record's bounded command preview does not establish how much of the original
 command the record retains. Card text sanitation does not alter stored results.

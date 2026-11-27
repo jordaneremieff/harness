@@ -59,13 +59,13 @@ it("keeps one hint across the call, progress, final result and expanded result",
 	const component = card({ url, find: "literal", expected_source_id: sourceId, excerpt_offset: 2 });
 	const before = rows(component);
 	assert.equal(before[2], ` web_read ${url}`);
-	assert.equal(before[3], ` find literal · excerpt offset 2 · expected source ${sourceId}`);
-	assert.doesNotMatch(before.join("\n"), /to expand/);
+	assert.equal(before[3], " ... (ctrl+g to expand)");
+	assert.doesNotMatch(before.join("\n"), /find literal|expected source/);
 	assert.doesNotMatch(before.join("\n"), /Returned|Reading|unknown|pending/);
 	component.markExecutionStarted();
 	component.updateResult(result(""), true);
 	assert.match(screen(component), /\n +Reading the page…/);
-	assert.doesNotMatch(screen(component), /to expand/);
+	assert.equal(screen(component).match(/to expand/g)?.length, 1);
 	const finalUrl = "https://example.net/final";
 	const header = "Fetch provenance \u202e\x1b[31m\nFurther fetch facts\n\n";
 	component.updateResult(
@@ -88,33 +88,19 @@ it("keeps one hint across the call, progress, final result and expanded result",
 			},
 		),
 	);
-	const settled = rows(component, 180);
-	assert.equal(
-		settled[3],
-		` final URL ${finalUrl} · Page · source ${sourceId} · find literal · excerpt offset 2 · expected source ${sourceId}`,
-	);
-	assert.equal(settled[4], "");
-	assert.equal(
-		settled[5],
-		" Returned 2 matching excerpts (first E4) from example.net; more follow from excerpt offset 7.",
-	);
+	const settled = rows(component, 88);
 	assert.deepEqual(
-		settled.slice(6, 11).map((line) => line.trim()),
-		["First evidence", "Second evidence", "Third evidence", "Fourth evidence", "Fifth evidence"],
-	);
-	assert.deepEqual(
-		settled.filter((line) => line.includes("to expand")),
-		[" ... (1 more line, ctrl+g to expand)"],
-	);
-	assert.doesNotMatch(
-		settled.join("\n"),
-		/Fetch provenance|Further fetch facts|Sixth evidence|Partial coverage|E3\.\.E4/,
+		settled.filter((line) => line.trim()),
+		[` web_read ${url}`, " Returned 2 matching excerpts from example.net; more follow.", " ... (ctrl+g to expand)"],
 	);
 	component.setExpanded(true);
 	const expanded = screen(component, 180);
-	assert.doesNotMatch(expanded, /^ {3}expected_source_id: /m);
-	assert.match(expanded, /Fetch provenance/);
-	assert.match(expanded, /Sixth evidence/);
+	assert.ok(expanded.includes(`final URL ${finalUrl} · Page · source ${sourceId} · find literal`));
+	assert.match(
+		expanded,
+		/Returned 2 matching excerpts \(first E4\) from example\.net; more follow from excerpt offset 7\./,
+	);
+	assert.match(expanded, /Fetch provenance[\s\S]*First evidence[\s\S]*Sixth evidence/);
 	assert.match(expanded, /1 redirect · 412 bytes downloaded/);
 	assert.ok(
 		expanded.includes(
@@ -125,10 +111,10 @@ it("keeps one hint across the call, progress, final result and expanded result",
 	assert.doesNotMatch(expanded, /to expand/);
 });
 
-it("finds the first retained page record without a preview offset", (t) => {
+it("discloses retained records and fetch provenance without a preview offset", (t) => {
 	keyFixture(t);
 	const component = card({ url, excerpt_offset: 0, max_bytes: 3500 });
-	assert.doesNotMatch(screen(component, 60), /to expand/);
+	assert.match(screen(component, 60), /to expand/);
 	const text = `Final URL: ${url}\nRetrieved: 2026-11-21\nTitle: (not supplied)\nUntrusted page content follows.\n\n[${sourceId}:E1] Modules: TypeScript#`;
 	component.updateResult(
 		result(text, {
@@ -141,15 +127,14 @@ it("finds the first retained page record without a preview offset", (t) => {
 			title: "",
 		}),
 	);
-	assert.match(screen(component), /example\.com · source/);
-	assert.match(screen(component), /Returned 1 excerpt \(E1\) from example\.com\./);
-	assert.match(screen(component), /Modules: TypeScript#/);
-	assert.doesNotMatch(screen(component), /not supplied|Final URL:|Retrieved:|Untrusted page/);
+	assert.match(screen(component), /Returned 1 excerpt from example\.com\./);
+	assert.doesNotMatch(screen(component), /source |Modules: TypeScript#|Retrieved:|Untrusted page/);
 	component.setExpanded(true);
-	assert.match(screen(component), /Retrieved: 2026-11-21/);
+	assert.match(screen(component), /example\.com · source/);
+	assert.match(screen(component), /Retrieved: 2026-11-21[\s\S]*Modules: TypeScript#/);
 });
 
-it("only offers an error disclosure hint if its diagnostic clips", (t) => {
+it("keeps the first diagnostic visible and discloses its supplemental evidence", (t) => {
 	keyFixture(t);
 	const component = card({ url, find: "pi-node", max_bytes: 12_000 });
 	component.updateResult(
@@ -159,16 +144,19 @@ it("only offers an error disclosure hint if its diagnostic clips", (t) => {
 			true,
 		),
 	);
-	assert.doesNotMatch(screen(component, 100), /to expand/);
+	assert.match(screen(component), /returned a PDF\.\n ... \(ctrl\+g to expand\)/);
+	assert.doesNotMatch(screen(component), /HTTP 200/);
 	assert.match(screen(component, 60), /…[\s\S]*\.\.\. \(ctrl\+g to expand\)/);
+	component.setExpanded(true);
+	assert.match(screen(component), /HTTP 200 · application\/pdf/);
 });
 
 it("uses no hint when disclosure adds nothing, and a click hint without a binding", (t) => {
 	keyFixture(t, []);
 	const component = card();
 	assert.doesNotMatch(screen(component), /expand/);
-	component.updateResult(result("one retained excerpt", { status: "readable", excerptCount: 1, excerptOffset: 0 }));
-	assert.match(screen(component), /Returned 1 excerpt \(E1\)\./);
+	component.updateResult(result("", { status: "readable", excerptCount: 1 }));
+	assert.match(screen(component), /Returned 1 excerpt\./);
 	assert.doesNotMatch(screen(component), /expand/);
 	const redirected = card({ url: `${url}/${"long".repeat(100)}` });
 	assert.doesNotMatch(screen(redirected), /expand/);
@@ -187,8 +175,7 @@ it("shows actual empty, partial and budget outcomes instead of success claims", 
 	component.updateResult(
 		result("Retained text evidence", { status: "no-readable-text", excerptCount: 0, extractionTruncated: true }),
 	);
-	assert.match(screen(component), /No readable text in the retained page\./);
-	assert.match(screen(component), /\[Partial coverage: extraction truncated\]/);
+	assert.match(screen(component), /No readable text in the retained page\. · extraction truncated/);
 	component.updateResult(
 		result("Retained find evidence", {
 			status: "readable",
@@ -230,14 +217,19 @@ it("uses the actual diagnostic and falls back to retained text for malformed det
 			true,
 		),
 	);
-	assert.match(screen(component), /Web reader cancelled\.\n First diagnostic\n Second diagnostic/);
-	assert.doesNotMatch(screen(component), /web_read:|Returned 5 excerpts/);
+	assert.match(screen(component), /Web reader cancelled\.\n ... \(ctrl\+g to expand\)/);
+	assert.doesNotMatch(screen(component), /Returned 5 excerpts|First diagnostic|Second diagnostic/);
+	component.setExpanded(true);
+	assert.match(screen(component), /First diagnostic\n Second diagnostic/);
+	component.setExpanded(false);
 	component.updateResult(result("Source snapshot\nActual evidence", { status: "readable", excerptCount: "1" }));
-	assert.match(screen(component), /Source snapshot\n Actual evidence/);
-	assert.doesNotMatch(screen(component), /0 excerpts|unknown|expand/);
+	assert.match(screen(component), /Source snapshot\n ... \(ctrl\+g to expand\)/);
+	assert.doesNotMatch(screen(component), /0 excerpts|unknown|Actual evidence/);
+	component.setExpanded(true);
+	assert.match(screen(component), /Actual evidence/);
 });
 
-it("clips narrow rows inside Pi's background and discloses wrapped body lines", (t) => {
+it("clips narrow rows inside Pi's background and keeps the body for expansion", (t) => {
 	keyFixture(t);
 	const component = card({ url: `${url}/${"界é🙂".repeat(40)}` });
 	const content = `${"x".repeat(240)}\u202e\u009b\x1b[31m\tTail`;
@@ -245,8 +237,8 @@ it("clips narrow rows inside Pi's background and discloses wrapped body lines", 
 	const width = 36;
 	const narrow = rows(component, width);
 	assert.match(narrow[2] ?? "", /…$/u);
-	assert.equal(narrow.filter((row) => row.startsWith(" x")).length, 5);
-	assert.match(narrow.join("\n"), /\.\.\. \(3 more lines, ctrl\+g to expa…/);
+	assert.equal(narrow.filter((row) => row.trim()).length, 3);
+	assert.match(narrow.join("\n"), /\.\.\. \(ctrl\+g to expand\)/);
 	assert.doesNotMatch(narrow.join("\n"), /Tail|\u202e|\u009b/);
 	for (const row of component.render(width)) {
 		assert.ok(visibleWidth(row) <= width);

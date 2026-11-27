@@ -78,9 +78,9 @@ environment setup.
 
 ## Terminal cards
 
-The call line shows the tool name and its subject. A facts line lists known
-qualifiers. The result starts below a blank line. A preview keeps the first
-five visual rows of the body; one final hint describes the available expansion.
+The call line shows the tool name and its subject. The result starts below a
+blank line with the outcome. Expansion shows additional call qualifiers and
+retained evidence. A final hint marks cards with more to show.
 The call owns the hint until the result arrives. Before that, only a configured
 key works; after that, a click also works. A counted hint counts hidden rows of
 the same text, not a cursor, omitted records or withheld content.

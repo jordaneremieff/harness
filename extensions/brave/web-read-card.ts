@@ -8,7 +8,6 @@ import {
 import { type Component, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const DISPLAY_LIMIT = 32_000;
-const PREVIEW_ROWS = 5;
 
 interface ReadCardContext extends Partial<KeybindingHints> {
 	expanded: boolean;
@@ -50,14 +49,12 @@ export function clipRow(text: string, width: number): string {
 	return truncateToWidth(text, width, "…").replace(/\x1b\[0m…\x1b\[0m$/u, "…\x1b[22;23;24;25;27;28;29;39m");
 }
 
-export function hint(theme: Theme, keys: Partial<KeybindingHints>, skipped = 0): string {
+export function hint(theme: Theme, keys: Partial<KeybindingHints>): string {
 	const key = keys.keyText?.("app.tools.expand");
 	const action = key
 		? (keys.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
 		: theme.fg("muted", "click to expand");
-	return (
-		theme.fg("muted", `... (${skipped ? `${wordCount(skipped, "more line")}, ` : ""}`) + action + theme.fg("muted", ")")
-	);
+	return theme.fg("muted", "... (") + action + theme.fg("muted", ")");
 }
 
 /** Pi builds the two components before it draws either; resolve their rows at the content width. */
@@ -96,8 +93,8 @@ function requestFacts(args: Record<string, unknown>): string[] {
 	return facts;
 }
 
-function callDisclosure(args: Record<string, unknown>, facts: string, width: number): boolean {
-	return visibleWidth(`web_read ${field(args, "url")}`.trimEnd()) > width || visibleWidth(facts) > width;
+function clippedCall(args: Record<string, unknown>, width: number): boolean {
+	return visibleWidth(`web_read ${field(args, "url")}`.trimEnd()) > width;
 }
 
 export function enteredArguments(args: Record<string, unknown>): string {
@@ -124,12 +121,14 @@ export function renderReadCall(value: unknown, theme: Theme, context: ReadCardCo
 		const source = context.state?.read?.sourceFacts ?? [];
 		const facts = [...source, ...request].join(" · ");
 		const rows = [clipRow(subject ? `${title} ${theme.fg("accent", subject)}` : title, width)];
-		rows.push(...fieldRows(facts, width, context.expanded).map((line) => theme.fg("muted", line)));
-		if (!callDisclosure(args, facts, width)) return rows;
-		if (context.expanded)
-			rows.push(...fieldRows(enteredArguments(args), width, true).map((line) => theme.fg("muted", line)));
-		else if (!context.state?.read && context.keyText?.("app.tools.expand"))
+		const clipped = clippedCall(args, width);
+		if (context.expanded) {
+			rows.push(...fieldRows(facts, width, true).map((line) => theme.fg("muted", line)));
+			if (clipped || visibleWidth(facts) > width)
+				rows.push(...fieldRows(enteredArguments(args), width, true).map((line) => theme.fg("muted", line)));
+		} else if ((facts || clipped) && !context.state?.read && context.keyText?.("app.tools.expand")) {
 			rows.push(clipRow(hint(theme, context), width));
+		}
 		return rows;
 	});
 }
@@ -154,13 +153,14 @@ function sourceDomain(details: Record<string, unknown>): string {
 	}
 }
 
-function excerptOutcome(details: Record<string, unknown>, matching: boolean): string | undefined {
+function excerptOutcome(details: Record<string, unknown>, matching: boolean, compact: boolean): string | undefined {
 	if (details.status === "no-readable-text") return "No readable text in the retained page";
 	const n = count(details, "excerptCount");
 	if (details.status !== "readable" || n === undefined) return undefined;
 	const unit = matching ? "matching excerpt" : "excerpt";
 	if (!n) return `No ${unit}s in this page of retained results`;
 	const outcome = `Returned ${wordCount(n, unit)}`;
+	if (compact) return outcome;
 	if (matching) {
 		const first = count(record(details.find), "firstMatchOffset");
 		return first === undefined ? outcome : `${outcome} (first E${first + 1})`;
@@ -170,7 +170,7 @@ function excerptOutcome(details: Record<string, unknown>, matching: boolean): st
 	return n === 1 ? `${outcome} (E${offset + 1})` : `${outcome} (E${offset + 1}..E${offset + n})`;
 }
 
-function linkOutcome(details: Record<string, unknown>, matching: boolean): string | undefined {
+function linkOutcome(details: Record<string, unknown>, matching: boolean, compact: boolean): string | undefined {
 	const n = count(details, "linkCount");
 	if (n === undefined) return undefined;
 	const unit = matching ? "matching link" : "link";
@@ -179,14 +179,14 @@ function linkOutcome(details: Record<string, unknown>, matching: boolean): strin
 			? `No ${unit}s in this page of retained results`
 			: "No complete link returned";
 	const offset = count(details, "linkOffset");
-	const origin = offset ? ` at link offset ${offset}` : "";
+	const origin = !compact && offset ? ` at link offset ${offset}` : "";
 	return `Returned ${wordCount(n, unit)}${origin}`;
 }
 
-function readOutcome(details: Record<string, unknown>): string | undefined {
+function readOutcome(details: Record<string, unknown>, compact = false): string | undefined {
 	const links = details.view === "links";
 	const matching = typeof record(details.find).query === "string";
-	const summary = links ? linkOutcome(details, matching) : excerptOutcome(details, matching);
+	const summary = links ? linkOutcome(details, matching, compact) : excerptOutcome(details, matching, compact);
 	if (!summary) return undefined;
 	const domain = sourceDomain(details);
 	const recordCount = count(details, links ? "linkCount" : "excerptCount");
@@ -194,9 +194,9 @@ function readOutcome(details: Record<string, unknown>): string | undefined {
 	const required = links ? count(details, "requiredMaxBytes") : undefined;
 	if (required !== undefined) return `${outcome}; retry with max_bytes ${required}.`;
 	const next = count(details, "nextOffset");
-	return next === undefined
-		? `${outcome}.`
-		: `${outcome}; more follow from ${links ? "link" : "excerpt"} offset ${next}.`;
+	if (next === undefined) return `${outcome}.`;
+	if (compact) return `${outcome}; more follow.`;
+	return `${outcome}; more follow from ${links ? "link" : "excerpt"} offset ${next}.`;
 }
 
 function continuationCall(details: Record<string, unknown>, args: Record<string, unknown>): string {
@@ -266,26 +266,20 @@ function expandedFetchFacts(details: Record<string, unknown>): string {
 		.join(" · ");
 }
 
-function limitText(details: Record<string, unknown>, displayLimit?: string): string {
-	const limits: string[] = [];
-	if (details.extractionTruncated === true) limits.push("Partial coverage: extraction truncated");
-	else if (details.outputTruncated === true && count(details, "nextOffset") === undefined)
-		limits.push("Partial coverage: output truncated");
-	if (displayLimit) limits.push(displayLimit);
-	return limits.length ? `[${limits.join("; ")}]` : "";
+function coverageLimit(details: Record<string, unknown>): string {
+	if (details.extractionTruncated === true) return "extraction truncated";
+	if (details.outputTruncated === true && count(details, "nextOffset") === undefined) return "output truncated";
+	return "";
 }
 
-function firstRecord(raw: string, details: Record<string, unknown>): number {
-	const offset = count(details, "previewOffset");
-	if (offset !== undefined && offset <= raw.length) return offset;
-	const mode = details.view === "links" ? "L" : "E";
-	const source = field(details, "sourceId");
-	const id = /^[a-f0-9]{16}$/.test(source) ? source : "[a-f0-9]{16}";
-	const marker = new RegExp(`^\\[${id}:${mode}[1-9]\\d*\\] `, "m");
-	const framed = raw.search(marker);
-	if (framed >= 0) return framed;
-	const records = count(details, mode === "L" ? "linkCount" : "excerptCount");
-	return records === 0 || details.status === "no-readable-text" ? raw.length : 0;
+export function outcomeRow(outcome: string, coverage: string, width: number, theme: Theme, isError: boolean): string {
+	const color = isError ? "error" : "toolOutput";
+	if (!coverage) return theme.fg(color, clipRow(outcome, width));
+	const suffix = ` · ${coverage}`;
+	const room = width - visibleWidth(suffix);
+	return room >= 12
+		? theme.fg(color, clipRow(outcome, room)) + theme.fg("warning", suffix)
+		: clipRow(theme.fg(color, outcome) + theme.fg("warning", suffix), width);
 }
 
 export function renderReadResult(
@@ -298,8 +292,8 @@ export function renderReadResult(
 	const source = options.isPartial ? [] : sourceFacts(details);
 	if (context.state) context.state.read = { sourceFacts: source };
 	const args = record(context.args);
-	const facts = [...source, ...requestFacts(args)].join(" · ");
-	const needsCallHint = (width: number) => callDisclosure(args, facts, width);
+	const facts = [...source, ...requestFacts(args)];
+	const needsCallHint = (width: number) => facts.length > 0 || clippedCall(args, width);
 	if (options.isPartial)
 		return atWidth((width) => [
 			"",
@@ -311,31 +305,27 @@ export function renderReadResult(
 	const fromDetails = context.isError ? undefined : readOutcome(details);
 	const bounded = displayBound(bodyText(output).trimEnd());
 	const { outcome, body } = fromDetails ? { outcome: fromDetails, body: bounded.text } : splitDiagnostic(bounded.text);
-	// Record offsets refer to raw text, before display sanitisation changes its length.
-	const start = fromDetails ? bodyText(output.slice(0, firstRecord(output, details))).length : 0;
-	const bodyToDraw = options.expanded ? body : body.slice(start);
+	const summary = fromDetails ? (readOutcome(details, true) ?? outcome) : outcome;
 	const supplemental = [expandedFetchFacts(details), continuationCall(details, args)].filter(Boolean).join("\n");
-	const limit = limitText(details, bounded.limit);
+	const coverage = coverageLimit(details);
+	const limits = [coverage && `Partial coverage: ${coverage}`, bounded.limit].filter(Boolean).join("; ");
 	const color = context.isError ? "error" : "toolOutput";
 	return atWidth((width) => {
-		const preview = truncateToVisualLines(bodyToDraw, options.expanded ? Infinity : PREVIEW_ROWS, width, 0, "start");
-		const rows = [
+		if (!options.expanded) {
+			const hidden =
+				body || supplemental || limits || summary !== outcome || needsCallHint(width) || visibleWidth(summary) > width;
+			return [
+				"",
+				...(summary ? [outcomeRow(summary, coverage, width, theme, context.isError)] : []),
+				...(hidden ? [clipRow(hint(theme, context), width)] : []),
+			];
+		}
+		return [
 			"",
-			...fieldRows(outcome, width, options.expanded).map((line) => theme.fg(color, line)),
-			...preview.visualLines.map((line) => theme.fg(color, line)),
-			...fieldRows(options.expanded ? supplemental : "", width, true).map((line) => theme.fg("muted", line)),
-			...fieldRows(limit, width, options.expanded).map((line) => theme.fg("warning", line)),
+			...fieldRows(outcome, width, true).map((line) => theme.fg(color, line)),
+			...fieldRows(body, width, true).map((line) => theme.fg(color, line)),
+			...fieldRows(supplemental, width, true).map((line) => theme.fg("muted", line)),
+			...fieldRows(limits && `[${limits}]`, width, true).map((line) => theme.fg("warning", line)),
 		];
-		if (options.expanded) return rows;
-		if (
-			preview.skippedCount ||
-			start > 0 ||
-			supplemental ||
-			needsCallHint(width) ||
-			visibleWidth(outcome) > width ||
-			visibleWidth(limit) > width
-		)
-			rows.push(clipRow(hint(theme, context, preview.skippedCount), width));
-		return rows;
 	});
 }

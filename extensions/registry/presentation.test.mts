@@ -2,22 +2,22 @@ import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import { it, type TestContext } from "node:test";
 import {
-	initTheme,
-	Theme,
-	ToolExecutionComponent,
 	type AgentToolResult,
 	type ExtensionAPI,
 	type ExtensionToolContext,
+	initTheme,
+	Theme,
 	type ToolDefinition,
+	ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import {
 	getKeybindings,
 	KeybindingsManager,
+	type KeyId,
 	setKeybindings,
 	stripTerminalSequences,
-	TUI_KEYBINDINGS,
-	type KeyId,
 	type TUI,
+	TUI_KEYBINDINGS,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { toolDisplay } from "./display.ts";
@@ -109,11 +109,15 @@ function settle(component: ToolExecutionComponent, result: AgentToolResult<unkno
 
 it("shows one Pi expansion hint at the correct position, only for hidden content", (t) => {
 	key(t, ["ctrl+g"]);
-	const plain = card({ kind: "model", available: false, provider: "p" });
-	assert.match(screen(plain), /registry model\nprovider p · cached unavailable only/);
-	assert.doesNotMatch(screen(plain), /to expand/);
+	const plain = card({ kind: "model" });
+	assert.deepEqual(rows(plain).filter(Boolean), ["registry model"]);
 	settle(plain, resultOf("No matches", {}));
-	assert.doesNotMatch(screen(plain), /to expand/);
+	assert.deepEqual(rows(plain).filter(Boolean), ["registry model", "No matches"]);
+
+	const filtered = card({ kind: "model", available: false, provider: "p" });
+	assert.deepEqual(rows(filtered).filter(Boolean), ["registry model", "... (ctrl+g to expand)"]);
+	filtered.setExpanded(true);
+	assert.match(screen(filtered), /available: false\s+provider: p/);
 
 	const component = card({ cursor: "opaque-input-cursor" });
 	assert.deepEqual(rows(component).filter(Boolean), ["registry continuation", "... (ctrl+g to expand)"]);
@@ -142,17 +146,27 @@ it("renders a real registered overview and tool detail, with full identifiers on
 	assert.equal(tool.renderResult, toolDisplay().tools[0].renderResult);
 	const overview = card();
 	settle(overview, await tool.execute("host", {}, undefined, undefined, context));
-	assert.match(screen(overview), /Session overview\nprovider\/model · high · context 75%\n2 tools · 1 active/);
+	assert.deepEqual(rows(overview).filter(Boolean), [
+		"registry session overview",
+		"Session overview · 2 tools · 1 active · provider/model",
+		"... (ctrl+o to expand)",
+	]);
+	overview.setExpanded(true);
+	assert.match(screen(overview), /provider\/model · high · context 75%/);
 	assert.match(screen(overview), /\n1 skill\n/);
-	assert.doesNotMatch(screen(overview), /unknown|unavailable \(|0 commands|0 prompts/);
+	assert.match(screen(overview), /unknown, not absent/);
 
 	const args = { kind: "tool", name: toolName, detail: true };
 	const component = card(args);
 	const result = await tool.execute("detail", args, undefined, undefined, context);
 	settle(component, result);
-	assert.match(screen(component, 80), /Returned 1 of 1 match/);
+	assert.match(screen(component, 80), /\nTool synthetic_registry_.*…\n/);
 	assert.equal(rows(component, 80).filter((line) => line.includes("to expand")).length, 1);
-	assert.match(screen(component, 800), new RegExp(toolName));
+	assert.deepEqual(rows(component, 800).filter(Boolean), [
+		`registry ${toolName}`,
+		`Tool ${toolName} · inactive · not callable here`,
+		"... (ctrl+o to expand)",
+	]);
 	component.setExpanded(true);
 	assert.match(screen(component, 800), new RegExp(`Source for ${toolName}: /fixtures/extension.ts`));
 	assert.match(screen(component), /parameters:.*Long-name schema/);
@@ -166,9 +180,9 @@ it("reports real page scope and renders the exact continuation argument", async 
 	const first = await tool.execute("first", args, undefined, undefined, context);
 	settle(component, first);
 	assert.match(screen(component), /Returned 1 of 2 matches; continuation available/);
-	assert.match(screen(component), /Tool first · configured · active · not callable in this host/);
-	assert.doesNotMatch(screen(component), /Next call:|pass cursor=/);
+	assert.doesNotMatch(screen(component), /Tool first|Next call:|pass cursor=/);
 	component.setExpanded(true);
+	assert.match(screen(component), /Tool first · configured · active · not callable in this host/);
 	const cursor = first.details?.cursor;
 	assert.equal(typeof cursor, "string");
 	assert.ok(screen(component, 2048).includes(`Next call: registry ${JSON.stringify({ cursor })}`));
@@ -195,7 +209,7 @@ it("shows a missing chat model and a local catalog review without implying remot
 	const missing = card(args);
 	settle(missing, await tool.execute("model", args, undefined, undefined, modelContext));
 	assert.match(screen(missing), /No matches; no further known matches/);
-	assert.match(screen(missing), /\nChat models only\n/);
+	assert.match(screen(missing), /\[chat models only\]/);
 	assert.doesNotMatch(screen(missing), /classifier|codemode models/);
 	missing.setExpanded(true);
 	assert.match(screen(missing), /models\.getModelsOfType\("classifier"\)/);
@@ -208,8 +222,27 @@ it("shows a missing chat model and a local catalog review without implying remot
 	assert.doesNotMatch(screen(health), /0 matched records|0 unflagged/);
 });
 
-it("omits absent model facts and distinguishes cached availability from configured auth", () => {
+it("names a single model and distinguishes cached availability from configured auth", () => {
 	const model = card({ kind: "model" });
+	const present = {
+		kind: "model",
+		name: "provider/present",
+		available: false,
+		configuredAuth: true,
+		contextWindow: 250000,
+	};
+	settle(
+		model,
+		resultOf("Catalog boundaries", {
+			outcome: "ok",
+			catalogBoundary: "Chat only",
+			returnedRecords: 1,
+			total: 1,
+			records: [present],
+		}),
+	);
+	assert.match(screen(model), /provider\/present · unavailable \(cached\) · auth configured \[chat models only\]/);
+	assert.doesNotMatch(screen(model), /250,000|Returned 1 of 1/);
 	settle(
 		model,
 		resultOf("Catalog boundaries", {
@@ -218,11 +251,14 @@ it("omits absent model facts and distinguishes cached availability from configur
 			returnedRecords: 2,
 			total: 2,
 			records: [
-				{ kind: "model", name: "provider/present", available: false, configuredAuth: true, contextWindow: 250000 },
+				present,
 				{ kind: "model", name: "provider/limited", available: null, configuredAuth: null, contextWindow: null },
 			],
 		}),
 	);
+	assert.match(screen(model), /Returned 2 of 2 matches \[chat models only\]/);
+	assert.doesNotMatch(screen(model), /provider\//);
+	model.setExpanded(true);
 	assert.match(screen(model), /provider\/present · unavailable \(cached\) · auth configured · 250,000 context/);
 	assert.match(screen(model), /provider\/limited\n/);
 	assert.doesNotMatch(screen(model), /unknown|· 0 context|thinking/);
@@ -252,7 +288,24 @@ it("distinguishes settings coverage, context evidence, scan coverage, ambiguity,
 			records: [{ kind: "context_file", path: `${homedir()}/fixtures/AGENTS.md` }],
 		}),
 	);
-	assert.match(screen(contextFiles), /Prior context path observation; no file content read\n~\/fixtures\/AGENTS.md/);
+	assert.match(screen(contextFiles), /~\/fixtures\/AGENTS.md · observed path only/);
+	contextFiles.setExpanded(true);
+	assert.match(screen(contextFiles), /Prior context path observation; no file content read/);
+
+	const incompletePaths = card({ kind: "context_file" });
+	settle(
+		incompletePaths,
+		resultOf("Prior path observation was capped", {
+			outcome: "missing",
+			query: { kind: "context_file" },
+			observed: true,
+			observationPartial: true,
+		}),
+	);
+	assert.match(
+		screen(incompletePaths, 56),
+		/Partial coverage; no observed context paths match\n\[absence is not established\]/,
+	);
 
 	const scan = await lookup({
 		params: { kind: "skill", name: "example", contains: "needle" },
@@ -278,9 +331,11 @@ it("distinguishes settings coverage, context evidence, scan coverage, ambiguity,
 	const scanCard = card();
 	settle(scanCard, resultOf(scan.text, scan.details, lookupIsError(scan.outcome)));
 	assert.match(screen(scanCard), /Partial file scan; 1 of 1 known match in skill example; continuation unavailable/);
+	assert.match(screen(scanCard), /\[absence is not established\]/);
+	assert.doesNotMatch(screen(scanCard), /bytes read|Needle/);
+	scanCard.setExpanded(true);
 	assert.match(screen(scanCard), /100 of 500 bytes read/);
 	assert.match(screen(scanCard), /Line 4 · Needle: sample source text/);
-	assert.match(screen(scanCard), /\[Coverage is partial; absence is not established\]/);
 
 	const partialSettings = card({ kind: "setting" });
 	settle(
@@ -293,6 +348,10 @@ it("distinguishes settings coverage, context evidence, scan coverage, ambiguity,
 			settingsCoverage: { respondingSlices: ["example"], collection: { malformed: 1 } },
 		}),
 	);
+	assert.match(screen(partialSettings), /Partial configuration snapshot; 1 of 1 known match/);
+	assert.match(screen(partialSettings), /\[absence is not established; responding publishers only\]/);
+	assert.doesNotMatch(screen(partialSettings), /example\.status/);
+	partialSettings.setExpanded(true);
 	assert.match(screen(partialSettings), /Configuration snapshot; responding publishers only · example/);
 	assert.match(screen(partialSettings), /1 publication malformed/);
 	assert.match(screen(partialSettings), /example\.status · valid · file/);
@@ -321,8 +380,9 @@ it("distinguishes settings coverage, context evidence, scan coverage, ambiguity,
 	const blockedCard = card();
 	settle(blockedCard, resultOf(blocked.text, blocked.details));
 	assert.match(screen(blockedCard), /Returned 0 of 1 match; page cannot advance/);
+	assert.doesNotMatch(screen(blockedCard), /No matches|absence is not established/);
+	blockedCard.setExpanded(true);
 	assert.match(screen(blockedCard), /first record exceeds the result bound/);
-	assert.doesNotMatch(screen(blockedCard), /No matches|\[Coverage is partial/);
 });
 
 it("uses Pi's error context for validation, stale cursors and thrown diagnostics, and names structured cancellation", async (t) => {
@@ -361,11 +421,9 @@ it("discloses bare multiline errors only when the card hides diagnostic text", (
 	const lead = "Read error";
 	const detail = `Details: ${"x".repeat(190)}`;
 	settle(component, resultOf(`${lead}\n${detail}`, {}, true));
-	assert.deepEqual(rows(component, 220).filter(Boolean), ["registry session overview", lead, detail]);
-
-	const narrow = rows(component, 40).filter(Boolean);
-	assert.equal(narrow.filter((row) => row.includes("to expand")).length, 1);
-	assert.match(narrow.at(-1) ?? "", /more line[s]?, ctrl\+o to expand/);
+	const expected = ["registry session overview", lead, "... (ctrl+o to expand)"];
+	assert.deepEqual(rows(component, 220).filter(Boolean), expected);
+	assert.deepEqual(rows(component, 40).filter(Boolean), expected);
 
 	component.setExpanded(true);
 	assert.deepEqual(rows(component, 220).filter(Boolean), ["registry session overview", lead, detail]);
@@ -383,15 +441,15 @@ it("does not repeat a structured error lead in evidence", () => {
 	assert.deepEqual(rows(component).filter(Boolean), ["registry session overview", lead, "File evidence was not read."]);
 });
 
-it("caps wrapped content, shows exact display bounds, and contains terminal controls", (t) => {
+it("clips the outcome, keeps exact expanded display bounds, and contains terminal controls", (t) => {
 	key(t, ["ctrl+o"]);
 	const diagnostic = `Failure:\x1b[31m\u202e ${"x".repeat(240)}`;
 	const compact = card();
 	settle(compact, resultOf(`${diagnostic}\n${"Y".repeat(400)}`, { malformed: true }, true));
 	const collapsed = rows(compact, 40).filter(Boolean);
-	assert.equal(collapsed.length, 8, "call, outcome, five wrapped body lines, and hint");
+	assert.equal(collapsed.length, 3, "call, outcome and hint");
 	assert.match(collapsed[1], /^Failure: x+…$/);
-	assert.match(collapsed.at(-1) ?? "", /more lines, ctrl\+o to expand/);
+	assert.equal(collapsed.at(-1), "... (ctrl+o to expand)");
 	assert.doesNotMatch(collapsed.join("\n"), /[\x1b\u202e]/u);
 	compact.setExpanded(true);
 	assert.ok(screen(compact, 500).includes("Y".repeat(400)));

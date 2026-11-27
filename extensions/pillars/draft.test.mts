@@ -354,8 +354,7 @@ test("source rendering identifies the agent draft without showing it as source c
 	const renderers = accessRenderers();
 	const draft = "A draft unrelated to the source body.";
 	const call = renderers.renderCall({ draft }, theme, { isError: false }).render(120).join("\n");
-	assert.match(call, /inventory/);
-	assert.match(call, /draft assessment/);
+	assert.match(call, /^pillars assess draft$/u);
 	assert.ok(!call.includes(draft));
 	const source = {
 		schema: "pillars-source" as const,

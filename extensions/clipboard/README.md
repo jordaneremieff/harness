@@ -351,12 +351,13 @@ usable.
 ## Tool cards
 
 The cards follow the [emission grammar](../../docs/conventions/emissions.md).
-Collapsed cards show sizes, identifiers and outcomes without copied, pasted or
-archived bodies. Even expanded copy arguments show only the size of the content.
-Previously retained result text, including a copy receipt’s bounded preview, is
-available only on expansion. Copy diagnostics also stay in the expanded result:
-Pi can include the original arguments in a validation error. A successful clipboard write remains a success if
-its optional history write fails; a separate warning gives the archive error.
+Collapsed cards show outcomes without copied, pasted or archived bodies.
+Even expanded copy arguments show only the size of the content. Retained result
+text, including a copy receipt’s bounded preview, is available only on
+expansion. Copy diagnostics also stay in the expanded result: Pi can include
+the original arguments in a validation error. A successful clipboard write
+remains a success if its optional history write fails; the outcome flags the
+archive failure and expansion shows the diagnostic.
 
 Reads and archive searches distinguish an empty clipboard or result page from
 an error. Expanded pages show the result evidence and exact continuation when

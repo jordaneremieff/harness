@@ -1,10 +1,4 @@
-import {
-	type AgentToolResult,
-	type KeybindingHints,
-	type Theme,
-	type ToolRenderResultOptions,
-	truncateToVisualLines,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { type Component, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	atWidth,
@@ -17,6 +11,7 @@ import {
 	field,
 	fieldRows,
 	hint,
+	outcomeRow,
 	record,
 	splitDiagnostic,
 } from "./web-read-card.ts";
@@ -49,8 +44,8 @@ function searchFacts(args: Record<string, unknown>, correctedQuery = ""): string
 	return facts.join(" · ");
 }
 
-function callDisclosure(args: Record<string, unknown>, facts: string, width: number): boolean {
-	return visibleWidth(`web_search ${field(args, "query")}`.trimEnd()) > width || visibleWidth(facts) > width;
+function clippedCall(args: Record<string, unknown>, width: number): boolean {
+	return visibleWidth(`web_search ${field(args, "query")}`.trimEnd()) > width;
 }
 
 export function renderSearchCall(value: unknown, theme: Theme, context: CardContext): Component {
@@ -60,15 +55,15 @@ export function renderSearchCall(value: unknown, theme: Theme, context: CardCont
 	const subject = query ? `${title} ${theme.fg("accent", query)}` : title;
 	return atWidth((width) => {
 		const facts = searchFacts(args, context.state?.search?.correctedQuery);
-		const rows = [
-			clipRow(subject, width),
-			...fieldRows(facts, width, context.expanded).map((line) => theme.fg("muted", line)),
-		];
-		if (!callDisclosure(args, facts, width)) return rows;
-		if (context.expanded)
-			rows.push(...fieldRows(enteredArguments(args), width, true).map((line) => theme.fg("muted", line)));
-		else if (!context.state?.search && context.keyText?.("app.tools.expand"))
+		const rows = [clipRow(subject, width)];
+		const clipped = clippedCall(args, width);
+		if (context.expanded) {
+			rows.push(...fieldRows(facts, width, true).map((line) => theme.fg("muted", line)));
+			if (clipped || visibleWidth(facts) > width)
+				rows.push(...fieldRows(enteredArguments(args), width, true).map((line) => theme.fg("muted", line)));
+		} else if ((facts || clipped) && !context.state?.search && context.keyText?.("app.tools.expand")) {
 			rows.push(clipRow(hint(theme, context), width));
+		}
 		return rows;
 	});
 }
@@ -93,37 +88,18 @@ function nextCall(details: Record<string, unknown>, args: Record<string, unknown
 	return `web_search ${callJson(params)}`;
 }
 
-function matchPreview(text: string): string {
-	// The search formatter emits numbered records with indented fields. Its header and notices are outside that frame.
-	const start = text.search(/^[1-9]\d*\. /m);
-	if (start === -1) return "";
-	const lines = text.slice(start).split("\n");
-	const end = lines.findIndex((line) => line && !/^(?:[1-9]\d*\. | {3})/.test(line));
-	return lines
-		.slice(0, end === -1 ? undefined : end)
-		.filter((line) => line !== "   Additional excerpts:")
-		.map((line) => line.replace(/^( {3})(?:URL|Published|Snippet): /, "$1"))
-		.join("\n")
-		.trimEnd();
-}
-
 function resultData(result: AgentToolResult<unknown>, details: Record<string, unknown>, isError: boolean) {
 	const raw = result.content.flatMap((entry) => (entry.type === "text" ? [entry.text] : [])).join("\n");
 	const bounded = displayBound(bodyText(raw).trimEnd());
-	const preview = isError ? "" : matchPreview(bounded.text);
 	const outcome = isError
 		? undefined
-		: (searchOutcome(details) ?? (preview ? "Search records are available." : undefined));
-	if (!outcome) {
-		const diagnostic = splitDiagnostic(bounded.text);
-		return { ...diagnostic, preview: diagnostic.body, hidden: false, limit: bounded.limit };
-	}
-	const limits = [
-		details.outputTruncated === true ? "Partial coverage: search output shortened" : "",
-		bounded.limit,
-	].filter(Boolean);
-	const hidden = details.outputTruncated === true || (!preview && (count(details, "resultCount") ?? 0) > 0);
-	return { outcome, body: bounded.text, preview, hidden, limit: limits.join("; ") };
+		: (searchOutcome(details) ?? (/^[1-9]\d*\. /m.test(bounded.text) ? "Search records are available." : undefined));
+	if (!outcome) return { ...splitDiagnostic(bounded.text), coverage: "", limit: bounded.limit };
+	const coverage = details.outputTruncated === true ? "search output shortened" : "";
+	const limit = [coverage && `Partial coverage: ${coverage}`, bounded.limit].filter(Boolean).join("; ");
+	// A complete empty page contains no ranked records to disclose.
+	const body = count(details, "resultCount") === 0 && !coverage ? "" : bounded.text;
+	return { outcome, body, coverage, limit };
 }
 
 export function renderSearchResult(
@@ -137,41 +113,32 @@ export function renderSearchResult(
 	if (context.state) context.state.search = { correctedQuery };
 	const args = record(context.args);
 	const facts = searchFacts(args, correctedQuery);
+	const needsCallHint = (width: number) => facts || clippedCall(args, width);
 	if (isPartial)
 		return atWidth((width) => [
 			"",
 			theme.fg("muted", clipRow("Searching the web…", width)),
-			...(!expanded && callDisclosure(args, facts, width) ? [clipRow(hint(theme, context), width)] : []),
+			...(!expanded && needsCallHint(width) ? [clipRow(hint(theme, context), width)] : []),
 		]);
 	const view = resultData(result, details, context.isError);
 	const next = nextCall(details, args);
 	const color = context.isError ? "error" : "toolOutput";
 	const limit = view.limit ? `[${view.limit}]` : "";
 	return atWidth((width) => {
-		const preview = truncateToVisualLines(
-			expanded ? view.body : view.preview,
-			expanded ? Infinity : 5,
-			width,
-			0,
-			"start",
-		);
-		const rows = [
+		if (!expanded) {
+			const hidden = view.body || next || limit || needsCallHint(width) || visibleWidth(view.outcome) > width;
+			return [
+				"",
+				...(view.outcome ? [outcomeRow(view.outcome, view.coverage, width, theme, context.isError)] : []),
+				...(hidden ? [clipRow(hint(theme, context), width)] : []),
+			];
+		}
+		return [
 			"",
-			...fieldRows(view.outcome, width, expanded).map((line) => theme.fg(color, line)),
-			...preview.visualLines.map((line) => theme.fg(color, line)),
-			...fieldRows(expanded ? next : "", width, true).map((line) => theme.fg("muted", line)),
-			...fieldRows(limit, width, expanded).map((line) => theme.fg("warning", line)),
+			...fieldRows(view.outcome, width, true).map((line) => theme.fg(color, line)),
+			...fieldRows(view.body, width, true).map((line) => theme.fg(color, line)),
+			...fieldRows(next, width, true).map((line) => theme.fg("muted", line)),
+			...fieldRows(limit, width, true).map((line) => theme.fg("warning", line)),
 		];
-		if (expanded) return rows;
-		if (
-			preview.skippedCount ||
-			view.hidden ||
-			next ||
-			callDisclosure(args, facts, width) ||
-			visibleWidth(view.outcome) > width ||
-			visibleWidth(limit) > width
-		)
-			rows.push(clipRow(hint(theme, context, preview.skippedCount), width));
-		return rows;
 	});
 }

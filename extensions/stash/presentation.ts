@@ -5,7 +5,6 @@ import { parseFrontmatter } from "./format.ts";
 import { readRedactionReport, redactSecrets } from "./redact.ts";
 
 const DISPLAY_LIMIT = 32_000;
-const PREVIEW_LINES = 5;
 const REOPEN_NOTE = "Reopen this stash before pickup (browser Actions or /stash reopen).";
 
 type Args = Record<string, unknown>;
@@ -130,8 +129,8 @@ function callCard(
 	const factRow = oneLine(safeCopy(facts.join(" · ")));
 	const prose = bounded(safeCopy(body));
 	const args = bounded(safeCopy(disclosure));
-	const hidden = (width: number) => Math.max(0, wrapBody(prose.text, width).length - PREVIEW_LINES);
-	const other = (width: number) => !!args.text || clipsRow(header, width) || clipsRow(factRow, width);
+	const hidden = (width: number) => wrapBody(prose.text, width).length;
+	const other = (width: number) => Boolean(args.text || factRow || clipsRow(header, width));
 	if (context.state) {
 		context.state.stashHasResult = false;
 		context.state.stashCallDisclosure = (width) => ({ hidden: hidden(width), other: other(width) });
@@ -143,13 +142,11 @@ function callCard(
 		const muted = factRow ? theme.fg("muted", factRow) : "";
 		const rows = [
 			...headingRows(header, header, expanded, width),
-			...headingRows(muted, muted, expanded, width),
+			...(expanded ? headingRows(muted, muted, true, width) : []),
 			...wrapBody(expanded ? args.text : "", width).map((row) => theme.fg("muted", row)),
-			...wrapBody(prose.text, width)
-				.slice(0, expanded ? undefined : PREVIEW_LINES)
-				.map((row) => theme.fg("toolOutput", row)),
+			...wrapBody(expanded ? prose.text : "", width).map((row) => theme.fg("toolOutput", row)),
 		];
-		if (limit && !context.state?.stashHasResult) rows.push(clipRow(theme.fg("warning", limit), width));
+		if (limit && expanded && !context.state?.stashHasResult) rows.push(clipRow(theme.fg("warning", limit), width));
 		const hint = preResultHint(theme, context, hidden(width), other(width));
 		if (hint) rows.push(clipRow(hint, width));
 		return rows;
@@ -185,21 +182,23 @@ function resultCard(
 		receipt.retainedLimit ??
 		(receipt.partialCoverage ? "[Partial coverage]" : undefined);
 	const more = lines(extra.text, receipt.continuation ?? "");
-	const flatOutcome = outcome ? theme.fg(tone, outcome) : "";
+	const warning = receipt.partialCoverage ? "partial coverage" : receipt.retainedLimit ? "bounded output" : "";
+	const compact = [outcome, warning].filter(Boolean).join(" · ");
+	const flatOutcome = compact ? theme.fg(tone, compact) : "";
 	const fullOutcome = theme.fg(tone, outcomeBound.text);
 	return component((width) => {
 		const expanded = options.expanded;
 		const preview = wrapBody(body.text, width);
 		const call = context.state?.stashCallDisclosure?.(width);
-		const hidden = Math.max(0, preview.length - PREVIEW_LINES) + (call?.hidden ?? 0);
-		const hasOther = !!more || clipsRow(outcome, width) || call?.other;
+		const hidden = preview.length + (call?.hidden ?? 0);
+		const hasOther = Boolean(more || limit || clipsRow(compact, width) || call?.other);
 		const rows = [
 			"",
 			...headingRows(flatOutcome, fullOutcome, expanded, width),
-			...preview.slice(0, expanded ? undefined : PREVIEW_LINES).map((row) => theme.fg(tone, row)),
+			...(expanded ? preview.map((row) => theme.fg(tone, row)) : []),
 			...wrapBody(expanded ? more : "", width).map((row) => theme.fg(tone, row)),
 		];
-		if (limit) rows.push(clipRow(theme.fg("warning", limit), width));
+		if (limit && expanded) rows.push(clipRow(theme.fg("warning", limit), width));
 		if (!expanded && (hidden || hasOther)) rows.push(clipRow(expansionHint(theme, context, hidden), width));
 		return rows;
 	}, context.lastComponent);
@@ -360,12 +359,12 @@ function searchReceipt(details: Args, matches: unknown[], args: unknown): Receip
 	const cursor = string(details.nextCursor);
 	const scope =
 		typeof coverage.from === "number" && typeof coverage.next === "number"
-			? `, candidates [${coverage.from}, ${coverage.next})`
+			? `Candidate range: [${coverage.from}, ${coverage.next})`
 			: "";
 	return {
-		outcome: `Found ${plural(matches.length, "match", "matches")} ${details.provisional === true ? "on this checkpoint page" : "on this page"}${scope}${skips.length ? `, ${skips.length} skipped` : ""}${cursor ? "; continuation available" : ""}.`,
+		outcome: `${matches.length ? `Found ${plural(matches.length, "match", "matches")}` : "No matches"} ${details.provisional === true ? "on this checkpoint page" : "on this page"}${skips.length ? `; ${skips.length} skipped` : ""}${cursor ? "; more to scan" : ""}.`,
 		body: lines(...matches.map((item) => listRow(record(item)))),
-		extra: searchEvidence(coverage, matches, skips),
+		extra: lines(scope, searchEvidence(coverage, matches, skips)),
 		continuation: cursor ? continuation(cursor, record(args)) : undefined,
 		partialCoverage: coverage.complete === false && !cursor,
 	};

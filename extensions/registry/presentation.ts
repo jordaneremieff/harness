@@ -1,10 +1,9 @@
+import { homedir } from "node:os";
 import { type Theme, type ToolDefinition, truncateToVisualLines } from "@earendil-works/pi-coding-agent";
 import { type Component, stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { homedir } from "node:os";
 
 const EXPAND = "app.tools.expand";
 const DISPLAY_LIMIT = 32_000;
-const PREVIEW_ROWS = 5;
 type Fields = Record<string, unknown>;
 type CardState = { hasResult?: boolean; hidesArguments?: (width: number) => boolean };
 type CardContext = Omit<Parameters<NonNullable<ToolDefinition["renderCall"]>>[2], "state"> & { state: CardState };
@@ -81,73 +80,30 @@ function component(draw: (width: number) => string[]): Component {
 	};
 }
 
-function hint(theme: Theme, context: CardContext, width: number, hidden = 0): string {
-	const prefix = hidden > 0 ? `... (${count(hidden, "more line")}, ` : "... (";
+function hint(theme: Theme, context: CardContext, width: number): string {
 	const key = context.keyText(EXPAND);
-	const plain = `${prefix}${key ? `${key} to expand` : "click to expand"})`;
+	const plain = `... (${key ? `${key} to expand` : "click to expand"})`;
 	if (!key || visibleWidth(plain) > width) return theme.fg("muted", clipLine(plain, width));
-	return theme.fg("muted", prefix) + context.keyHint(EXPAND, "to expand") + theme.fg("muted", ")");
+	return theme.fg("muted", "... (") + context.keyHint(EXPAND, "to expand") + theme.fg("muted", ")");
 }
 
-function hiddenSelector(key: string, value: unknown, labels: Record<string, string>): boolean {
-	if (Object.hasOwn(labels, key)) return value !== labels[key] || !labels[key];
-	switch (key) {
-		case "match":
-			return value !== "substring" && value !== "exact";
-		case "available":
-		case "detail":
-		case "health":
-			return typeof value !== "boolean";
-		case "limit":
-			return number(value) === undefined;
-		default:
-			return true;
+function callSubject(args: Fields): { subject: string; unshown: boolean } {
+	for (const key of ["name", "search", "contains", "kind"] as const) {
+		const value = key === "name" && args.kind === "context_file" ? pathField(args[key]) : field(args[key]);
+		if (!value) continue;
+		const subject = key === "search" || key === "contains" ? `${key} ${JSON.stringify(value)}` : value;
+		return { subject, unshown: value !== args[key] || Object.keys(args).some((argument) => argument !== key) };
 	}
-}
-
-function matchMode(value: unknown): string {
-	if (value === "substring") return "substring";
-	return value === "exact" ? "exact match" : "";
-}
-
-function callFacts(args: Fields): { subject: string; facts: string; unshown: boolean } {
-	const name = args.kind === "context_file" ? pathField(args.name) : field(args.name);
-	const search = field(args.search);
-	const contains = field(args.contains);
-	const kind = field(args.kind);
-	const cursor = field(args.cursor);
-	const provider = field(args.provider);
-	const limit = number(args.limit);
-	const subject =
-		name ||
-		(search && `search ${JSON.stringify(search)}`) ||
-		(contains && `contains ${JSON.stringify(contains)}`) ||
-		kind ||
-		(cursor ? "continuation" : "session overview");
 	return {
-		subject,
-		facts: join(
-			kind !== subject ? kind : "",
-			name && search ? `search ${JSON.stringify(search)}` : "",
-			(name || search) && contains ? `contains ${JSON.stringify(contains)}` : "",
-			matchMode(args.match),
-			boolean(args.detail, "tool details", "no tool details"),
-			provider ? `provider ${provider}` : "",
-			boolean(args.available, "cached available only", "cached unavailable only"),
-			boolean(args.health, "local catalog review", "standard catalog lookup"),
-			limit === undefined ? "" : `limit ${limit}`,
-		),
-		unshown: Object.entries(args).some(([key, value]) =>
-			hiddenSelector(key, value, { name, kind, search, contains, provider }),
-		),
+		subject: field(args.cursor) ? "continuation" : "session overview",
+		unshown: Object.keys(args).length > 0,
 	};
 }
 
 export const renderRegistryCall: NonNullable<ToolDefinition["renderCall"]> = (value, theme, context: CardContext) => {
 	const args = record(value);
-	const { subject, facts, unshown } = callFacts(args);
+	const { subject, unshown } = callSubject(args);
 	const headingWidth = visibleWidth(`registry ${subject}`);
-	const factsWidth = visibleWidth(facts);
 	const argumentsText = context.expanded
 		? bounded(
 				Object.entries(args)
@@ -158,8 +114,7 @@ export const renderRegistryCall: NonNullable<ToolDefinition["renderCall"]> = (va
 					.join("\n"),
 			)
 		: undefined;
-	context.state.hidesArguments = (width) =>
-		Object.keys(args).length > 0 && (unshown || headingWidth > width || factsWidth > width);
+	context.state.hidesArguments = (width) => Object.keys(args).length > 0 && (unshown || headingWidth > width);
 	// Pi constructs the call first. Defer the hint until both renderers have seen the card state.
 	context.state.hasResult = false;
 	return component((width) => {
@@ -170,7 +125,7 @@ export const renderRegistryCall: NonNullable<ToolDefinition["renderCall"]> = (va
 				? `${title("registry")} ${theme.fg("accent", clipLine(subject, room))}`
 				: title(clipLine("registry", width)),
 		];
-		if (facts) rows.push(theme.fg("muted", clipLine(facts, width)));
+
 		if (argumentsText?.text) rows.push(...wrapped(argumentsText.text, width).map((line) => theme.fg("muted", line)));
 		if (argumentsText?.limit) rows.push(theme.fg("warning", clipLine(argumentsText.limit, width)));
 		if (
@@ -330,7 +285,8 @@ function unavailableLead(details: Fields): string {
 function pageLead(details: Fields, scope: string): string {
 	switch (details.outcome) {
 		case "missing":
-			return isContextPathQuery(details) ? "No observed context paths match" : "No matches";
+			if (isContextPathQuery(details)) return "No observed context paths match";
+			return hasPartialCoverage(details) ? "No known matches" : "No matches";
 		case "ambiguous":
 			return "The query needs one resource";
 		case "unavailable":
@@ -346,10 +302,19 @@ function pageLead(details: Fields, scope: string): string {
 	}
 }
 
+function hasPartialCoverage(details: Fields): boolean {
+	return (
+		details.outcome === "partial" ||
+		details.partialScan === true ||
+		details.observationPartial === true ||
+		details.incompleteInventory === true
+	);
+}
+
 function pageScope(details: Fields): string {
 	const total = number(details.total) ?? number(details.candidates);
 	const shown = number(details.returnedRecords);
-	const incomplete = details.outcome === "partial" || details.outcome === "unavailable";
+	const incomplete = hasPartialCoverage(details) || details.outcome === "unavailable";
 	if (shown === undefined || total === undefined || total === 0) return "";
 	const noun = isHealthReview(details) ? "flagged record" : details.candidates === undefined ? "match" : "candidate";
 	const plural = noun === "match" ? "matches" : `${noun}s`;
@@ -357,7 +322,70 @@ function pageScope(details: Fields): string {
 	return `${shown} of ${count(total, qualifier + noun, qualifier + plural)}`;
 }
 
-function pageOutcome(details: Fields): string {
+function singleRecordOutcome(entry: Fields): string {
+	const name = recordName(entry);
+	if (!name) return "";
+	if (entry.kind === "tool") {
+		return join(
+			`Tool ${name}`,
+			boolean(entry.active, "active", "inactive") || boolean(entry.configured, "configured", "not configured"),
+			boolean(entry.callable, "callable here", "not callable here"),
+		);
+	}
+	if (entry.kind === "model") {
+		const finding = Array.isArray(entry.findings) ? field(record(entry.findings[0]).reason) : "";
+		return join(
+			name,
+			finding || (entry.selected === true ? join("selected", field(entry.currentThinkingLevel)) : ""),
+			boolean(entry.available, "available (cached)", "unavailable (cached)"),
+			boolean(
+				entry.configuredAuth,
+				"auth configured",
+				entry.authSource === "stored" ? "stored credential unresolved" : "no configured auth",
+			),
+		);
+	}
+	if (entry.kind === "context_file") return join(name, "observed path only");
+	return recordLine(entry);
+}
+
+function overviewOutcome(details: Fields): string {
+	const model = field(record(details.context).model);
+	const tools = number(record(details.counts).tool);
+	const active = number(details.activeToolCount);
+	const inventory = tools === undefined ? "" : count(tools, "tool");
+	const unavailable = record(details.availability).tools === false;
+	return join(
+		"Session overview",
+		unavailable ? "tool registry unavailable" : inventory,
+		unavailable || active === undefined ? "" : `${active} active`,
+		model,
+	);
+}
+
+function exactPageRecord(details: Fields, entries: Fields[]): Fields | undefined {
+	const { continuationStatus } = details;
+	if (
+		details.outcome === "ok" &&
+		!hasPartialCoverage(details) &&
+		details.total === 1 &&
+		details.returnedRecords === 1 &&
+		entries.length === 1 &&
+		details.scanned !== true &&
+		details.pageBlocked !== true &&
+		(continuationStatus === undefined || continuationStatus === "complete")
+	) {
+		return entries[0];
+	}
+}
+
+function pageOutcome(details: Fields, entries: Fields[]): string {
+	if (details.outcome === "host_summary") return overviewOutcome(details);
+	const exact = exactPageRecord(details, entries);
+	if (exact) {
+		const single = singleRecordOutcome(exact);
+		if (single) return single;
+	}
 	const scope = pageScope(details);
 	const lead = pageLead(details, scope);
 	const resolved = record(details.resolved);
@@ -370,8 +398,10 @@ function pageOutcome(details: Fields): string {
 	]
 		.filter(Boolean)
 		.join(" ");
+	const coverage = hasPartialCoverage(details) && details.outcome !== "partial" && details.outcome !== "unavailable";
 	const next = continuation(details);
-	return next ? `${page}; ${next}` : page;
+	const qualified = coverage ? `Partial coverage; ${page[0].toLowerCase()}${page.slice(1)}` : page;
+	return next ? `${qualified}; ${next}` : qualified;
 }
 
 function catalogCoverage(details: Fields): string[] {
@@ -438,14 +468,20 @@ function coverage(details: Fields): string[] {
 }
 
 function coverageWarning(details: Fields): string | undefined {
-	if (
-		details.partialScan === true ||
-		details.observationPartial === true ||
-		details.outcome === "partial" ||
-		details.incompleteInventory === true
-	) {
-		return "[Coverage is partial; absence is not established]";
+	const limits: string[] = [];
+	if (hasPartialCoverage(details)) limits.push("absence is not established");
+	if (details.settingsCoverage !== undefined && details.outcome !== "unavailable") {
+		limits.push("responding publishers only");
 	}
+	if (isHealthReview(details)) limits.push("remote health not checked");
+	else if (isChatCatalog(details)) limits.push("chat models only");
+	if (details.outcome === "host_summary" && record(details.availability).activeTools === false) {
+		limits.push("active tools unavailable");
+	}
+	if (details.outcome === "host_summary" && record(details.availability).commands === false) {
+		limits.push("command registry unavailable");
+	}
+	if (limits.length) return `[${limits.join("; ")}]`;
 }
 
 function sourceRows(details: Fields, entries: Fields[]): string[] {
@@ -464,25 +500,26 @@ function isPage(details: Fields): boolean {
 
 type View = {
 	outcome: ReturnType<typeof bounded>;
-	preview: ReturnType<typeof bounded>;
 	evidence: ReturnType<typeof bounded>;
 	warning?: string;
 };
 
 function pageView(details: Fields, raw: string): View {
-	const outcome = bounded(details.outcome === "host_summary" ? "Session overview" : pageOutcome(details));
 	const entries = Array.isArray(details.records) ? details.records.map(record) : [];
-	const preview = [...coverage(details), ...entries.map(recordLine)].filter(Boolean).join("\n");
+	const outcome = bounded(pageOutcome(details, entries));
+	const facts = [...coverage(details), ...entries.map(recordLine)]
+		.filter((line) => line && line !== outcome.text)
+		.join("\n");
 	const cursor = details.continuationStatus === "available" ? details.cursor : undefined;
 	const evidence = [
 		typeof cursor === "string" ? safeText(`Next call: registry ${JSON.stringify({ cursor })}`) : "",
-		preview,
+		facts,
 		sourceRows(details, entries).join("\n"),
-		raw !== outcome.text && raw !== preview ? raw : "",
+		raw !== outcome.text && raw !== facts ? raw : "",
 	]
 		.filter(Boolean)
 		.join("\n\n");
-	return { outcome, preview: bounded(preview), evidence: bounded(evidence), warning: coverageWarning(details) };
+	return { outcome, evidence: bounded(evidence), warning: coverageWarning(details) };
 }
 
 function resultView(result: Parameters<NonNullable<ToolDefinition["renderResult"]>>[0], isError: boolean): View {
@@ -499,20 +536,18 @@ function resultView(result: Parameters<NonNullable<ToolDefinition["renderResult"
 	const heading =
 		lead || firstLine || (isError ? "Registry returned no diagnostic." : "Registry returned no result text.");
 	const remainder = heading === firstLine ? tail.join("\n") : raw;
-	const evidence = bounded(remainder);
-	return {
-		outcome: bounded(heading),
-		preview: !structured && isError ? evidence : { text: "" },
-		evidence,
-	};
+	return { outcome: bounded(heading), evidence: bounded(remainder) };
 }
 
-function hidesReadback(view: View, width: number): boolean {
-	return (
-		view.evidence.text !== view.preview.text ||
-		view.evidence.limit !== view.preview.limit ||
-		visibleWidth(view.outcome.text) > width
-	);
+function expandedResult(view: View, theme: Theme, width: number, color: "error" | "toolOutput"): string[] {
+	return [
+		"",
+		...wrapped(view.outcome.text, width).map((line) => theme.fg(color, line)),
+		...(view.evidence.text ? wrapped(view.evidence.text, width).map((line) => theme.fg(color, line)) : []),
+		...[view.warning, view.outcome.limit, view.evidence.limit].flatMap((limit) =>
+			limit ? wrapped(limit, width).map((line) => theme.fg("warning", line)) : [],
+		),
+	];
 }
 
 export const renderRegistryResult: NonNullable<ToolDefinition["renderResult"]> = (
@@ -531,24 +566,21 @@ export const renderRegistryResult: NonNullable<ToolDefinition["renderResult"]> =
 	}
 	const view = resultView(result, context.isError);
 	const color = context.isError ? "error" : "toolOutput";
-	const body = options.expanded ? view.evidence : view.preview;
-	const warning = view.outcome.limit ?? body.limit ?? view.warning;
 	return component((width) => {
-		const outcomeRows = options.expanded ? wrapped(view.outcome.text, width) : [clipLine(view.outcome.text, width)];
-		const drawn = options.expanded
-			? { visualLines: wrapped(body.text, width), skippedCount: 0 }
-			: truncateToVisualLines(body.text, PREVIEW_ROWS, width, 0, "start");
-		const rows = [
-			"",
-			...outcomeRows.map((line) => theme.fg(color, line)),
-			...drawn.visualLines.map((line) => theme.fg(color, line)),
-		];
-		if (warning) rows.push(theme.fg("warning", clipLine(warning, width)));
+		if (options.expanded) return expandedResult(view, theme, width, color);
+		const lead = view.outcome.text;
+		const warning = view.warning ?? view.outcome.limit;
+		const inline = warning && visibleWidth(`${lead} ${warning}`) <= width;
+		const outcome = theme.fg(color, clipLine(lead, width));
+		const rows = ["", inline ? `${outcome} ${theme.fg("warning", warning)}` : outcome];
+		if (warning && !inline) rows.push(theme.fg("warning", clipLine(warning, width)));
 		if (
-			!options.expanded &&
-			(drawn.skippedCount || hidesReadback(view, width) || context.state.hidesArguments?.(width))
+			view.evidence.text ||
+			visibleWidth(lead) > width ||
+			(warning && visibleWidth(warning) > width) ||
+			context.state.hidesArguments?.(width)
 		) {
-			rows.push(hint(theme, context, width, drawn.skippedCount));
+			rows.push(hint(theme, context, width));
 		}
 		return rows;
 	});

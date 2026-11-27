@@ -24,7 +24,6 @@ const NAMES = ["browser_tabs", "browser_inspect", "browser_act", "browser_evalua
 type Name = (typeof NAMES)[number];
 type Display = Pick<ToolDefinition, "name" | "renderCall" | "renderResult"> & { name: Name };
 const EXPAND = "app.tools.expand";
-const PREVIEW_ROWS = 5;
 const DISPLAY_LIMIT = 32_000;
 
 function object(value: unknown): Fields {
@@ -86,9 +85,9 @@ function atWidth(draw: (width: number) => string[]): Component {
 	return { render: draw, invalidate() {} };
 }
 
-function hint(theme: Theme, context: CardContext, skipped = 0): string {
+function hint(theme: Theme, context: CardContext): string {
 	const action = context.keyText(EXPAND) ? context.keyHint(EXPAND, "to expand") : theme.fg("muted", "click to expand");
-	return theme.fg("muted", `... (${skipped ? `${qty(skipped, "more line")}, ` : ""}`) + action + theme.fg("muted", ")");
+	return theme.fg("muted", "... (") + action + theme.fg("muted", ")");
 }
 
 function identify(args: Fields): string {
@@ -104,6 +103,7 @@ function callSubject(name: Name, args: Fields): string {
 	if (name === "browser_act") {
 		return [line(args.action), line(args.url) || line(args.ref) || line(args.selector)].filter(Boolean).join(" ");
 	}
+	if (name === "browser_inspect") return join(line(args.view), line(args.selector), identify(args));
 	return identify(args);
 }
 
@@ -112,8 +112,7 @@ function callFacts(name: Name, args: Fields): string {
 		name === "browser_act" ? identify(args) : undefined,
 		name === "browser_tabs" && args.match ? line(args.browser) : undefined,
 		name === "browser_tabs" && num(args.pid) !== undefined ? `pid ${args.pid}` : undefined,
-		line(args.view),
-		name === "browser_inspect" ? line(args.selector) : undefined,
+		name === "browser_inspect" ? undefined : line(args.view),
 		line(args.origin),
 		path(args.savePath),
 		typeof args.value === "string" ? `${qty(args.value.length, "character")} of input` : undefined,
@@ -167,31 +166,25 @@ function call(name: Name, value: unknown) {
 	const facts = callFacts(name, args);
 	const hiddenArgs = hasHiddenArgs(name, args);
 	const source = bound(name === "browser_evaluate" && typeof args.expression === "string" ? safe(args.expression) : "");
-	const preview = (width: number, expand: boolean) => visual(source.text, width, expand ? Infinity : PREVIEW_ROWS);
+	const showArgs = (width: number) =>
+		hiddenArgs || visibleWidth(subject ? `${name} ${subject}` : name) > width || visibleWidth(facts) > width;
 	return {
 		subject,
 		facts,
 		args,
 		source,
-		preview,
-		hidden(width: number) {
-			return hiddenArgs || visibleWidth(subject ? `${name} ${subject}` : name) > width || visibleWidth(facts) > width;
-		},
+		showArgs,
+		hidden: (width: number) => Boolean(facts || source.text || showArgs(width)),
 	};
 }
 
-function visual(text: string, width: number, rows = Infinity, tail = false) {
-	return truncateToVisualLines(text, rows, width, 0, tail ? "end" : "start");
+function fieldRows(text: string, width: number): readonly string[] {
+	return text ? truncateToVisualLines(text, Infinity, width, 0, "start").visualLines : [];
 }
 
-function fieldRows(text: string, width: number, expanded: boolean): readonly string[] {
-	if (!text) return [];
-	return expanded ? visual(text, width).visualLines : [clip(text, width)];
-}
-
-function warning(theme: Theme, limits: (string | undefined)[], width: number, expanded: boolean): string[] {
+function warning(theme: Theme, limits: (string | undefined)[], width: number): string[] {
 	const text = limits.filter(Boolean).join("; ");
-	return fieldRows(text && `[${text}]`, width, expanded).map((row) => theme.fg("warning", row));
+	return fieldRows(text && `[${text}]`, width).map((row) => theme.fg("warning", row));
 }
 
 function renderCall(name: Name, args: unknown, theme: Theme, context: CardContext): Component {
@@ -201,23 +194,20 @@ function renderCall(name: Name, args: unknown, theme: Theme, context: CardContex
 	const header = card.subject ? `${title} ${theme.fg("accent", card.subject)}` : title;
 	const argsView = expanded ? expandedArgs(card.args) : undefined;
 	return atWidth((width) => {
-		const disclosure = card.hidden(width) ? argsView : undefined;
-		const source = card.preview(width, expanded);
-		const rows = [
-			...fieldRows(header, width, expanded),
-			...fieldRows(disclosure?.text ?? card.facts, width, expanded).map((row) => theme.fg("muted", row)),
-			...source.visualLines.map((row) => theme.fg("toolOutput", row)),
-			...warning(theme, [disclosure?.limit, card.source.limit], width, expanded),
-		];
-		if (
-			!expanded &&
-			!context.state.resultPresent &&
-			context.keyText(EXPAND) &&
-			(card.hidden(width) || source.skippedCount)
-		) {
-			rows.push(clip(hint(theme, context, source.skippedCount), width));
+		if (!expanded) {
+			const rows = [clip(header, width)];
+			if (!context.state.resultPresent && context.keyText(EXPAND) && card.hidden(width)) {
+				rows.push(clip(hint(theme, context), width));
+			}
+			return rows;
 		}
-		return rows;
+		const disclosure = card.showArgs(width) ? argsView : undefined;
+		return [
+			...fieldRows(header, width),
+			...fieldRows(disclosure?.text ?? card.facts, width).map((row) => theme.fg("muted", row)),
+			...fieldRows(card.source.text, width).map((row) => theme.fg("toolOutput", row)),
+			...warning(theme, [disclosure?.limit, card.source.limit], width),
+		];
 	});
 }
 
@@ -599,6 +589,33 @@ function imageNotices(result: AgentToolResult<unknown>, report: Fields, showImag
 	);
 }
 
+function compactResult(
+	view: {
+		heading: string;
+		body: string;
+		inlineBody: boolean;
+		notice: string[];
+		timing: string;
+		color: "error" | "muted" | "toolOutput";
+	},
+	hasEvidence: (width: number) => boolean,
+	theme: Theme,
+	context: CardContext,
+): Component {
+	const summary = view.inlineBody ? [view.heading, view.body].filter(Boolean).join(" ") : view.heading;
+	const outcome = join(
+		summary && theme.fg(view.color, summary),
+		...view.notice.map((row) => theme.fg("toolOutput", row)),
+		view.timing && theme.fg("muted", view.timing),
+	);
+	const hiddenBody = !view.inlineBody && Boolean(view.body);
+	return atWidth((width) => [
+		"",
+		...(outcome ? [clip(outcome, width)] : []),
+		...(hiddenBody || hasEvidence(width) || visibleWidth(outcome) > width ? [clip(hint(theme, context), width)] : []),
+	]);
+}
+
 function renderResult(
 	name: Name,
 	result: AgentToolResult<unknown>,
@@ -623,27 +640,32 @@ function renderResult(
 	const elapsed = tail ? (context.durationMs ?? num(object(report.execution).elapsedMs)) : undefined;
 	const notice = imageNotices(result, report, context.showImages);
 	const extra = [evidence.text, view.continuation].filter(Boolean).join("\n");
-	const limits = [heading.limit, body.limit, expanded ? evidence.limit : undefined];
-	const timing = elapsed === undefined ? "" : `${isPartial ? "Elapsed" : "Took"} ${duration(elapsed)}`;
-	const drawDisclosure = (width: number, skipped: number, hasClippedRow: boolean) => {
-		const hidden =
-			skipped || extra || hasClippedRow || request.hidden(width) || request.preview(width, false).skippedCount;
-		return !expanded && hidden ? [clip(hint(theme, context, skipped), width)] : [];
-	};
-	return atWidth((width) => {
-		const preview = visual(body.text, width, expanded ? Infinity : PREVIEW_ROWS, tail);
-		const clippedNotice = notice.some((row) => visibleWidth(row) > width);
-		return [
-			"",
-			...fieldRows(heading.text, width, expanded).map((row) => theme.fg(color, row)),
-			...preview.visualLines.map((row) => theme.fg(color, row)),
-			...notice.flatMap((row) => fieldRows(row, width, expanded).map((fit) => theme.fg("toolOutput", fit))),
-			...(expanded ? visual(extra, width).visualLines.map((row) => theme.fg("muted", row)) : []),
-			...warning(theme, limits, width, expanded),
-			...(timing ? ["", theme.fg("muted", clip(timing, width))] : []),
-			...drawDisclosure(width, preview.skippedCount, clippedNotice || visibleWidth(heading.text) > width),
-		];
-	});
+	const limits = [heading.limit, body.limit, evidence.limit];
+	const timingLabel = isPartial ? "Elapsed" : "Took";
+	const timing = elapsed === undefined ? "" : `${timingLabel} ${duration(elapsed)}`;
+	if (!expanded)
+		return compactResult(
+			{
+				heading: heading.text,
+				body: body.text,
+				inlineBody: name === "browser_capture" && status === "ok",
+				notice,
+				timing,
+				color,
+			},
+			(width) => Boolean(extra) || request.hidden(width) || limits.some(Boolean),
+			theme,
+			context,
+		);
+	return atWidth((width) => [
+		"",
+		...fieldRows(heading.text, width).map((row) => theme.fg(color, row)),
+		...fieldRows(body.text, width).map((row) => theme.fg(color, row)),
+		...notice.flatMap((row) => fieldRows(row, width).map((fit) => theme.fg("toolOutput", fit))),
+		...fieldRows(extra, width).map((row) => theme.fg("muted", row)),
+		...warning(theme, limits, width),
+		...(timing ? ["", theme.fg("muted", clip(timing, width))] : []),
+	]);
 }
 
 const tools: Display[] = NAMES.map((name) => ({
