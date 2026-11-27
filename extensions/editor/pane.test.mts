@@ -106,7 +106,7 @@ test("the pane-owned child outlives a session, attaches another and delivers liv
 	const starter = { id: "ordinary:starter", label: "Opening Pi", kind: "ordinary" } as const;
 	const second = { id: "ordinary:other", label: "Another Pi", kind: "ordinary" } as const;
 	const noSplit = async () => {
-		throw Error("Do not create a split when an Editor is visible");
+		throw Error("Do not create a split when an Editor is already open");
 	};
 	const opened = new EditorRoom(agentDir, root, starter, async () => {}, noSplit);
 	const attached = new EditorRoom(agentDir, root, second, async () => {}, noSplit);
@@ -173,7 +173,8 @@ test("the pane-owned child outlives a session, attaches another and delivers liv
 	assert.deepEqual((await departed).members, []);
 	assert.equal((await call("state")).currentSession, null);
 	assert.equal(child.exitCode, null);
-	assert.equal(await attached.command(doc), `Connected to Editor for ${root}.`);
+	await call("visibility", { visible: false });
+	assert.equal(await attached.command(doc), `Connected to Editor for ${root} in another tab.`);
 	assert.deepEqual(await next("attach"), { type: "attach", participant: second, doc });
 	assert.deepEqual((await call("state")).currentSession, second);
 	assert.equal((await call("session", { id: null })).currentSession, null);

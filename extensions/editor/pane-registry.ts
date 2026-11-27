@@ -23,6 +23,8 @@ export type PaneRecord = {
 	servicePid: number;
 	loaded: boolean;
 	visible: boolean;
+	startedAt: number;
+	lastVisibleAt: number | null;
 	currentSession: Participant | null;
 };
 
@@ -100,6 +102,8 @@ async function paneRecord(dir: string, id: string, checkService = true): Promise
 				/^[\da-f]{64}$/.test(value.token) &&
 				typeof value.loaded === "boolean" &&
 				typeof value.visible === "boolean" &&
+				Number.isSafeInteger(value.startedAt) &&
+				(value.lastVisibleAt === null || Number.isSafeInteger(value.lastVisibleAt)) &&
 				(value.currentSession === null || isParticipant(value.currentSession)) &&
 				alive(value.appPid) &&
 				(!checkService || alive(value.servicePid))
@@ -123,7 +127,7 @@ export async function readPane(workspace: string, id: string) {
 	}
 }
 
-async function panes(workspace: string): Promise<PaneRecord[]> {
+async function panes(workspace: string, checkService = true): Promise<PaneRecord[]> {
 	const dir = await directory(workspace).catch((error: NodeJS.ErrnoException) => {
 		if (error.code !== "ENOENT") throw error;
 		return undefined;
@@ -136,10 +140,12 @@ async function panes(workspace: string): Promise<PaneRecord[]> {
 		ids.push(id);
 		if (ids.length === 256) break;
 	}
-	return (await Promise.all(ids.map((id) => paneRecord(dir, id)))).filter((record) => record !== undefined);
+	return (await Promise.all(ids.map((id) => paneRecord(dir, id, checkService)))).filter(
+		(record) => record !== undefined,
+	);
 }
 
-async function control(record: PaneRecord, input: PaneControl, signal?: AbortSignal): Promise<boolean> {
+async function control(record: PaneRecord, input: PaneControl, signal?: AbortSignal): Promise<Payload | undefined> {
 	const timeout = AbortSignal.timeout(1200);
 	try {
 		const response = await fetch(`http://127.0.0.1:${record.port}/control`, {
@@ -150,9 +156,9 @@ async function control(record: PaneRecord, input: PaneControl, signal?: AbortSig
 			signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
 		});
 		const result = (await response.json()) as Payload;
-		return response.ok && result.id === record.id && result.accepted === true;
+		if (response.ok && result.id === record.id && result.accepted === true) return result;
 	} catch {
-		return false;
+		return undefined;
 	}
 }
 
@@ -163,15 +169,31 @@ export async function notifyPanes(workspace: string, input: PaneControl, except?
 	return results.filter(Boolean).length;
 }
 
-export async function attachVisiblePane(
+function panePriority(a: PaneRecord, b: PaneRecord): number {
+	return (
+		Number(b.visible) - Number(a.visible) ||
+		(b.lastVisibleAt ?? 0) - (a.lastVisibleAt ?? 0) ||
+		b.startedAt - a.startedAt ||
+		a.id.localeCompare(b.id)
+	);
+}
+
+export async function attachPane(
 	workspace: string,
 	participant: Participant,
 	doc: string | undefined,
 	signal: AbortSignal,
-): Promise<boolean> {
-	for (const record of await panes(workspace)) {
+): Promise<{ visible: boolean } | undefined> {
+	const candidates = (await panes(workspace, false)).sort(panePriority);
+	for (const record of candidates) {
 		signal.throwIfAborted();
-		if (record.visible && (await control(record, { op: "attach", participant, doc }, signal))) return true;
+		const receipt = await control(record, { op: "attach", participant, doc }, signal);
+		if (typeof receipt?.visible === "boolean") return { visible: receipt.visible };
 	}
-	return false;
+	signal.throwIfAborted();
+	if (candidates.some(({ appPid }) => alive(appPid))) {
+		throw Error(
+			"An Editor pane for this folder is open but did not answer. If that pane shows a problem, close it and run /editor again.",
+		);
+	}
 }

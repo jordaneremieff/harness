@@ -146,8 +146,8 @@ The Markdown command's Read action requests a half-width split on the left for i
 reader and a pinned open-request path. Request consumption separately establishes acceptance.
 Browse-only selection and publication do not invoke the adapter.
 
-The interactive `/editor` command first tries to connect to a visible Editor pane for the
-folder. If there is none, it opens Editor.app to the right of the invoking Pi pane. The one-use
+The interactive `/editor` command connects to a live Editor pane for the folder, even if
+it is hidden. If no pane for the folder is live, it opens Editor.app to the right of the invoking Pi pane. The one-use
 launch ticket identifies the local folder, optional file and pane-owned service program. The app
 reports workspace load and panel visibility separately and stays open when its opening Pi closes.
 Joining an Editor workspace through the agent tool neither starts an app nor creates a split.

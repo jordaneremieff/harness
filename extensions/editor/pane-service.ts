@@ -135,8 +135,11 @@ export async function startPaneService(config: PaneConfig) {
 	let live: Participant[] = [];
 	let membersAt = -Infinity;
 	let seq = store.sequence();
+	let startedAt = Date.now();
+	let lastVisibleAt: number | null = null;
 	let loaded = false;
 	let visible = false;
+	let eventFeedStarted = false;
 	let closed = false;
 	let refresh: Promise<void> | undefined;
 	let scan: ReturnType<typeof setTimeout> | undefined;
@@ -289,6 +292,8 @@ export async function startPaneService(config: PaneConfig) {
 			servicePid: process.pid,
 			loaded,
 			visible,
+			startedAt,
+			lastVisibleAt,
 			currentSession,
 		};
 		return record.publish(value);
@@ -356,7 +361,9 @@ export async function startPaneService(config: PaneConfig) {
 			"visibility",
 			async (input) => {
 				if (typeof input.visible !== "boolean") throw Error("Invalid pane visibility.");
-				visible = input.visible && loaded;
+				const next = input.visible && loaded;
+				if (next && !visible) lastVisibleAt = Date.now();
+				visible = next;
 				await publishRecord();
 				return { visible };
 			},
@@ -380,11 +387,13 @@ export async function startPaneService(config: PaneConfig) {
 		["send", handoff],
 		[
 			"events",
-			(input, signal) =>
-				events.after(input.since as number, signal, () => [
+			(input, signal) => {
+				if (input.since === 0) eventFeedStarted = true;
+				return events.after(input.since as number, signal, () => [
 					{ type: "workspace", seq },
 					{ type: "members", members: live },
-				]),
+				]);
+			},
 		],
 	]);
 
@@ -412,10 +421,11 @@ export async function startPaneService(config: PaneConfig) {
 	async function control(input: PaneControl): Promise<boolean> {
 		switch (input.op) {
 			case "attach": {
-				if (!visible || !isParticipant(input.participant)) return false;
+				// The initial event read does not replay earlier events, including file opens.
+				if (!loaded || !eventFeedStarted || !isParticipant(input.participant)) return false;
 				await refreshMembers();
 				const participant = live.find((p) => p.id === input.participant.id);
-				if (!visible || !participant) return false;
+				if (!participant) return false;
 				currentSession = participant;
 				await publishRecord();
 				events.publish({ type: "attach", participant, doc: input.doc, line: input.line });
@@ -441,6 +451,11 @@ export async function startPaneService(config: PaneConfig) {
 		return false;
 	}
 
+	async function controlResult(input: PaneControl): Promise<Payload> {
+		const accepted = await control(input);
+		return { id: config.paneId, accepted, ...(accepted && input.op === "attach" ? { visible } : {}) };
+	}
+
 	const server = await listen(async (req, res) => {
 		const isAPI = req.url === "/api";
 		const key = isAPI ? token : controlToken;
@@ -452,9 +467,7 @@ export async function startPaneService(config: PaneConfig) {
 		const input = await jsonBody(req, limit);
 		const controller = new AbortController();
 		res.once("close", () => controller.abort());
-		const result = isAPI
-			? await api(input, controller.signal)
-			: { id: config.paneId, accepted: await control(input as PaneControl) };
+		const result = isAPI ? await api(input, controller.signal) : await controlResult(input as PaneControl);
 		if (!res.destroyed) json(res, 200, result);
 	}, 25_000).catch((error) => {
 		store.close();
@@ -463,7 +476,11 @@ export async function startPaneService(config: PaneConfig) {
 	try {
 		record = await registerPane(store.dir, config.paneId);
 		const previous = await record.previous();
-		if (previous?.appPid === config.appPid) currentSession = previous.currentSession;
+		if (previous?.appPid === config.appPid) {
+			currentSession = previous.currentSession;
+			startedAt = previous.startedAt;
+			lastVisibleAt = previous.lastVisibleAt;
+		}
 		await publishRecord();
 	} catch (error) {
 		await server.close();

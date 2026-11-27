@@ -6,7 +6,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { browse } from "./browse.ts";
 import type { FileEvent, RequestState, ShowEvent } from "./pane-events.ts";
-import { attachVisiblePane, notifyPanes, readPane, type PaneControl } from "./pane-registry.ts";
+import { attachPane, notifyPanes, type PaneControl, readPane } from "./pane-registry.ts";
 import { join, members, type Invitation, type Participant } from "./participants.ts";
 import { preparePane, type PreparePane } from "./pane-launch.ts";
 import { projectReplace } from "./project-search.ts";
@@ -198,10 +198,16 @@ export class EditorRoom {
 		const { root, file } = await commandTarget(this.cwd, args);
 		const { store } = await this.attach(root);
 		const signal = this.lifetime.signal;
-		if (await attachVisiblePane(store.dir, this.actor, file, signal)) return `Connected to Editor for ${root}.`;
+		const connected = async () => {
+			const pane = await attachPane(store.dir, this.actor, file, signal);
+			if (pane) return `Connected to Editor for ${root}${pane.visible ? "" : " in another tab"}.`;
+		};
+		const existing = await connected();
+		if (existing) return existing;
 		const launch = await this.prepare(this.agentDir, signal);
 		// Installation can take long enough for another session to open this workspace.
-		if (await attachVisiblePane(store.dir, this.actor, file, signal)) return `Connected to Editor for ${root}.`;
+		const openedDuringInstall = await connected();
+		if (openedDuringInstall) return openedDuringInstall;
 		const paneId = randomUUID();
 		const path = joinPath(store.dir, `open-${paneId}.json`);
 		const failure = `${path}.failure`;

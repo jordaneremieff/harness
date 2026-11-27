@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -249,28 +250,23 @@ test("pane file receipts report the save encoding and discard draft-only documen
 	assert.equal(posted.quote, "idea");
 });
 
-test("a loaded but hidden pane does not prevent another session from opening its own split", async (t) => {
+test("the command reuses the best live pane without opening another split", async (t) => {
 	const base = await realpath(await mkdtemp(join(tmpdir(), "editor-hidden-")));
 	const root = join(base, "project"),
 		state = join(base, "state");
 	await Promise.all([mkdir(root), mkdir(state, { mode: 0o700 })]);
+	const file = "file.txt";
+	await writeFile(join(root, file), "This file opens in the attached pane.\n");
 	const services: Awaited<ReturnType<typeof startPaneService>>[] = [];
+	const opener = { id: "ordinary:opener", kind: "ordinary", label: "Opener" } as const;
+	const actor = { id: "ordinary:next", kind: "ordinary", label: "Next" } as const;
 	const room = new EditorRoom(
 		state,
 		root,
-		{ id: "ordinary:a", kind: "ordinary", label: "Pi" },
+		actor,
 		async () => {},
-		async () => async (_folder, path) => {
-			const ticket = JSON.parse(await readFile(path, "utf8"));
-			const service = await startPaneService(paneConfig({ ...ticket, appPid: process.pid }));
-			services.push(service);
-			const response = await fetch(`http://127.0.0.1:${service.port}/api`, {
-				method: "POST",
-				headers: { Authorization: `Bearer ${service.token}`, "Content-Type": "application/json" },
-				body: JSON.stringify({ op: "loaded" }),
-			});
-			assert.equal(response.status, 200);
-			return { blockId: `pane-${services.length}` };
+		async () => {
+			throw Error("Do not prepare another split while a pane is live.");
 		},
 	);
 	t.after(async () => {
@@ -278,9 +274,57 @@ test("a loaded but hidden pane does not prevent another session from opening its
 		await Promise.all(services.map((service) => service.close()));
 		await rm(base, { recursive: true, force: true });
 	});
-	assert.match(await room.command(""), /loaded.*Show that Rex tab/);
-	assert.match(await room.command(""), /loaded.*Show that Rex tab/);
-	assert.equal(services.length, 2);
+	let now = Date.now();
+	t.mock.method(Date, "now", () => ++now);
+
+	async function pane() {
+		const service = await startPaneService(
+			paneConfig({ root, agentDir: state, paneId: randomUUID(), appPid: process.pid, participant: opener }),
+		);
+		services.push(service);
+		async function call(input: Record<string, unknown>) {
+			const response = await fetch(`http://127.0.0.1:${service.port}/api`, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${service.token}`, "Content-Type": "application/json" },
+				body: JSON.stringify(input),
+				signal: AbortSignal.timeout(2000),
+			});
+			assert.equal(response.status, 200);
+			return response.json();
+		}
+		await call({ op: "loaded" });
+		return call;
+	}
+
+	const older = await pane();
+	await assert.rejects(room.command(file), /open but did not answer/);
+	await older({ op: "events", since: 0 });
+	const newer = await pane();
+	const { cursor } = await newer({ op: "events", since: 0 });
+	assert.equal(await room.command(file), `Connected to Editor for ${root} in another tab.`);
+	const result = await newer({ op: "events", since: cursor });
+	assert.ok(result.events.some((event: Record<string, unknown>) => event.type === "attach" && event.doc === file));
+	assert.equal((await older({ op: "state" })).currentSession, null);
+
+	await newer({ op: "visibility", visible: true });
+	await older({ op: "visibility", visible: true });
+	await older({ op: "visibility", visible: false });
+	const visible = await newer({ op: "events", since: 0 });
+	assert.equal(await room.command(file), `Connected to Editor for ${root}.`);
+	assert.ok(
+		(await newer({ op: "events", since: visible.cursor })).events.some(
+			(event: Record<string, unknown>) => event.type === "attach",
+		),
+	);
+
+	await newer({ op: "visibility", visible: false });
+	const latestVisible = await older({ op: "events", since: 0 });
+	assert.equal(await room.command(file), `Connected to Editor for ${root} in another tab.`);
+	assert.ok(
+		(await older({ op: "events", since: latestVisible.cursor })).events.some(
+			(event: Record<string, unknown>) => event.type === "attach",
+		),
+	);
 });
 
 test("a split that never starts its app loses its launch ticket", async (t) => {
