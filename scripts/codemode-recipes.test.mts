@@ -107,7 +107,7 @@ function digestFixture(events: ThreadEvent[]) {
 		},
 		digest: () =>
 			run(
-				{ agent_collaborate: async (input: Record<string, unknown>) => JSON.stringify(read(input)) },
+				{ agent_collaborate: async (input: Record<string, unknown>) => read(input) },
 				(key: string) => saved.get(key),
 				(key: string, value: unknown) => {
 					saved.set(key, value);
@@ -230,13 +230,13 @@ test("the file digest writes the exact requested result once and returns only it
 				assert.equal(input.finalReport, finalReport || undefined);
 				offsets.push(input.offset ?? 0);
 				const first = input.offset === undefined;
-				const text = parts[first ? 0 : 1],
-					nextOffset = first ? parts[0].length : null;
-				return JSON.stringify(
-					finalReport
-						? { status: "unanswered", finalReport: { text, nextOffset } }
-						: { status: "done", answer: text, nextOffset },
-				);
+				const text = parts[first ? 0 : 1];
+				const continuation = first
+					? { tool: "agent_inspect", view: "result", ...(finalReport ? { finalReport } : {}), offset: parts[0].length }
+					: undefined;
+				return finalReport
+					? { status: "unanswered", finalReport: { text }, finalReportContinuation: continuation }
+					: { status: "done", answer: text, answerContinuation: continuation };
 			},
 			write: async (input: unknown) => {
 				writes.push(input);
@@ -246,13 +246,14 @@ test("the file digest writes the exact requested result once and returns only it
 		const content = parts.join("");
 		assert.deepEqual(offsets, [0, parts[0].length]);
 		assert.deepEqual(writes, [{ path, content }]);
-		assert.deepEqual(receipt, { path, bytes: Buffer.byteLength(content, "utf8") });
+		assert.deepEqual(receipt, { path, bytes: Buffer.byteLength(content, "utf8"), pages: 2 });
 	}
 });
 
 test("the file digest never writes a partial or unavailable result", async () => {
 	const run = resultDigest("out/result.txt", false);
-	for (const incomplete of [{ status: "placed" }, { status: "done", answer: "part", nextOffset: 0 }]) {
+	const endless = { tool: "agent_inspect", view: "result", offset: 0 };
+	for (const incomplete of [{ status: "placed" }, { status: "done", answer: "part", answerContinuation: endless }]) {
 		const writes: unknown[] = [];
 		await assert.rejects(
 			run({
@@ -261,7 +262,7 @@ test("the file digest never writes a partial or unavailable result", async () =>
 					writes.push(input);
 				},
 			}),
-			/not available|did not advance/,
+			/not available|exceeds the page limit/,
 		);
 		assert.deepEqual(writes, []);
 	}
