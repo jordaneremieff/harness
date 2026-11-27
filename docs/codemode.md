@@ -339,8 +339,9 @@ provider payload or a second model catalog in the script.
 
 ## Generate images from a script
 
-The `models` API runs image models with the session's credentials. OpenRouter
-image models use the same `OPENROUTER_API_KEY` or `/login` credential as its chat
+The `models` API runs image models with the session's credentials. Pi lists
+image models from OpenRouter and, when the organization enables them, from
+Radius; each provider uses the same API key or `/login` credential as its chat
 models. Use `models.getAvailableOfType("image")` for current selection facts;
 a catalog entry does not prove that a remote request will succeed. Generation
 can take minutes, so leave `timeout_ms` unset or generous; at most four `models`
@@ -356,9 +357,11 @@ const painter = available.find(model =>
   model.provider === "PROVIDER" && model.id === "MODEL_ID",
 );
 if (!painter) return "No available image model matches the selected provider and ID.";
-const result = await models.generateImages(painter, {
-  input: [{ type: "text", text: "A red fox in the snow, watercolor" }],
-});
+const result = await models.generateImages(
+  painter,
+  { input: [{ type: "text", text: "A red fox in the snow, watercolor" }] },
+  { aspectRatio: "16:9", size: "2K" },
+);
 if (result.stopReason !== "stop") return result.errorMessage;
 for (const block of result.output) {
   if (block.type === "image") image(block);
@@ -366,13 +369,22 @@ for (const block of result.output) {
 }
 ```
 
+The third argument is optional and accepts only `aspectRatio` (for example
+`"1:1"`, `"16:9"`, `"4:3"`, `"9:16"`) and `size` (`"1K"`, `"2K"` or `"4K"`;
+pixel dimensions are not supported). Both go to the provider unchanged, so the
+model decides which values work, and an unsupported value can come back as an
+error result. Any other option key throws before the request.
+
 `generateImages` does not throw on provider errors; check `stopReason` and
 `errorMessage`. Show each image block with `image()`: printing the base64
 `data` with `text()` adds a large string the model cannot read, and a script
 that generates images without showing them gets a note in its result.
 Codemode attempts to save each emitted image to a temporary file. Its output
 includes the path or a save-failure note. Image usage is added to the `codemode`
-tool result and counts toward the session cost, as classifier calls do.
+tool result and counts toward the session cost, as classifier calls do. Usage
+reports image output tokens as `imageOutput`, a part of `output`, when the
+provider gives the split; a model's `cost.imageOutput` rate prices those tokens
+and `cost.output` prices the rest.
 
 ## Orchestration versus native execution
 
