@@ -38,7 +38,7 @@ App Pane uses the Accessibility and Screen Recording access of the terminal appl
 
 The window is the app's own window placed over the pane; the terminal does not embed it. Content that the terminal draws over the pane, such as a floating pane, is visible only while the terminal is in front. The first click on the live image activates the app and does not reach the page. An app in full screen, or a minimised window, stays as it is until it returns. Windows live on one desktop: a window on another desktop does not move to the pane.
 
-Links follow the tab where you work in browsers that open a link in their first window: the Chromium browsers above and Safari. A window attached by title takes no part. If every window of the browser is in a pane, a link from a tab without a browser pane opens in one of them; keep one browser window outside the panes for such links.
+Links follow the tab where you work in Chromium browsers, which open a link from another app in the window they used last. Safari's choice of window is unconfirmed. A window attached by title takes no part. If every window of the browser is in a pane, a link from a tab without a browser pane opens in one of them; keep one browser window outside the panes for such links.
 
 ## Files and checks
 
