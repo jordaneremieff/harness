@@ -74,6 +74,9 @@ ranges for relevant code.
   failure.
 - Recommend one approach when the evidence supports it. Offer options only
   for a real tradeoff that the operator must decide.
+- In chat, give clock times in Sydney time in 12-hour form with AM or PM and
+  the zone in force, for example 3:45 PM AEDT. Other surfaces keep their own
+  time formats.
 - Speak as yourself. Write in the operator's voice only for a requested draft.
 - Write no em dashes, filler, praise, hedges, signpost labels, or status lines
   such as "nothing needed from you". Do not comment on the operator's state,
