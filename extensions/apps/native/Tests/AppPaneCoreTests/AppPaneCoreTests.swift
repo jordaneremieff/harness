@@ -33,7 +33,7 @@ struct ApplicationsTests {
     let entries = [
         AppEntry(name: "Brave Browser", path: "/Applications/Brave Browser.app", bundleIdentifier: "com.brave.Browser", running: true),
         AppEntry(name: "Google Chrome", path: "/Applications/Google Chrome.app", bundleIdentifier: "com.google.Chrome", running: false),
-        AppEntry(name: "Sublime Text", path: "/Applications/Sublime Text.app", bundleIdentifier: "com.sublimetext.4", running: true),
+        AppEntry(name: "Activity Monitor", path: "/System/Applications/Utilities/Activity Monitor.app", bundleIdentifier: "com.apple.ActivityMonitor", running: true),
         AppEntry(name: "Slack", path: "/Applications/Slack.app", bundleIdentifier: "com.tinyspeck.slackmacgap", running: false),
         AppEntry(name: "Notes", path: "/System/Applications/Notes.app", bundleIdentifier: "com.apple.Notes", running: false),
         AppEntry(name: "Notion", path: "/Applications/Notion.app", bundleIdentifier: "notion.id", running: false),
@@ -41,12 +41,12 @@ struct ApplicationsTests {
 
     @Test func matchesNamesWordsAndIdentifiers() {
         #expect(Applications.match("brave", in: entries) == .found(entries[0]))
-        #expect(Applications.match("Sublime", in: entries) == .found(entries[2]))
+        #expect(Applications.match("Activity", in: entries) == .found(entries[2]))
         #expect(Applications.match("chrome", in: entries) == .found(entries[1]))
         #expect(Applications.match("google chrome.app", in: entries) == .found(entries[1]))
         #expect(Applications.match("com.tinyspeck.slackmacgap", in: entries) == .found(entries[3]))
         #expect(Applications.match("slack", in: entries) == .found(entries[3]))
-        #expect(Applications.match("text", in: entries) == .found(entries[2]))
+        #expect(Applications.match("monitor", in: entries) == .found(entries[2]))
         #expect(Applications.match("zoom", in: entries) == .missing)
         #expect(Applications.match("  ", in: entries) == .missing)
     }

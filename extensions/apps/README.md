@@ -19,7 +19,7 @@ A window that another pane already shows stays in that pane. An app that is not 
 
 ## Agents
 
-`apps_show` takes `app` (a name such as `brave`, `slack` or `sublime`, a bundle identifier, or an absolute `.app` path) and optionally `url` for a new browser window or `window` for text in an existing window's title. It checks the app and returns `show`, the program and arguments of the pane. The agent runs `show` as the program of a new split on the right of its own pane, without taking focus, and with the pane set to close when its program ends. The tool opens no pane itself.
+`apps_show` takes `app` (a name such as `brave`, `slack` or `notes`, a bundle identifier, or an absolute `.app` path) and optionally `url` for a new browser window or `window` for text in an existing window's title. It checks the app and returns `show`, the program and arguments of the pane. The agent runs `show` as the program of a new split on the right of its own pane, without taking focus, and with the pane set to close when its program ends. The tool opens no pane itself.
 
 Keep the block ID returned when the app pane opens. To open a new browser tab, send the text `:tab https://example.com` and the Enter key to **that block**, not to the focused pane or the browser application. The pane accepts one HTTP or HTTPS address, or no address for a blank tab. Read its reply before sending another request. If the pane or its window is gone, do not retry in the front window. System URL openers and global keyboard shortcuts still follow system focus.
 

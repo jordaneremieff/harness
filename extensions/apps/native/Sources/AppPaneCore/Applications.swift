@@ -50,7 +50,7 @@ public enum Applications {
 
     /// Finds the application that a person means by `query`: an exact bundle identifier or name
     /// first, then names whose words start with the query's words in order, such as "brave" for
-    /// "Brave Browser" or "sublime" for "Sublime Text". A running application wins over an
+    /// "Brave Browser" or "activity" for "Activity Monitor". A running application wins over an
     /// installed one with the same name. Several different applications are ambiguous.
     public static func match(_ query: String, in entries: [AppEntry]) -> AppMatch {
         let candidates = merged(entries)

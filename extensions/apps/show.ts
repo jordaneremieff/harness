@@ -13,7 +13,7 @@ export const ShowParameters = obj(
 			minLength: 1,
 			maxLength: 1024,
 			description:
-				'Application name such as "Brave", "Slack" or "Sublime Text", a bundle identifier, or an absolute .app path',
+				'Application name such as "Brave", "Slack" or "Notes", a bundle identifier, or an absolute .app path',
 		}),
 		url: opt(str({ minLength: 1, maxLength: 2048, description: "http or https address for a new browser window" })),
 		window: opt(
