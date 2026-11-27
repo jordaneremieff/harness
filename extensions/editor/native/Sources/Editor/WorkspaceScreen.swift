@@ -166,14 +166,21 @@ final class WorkspaceScreen {
                 if event.keyCode == 53 { confirmation.resolve(nil); return nil }
                 return event
             }
-            let responder = window.firstResponder
-            if responder === requests.view.input { return event }
-            let composing = (responder as? NSTextView)?.hasMarkedText() ?? false
-            let field = (responder as? NSTextView)?.isFieldEditor ?? false
-            return registry.handle(event, textInput: field, composing: composing) ? nil : event
+            let handled = handleWorkspaceKey(event, responder: window.firstResponder) { action in
+                window === NSApp.keyWindow && NSApp.sendAction(action, to: nil, from: nil)
+            }
+            return handled ? nil : event
         }
         Self.setApplicationAppearance(appearance.applicationAppearance)
         present()
+    }
+
+    func handleWorkspaceKey(_ event: NSEvent, responder: NSResponder?, sendEditAction: (Selector) -> Bool) -> Bool {
+        guard (responder as? NSTextView)?.hasMarkedText() != true else { return false }
+        if let action = KeyChord(event: event)?.standardEditAction { return sendEditAction(action) }
+        if responder === requests.view.input { return false }
+        let field = (responder as? NSTextView)?.isFieldEditor ?? false
+        return registry.handle(event, textInput: field, composing: false)
     }
 
     /// Sets the application appearance only when it changes: each assignment makes AppKit report
@@ -930,7 +937,7 @@ final class WorkspaceScreen {
             }
             let encoding = formats[editor.doc]?.bom.map { $0 ? "UTF-8 BOM" : "UTF-8" }
             let format = [ending, encoding].compactMap { $0 }.joined(separator: "  ·  ")
-            chrome.setEditorStatus(branch: branch, position: at, indentation: "\(indentation.spaces ? "Spaces" : "Tabs"): \(indentation.width)", language: editor.languageName, format: format)
+            chrome.setEditorStatus(branch: branch, position: at, compactPosition: "Ln \(caret.line), Col \(caret.column)", indentation: "\(indentation.spaces ? "Spaces" : "Tabs"): \(indentation.width)", language: editor.languageName, format: format)
             chrome.setStatus("", status, canSave: !disconnected && !editor.conflicted)
         } else if let id = viewID(for: selected), let h = viewHeaders.first(where: { $0["id"] as? String == id }) {
             chrome.setEditorStatus(branch: branch, position: h["title"] as? String ?? "Composed tab", indentation: nil, language: nil, format: "")
@@ -1629,6 +1636,17 @@ final class WorkspaceScreen {
         let editing: @MainActor () -> Bool = { [weak self] in self?.currentEditor != nil }
         add("collaboration.ask", "Ask About Selection…", "Conversations", keys: "cmd+shift+A", enabled: editing) { $0.currentEditor?.askSelection() }
         add("collaboration.resume", "Resume Unsent Request", "Conversations", enabled: { [weak self] in self?.requests.hasUnpostedText == true }) { $0.requests.resumeDraft() }
+        add("collaboration.showChange", "Show Latest External Change", "File", enabled: { [weak self] in
+            self?.currentEditor?.reviews.isEmpty == false
+        }) { screen in
+            if let editor = screen.currentEditor { editor.scroll.showLatestChange(editor) }
+        }
+        add("collaboration.undoChange", "Undo Latest External Change", "File", enabled: { [weak self] in
+            guard let editor = self?.currentEditor, let review = editor.reviews.first else { return false }
+            return !editor.conflicted && !editor.textView.hasMarkedText() && review.hunks.allSatisfy { $0.span.intact }
+        }) { screen in
+            if let editor = screen.currentEditor, let review = editor.reviews.first { editor.undoReview(review) }
+        }
         add("file.newScratch", "New Scratch", "File", keys: "cmd+N") { $0.command("scratch") }
         add("file.newFile", "New File…", "File", keys: "cmd+shift+N") { $0.command("newFile") }
         add("file.save", "Save", "File", keys: "cmd+S", enabled: editing) { $0.command("save") }

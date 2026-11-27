@@ -575,6 +575,81 @@ struct WorkspaceScreenTests {
         #expect(labels.contains { $0.contains("UTF-8") && $0.contains("LF") })
     }
 
+    @Test func narrowStatusUsesTheWholeCompactPosition() async throws {
+        _ = NSApplication.shared
+        let screen = WorkspaceScreen(api: WorkspaceFixture(), root: "/project")
+        let window = window(screen, width: 420)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "sample.swift")
+        screen.chrome.setSessionStatus("Source collaboration session")
+        let full = "Line 3, Column 29  ·  480 selected"
+        let compact = "Ln 3, Col 29"
+        screen.chrome.setEditorStatus(branch: "local-feature", position: full, compactPosition: compact,
+                                      indentation: "Spaces: 4", language: "Swift", format: "LF  ·  UTF-8")
+        let position = try #require(children(screen.view, NSTextField.self).first { $0.toolTip == full })
+        #expect(position.stringValue == compact)
+        #expect(!position.isHidden)
+        let font = try #require(position.font)
+        #expect((compact as NSString).size(withAttributes: [.font: font]).width <= position.frame.width)
+        resize(window, screen, width: 1000)
+        #expect(position.stringValue == full)
+    }
+
+    @Test func workspaceEditKeysReachTheSourceAndRequestFieldThroughTheResponderChain() async throws {
+        _ = NSApplication.shared
+        let screen = WorkspaceScreen(api: WorkspaceFixture(), root: "/project")
+        let window = window(screen, width: 720)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: "sample.swift")
+        let editor = try #require(screen.currentEditor)
+        let source = editor.textView
+        var actions: [String] = []
+        func press(_ character: String, _ code: UInt16, modifiers: NSEvent.ModifierFlags = .command) throws -> Bool {
+            let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                                                      windowNumber: window.windowNumber, context: nil, characters: character,
+                                                      charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
+            return screen.handleWorkspaceKey(event, responder: window.firstResponder) { action in
+                let name = NSStringFromSelector(action)
+                actions.append(name)
+                if ["cut:", "copy:", "paste:"].contains(name) { return false }
+                return window.firstResponder?.tryToPerform(action, with: nil) ?? false
+            }
+        }
+        window.makeFirstResponder(source)
+        let before = source.string
+        source.insertText("// ", replacementRange: NSRange(location: 0, length: 0))
+        #expect(try press("z", 6))
+        #expect(source.string == before)
+        #expect(try press("Z", 6, modifiers: [.command, .shift]))
+        #expect(source.string == "// " + before)
+        #expect(try press("a", 0))
+        #expect(source.selectedRange().length == source.source.length)
+        #expect(try !press("x", 7))
+        #expect(try !press("c", 8))
+        #expect(try !press("v", 9))
+        #expect(actions == ["undo:", "redo:", "selectAll:", "cut:", "copy:", "paste:"])
+        source.setSelectedRange(source.source.range(of: "return"))
+        editor.askSelection()
+        let field = screen.requests.view.input
+        #expect(window.firstResponder === field)
+        #expect(source.requestMark?.range == source.source.range(of: "return"))
+        field.insertText("Check this", replacementRange: NSRange(location: 0, length: 0))
+        #expect(try press("z", 6))
+        #expect(field.string.isEmpty)
+        #expect(try press("Z", 6, modifiers: [.command, .shift]))
+        #expect(try press("a", 0))
+        #expect(field.selectedRange().length == "Check this".utf16.count)
+        field.setMarkedText("x", selectedRange: NSRange(location: 1, length: 0), replacementRange: field.selectedRange())
+        #expect(field.hasMarkedText())
+        let delivered = actions.count
+        #expect(try !press("a", 0))
+        #expect(actions.count == delivered)
+        field.unmarkText()
+        #expect(source.string == "// " + before)
+        screen.requests.hide()
+        #expect(source.requestMark == nil)
+    }
+
     @Test func disconnectedWorkspaceKeepsUnsentSourceReadable() async throws {
         _ = NSApplication.shared
         let api = WorkspaceFixture()
@@ -652,6 +727,40 @@ struct WorkspaceScreenTests {
         #expect(window.firstResponder === original.textView)
         #expect(original.textView.selectedRange() == origin)
         #expect(children(screen.view, NSTextField.self).contains { $0.stringValue.contains("Look here") })
+    }
+
+    @Test func changeNoticeSitsAboveFindAndThePaletteReversesTheLatestChange() async throws {
+        _ = NSApplication.shared
+        let api = WorkspaceFixture()
+        api.emitsEvents = true
+        let screen = WorkspaceScreen(api: api, root: "/project")
+        let window = window(screen, width: 600)
+        defer { screen.stop(); window.orderOut(nil) }
+        try await screen.start(file: api.primary)
+        let editor = try #require(screen.currentEditor)
+        let original = api.text
+        #expect(screen.registry.command("collaboration.showChange")?.isEnabled() == false)
+        api.text = "let 🌊 = 1\nreturn 4"
+        api.rev += 1
+        api.event(.file(api.rev))
+        try await eventually { editor.reviews.count == 1 }
+        #expect(screen.registry.command("collaboration.showChange")?.isEnabled() == true)
+
+        let notice = try #require(children(editor.scroll, ChangeNoticeView.self).first)
+        func expectBottomRight() {
+            screen.view.layoutSubtreeIfNeeded()
+            let clip = editor.scroll.contentView.convert(editor.scroll.contentView.bounds, to: notice.superview)
+            #expect(abs(notice.frame.maxY - (clip.maxY - 6)) < 1)
+            #expect(abs(notice.frame.maxX - (clip.maxX - 6)) < 1)
+        }
+        expectBottomRight()
+        let oldBottom = notice.convert(notice.bounds, to: screen.view).maxY
+        #expect(screen.registry.run("find.find"))
+        expectBottomRight()
+        #expect(notice.convert(notice.bounds, to: screen.view).maxY < oldBottom)
+        #expect(screen.registry.run("collaboration.undoChange"))
+        #expect(editor.textView.string == original)
+        #expect(screen.registry.command("collaboration.undoChange")?.isEnabled() == false)
     }
 
     @Test func workspaceChromeDoesNotPaintOverSourceGlyphs() async throws {

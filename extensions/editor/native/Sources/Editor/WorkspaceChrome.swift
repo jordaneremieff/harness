@@ -58,6 +58,8 @@ final class WorkspaceChrome: NSView {
     private let status = NSTextField(labelWithString: "")
     private let branch = NSTextField(labelWithString: "")
     private let position = NSTextField(labelWithString: "")
+    private var fullPosition = ""
+    private var compactPosition: String?
     private let indentation = WorkspaceButton("", help: "Indentation options")
     private let language = WorkspaceButton("", help: "Language options")
     private let format = NSTextField(labelWithString: "")
@@ -274,9 +276,13 @@ final class WorkspaceChrome: NSView {
         layoutStatus()
     }
 
-    func setEditorStatus(branch: String?, position: String, indentation: String?, language: String?, format: String) {
-        var changed = false
-        for (label, value) in [(self.branch, branch ?? ""), (self.position, position), (self.format, format)] where label.stringValue != value {
+    func setEditorStatus(branch: String?, position: String, compactPosition: String? = nil,
+                         indentation: String?, language: String?, format: String) {
+        var changed = fullPosition != position || self.compactPosition != compactPosition
+        fullPosition = position
+        self.compactPosition = compactPosition
+        self.position.toolTip = position.isEmpty ? nil : position
+        for (label, value) in [(self.branch, branch ?? ""), (self.format, format)] where label.stringValue != value {
             label.stringValue = value
             label.toolTip = value.isEmpty ? nil : value
             changed = true
@@ -880,9 +886,9 @@ final class WorkspaceChrome: NSView {
             right -= square
             button.frame = NSRect(x: right, y: 2, width: square, height: buttonHeight)
         }
-        func measure(_ label: NSTextField) -> CGFloat {
+        func measure(_ label: NSTextField, _ text: String? = nil) -> CGFloat {
             guard let font = label.font else { return 0 }
-            return ceil((label.stringValue as NSString).size(withAttributes: [.font: font]).width) + 4
+            return ceil(((text ?? label.stringValue) as NSString).size(withAttributes: [.font: font]).width) + 4
         }
         for label in [session, details, format] {
             label.isHidden = label.stringValue.isEmpty || (label === format && w < 520) || (label === details && w < 390)
@@ -891,25 +897,29 @@ final class WorkspaceChrome: NSView {
             right -= width + 8
             label.frame = centredLabel(label, x: right, width: width, height: h)
         }
+        var left = square + 10
+        let notices = !status.stringValue.isEmpty
+        let minimumPosition = notices ? 0 : compactPosition.map { measure(position, $0) } ?? 0
         for button in [language, indentation] {
-            button.isHidden = button.title.isEmpty
-            guard !button.isHidden else { continue }
             let width = min(button.fittingSize.width + 8, w * 0.22)
+            button.isHidden = button.title.isEmpty || right - width - left - 6 < minimumPosition
+            guard !button.isHidden else { continue }
             right -= width
             button.frame = NSRect(x: right, y: 2, width: width, height: buttonHeight)
         }
-        var left = square + 10
-        let notices = !status.stringValue.isEmpty
-        position.isHidden = notices || position.stringValue.isEmpty
-        branch.isHidden = notices || branch.stringValue.isEmpty || w < 360
+        position.isHidden = notices || fullPosition.isEmpty
+        let branchBudget = max(0, right - left - max(minimumPosition, min(135, measure(position, fullPosition))) - 15) / 2
+        branch.isHidden = notices || branch.stringValue.isEmpty || w < 360 || branchBudget < 25
         status.isHidden = !notices
         if !branch.isHidden {
-            let cap = max(0, right - left - min(135, measure(position))) / 2
-            let width = min(measure(branch), w * 0.18, cap)
+            let width = min(measure(branch), w * 0.18, branchBudget)
             branch.frame = centredLabel(branch, x: left, width: width, height: h)
             left += width + 9
         }
-        position.frame = centredLabel(position, x: left, width: right - left - 6, height: h)
+        let available = right - left - 6
+        let visiblePosition = available < measure(position, fullPosition) ? compactPosition ?? fullPosition : fullPosition
+        if position.stringValue != visiblePosition { position.stringValue = visiblePosition }
+        position.frame = centredLabel(position, x: left, width: available, height: h)
         status.frame = centredLabel(status, x: left, width: right - left - 6, height: h)
     }
 }

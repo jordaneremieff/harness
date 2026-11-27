@@ -20,7 +20,10 @@ final class ChangeNoticeView: NSView {
         setAccessibilityLabel("External change")
         label.lineBreakMode = .byTruncatingTail
         [label, show, undo, older, close].forEach { addSubview($0) }
-        show.run = { [weak self] in self?.showDiff() }
+        show.run = { [weak self] in
+            guard let self, let review else { return }
+            showDiff(review, from: show)
+        }
         undo.run = { [weak self] in
             guard let self, let review else { return }
             editor?.undoReview(review)
@@ -78,16 +81,24 @@ final class ChangeNoticeView: NSView {
         label.frame = NSRect(x: x, y: 7, width: max(0, w - x - 126), height: 16)
     }
 
-    private func showDiff() {
-        guard let editor, let review else { return }
-        if popover.isShown { popover.close(); return }
+    func showLatest(in editor: CodeEditor, fallback: NSView) {
+        guard let latest = editor.reviews.first else { return }
+        update(editor)
+        layoutSubtreeIfNeeded()
+        showDiff(latest, from: frame.isEmpty ? fallback : show)
+    }
+
+    private func showDiff(_ review: DraftChangeReview, from anchor: NSView) {
+        guard let editor else { return }
+        if popover.isShown { popover.close() }
         if let first = review.hunks.first(where: { $0.span.intact }) { editor.textView.revealSourceRange(first.span.range) }
         let content = ChangeComparisonView(review: review)
         let controller = NSViewController()
         controller.view = content
         popover.contentViewController = controller
         popover.contentSize = NSSize(width: min(490, max(280, window?.frame.width ?? 490)), height: 320)
-        popover.show(relativeTo: show.bounds, of: show, preferredEdge: .minY)
+        let edge: NSRectEdge = anchor.isFlipped ? .minY : .maxY
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: edge)
     }
 }
 

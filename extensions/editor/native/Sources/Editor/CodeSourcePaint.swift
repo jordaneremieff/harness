@@ -42,6 +42,9 @@ extension CodeTextView {
         if let mark = revealMark {
             paint(NSIntersectionRange(mark.range, visible), color: sourceTheme.accent.withAlphaComponent(0.23), in: dirty)
         }
+        if let mark = requestMark {
+            paint(NSIntersectionRange(mark.range, visible), color: sourceTheme.accent.withAlphaComponent(0.32), in: dirty)
+        }
         if let occurrence = paintState.occurrence, let span = occurrenceSpan(in: dirty) {
             for part in visibleParts(of: span) {
                 forEachOccurrence(occurrence, in: part) { paint($0, color: sourceTheme.selectionMatch, in: dirty) }
@@ -69,7 +72,7 @@ extension CodeTextView {
         let settings = sourceSettings
         let paintState = selectionPaint()
         guard settings.whitespace == "all" || !paintState.whitespace.isEmpty || paintState.bracket != nil ||
-                !folds.isEmpty || !threadMarks.isEmpty || !reviewMarks.isEmpty else { return }
+                !folds.isEmpty || !threadMarks.isEmpty || !reviewMarks.isEmpty || requestMark != nil else { return }
         let rows = visibleRows(in: dirty)
         let span = paintSpan(rows)
         drawCollaborationMarks(dirty, rows: rows)

@@ -50,6 +50,18 @@ struct KeyChord: Hashable, Sendable {
 
     var flags: NSEvent.ModifierFlags { NSEvent.ModifierFlags(rawValue: modifiers) }
 
+    var standardEditAction: Selector? {
+        switch (key, flags) {
+        case ("z", .command): NSSelectorFromString("undo:")
+        case ("z", [.command, .shift]): NSSelectorFromString("redo:")
+        case ("x", .command): #selector(NSText.cut(_:))
+        case ("c", .command): #selector(NSText.copy(_:))
+        case ("v", .command): #selector(NSText.paste(_:))
+        case ("a", .command): #selector(NSText.selectAll(_:))
+        default: nil
+        }
+    }
+
     /// The words that Editor shows for this chord, such as `cmd+shift+P`.
     var label: String {
         let words = Self.modifierOrder.filter { flags.contains($0.1) }.map(\.0)

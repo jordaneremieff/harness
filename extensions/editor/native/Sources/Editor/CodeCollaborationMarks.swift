@@ -64,8 +64,12 @@ extension CodeTextView {
     }
 
     func drawCollaborationMarks(_ dirty: NSRect, rows: [(line: Int, rect: NSRect, chars: NSRange)]) {
-        guard !threadMarks.isEmpty || !reviewMarks.isEmpty || revealMark != nil else { return }
+        guard !threadMarks.isEmpty || !reviewMarks.isEmpty || requestMark != nil else { return }
         for row in rows {
+            if let requestMark, let active = threadUnderline(requestMark.range, in: row.chars, row: row.rect) {
+                sourceTheme.accent.setFill()
+                active.intersection(dirty).fill()
+            }
             sourceTheme.accent.withAlphaComponent(0.66).setFill()
             for mark in threadMarks {
                 threadUnderline(mark.span.range, in: row.chars, row: row.rect)?.intersection(dirty).fill()

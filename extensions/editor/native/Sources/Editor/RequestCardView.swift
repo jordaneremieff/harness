@@ -1,48 +1,5 @@
 import AppKit
 
-/// Places a request beside its anchor in flipped viewport coordinates. The caller owns the dock
-/// used when a card would obscure the source or leave too little room for the composer.
-func requestCardFrame(in bounds: NSRect, avoiding selection: NSRect, preferred: NSSize) -> NSRect? {
-    let margin: CGFloat = 6
-    let gap: CGFloat = 8
-    let minimumWidth: CGFloat = 220
-    let minimumHeight: CGFloat = 150
-    guard bounds.width >= minimumWidth + 2 * margin, bounds.height >= minimumHeight + 2 * margin else { return nil }
-    let area = bounds.insetBy(dx: margin, dy: margin)
-    let width = min(335, preferred.width, area.width)
-    let height = min(preferred.height, area.height)
-    guard width >= minimumWidth, height >= minimumHeight else { return nil }
-
-    let anchor = selection.intersection(bounds)
-    guard !anchor.isEmpty else {
-        return NSRect(x: area.maxX - width, y: area.minY, width: width, height: height)
-    }
-
-    let sideY = max(area.minY, min(anchor.minY, area.maxY - height))
-    let rightX = max(area.minX, anchor.maxX + gap)
-    let rightWidth = min(width, area.maxX - rightX)
-    if rightWidth >= minimumWidth {
-        return NSRect(x: rightX, y: sideY, width: rightWidth, height: height)
-    }
-
-    let columnX = max(area.minX, min(anchor.minX, area.maxX - width))
-    let belowY = max(area.minY, anchor.maxY + gap)
-    let belowHeight = min(height, area.maxY - belowY)
-    let aboveEnd = min(area.maxY, anchor.minY - gap)
-    let aboveHeight = min(height, aboveEnd - area.minY)
-    if belowHeight >= minimumHeight, belowHeight >= aboveHeight {
-        return NSRect(x: columnX, y: belowY, width: width, height: belowHeight)
-    }
-    if aboveHeight >= minimumHeight {
-        return NSRect(x: columnX, y: aboveEnd - aboveHeight, width: width, height: aboveHeight)
-    }
-
-    let leftEnd = min(area.maxX, anchor.minX - gap)
-    let leftWidth = min(width, leftEnd - area.minX)
-    guard leftWidth >= minimumWidth else { return nil }
-    return NSRect(x: leftEnd - leftWidth, y: sideY, width: leftWidth, height: height)
-}
-
 @MainActor
 final class RequestCardView: NSView, NSTextViewDelegate {
     let input: NSTextView = RequestInput(frame: .zero)
@@ -69,7 +26,7 @@ final class RequestCardView: NSView, NSTextViewDelegate {
     private var pending = false
     private var messages: [(author: String, text: String)] = []
     private var files: [String] = []
-    private var historyRows: [(author: CollaborationLabel, body: CollaborationLabel)] = []
+    private var historyRows: [(author: CollaborationLabel, body: NSView)] = []
     private var fileRows: [WorkspaceButton] = []
     private var transcriptWidth: CGFloat = -1
     private var transcriptHeight: CGFloat = 0
@@ -202,7 +159,11 @@ final class RequestCardView: NSView, NSTextViewDelegate {
         input.insertionPointColor = theme.caret
         input.selectedTextAttributes = [.backgroundColor: theme.selection]
         input.drawsBackground = false
-        for row in historyRows { row.author.applyLook(); row.body.applyLook() }
+        for row in historyRows {
+            row.author.applyLook()
+            (row.body as? CollaborationLabel)?.applyLook()
+            (row.body as? RequestAnswerView)?.applyLook()
+        }
         for row in fileRows { row.preferredTint = theme.accent }
         transcriptWidth = -1
         needsLayout = true
@@ -258,7 +219,9 @@ final class RequestCardView: NSView, NSTextViewDelegate {
         let documentSize = NSSize(width: historyWidth, height: max(transcriptHeight, viewportHeight))
         if transcript.frame.size != documentSize { transcript.setFrameSize(documentSize) }
         if followTranscript, viewportHeight > 0 {
-            history.contentView.scroll(to: NSPoint(x: 0, y: max(0, transcriptHeight - viewportHeight)))
+            let bottom = max(0, transcriptHeight - viewportHeight)
+            let latest = historyRows.last?.author.frame.minY ?? bottom
+            history.contentView.scroll(to: NSPoint(x: 0, y: min(bottom, latest)))
             history.reflectScrolledClipView(history.contentView)
             followTranscript = false
         }
@@ -297,8 +260,7 @@ final class RequestCardView: NSView, NSTextViewDelegate {
         for view in transcript.subviews { view.removeFromSuperview() }
         historyRows = messages.map { author, text in
             let name = CollaborationLabel(author, style: .heading)
-            let body = CollaborationLabel(text, style: .body, selectable: true)
-            body.lineBreakMode = .byWordWrapping
+            let body: NSView = author == "You" ? CollaborationLabel(text, selectable: true) : RequestAnswerView(text)
             transcript.addSubview(name)
             transcript.addSubview(body)
             return (name, body)
@@ -320,12 +282,15 @@ final class RequestCardView: NSView, NSTextViewDelegate {
         var y: CGFloat = 0
         let width = max(0, width - 9)
         for row in historyRows {
-            for label in [row.author, row.body] {
-                let height = textHeight(label, width: width)
-                label.frame = NSRect(x: 2, y: y, width: width, height: height)
-                y += height
-            }
-            y += 7
+            let heading = textHeight(row.author, width: width)
+            row.author.frame = NSRect(x: 2, y: y, width: width, height: heading)
+            y += heading
+            let height: CGFloat
+            if let answer = row.body as? RequestAnswerView { height = answer.height(at: width) }
+            else if let label = row.body as? CollaborationLabel { height = textHeight(label, width: width) }
+            else { height = 0 }
+            row.body.frame = NSRect(x: 2, y: y, width: width, height: height)
+            y += height + 7
         }
         for row in fileRows {
             let height = max(23, row.fittingSize.height)

@@ -170,7 +170,9 @@ struct WorkspaceRequestsTests {
     }
 
     private func labels(_ view: NSView) -> [String] {
-        (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(labels)
+        if let label = view as? NSTextField { return [label.stringValue] }
+        if let answer = view as? RequestAnswerView { return [answer.string] }
+        return view.subviews.flatMap(labels)
     }
     private func buttons(_ view: NSView) -> [NSButton] {
         (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons)

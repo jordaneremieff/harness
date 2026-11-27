@@ -109,6 +109,7 @@ final class CodeScrollView: NSScrollView {
         request?.removeFromSuperview()
         request = view
         requestAnchor = anchor
+        gutter.editor?.requestMark = anchor
         docked = false
         if let view { popups.addSubview(view) }
         tile()
@@ -121,6 +122,13 @@ final class CodeScrollView: NSScrollView {
         needsLayout = true
     }
 
+    func showLatestChange(_ editor: CodeEditor) {
+        guard !editor.reviews.isEmpty else { return }
+        if changeNotice.isHidden { updateChangeNotice(editor) }
+        layoutSubtreeIfNeeded()
+        changeNotice.showLatest(in: editor, fallback: contentView)
+    }
+
     func repositionCollaboration() {
         if request != nil || !changeNotice.isHidden { needsLayout = true }
     }
@@ -129,11 +137,12 @@ final class CodeScrollView: NSScrollView {
         guard request != nil || !changeNotice.isHidden else { return }
         popups.frame = bounds
         var viewport = popups.convert(contentView.frame, from: self).intersection(popups.bounds)
+        let noticeHeight: CGFloat = changeNotice.isHidden ? 0 : 36
         if let request, let requestAnchor {
             let preferred = NSSize(width: 335, height: requestHeight)
-            let selected = text.collaborationBounds(for: requestAnchor.range, in: text.visibleRect)
-                .map { popups.convert($0, from: text) } ?? .null
-            if !docked, let frame = requestCardFrame(in: viewport, avoiding: selected, preferred: preferred) {
+            var cardArea = viewport
+            cardArea.size.height = max(0, cardArea.height - noticeHeight)
+            if !docked, let frame = text.placeRequestCard(in: cardArea, panel: popups, anchor: requestAnchor.range, preferred: preferred) {
                 request.frame = frame
             } else {
                 if !docked {
@@ -148,15 +157,9 @@ final class CodeScrollView: NSScrollView {
             }
         }
         if !changeNotice.isHidden {
-            let size = NSSize(width: min(330, viewport.width - 12), height: 30)
-            let selected = text.collaborationBounds(for: text.selectedRange(), in: text.visibleRect)
-                .map { popups.convert($0, from: text) } ?? .null
-            let corners = [viewport.minY + 7, viewport.maxY - size.height - 7].flatMap { y in
-                [viewport.maxX - size.width - 6, viewport.minX + 6].map { x in NSRect(origin: NSPoint(x: x, y: y), size: size) }
-            }
-            if size.width >= 135, let frame = corners.first(where: { !$0.intersects(selected) && !(request?.frame.intersects($0) ?? false) }) {
-                changeNotice.frame = frame
-            } else { changeNotice.frame = .zero }
+            let width = min(330, max(0, viewport.width - 12))
+            changeNotice.frame = width >= 135 && viewport.height >= 36
+                ? NSRect(x: viewport.maxX - width - 6, y: viewport.maxY - 36, width: width, height: 30) : .zero
         }
     }
 }
@@ -195,6 +198,9 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
     }
     var reviewMarks: [TrackedDraftRange] = [] {
         didSet { invalidateCollaborationRows(from: oldValue.map(\.range), to: reviewMarks.map(\.range)) }
+    }
+    var requestMark: TrackedDraftRange? {
+        didSet { invalidateCollaborationRows(from: [oldValue?.range].compactMap { $0 }, to: [requestMark?.range].compactMap { $0 }) }
     }
     var revealMark: TrackedDraftRange? {
         didSet { invalidateCollaborationRows(from: [oldValue?.range].compactMap { $0 }, to: [revealMark?.range].compactMap { $0 }) }
