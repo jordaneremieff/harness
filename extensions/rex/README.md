@@ -960,6 +960,36 @@ Mac workspace window. A reader's application-level action therefore stays
 **Return to Rex**. A failed or stale exact return must not prevent reading.
 The helper is separate from tool configuration and caller ownership records.
 
+## Program resume
+
+Rex server 0.1.0-preview.25 and later restores sessions, tabs and panes after a
+server restart. It starts a pane's program again when the program reported a
+resume command (Program Resume Protocol, OSC 7577) and a trust rule names that
+command; otherwise the pane comes back as a shell. Checked on an isolated
+0.1.0-preview.25 server:
+
+- Rex puts `OSC7577_TOKEN` in each terminal's environment. Pi 1.7.0 and later
+  takes the token, reports `pi --session <id>` with the flags of its command
+  line, follows session changes and removes the record on quit. The Agent's
+  `/restart` passes the token to the replacement process; see "Primary restart
+  and continuity" in the [Agent README](../agent/README.md).
+- The built-in rules cover other programs. Pi needs a rule in the Rex
+  configuration:
+  `rex.set("resume.trust.pi", { command = { "pi", "--session", rex.match.uuid } })`.
+  A Pi started with flags, another agent directory or another session directory
+  reports a longer command and needs a rule with those exact words in order.
+  `rex.match` is absent before 0.1.0-preview.25, so a configuration that an
+  older server also loads guards the rule with `if rex.match and rex.match.uuid`.
+- `rex config check [PATH]` loads a configuration with the calling binary and
+  lists the rules in force. `rex block call -b <block> program_resume_records`
+  lists a terminal's records with `trusted`, `chosen`, `rule`, the command and,
+  for an untrusted record, `untrusted_reason`. The method is not in the
+  verified read-only list above.
+
+The extension neither edits the Rex configuration nor reports resume commands
+for the panes it creates. Its ownership records and tab names were not
+exercised across a server restart with resumed sessions.
+
 ## Review a Rex upgrade
 
 From a checkout on the Mac that runs Rex, run:
