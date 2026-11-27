@@ -1655,20 +1655,17 @@ export class RexCore {
 	): Promise<ResourceObservation> {
 		try {
 			if (resource.kind !== "block" || !resource.blockId) throw new Error("This record has no exact owned block ID.");
+			// A block keeps its ID when its tab moves to another session, so the lookup covers every session of the
+			// server and the session that holds the block now is the one to observe and close it in.
 			const response = object(
-				await this.api(
-					"target.resolve",
-					{ kinds: ["block"], queries: [resource.blockId], scope: { session: resource.sessionId } },
-					server,
-					context,
-				),
+				await this.api("target.resolve", { kinds: ["block"], queries: [resource.blockId] }, server, context),
 			);
 			const entry = object(Array.isArray(response.results) ? response.results[0] : undefined);
 			if (entry.status === "not_found") return { resource, presence: "absent" };
 			const found = object(entry.target);
-			if (entry.status !== "resolved" || found.block_id !== resource.blockId || found.session_id !== resource.sessionId)
+			if (entry.status !== "resolved" || found.block_id !== resource.blockId || !fullId(found.session_id, "session"))
 				throw new Error("The exact resource identity did not resolve conclusively.");
-			const present: ResourceRef = { kind: "block", sessionId: resource.sessionId, blockId: resource.blockId };
+			const present: ResourceRef = { kind: "block", sessionId: found.session_id, blockId: resource.blockId };
 			if (fullId(found.window_id, "window")) present.windowId = found.window_id;
 			return { resource: present, presence: "present" };
 		} catch (error) {
@@ -1693,7 +1690,8 @@ export class RexCore {
 				throw new Error(
 					`The presence of owned block ${resource.blockId} is unknown (${observation.error ?? "no conclusive lookup"}). Reconcile the record before cleanup; no block was closed.`,
 				);
-			(observation.presence === "present" ? present : absent).push(resource);
+			if (observation.presence === "present") present.push(observation.resource);
+			else absent.push(resource);
 		}
 		if (present.length === 0) return this.closeAbsentRecord(record, absent, target, context);
 		const pending = pendingRecord(request, target, context);

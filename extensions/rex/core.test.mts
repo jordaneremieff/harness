@@ -353,7 +353,7 @@ test("cleanup uses exact presence without fetching oversized block descriptions"
 	);
 	assert.deepEqual(
 		f.transport.calls.filter((call) => call.method === "target.resolve").map((call) => call.data),
-		[{ kinds: ["block"], queries: [block], scope: { session } }],
+		[{ kinds: ["block"], queries: [block] }],
 	);
 	assert.deepEqual(
 		f.transport.calls.filter((call) => call.method === "block.close").map((call) => call.data),
@@ -361,11 +361,41 @@ test("cleanup uses exact presence without fetching oversized block descriptions"
 	);
 });
 
+test("cleanup and observation follow an owned block whose tab moved to another session", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const movedWindow = "window:66666666-6666-4666-8666-666666666666";
+	f.transport.handler = (method) =>
+		method === "target.resolve"
+			? reply({
+					results: [
+						{ status: "resolved", target: { block_id: block, session_id: otherSession, window_id: movedWindow } },
+					],
+				})
+			: undefined;
+	const observed = await f.core.execute({ op: "reconcile", recordId: "create" }, { ...context, callId: "look" });
+	assert.equal(observed.ok, true);
+	assert.deepEqual(
+		(
+			observed.data as { reports: { observations: { resource: unknown; presence: string }[] }[] }
+		).reports[0]?.observations.map((entry) => [entry.resource, entry.presence]),
+		[[{ kind: "block", sessionId: otherSession, windowId: movedWindow, blockId: block }, "present"]],
+	);
+	const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
+	assert.equal(response.ok, true);
+	assert.deepEqual(
+		f.transport.calls.filter((call) => call.method === "block.close").map((call) => call.data),
+		[{ session_id: otherSession, block_id: block }],
+		"the close names the session that holds the block now",
+	);
+	assert.deepEqual(f.store.state.records.find((record) => record.callId === "create")?.phase, "closed");
+});
+
 test("cleanup refuses ambiguous, unavailable and mismatched exact targets as unknown presence before effect admission", async () => {
 	for (const observed of [
 		reply({ results: [{ status: "ambiguous" }] }),
 		{ ...reply({}), outcome: "timeout" as const, exitCode: null },
-		reply({ results: [{ status: "resolved", target: { block_id: block, session_id: otherSession } }] }),
+		reply({ results: [{ status: "resolved", target: { block_id: block } }] }),
 		reply({
 			results: [
 				{ status: "resolved", target: { block_id: "block:55555555-5555-4555-8555-555555555555", session_id: session } },

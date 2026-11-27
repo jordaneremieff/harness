@@ -757,6 +757,9 @@ Each `data.reports` entry retains the exact `recordId` and unchanged stored
 
 - `presence` is `present`, `absent` or `unknown`, from exact-ID resolution on the
   retained server instance. A changed or unavailable server is unknown, not absent.
+  A block keeps its ID when its tab moves to another session, so the lookup covers
+  every session of the server, and a present resource names the session and window
+  that hold the block now.
 - `childState` is `running` when the process snapshot identifies a direct child,
   `exited` when it reports `last_exit.exit_code`, `unknown` when neither fact is
   available, or `unavailable` when the read cannot complete. The `process` field
@@ -824,9 +827,10 @@ a current-state inspection attempt. It does not undo effects or prove their abse
 A released record is eligible for explicit forgetting without replay.
 
 `cleanup` requires a retained record ID owned by this caller and the same server
-instance. Its preflight resolves each exact retained session/block ID without
-fetching the block's full API description, and finds each owned block present,
-absent or unknown. An ambiguous, unavailable or mismatched lookup leaves presence
+instance. Its preflight resolves each exact retained block ID in every session
+without fetching the block's full API description, and finds each owned block
+present, absent or unknown. It closes a present block in the session that holds
+it now. An ambiguous, unavailable or mismatched lookup leaves presence
 unknown: cleanup stops before effect admission and says so; reconcile the record
 before retrying. When every owned block is already absent, cleanup closes the claim
 with no Rex effect and no record for the call, and returns `already_closed` with
