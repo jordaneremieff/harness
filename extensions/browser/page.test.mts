@@ -12,6 +12,7 @@ import {
 	evaluationStartScript,
 	INSPECT_VIEWS,
 	inspectScript,
+	navigationScript,
 	pollScript,
 	REF_LIMIT,
 	REF_PATTERN,
@@ -759,7 +760,10 @@ it("keeps a field's ref through fill and press, because its value is not part of
 	);
 	const [searchRef, composerRef, plainRef] = fields.map((field) => String(field.ref));
 
-	assert.equal(obj(act(page, { ref: searchRef, type: "fill", value: "invoices" }).record).state, "dispatched");
+	const filled = act(page, { ref: searchRef, type: "fill", value: "invoices" });
+	assert.equal(obj(filled.record).state, "dispatched");
+	assert.equal(obj(obj(filled.record).element).ref, searchRef, "the record describes the element after the action");
+	assert.equal(obj(obj(filled.record).element).value, "invoices");
 	assert.equal(obj(act(page, { ref: searchRef, type: "press", key: "Enter" }).record).state, "dispatched");
 	assert.equal(obj(act(page, { ref: composerRef, type: "fill", value: "Hello" }).record).state, "dispatched");
 	assert.equal(obj(act(page, { ref: composerRef, type: "press", key: "Enter" }).record).state, "dispatched");
@@ -808,4 +812,33 @@ it("checks actionability on the referenced element", () => {
 	assert.equal(act(page, { ref: refs[0] }).reply.kind, "not-actionable");
 	assert.equal(act(page, { ref: refs[1] }).reply.kind, "not-actionable");
 	assert.equal(page.document.events.length, 0);
+});
+
+it("dispatches nothing and records it when the page runs an action after its deadline", () => {
+	const page = fakePage(PAGE_URL);
+	const { buttons } = inbox(page);
+	const late = act(page, { selector: "body > ul > li:nth-of-type(2) > button", deadline: Date.now() - 1 });
+	assert.equal(late.reply.kind, "expired");
+	assert.equal(obj(late.record).state, "not-dispatched");
+	assert.equal(clicks(page, buttons[1]), 0);
+	const timely = act(page, { selector: "body > ul > li:nth-of-type(2) > button", deadline: Date.now() + 60_000 });
+	assert.equal(timely.reply.kind, "scheduled");
+	assert.equal(clicks(page, buttons[1]), 1);
+});
+
+it("starts no evaluation and no navigation after the deadline", () => {
+	const page = fakePage(PAGE_URL);
+	const late = JSON.parse(
+		page.run(evaluationStartScript(new URL(PAGE_URL).origin, "run-late", "1 + 1", 1000, Date.now() - 1)),
+	);
+	assert.equal(late.kind, "expired");
+	const poll = JSON.parse(page.run(evaluationPollScript("run-late")));
+	assert.notEqual(poll.kind, "settled");
+	const url = page.document.url;
+	const navigation = JSON.parse(
+		page.run(navigationScript(new URL(PAGE_URL).origin, `${PAGE_URL}#next`, Date.now() - 1)),
+	);
+	assert.equal(navigation.kind, "expired");
+	page.runTasks();
+	assert.equal(page.document.url, url);
 });

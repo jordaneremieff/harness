@@ -1,12 +1,13 @@
 /** Tool schemas, model-facing text, and production dependencies shared by the ordinary and Durable forms. */
 
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { resizeImage } from "@earendil-works/pi-coding-agent";
 import { bool, int, obj, opt, type Schema, str } from "@earendil-works/pi-schema";
 import { ACCESS_LEVELS, type AccessMap, BROWSER_KEYS } from "./browsers.ts";
+import { createFocusWatcher, spawnFocusProgram } from "./focus.ts";
 import type { BrowserDeps } from "./operations.ts";
 import { runOsascript, TransportError } from "./osa.ts";
 import { ACTION_TYPES, INSPECT_VIEWS, REF_PATTERN } from "./page.ts";
@@ -175,7 +176,8 @@ export const ACT_PARAMETERS = obj(
 		),
 		observeMs: opt(
 			int({
-				description: "Observation time without waitFor (default 1000, maximum 10000).",
+				description:
+					"Observation time without waitFor (default 300 for fill, focus, and scroll, 1000 for other actions; maximum 10000).",
 				minimum: 100,
 				maximum: 10_000,
 			}),
@@ -192,7 +194,7 @@ export const EVALUATE_PARAMETERS = obj(
 		origin,
 		expression: str({
 			description:
-				"One JavaScript expression. A promise result is awaited. Use (async () => { ...; return value; })() for statements.",
+				"One JavaScript expression. For statements use (() => { ...; return value; })(). A promise result is awaited, which takes extra round trips: use an async function only when the code awaits.",
 			minLength: 1,
 			maxLength: 100_000,
 		}),
@@ -244,9 +246,54 @@ export const CAPTURE_PARAMETERS = obj(
 	{ open: false },
 );
 
+export const SAVE_PARAMETERS = obj(
+	{
+		browser,
+		pid,
+		tab,
+		fileName: opt(
+			str({
+				description:
+					"Name to save the file under, without a folder (no / or :, no leading dot). Default: the name the dialog suggests. A name without an extension gets the download's extension. The file goes to the folder the dialog shows; move it afterwards when the task needs it elsewhere.",
+				minLength: 1,
+				maxLength: 255,
+			}),
+		),
+		expectedName: opt(
+			str({
+				description:
+					"The file name that your download should suggest, such as the download name of the link you clicked. The tool refuses a dialog that suggests another name: it can be the operator's. An extension that the dialog hides does not count.",
+				minLength: 1,
+				maxLength: 255,
+			}),
+		),
+		cancel: opt(bool({ description: "Cancel the Save dialog instead of saving." })),
+		timeoutMs: opt(
+			int({
+				description: "How long to wait for the download to finish after saving (default 30000, maximum 300000).",
+				minimum: 0,
+				maximum: 300_000,
+			}),
+		),
+		requestPermission: opt(
+			bool({
+				description:
+					"Ask macOS for Accessibility permission when it is missing. Use only when the operator is present.",
+			}),
+		),
+	},
+	{ open: false },
+);
+
 export const ACCESS_TEXT = `browser.access (${ACCESS_LEVELS.join(" or ")} per browser)`;
 
-export type ToolName = "browser_tabs" | "browser_inspect" | "browser_act" | "browser_evaluate" | "browser_capture";
+export type ToolName =
+	| "browser_tabs"
+	| "browser_inspect"
+	| "browser_act"
+	| "browser_evaluate"
+	| "browser_save"
+	| "browser_capture";
 
 /**
  * Tools offered for the configured access, read when the extension loads. No
@@ -261,6 +308,7 @@ export function offeredTools(access: AccessMap): Set<ToolName> {
 	if (levels.has("interact")) {
 		tools.add("browser_act");
 		tools.add("browser_evaluate");
+		tools.add("browser_save");
 	}
 	return tools;
 }
@@ -281,14 +329,20 @@ export const TOOL_TEXT = {
 	browser_act: {
 		label: "Act in browser tab",
 		description:
-			"Perform one action in a selected tab (click, fill, select, check, uncheck, press, submit, focus, scroll, navigate) after confirming its origin, on the element that an inspection ref names, then wait for an optional postcondition. Refuses a ref whose element the page navigated away from, removed, replaced, repurposed, or reused in a changed row. Reports transport, dispatch, observed application responses, and postcondition separately. A failed read after dispatch keeps the known dispatch and marks the outcome unknown. Never repeats an action.",
+			"Perform one action in a selected tab (click, fill, select, check, uncheck, press, submit, focus, scroll, navigate) after confirming its origin, on the element that an inspection ref names, then wait for an optional postcondition. Refuses a ref whose element the page navigated away from, removed, replaced, repurposed, or reused in a changed row. Reports transport, dispatch, observed application responses (HTTP statuses from Resource Timing; 0 or null means the browser did not expose one), and postcondition separately. A failed read after dispatch keeps the known dispatch and marks the outcome unknown. Never repeats an action. The page navigates itself when it can, so the browser stays in the background; when the browser takes the keyboard anyway, the tool gives it back to the operator's application and reports focus.",
 		snippet: "Perform one verified action in a selected browser tab",
 	},
 	browser_evaluate: {
 		label: "Evaluate in browser tab",
 		description:
-			"Evaluate one JavaScript expression in a selected tab after confirming its origin and await a promise result. Returns fulfilled JSON values, undefined, rejections, synchronous exceptions, unserializable values, timeouts, and document replacement as distinct outcomes. Unrestricted code that can change state and read page data.",
+			"Evaluate one JavaScript expression in a selected tab after confirming its origin and await a promise result. Runs in an isolated world that shares the DOM, storage, cookies, and network identity with the page, not its JavaScript variables. Returns fulfilled JSON values, undefined, rejections, synchronous exceptions, unserializable values, timeouts, and document replacement as distinct outcomes. Unrestricted code that can change state and read page data. When page code makes the browser take the keyboard, the tool gives it back and reports focus.",
 		snippet: "Evaluate JavaScript in a selected browser tab and await its result",
+	},
+	browser_save: {
+		label: "Save browser download",
+		description:
+			"Answer the Save dialog that a download opened in the window of a selected tab: save the file under a name in the folder the dialog shows, or cancel the dialog. Works through macOS Accessibility without keystrokes and without making the browser active, so the operator's typing never reaches the dialog. Refuses a name that already exists in that folder. Waits for the download to finish and reports the saved path and size. Without Accessibility permission it refuses; then stop and ask the operator to save the file.",
+		snippet: "Save or cancel a browser download's Save dialog without the keyboard",
 	},
 	browser_capture: {
 		label: "Capture browser window",
@@ -300,9 +354,11 @@ export const TOOL_TEXT = {
 
 export const GUIDELINES: readonly string[] = [
 	"Use browser_tabs before other browser tools to find the running process and tab ids; select the tab the operator named, and ask when more than one tab plausibly matches. Never pick the foreground or first matching tab by assumption.",
-	"Pass the pid and tab from the same browser_tabs result to browser_inspect, browser_act, browser_evaluate, and browser_capture. A tab id is valid only in that browser process, so the tool never selects a process for you; after a browser restart, list tabs again and use the new pid.",
-	"Browser tools never launch, restart, activate, or quit a browser and never switch tabs; a closed tab, exited process, or changed origin refuses the operation instead of retargeting it.",
-	`Browser tools address only browsers listed in ${ACCESS_TEXT}. Treat configured access and a signed-in session as reach, not task authority: use browser_act and browser_evaluate only for changes the operator's task authorises, and ask before changes to external services that the task does not cover.`,
+	"Pass the pid and tab from the same browser_tabs result to browser_inspect, browser_act, browser_evaluate, browser_save, and browser_capture. A tab id is valid only in that browser process, so the tool never selects a process for you; after a browser restart, list tabs again and use the new pid.",
+	"Browser tools never launch, restart, or quit a browser and never switch tabs; a closed tab, exited process, or changed origin refuses the operation instead of retargeting it.",
+	"The operator keeps working in other applications while you use the browser. browser_act and browser_evaluate watch the keyboard: when your work makes the browser take it (a JavaScript dialog, print preview, or a URL that page script cannot open), they give it back and report focus; when the operator switches to the browser, they leave it there. Never take the keyboard yourself: do not activate the browser, open URLs with open or similar commands, or send keystrokes or clicks through System Events or similar tools, because they reach whatever the operator is typing in.",
+	'When a result reports a Save window after your download, save or cancel it with browser_save, with expectedName set to the name you expect, then move the file if the task needs it elsewhere. When browser_save refuses for missing Accessibility permission or because the browser is in use, stop and ask the operator to save the file. Another reported window (a JavaScript dialog, print preview, or permission prompt) waits for the operator, and the page refuses scripts with page-blocked until it closes: tell the operator what is open and why, and do not repeat the action. After a first download, Chromium asks before further downloads from the same tab ("wants to: Download multiple files"); that prompt waits for the operator, who can also allow automatic downloads for the site.',
+	`Browser tools address only browsers listed in ${ACCESS_TEXT}. Treat configured access and a signed-in session as reach, not task authority: use browser_act, browser_evaluate, and browser_save only for changes the operator's task authorises, and ask before changes to external services that the task does not cover.`,
 	"Use browser_inspect for reading pages; use browser_evaluate only when extraction views cannot answer. browser_evaluate runs unrestricted JavaScript in an isolated world of the page and is not read-only.",
 	"Act on an inspected element by its ref from browser_inspect or an earlier browser_act result, not by its selector. A stale-reference refusal means the page changed and nothing was dispatched: inspect again and choose from the fresh result. Use selector only for deliberate low-level targeting.",
 	"Give browser_act a waitFor condition that shows the intended outcome, including for a check or uncheck that needs no change. A dispatched action is not a completed task: report the postcondition, observed HTTP statuses, and page state, and say when the outcome is unknown.",
@@ -369,12 +425,35 @@ async function resize(png: Buffer, maxDimension: number) {
 		: null;
 }
 
+async function fileStat(path: string): Promise<{ size: number; changedMs: number } | null> {
+	try {
+		const found = await stat(path);
+		return found.isFile() ? { size: found.size, changedMs: found.ctimeMs } : null;
+	} catch {
+		return null;
+	}
+}
+
+async function listFolder(path: string): Promise<string[]> {
+	try {
+		return await readdir(path);
+	} catch {
+		return [];
+	}
+}
+
 async function save(path: string, png: Buffer): Promise<void> {
 	if (!isAbsolute(path)) throw new TransportError("exit", "none", "savePath must be absolute.");
 	await writeFile(path, png, { flag: "wx" });
 }
 
+/** How long the focus watch of a browser process runs after the last act or evaluate on it. */
+const FOCUS_IDLE_MS = 120_000;
+/** Longest wait for a new focus watch to start before an operation proceeds unwatched. */
+const FOCUS_READY_MS = 1_000;
+
 export function productionDeps(agentDir: string): BrowserDeps {
+	const now = () => Date.now();
 	return {
 		run: runOsascript,
 		readAccess: () => readSettings({ agentDir }).values.access,
@@ -383,6 +462,14 @@ export function productionDeps(agentDir: string): BrowserDeps {
 		capture: captureWindow,
 		resize,
 		save,
-		now: () => Date.now(),
+		now,
+		fileStat,
+		listFolder,
+		watchFocus: createFocusWatcher({
+			idleMs: FOCUS_IDLE_MS,
+			readyMs: FOCUS_READY_MS,
+			now,
+			spawnProgram: spawnFocusProgram,
+		}),
 	};
 }

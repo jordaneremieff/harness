@@ -437,3 +437,62 @@ it("separates the optional save error from the capture and keeps the native inli
 	assert.equal(rows(component, 160).filter((row) => row.trim()).length, 3);
 	assert.ok(!component.render(100).some((row) => row.includes("\x1b_G")));
 });
+
+it("tells the operator when the browser took the keyboard and which window waits for a person", (t) => {
+	keys(t);
+	const component = card("browser_act", { ...target, action: "click", selector: "#delete" });
+	component.updateResult(
+		result("browser_act", "ok", {
+			action: { type: "click" },
+			dispatch: { status: "dispatched" },
+			application: { documentReplaced: false },
+			postcondition: { status: "unknown" },
+			focus: {
+				taken: [{ afterMs: 210, heldMs: 29, returnedTo: "Rex", returned: true }],
+				windows: [{ afterMs: 230, title: "127.0.0.1 says", width: 448, height: 144 }],
+				earlier: { windows: [{ afterMs: 900, title: null, width: 880, height: 448 }] },
+			},
+		}),
+	);
+	assert.match(screen(component), /Action dispatched\. The browser took the keyboard during the call; returned to Rex/);
+	component.setExpanded(true);
+	const text = screen(component).replace(/\n /g, " ");
+	assert.match(text, /The browser took the keyboard during the call; returned to Rex after 29 ms\./);
+	assert.match(text, /Browser window during the call: 127\.0\.0\.1 says\./);
+	assert.match(text, /Browser window after the previous call: untitled\./);
+	const evaluation = card("browser_evaluate", { ...target, expression: "print()" });
+	evaluation.updateResult(
+		result("browser_evaluate", "fulfilled", {
+			execution: { status: "fulfilled", valueType: "undefined" },
+			focus: { taken: [{ afterMs: 60, heldMs: 400, returnedTo: "Mail", returned: false }] },
+		}),
+	);
+	evaluation.setExpanded(true);
+	assert.match(
+		screen(evaluation).replace(/\n /g, " "),
+		/The browser took the keyboard during the call; returning it to Mail failed\./,
+	);
+});
+
+it("shows the saved file of a Save dialog, or its cancellation, without the dialog's folder listing", (t) => {
+	keys(t);
+	const component = card("browser_save", { ...target, fileName: "new.csv" });
+	assert.match(screen(component), /browser_save new\.csv/);
+	component.updateResult(
+		result("browser_save", "saved", {
+			dialog: { suggestedName: "report.csv", folderName: "Downloads" },
+			saved: { name: "new.csv", path: "/Volumes/Shared/Downloads/new.csv", bytes: 12 },
+			download: { status: "complete", waitedMs: 140 },
+		}),
+	);
+	assert.match(screen(component), /Saved \/Volumes\/Shared\/Downloads\/new\.csv \(12 bytes\)\./);
+	component.setExpanded(true);
+	assert.match(screen(component), /Suggested name: report\.csv/);
+	assert.match(screen(component), /Waited 140 ms for the download/);
+	const cancel = card("browser_save", { ...target, cancel: true });
+	assert.match(screen(cancel), /browser_save cancel Save dialog/);
+	cancel.updateResult(
+		result("browser_save", "dialog-cancelled", { dialog: { suggestedName: "report.csv", folderName: "Downloads" } }),
+	);
+	assert.match(screen(cancel), /Save dialog cancelled\./);
+});

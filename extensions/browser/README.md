@@ -4,8 +4,10 @@ This extension lets an agent work in a browser tab that the operator has
 already opened and signed in to. The operator names the browser and the tab
 and gives an ordinary task. The agent lists the tabs, selects the named one,
 reads the rendered page, performs authorised actions, waits for an observable
-outcome, evaluates JavaScript when extraction is not enough, and captures the
-live window.
+outcome, evaluates JavaScript when extraction is not enough, saves downloads
+through the browser's Save dialog, and captures the live window. The operator
+keeps working in other applications meanwhile: the agent's work does not keep
+the keyboard (see [Keyboard focus](#keyboard-focus)).
 
 The page keeps its own session: requests that the page or an evaluation makes
 carry the browser's cookies and storage as usual. The tools never read, export,
@@ -34,10 +36,11 @@ another.
 | `browser_capture` | `inspect` | Image of the live window that shows the tab |
 | `browser_act` | `interact` | One action on an inspected element: `click`, `fill`, `select`, `check`, `uncheck`, `press`, `submit`, `focus`, `scroll`, or `navigate`, then an optional postcondition wait |
 | `browser_evaluate` | `interact` | One JavaScript expression, with promise results awaited in the same call |
+| `browser_save` | `interact` | Save or cancel the Save dialog that a download opened in the tab's window |
 
 The extension offers tools for the access configured when it loads: none
 without any configured browser, the three reading tools when every configured
-browser has `inspect`, and all five when one has `interact`. A session that
+browser has `inspect`, and all six when one has `interact`. A session that
 never uses a browser therefore carries no browser tool declarations. Every
 offered tool is deferred: it stays registered and callable from other tools, and
 `tool_search` loads the ones the model needs. Enable discovery with
@@ -47,14 +50,15 @@ access of the browser it names. After changing access, run `/reload` or start a
 new session. Before setup, `registry {"kind":"setting", "search":"browser"}`
 shows the `browser.access` setting.
 
-`browser_act` and `browser_evaluate` run one at a time (`executionMode:
-"sequential"`) in both the ordinary and Durable forms. In the ordinary form
-every offered tool carries the shared model guidance, so loading any one of them
-brings the full set; an identical guideline appears once however many browser
-tools a request has active, and no browser guidance appears while no browser
-tool is active. In the Durable form the `browser-guidance` prompt section names
-the tools the request offers. Results are text: a headline, then a JSON report.
-Text and HTML views put the page content after the report, marked as untrusted.
+`browser_act`, `browser_evaluate`, and `browser_save` run one at a time
+(`executionMode: "sequential"`) in both the ordinary and Durable forms. In the
+ordinary form every offered tool carries the shared model guidance, so loading
+any one of them brings the full set; an identical guideline appears once
+however many browser tools a request has active, and no browser guidance
+appears while no browser tool is active. In the Durable form the `browser-guidance` prompt section names
+the tools the request offers. Results are text: a headline, then a JSON report
+on one line. Text and HTML views put the page content after the report, marked
+as untrusted.
 The capture result adds the image.
 
 Browser cards follow the [emission grammar](../../docs/conventions/emissions.md)
@@ -64,12 +68,14 @@ content or matching elements and show the next call for a paged view in the
 expanded card. Action cards distinguish dispatch, observation and the requested
 condition; they show the length of filled or selected text, not its value.
 Evaluation cards show the expression as call input and report its settlement
-separately. Capture cards keep the native inline image and distinguish a failed
-optional save from a failed capture.
+separately. Action and evaluation cards say when the browser took the keyboard
+and which browser window, such as a Save sheet or a dialog, waits for a person.
+Save cards show the saved path and size. Capture cards keep the native inline
+image and distinguish a failed optional save from a failed capture.
 
 ## Setup
 
-The operator controls four separate gates. The tools report which one is
+The operator controls five separate gates. The tools report which one is
 missing; they never change any of them.
 
 1. **Access** in the machine document: `browser.access` maps a browser key to
@@ -93,6 +99,12 @@ missing; they never change any of them.
    `requestPermission: true` on `browser_capture` asks macOS to list the host
    in System Settings; the operator enables it there. macOS can require the
    host application to restart before the permission applies.
+5. **Accessibility** for the host application, for `browser_save` only.
+   `requestPermission: true` on `browser_save` asks macOS to show its prompt;
+   the operator enables the host in System Settings > Privacy & Security >
+   Accessibility. Without it, `browser_save` refuses with
+   `accessibility-not-granted`, and the agent asks the operator to answer the
+   Save dialog.
 
 ## Selecting the subject
 
@@ -100,8 +112,8 @@ missing; they never change any of them.
   another one, or starts one; a browser that is not running is reported as
   `not-running`.
 - `pid` is required for `browser_inspect`, `browser_act`, `browser_evaluate`,
-  and `browser_capture`. Take it from the same `browser_tabs` call that
-  reported `tab`; no tool chooses a process for a tab. `browser_tabs` takes
+  `browser_save`, and `browser_capture`. Take it from the same `browser_tabs`
+  call that reported `tab`; no tool chooses a process for a tab. `browser_tabs` takes
   an optional `pid` to select one running process; it is required when several
   run (for example, instances with separate `--user-data-dir` profiles). An
   ambiguous listing reports each running pid with its `--user-data-dir`
@@ -114,9 +126,11 @@ missing; they never change any of them.
   closed tab reports `tab-not-found`; a pid that is not a current process of
   the named browser reports `not-running`. Operations never move to another
   tab, another process, the active tab, or a URL-prefix match.
-- `origin` (required for `browser_act` and `browser_evaluate`, optional
-  elsewhere) is checked inside the page immediately before the operation. A
-  tab that navigated elsewhere reports `origin-mismatch` and nothing runs.
+- `origin` (required for `browser_act` and `browser_evaluate`, optional for
+  `browser_inspect` and `browser_capture`) is checked inside the page
+  immediately before the operation. A tab that navigated elsewhere reports
+  `origin-mismatch` and nothing runs. `browser_save` answers the Save dialog
+  of the tab's window and takes no origin.
 - Apple Events do not report which browser profile owns a window. Windows of
   every profile in one process are listed together, with `mode` (`normal` or
   `incognito`). Identify the subject by window, URL, and title, and ask the
@@ -135,6 +149,14 @@ pid passes the check. The tab lookup in that process then refuses a tab id it
 does not have. Keep the pid with the tab id from one listing, and list tabs
 again after a browser restart.
 
+A JavaScript dialog, a print preview, or a "Leave site?" prompt blocks every
+page script until a person answers it, and a script sent to a blocked page
+runs when the page resumes. Before the first page script of an inspection,
+action, navigation, or evaluation, the operation therefore runs a trivial
+script with a two-second limit. A page that does not answer refuses with
+`page-blocked`, and nothing of the operation reaches it; the agent tells the
+operator what is open. Reads during a wait skip this check.
+
 One JXA invocation serves a discovery request. Availability for every
 supported application, and the windows and tabs of one named process, are each
 gathered in one invocation with no separate inventory call. Availability reads
@@ -144,7 +166,9 @@ explicit `pid`, or the only running process, and reports ambiguity rather than
 choosing. It asks macOS for Automation permission only when the call sets
 `requestPermission: true`. Without configured access it returns the static
 installation and running facts and sends no Apple Event. An inconsistent
-read-only column result is repeated once within the same invocation.
+read-only column result is repeated once within the same invocation. `match`
+filters tabs on their whole URL and title; the listing then cuts URLs after 300
+characters and titles after 150, since the origin and the start identify a tab.
 
 ## Inspection
 
@@ -246,8 +270,9 @@ layers apart:
 Actions use DOM events created in the page (`isTrusted` is false). Pages that
 accept only trusted input, file choosers, and implicit form submission by
 pressing Enter do not respond to them; use `submit` for forms. `fill` refuses
-password fields: the operator signs in through the browser. `navigate` sets the
-tab URL through Apple Events after checking the current origin.
+password fields: the operator signs in through the browser. Without `waitFor`,
+an action observes the page for `observeMs`: 300 ms for `fill`, `focus`, and
+`scroll`, which change only the element, and 1000 ms for the others.
 
 `check` and `uncheck` dispatch nothing when the element already has the
 requested state: `dispatch.status` is `not-needed` and no DOM event is sent.
@@ -265,12 +290,31 @@ is `unknown` with the reason. A tab that closes during the wait reports status
 Apple Events JavaScript reports `observation-failed`. Only a failure before the
 dispatch, or one that proves the page script never ran, is `blocked`.
 
-`navigate` sets the URL through Apple Events and checks the origin inside the
-browser, so it needs no page JavaScript to dispatch. When page reads are
-unavailable (JavaScript from Apple Events is off, or developer tools are
-disallowed), it still navigates and reports `dispatch.status: dispatched` with
-the unavailable observation and an unknown postcondition. The element actions
-and `browser_evaluate` need page JavaScript; when it is unavailable they refuse
+Each action, navigation, and evaluation script carries a deadline: the end of
+the tool's wait for its reply. A page that a dialog held runs a waiting script
+when a person closes the dialog; after the deadline the script does nothing
+and reports `expired`, and an action records `not-dispatched` for a later read.
+The action result describes the element as the page left it, so a filled
+field shows its new value.
+
+`navigate` checks the tab URL's origin through Apple Events, then lets the page
+navigate itself: a page script checks the document's origin and calls
+`location.assign` in the same request. Chromium makes itself the active
+application when Apple Events set a tab URL, but not when the page navigates,
+so this keeps the browser in the background. A page navigation counts as
+started by the page: the request carries the page as its referrer, and a site
+that limits cookies to same-site requests sees one. Apple Events set the URL
+instead, after the focus watch is armed (see [Keyboard focus](#keyboard-focus)),
+for a URL that is not `http` or `https`, for a document without an origin of
+its own (a browser error page or a sandboxed document), and when page
+JavaScript is unavailable (JavaScript from Apple Events is off, or developer
+tools are disallowed). `dispatch.method` says which one ran, and
+`dispatch.pageScript` says why page script did not. When page reads are
+unavailable, `navigate` still navigates and reports `dispatch.status:
+dispatched` with the unavailable observation and an unknown postcondition. A
+`javascript:` URL is refused: Apple Events would run it in the page's own
+world; use `browser_evaluate` to run code. The element actions and
+`browser_evaluate` need page JavaScript; when it is unavailable they refuse
 before anything runs.
 
 An exception from the page-side action marks the tool result as an error. Its
@@ -291,15 +335,19 @@ reply with no page result), the tool reads that record during the ordinary wait
 instead of resending the action. The report carries `dispatchReply.status:
 "lost"` and the transport failure; `dispatch.status` comes from the record, or
 stays `unknown` when no read finds one. Each new action in a document removes
-the oldest finished records while more than 32 remain. A `navigate` has no page record; a lost
-reply leaves its dispatch `unknown`.
+the oldest finished records while more than 32 remain. A `navigate` has no page
+record; a lost reply leaves its dispatch `unknown`.
 
 ## Evaluation
 
 `browser_evaluate` checks the expression's syntax locally, then runs it once in
-the tab's main frame. A promise result is awaited inside the same tool call; the
-tool polls the page until it settles, the `timeoutMs` limit passes, the document
-changes, the tab closes, the browser process exits, or the caller cancels.
+the tab's main frame. A synchronous result arrives in the reply to the start
+request. A promise result is awaited inside the same tool call; the tool polls
+the page until it settles, the `timeoutMs` limit passes, the document changes,
+the tab closes, the browser process exits, or the caller cancels. Each poll is
+a further request, so statements go in a synchronous function,
+`(() => { ...; return value; })()`, and an async function only when the code
+awaits.
 `execution.status` is one of:
 
 | Status | Meaning |
@@ -322,12 +370,12 @@ reply (a transport timeout or exit once the request may have reached the
 browser, or a reply with no page result) the tool reads the record instead of
 resending the expression, at least once even when the wait limit has passed;
 the report then carries `startReply.status: "lost"` beside the transport
-failure. The expression never runs again to recover a result. After the tool
-reads an outcome through a poll, times out, or is cancelled during the wait,
-it sends one removal request. A synchronous outcome that arrives in the start
-reply gets no removal request, so the common call costs one Apple Event; its
-record leaves through expiry or the record limit. If a removal request is lost,
-the record expires the same way: each new evaluation in the document first
+failure. The expression never runs again to recover a result. After a timeout
+or a cancellation during the wait the tool sends one removal request. An
+outcome that the start reply or a poll returned gets none, which saves a
+request per call; its record leaves through expiry or the record limit. If a
+removal request is lost, the record expires the same way: each new evaluation
+in the document first
 removes records older than five minutes (a record serves only the one tool call
 that created it, whose wait limit is at most two minutes) and keeps at most eight
 records, oldest removed first. One record holds at most
@@ -340,6 +388,137 @@ page, but not the page's JavaScript variables, and it does not reach iframes.
 The code is unrestricted: it can change state and read page data, so it is not
 read-only and keyword filters would not make it safe. Apply task authority as
 for any action.
+
+## Keyboard focus
+
+The operator works in other applications while an agent uses the browser,
+often by voice dictation that types wherever the keyboard is. Chromium makes
+itself the active application, and so takes the keyboard, for some events an
+agent can cause: Apple Events that set a tab URL or create a tab or window, a
+JavaScript dialog, a print preview, and a "Leave site?" prompt. Keystrokes then
+land in the browser: in a dialog, in a Save sheet's file name, or in the page.
+
+`navigate` avoids the most common cause by letting the page navigate itself.
+For the rest, `browser_act` and `browser_evaluate` watch the keyboard. The
+first such call on a browser process starts a small JXA program, which
+watches that process until two minutes after the last call on it, so a dialog
+that page code opens between calls is handled too. The program gives the
+keyboard back to the application the operator used last, a few tens of
+milliseconds after the browser took it, but only for an activation that it can
+attribute to the agent:
+
+- a browser window created during the watch came on screen within the last
+  half second (a dialog, print preview, or pop-up window), or one does within
+  700 ms after the activation: with Chromium 151, a JavaScript dialog came on
+  screen about 180 ms after the activation, and a "Leave site?" prompt also
+  comes after it; or
+- the activation follows an Apple Event that the operation marked just before
+  it: 2 seconds for an Apple Events URL change, 400 ms for a page navigation,
+  whose "Leave site?" prompt activates the browser before its window exists,
+  and 300 ms for an action or an evaluation, so that a dialog the page opens at
+  once returns at once instead of after the wait for its window. Each mark
+  gives the keyboard back once. A dialog that opens later returns when its
+  window appears: in a live check the browser held the keyboard for about
+  210 ms before such a return.
+
+Every other activation belongs to the operator: a click on a browser window or
+the Dock, the application switcher, a launcher, or a link opened from another
+application. The watch leaves the keyboard there, and returns it again only
+after the operator moves to another application. A mouse click within half a
+second before the activation, on a browser window in the window order from
+before the browser raised its window, is the operator's switch even when an
+agent cause coincides. A window that existed when
+the watch started never counts, also when it comes back on screen from a
+hidden application, a minimized window, or another desktop.
+
+The result of the call reports what the watch saw in a `focus` field, and the
+headline says it in words: `taken` lists each return (`afterMs`, `heldMs`,
+`returnedTo`, `cause`), `windows` lists browser windows that appeared, such as
+a Save sheet or a dialog that waits for a person, `yielded` says that the
+operator switched to the browser during the call, and `earlier` holds the
+returns and windows between the previous call and this one. A reported window
+whose bounds equal those of a browser window in the scripting model is an
+ordinary window, such as one the operator opened, and is left out; that check
+lists the windows only when there is a window to report. `unavailable` says
+why the watch did not run; the call still runs.
+
+Limits: keystrokes typed in the interval before a return can still reach the
+browser, and a menu open in the operator's application closes. The watch sees
+applications, not windows: when the operator works in the same browser that
+the agent uses, an Apple Events URL change, a "Leave site?" prompt, or a pop-up
+that the agent's page opens makes the agent's window the key window, and the
+keyboard follows it. Give agents their own browser or profile for long runs.
+Chromium shows a JavaScript dialog of the agent's tab only once the tab's
+window is the last active browser window. A browser window can also come to
+the front without taking the keyboard, as Chromium's quit confirmation does;
+the watch reports such a window but does not move it.
+
+## Save dialogs
+
+A download in a browser that asks where to save shows AppKit's Save panel as a
+sheet on the tab's window. The sheet appears without making the browser active,
+and the next result of `browser_act` or `browser_evaluate` reports it in
+`focus.windows`. `browser_save` answers it through macOS Accessibility: it
+finds the window of the selected tab by its bounds, sets the file name with an
+attribute write instead of keystrokes, and presses the panel's Save or Cancel
+button. No keystroke reaches the browser and the browser does not become the
+active application, so the operator's typing never reaches the file name.
+
+The tool answers only while the browser is not the active application: when
+it is, the operator can be working in it or typing in that dialog, and the
+tool refuses with `browser-in-use`. The panel shows its controls to
+Accessibility only while its window is on screen; the dialog of a hidden or
+minimized window refuses with `dialog-unreadable`. The panel reports no default
+or cancel button attribute: the Save button carries the identifier `OKButton`,
+and Cancel is the one other plain button beside it apart from New Folder. A
+browser that does not answer Accessibility within two seconds fails the read.
+
+`expectedName` names the file that the agent's download should suggest, such
+as the download name of the link it clicked; the tool refuses a dialog that
+suggests another name with `dialog-mismatch`, since that dialog can be the
+operator's. A download panel hides the file extension unless the Mac shows all
+extensions, so the comparison ignores an extension on either side.
+
+`fileName` is a name without a folder; without it the panel's suggested name
+stays. A name without an extension gets the download's extension. The file goes to the folder that the panel shows, and the agent moves it
+afterwards when the task needs it elsewhere. When the folder that the panel's
+folder menu names holds a file of that name, and the name has an extension,
+the tool refuses with `file-exists` before the press and leaves the Save dialog open for another
+name: the panel would ask whether to replace the file, and it shows that
+question to Accessibility only in part. When the panel stays open after the
+press anyway, the tool refuses with `save-question`; `cancel: true` still
+closes it.
+
+After the press the tool finds the saved file among the folders the panel can
+show: the folder of the last save that the browser's preferences domain records
+(`NSOSPLastRootDirectory`), the folders of the files the panel lists, and the
+standard folders whose name the panel's folder menu shows. A folder that held
+the name before the save is not a candidate, and a file counts only when its
+change time is at or after the press: the browser renames or creates the file
+there when the dialog closes, so an older file of the same name elsewhere does
+not count. For a name without an extension, a name of the folder that adds one
+extension also counts, and the result reports the name found. The tool then
+waits up to `timeoutMs` (default 30 seconds) until the file exists and the
+browser's partial file `<name>.crdownload` is gone, and reports the path and
+size.
+`saved-unlocated` and `download-unfinished` report a save whose file it did not
+find or that did not finish in time; a browser that holds a download for a
+person, as Chromium does for files it considers dangerous, ends the same way.
+`cancel: true` presses Cancel instead.
+
+Chromium lets a tab start one download without asking. A later download from
+the same tab waits behind its prompt to download multiple files ("wants to:
+Download multiple files") until a person answers it, or a navigation that the
+browser starts resets the tab; a page navigation does not reset it. The focus
+report shows the prompt as a window that waits for the operator, who can also
+allow automatic downloads for the site.
+
+`browser_save` needs `interact` access and Accessibility permission for the
+host application (see [Setup](#setup)). Without permission it refuses with
+`accessibility-not-granted`; the agent then stops and asks the operator to save
+or cancel the file. To read a file that a page links to, `browser_evaluate` can
+also fetch it with the page's session and return its content, which needs no
+dialog.
 
 ## Capture
 
@@ -371,25 +550,26 @@ two reads is not detected.
 ## Authority
 
 Configured access and a signed-in session are reach, not permission. The model
-guidance tells agents to use `browser_act` and `browser_evaluate` only for
-changes the operator's task authorises and to ask before external-service
+guidance tells agents to use `browser_act`, `browser_evaluate`, and
+`browser_save` only for changes the operator's task authorises and to ask before external-service
 changes the task does not cover; routine authorised steps need no extra
 confirmation. Operators can add policy rules for the tool names, for example to
 require approval for `browser_evaluate`. Page content is untrusted data.
 
 ## Durable agents
 
-The factory emits a `durable:contribution` named `browser` with the same five
+The factory emits a `durable:contribution` named `browser` with the same six
 tools, whose shared guidance comes from the `browser-guidance` prompt section
 rather than from each tool. The tools are deferred, so the
 section renders only the names the request offers; it is absent until
 `tool_search` loads a browser tool. `browser_tabs`,
 `browser_inspect`, and `browser_capture` declare `replay: "safe"` (a rerun
-repeats a read; a `savePath` file is never overwritten). `browser_act` and
-`browser_evaluate` declare `replay: "unsafe"`: an interrupted call reaches the
-model as interrupted and never runs again. They also declare
-`executionMode: "sequential"`, so a message that contains both calls, or two
-calls of one of them, runs them one at a time.
+repeats a read; a `savePath` file is never overwritten). `browser_act`,
+`browser_evaluate`, and `browser_save` declare `replay: "unsafe"`: an
+interrupted call reaches the model as interrupted and never runs again. They
+also declare `executionMode: "sequential"`, so a message that contains several
+of these calls runs them one at a time. One focus watch program per browser
+process serves every conversation of a Durable host.
 
 ## Configuration
 
@@ -405,10 +585,13 @@ calls of one of them, runs them one at a time.
   contribution; `durable.ts` is the native form.
 - `capability.ts` holds schemas, model-facing text, and production
   dependencies (`osascript`, `screencapture`, `ps`, Pi's image resizer).
-- `operations.ts` implements the five operations over injectable dependencies;
+- `operations.ts` implements the six operations over injectable dependencies;
   `session.ts` builds discovery requests and maps Apple Events failures.
-- `jxa.ts` is the JavaScript for Automation program; `osa.ts` runs it with a
-  deadline and cancellation.
+- `jxa.ts` is the JavaScript for Automation program, including the
+  Accessibility answer of a Save dialog; `osa.ts` runs it with a deadline and
+  cancellation.
+- `focus.ts` is the focus watch: its JXA program and the watcher that keeps one
+  program per browser process.
 - `page.ts` builds the page-side scripts, including the element references.
 - `page-fixture.mts` is the page stand-in for tests: a small DOM, the selectors
   and events the scripts use, and one isolated world per document.
@@ -422,7 +605,9 @@ npm run typecheck && npm run lint && npm run check
 
 The tests use fake Apple Events replies, run page scripts against a small
 fake DOM in a Node sandbox, and run the JXA program against a stand-in
-scripting object model; they do not contact a browser. The reference tests run
+scripting object model, and the Save dialog answer and the focus watch program
+against stand-ins of the Accessibility objects, the window list, and the
+activation notifications; they do not contact a browser. The reference tests run
 inspection and actions through `browserInspect` and `browserAct` over the page
 stand-in, then reorder, replace, remove, relabel, and navigate the page.
 Browser behaviour itself needs a live run against the selected application,

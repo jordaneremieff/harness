@@ -10,6 +10,7 @@ import {
 	INSPECT_PARAMETERS,
 	offeredTools,
 	productionDeps,
+	SAVE_PARAMETERS,
 	TABS_PARAMETERS,
 	TOOL_TEXT,
 	type ToolName,
@@ -22,10 +23,12 @@ import {
 	browserCapture,
 	browserEvaluate,
 	browserInspect,
+	browserSave,
 	browserTabs,
 	type CaptureParams,
 	type EvaluateParams,
 	type InspectParams,
+	type SaveParams,
 	type TabsParams,
 } from "./operations.ts";
 import { publishSettings } from "./settings.ts";
@@ -101,6 +104,17 @@ export default function registerBrowser(pi: ExtensionAPI) {
 			executionMode: "sequential",
 			async execute(_id, params, signal) {
 				return browserEvaluate(params as EvaluateParams, signal, deps);
+			},
+		});
+	}
+	if (offered.has("browser_save")) {
+		pi.registerTool({
+			...text("browser_save"),
+			exposure: "deferred",
+			parameters: SAVE_PARAMETERS,
+			executionMode: "sequential",
+			async execute(_id, params, signal) {
+				return browserSave(params as SaveParams, signal, deps);
 			},
 		});
 	}

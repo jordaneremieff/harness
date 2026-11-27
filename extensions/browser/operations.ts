@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { Script } from "node:vm";
 import { type AccessMap, accessCovers, BROWSER_KEYS, BROWSERS, type BrowserKey, type BrowserSpec } from "./browsers.ts";
+import type { FocusFacts, FocusWatch, FocusWatcher } from "./focus.ts";
 import { TransportError } from "./osa.ts";
 import {
 	type ActionSpec,
@@ -15,6 +16,7 @@ import {
 	evaluationStartScript,
 	type InspectView,
 	inspectScript,
+	navigationScript,
 	pollScript,
 	REF_PATTERN,
 } from "./page.ts";
@@ -31,8 +33,10 @@ import {
 	envelope,
 	executeInTab,
 	expectValue,
+	failureReason,
 	guidance,
 	normalOrigin,
+	PROBE_SECONDS,
 	type Rect,
 	requireAccess,
 	type SessionDeps,
@@ -60,6 +64,12 @@ export interface CaptureDeps {
 
 export interface BrowserDeps extends SessionDeps, CaptureDeps {
 	now: () => number;
+	/** Size and change time (epoch milliseconds) of the regular file at an absolute path, or null when there is none. */
+	fileStat: (path: string) => Promise<{ size: number; changedMs: number } | null>;
+	/** Names in a folder, or none when it cannot be read. */
+	listFolder: (path: string) => Promise<string[]>;
+	/** Watches the keyboard focus during browser_act and browser_evaluate; absent means no watch. */
+	watchFocus?: FocusWatcher;
 }
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
@@ -89,8 +99,152 @@ function result(
 	extra: Content[] = [],
 	trailer?: string,
 ): BrowserResult {
-	const text = [`${tool}: ${headline}`, JSON.stringify(report, null, 1), ...(trailer ? [trailer] : [])].join("\n");
+	const text = [`${tool}: ${headline}`, JSON.stringify(report), ...(trailer ? [trailer] : [])].join("\n");
 	return { content: [{ type: "text", text }, ...extra], details: { tool, status, report }, isError };
+}
+
+/** One headline sentence per kind of focus event, so an agent reads what waits for a person. */
+function focusSentences(facts: FocusFacts, when: string): string[] {
+	const sentences: string[] = [];
+	if (facts.taken?.length) {
+		const failed = facts.taken.find((item) => !item.returned);
+		const last = facts.taken[facts.taken.length - 1];
+		const times = facts.taken.length === 1 ? "once" : `${facts.taken.length} times`;
+		sentences.push(
+			failed
+				? `The browser took the keyboard ${when}, and returning it to ${failed.returnedTo ?? "the previous application"} failed, so the browser can still have it.`
+				: `The browser took the keyboard ${times} ${when}; the tool returned it to ${last.returnedTo ?? "the previous application"} after ${last.heldMs} ms.`,
+		);
+	}
+	if (facts.windows?.length) {
+		const titles = facts.windows.map((item) => (item.title ? `"${item.title}"` : "an untitled window"));
+		sentences.push(
+			`The browser showed ${titles.join(", ")} ${when}. Save or cancel a Save dialog with browser_save; a JavaScript dialog, print preview, or permission prompt, such as a request to download multiple files, waits for the operator; a download bubble closes by itself.`,
+		);
+	}
+	if (facts.yielded) sentences.push(`The operator switched to the browser ${when}; the tool left the keyboard there.`);
+	return sentences;
+}
+
+/** Adds what the focus watch observed to an act or evaluate result, whose text has no trailer. */
+function withFocus(result: BrowserResult, facts: FocusFacts | null): BrowserResult {
+	if (!facts) return result;
+	const report = { ...result.details.report, focus: facts };
+	const first = result.content[0];
+	const headline = first?.type === "text" ? first.text.slice(0, first.text.indexOf("\n")) : result.details.tool;
+	const sentences = [
+		...focusSentences(facts, "during this call"),
+		...(facts.earlier ? focusSentences(facts.earlier, "after the previous call") : []),
+		...(facts.unavailable ? [`The keyboard focus was not watched: ${facts.unavailable}`] : []),
+	];
+	const text = [[headline, ...sentences].join(" "), JSON.stringify(report)].join("\n");
+	return {
+		...result,
+		content: [{ type: "text", text }, ...result.content.slice(1)],
+		details: { ...result.details, report },
+	};
+}
+
+/**
+ * How long an activation after an action or an evaluation counts as caused by it: a dialog
+ * that the page opens at once returns at once, not after the wait for its window. A later
+ * dialog returns when its window appears.
+ */
+const ARM_MS = 300;
+/** How long an activation after an Apple Events URL change counts as caused by it. */
+const NAVIGATE_ARM_MS = 2_000;
+/**
+ * How long an activation after a page navigation counts as caused by it: a "Leave site?"
+ * prompt activates the browser before its window exists.
+ */
+const PAGE_NAVIGATE_ARM_MS = 400;
+
+type FocusWindow = NonNullable<FocusFacts["windows"]>[number];
+
+/** Removes the windows that a filter rejects, and the parts of the facts that become empty. */
+function keepWindows(facts: FocusFacts, keep: (window: FocusWindow) => boolean): FocusFacts | null {
+	const kept: FocusFacts = { ...facts };
+	const windows = facts.windows?.filter(keep) ?? [];
+	if (windows.length) kept.windows = windows;
+	else delete kept.windows;
+	const earlier = facts.earlier ? keepWindows(facts.earlier, keep) : null;
+	if (earlier) kept.earlier = earlier;
+	else delete kept.earlier;
+	return Object.keys(kept).length ? kept : null;
+}
+
+function hasWindows(facts: FocusFacts | null | undefined): boolean {
+	return Boolean(facts?.windows?.length || facts?.earlier?.windows?.length);
+}
+
+/**
+ * The focus watch of one operation. It starts before the first Apple Event that can reach
+ * the page and ends once, when the result is ready or the operation fails.
+ */
+class FocusScope {
+	private readonly deps: BrowserDeps;
+	private watch: FocusWatch | null = null;
+	private subject: { bundleId: string; pid: number } | null = null;
+	private facts: FocusFacts | null | undefined;
+	constructor(deps: BrowserDeps) {
+		this.deps = deps;
+	}
+
+	async begin(spec: BrowserSpec, pid: number, startedAt: number): Promise<void> {
+		if (!this.deps.watchFocus || this.watch) return;
+		this.subject = { bundleId: spec.bundleId, pid };
+		this.watch = this.deps.watchFocus(pid, startedAt);
+		await this.watch.ready;
+	}
+
+	/** Marks the next `ms` milliseconds: an activation then follows this operation's Apple Event. */
+	arm(ms: number): void {
+		this.watch?.arm(ms);
+	}
+
+	async settle(result: BrowserResult): Promise<BrowserResult> {
+		const facts = this.finish();
+		return withFocus(result, hasWindows(facts) ? await this.withoutBrowserWindows(facts as FocusFacts) : facts);
+	}
+
+	finish(): FocusFacts | null {
+		if (this.facts === undefined) this.facts = this.watch ? this.watch.finish() : null;
+		return this.facts;
+	}
+
+	/**
+	 * Drops reported windows that are ordinary browser windows, such as one the operator opened,
+	 * by their bounds: a dialog, sheet, or prompt is not a window of the scripting model. When
+	 * the windows cannot be listed, every report stays.
+	 */
+	private async withoutBrowserWindows(facts: FocusFacts): Promise<FocusFacts | null> {
+		if (!this.subject) return facts;
+		try {
+			const reply = await call(
+				this.deps,
+				{
+					op: "tabs",
+					bundleId: this.subject.bundleId,
+					pid: this.subject.pid,
+					inspectAllowed: true,
+					requestPermission: false,
+				},
+				undefined,
+				5_000,
+			);
+			const listed = expectValue<TabsDiscovery>(reply);
+			if (listed.kind !== "ok") return facts;
+			const bounds = new Set(
+				listed.windows.flatMap((window) => {
+					const rect = decodeRect(window.bounds);
+					return rect ? [`${rect.x},${rect.y},${rect.width},${rect.height}`] : [];
+				}),
+			);
+			return keepWindows(facts, (window) => !bounds.has(`${window.x},${window.y},${window.width},${window.height}`));
+		} catch {
+			return facts;
+		}
+	}
 }
 
 function blockedResult(tool: string, error: Blocked, report: Facts = {}): BrowserResult {
@@ -161,6 +315,14 @@ async function availability(deps: BrowserDeps, access: AccessMap, signal?: Abort
 	});
 }
 
+/** Long tab URLs and titles are cut in a listing: the origin and the start identify a tab. */
+const LISTED_URL_LIMIT = 300;
+const LISTED_TITLE_LIMIT = 150;
+
+function cut(value: string | null, limit: number): string | null {
+	return value !== null && value.length > limit ? `${value.slice(0, limit)}…` : value;
+}
+
 function tabRows(windows: WindowRow[], match: string | undefined) {
 	const needle = match?.toLowerCase();
 	let tabCount = 0;
@@ -174,12 +336,13 @@ function tabRows(windows: WindowRow[], match: string | undefined) {
 				loading: tab.loading,
 				active: index + 1 === window.activeTabIndex,
 			}))
-			.filter((tab) => !needle || `${tab.url ?? ""}\n${tab.title ?? ""}`.toLowerCase().includes(needle));
+			.filter((tab) => !needle || `${tab.url ?? ""}\n${tab.title ?? ""}`.toLowerCase().includes(needle))
+			.map((tab) => ({ ...tab, url: cut(tab.url, LISTED_URL_LIMIT), title: cut(tab.title, LISTED_TITLE_LIMIT) }));
 		tabCount += tabs.length;
 		const kept = tabs.slice(0, Math.max(0, TAB_LIMIT - shown));
 		shown += kept.length;
 		const { id, index, title, mode, minimized, visible } = window;
-		return { window: id, index, title, mode, minimized, visible, tabs: kept };
+		return { window: id, index, title: cut(title, LISTED_TITLE_LIMIT), mode, minimized, visible, tabs: kept };
 	});
 	return { rows: needle ? rows.filter((row) => row.tabs.length > 0) : rows, tabCount, omitted: tabCount - shown };
 }
@@ -367,6 +530,11 @@ function pageRefusal(data: Facts, expectOrigin: string | null): Blocked {
 	if (data.kind === "not-actionable")
 		return new Blocked("not-actionable", String(data.reason), { element: data.element });
 	if (data.kind === "stale-reference") return staleReference(data);
+	if (data.kind === "expired")
+		return new Blocked(
+			"page-blocked",
+			"The page ran the request only after the tool stopped waiting for it, so nothing ran. A dialog or a long page script held the page.",
+		);
 	return new Blocked(String(data.kind), String(data.message ?? data.kind));
 }
 
@@ -434,7 +602,15 @@ export async function browserInspect(
 			subject.update(target, null);
 			const options = inspectOptions(params);
 			const view = options.view;
-			const reply = await executeInTab(deps, spec, target, inspectScript(expectOrigin, options), signal);
+			const reply = await executeInTab(
+				deps,
+				spec,
+				target,
+				inspectScript(expectOrigin, options),
+				signal,
+				CALL_TIMEOUT_MS,
+				true,
+			);
 			const data = envelope(reply);
 			const page = record(data.page);
 			subject.update(target, page, reply.window);
@@ -487,6 +663,13 @@ const POLL_INTERVALS = [50, 100, 150, 250, 400, 500];
 const POLL_TIMEOUT_MS = 5_000;
 const DEFAULT_WAIT_MS = 5_000;
 const DEFAULT_OBSERVE_MS = 1_000;
+/** Actions that change only the element itself observe briefly unless the call asks for more. */
+const QUICK_OBSERVE_MS = 300;
+const QUICK_ACTIONS: ReadonlySet<ActParams["action"]> = new Set(["fill", "focus", "scroll"]);
+
+function defaultObserveMs(action: ActParams["action"]): number {
+	return QUICK_ACTIONS.has(action) ? QUICK_OBSERVE_MS : DEFAULT_OBSERVE_MS;
+}
 
 /** Failures that stop page reads until the operator changes a setting or restores permission. */
 const OBSERVATION_UNAVAILABLE = new Set([
@@ -518,10 +701,28 @@ const REQUIRED_ARGUMENT: Partial<Record<ActParams["action"], keyof ActParams>> =
 
 const REF = new RegExp(REF_PATTERN);
 
+/**
+ * A javascript: URL is not a navigation: Apple Events would run it in the page's own world.
+ * URL parsers drop tabs and line breaks anywhere and leading spaces and control characters,
+ * so the scheme is read as a parser reads it.
+ */
+function isJavaScriptURL(url: string): boolean {
+	try {
+		return new URL(url).protocol === "javascript:";
+	} catch {
+		return /^[\u0000-\u0020]*javascript:/i.test(url.replace(/[\t\n\r]/g, ""));
+	}
+}
+
 function checkActArguments(params: ActParams): void {
 	const required = REQUIRED_ARGUMENT[params.action];
 	if (required && params[required] === undefined)
 		throw new Blocked("invalid-arguments", `${params.action} needs ${required}.`);
+	if (params.action === "navigate" && isJavaScriptURL(params.url ?? ""))
+		throw new Blocked(
+			"invalid-arguments",
+			"navigate does not open javascript: URLs; use browser_evaluate to run code.",
+		);
 	if (params.action === "navigate") return;
 	if (params.ref !== undefined && params.selector !== undefined)
 		throw new Blocked("invalid-arguments", "Pass ref or selector, not both.");
@@ -577,62 +778,92 @@ function lostTransportReply(error: unknown): LostReply | null {
 	};
 }
 
-/**
- * Reads the current document token without changing the page. A read that cannot
- * answer yields no token; the navigate request itself decides whether to refuse.
- */
-async function currentDoc(deps: BrowserDeps, resolved: Resolved, signal?: AbortSignal): Promise<unknown> {
+/** A URL that page script can load in the tab: an absolute http or https URL. */
+function pageNavigable(url: string): boolean {
 	try {
-		const data = envelope(
-			await executeInTab(deps, resolved.spec, resolved.target, pollScript(null, null, null), signal, POLL_TIMEOUT_MS),
-		);
-		return record(data.page)?.doc ?? null;
-	} catch (error) {
-		if (error instanceof Blocked) return null;
-		throw error;
+		const { protocol } = new URL(url);
+		return protocol === "http:" || protocol === "https:";
+	} catch {
+		return false;
 	}
 }
 
-/** A page read before the navigation got no answer; the URL was never set. */
-function navigationReadFailure(params: ActParams, subject: Subject, error: TransportError): BrowserResult {
-	return transportResult("browser_act", error, {
-		target: subject.facts,
-		action: describeAction(params),
-		dispatch: {
-			status: "not-dispatched",
-			note: "A page read before the navigation got no answer; the URL was not set.",
-		},
-		postcondition: { status: "unknown" },
-		replay: "not attempted; the navigation was not sent",
-	});
+interface NavigateReply {
+	window: string;
+	before: string;
+	/** The page navigated itself; when false, the URL is still to be set through Apple Events. */
+	navigated: boolean;
+	page: Facts | null;
+	/** The Apple Events error that kept page script from running. */
+	pageError: number | null;
 }
 
+/** Why page script left the navigation to Apple Events, for the dispatch report. */
+function pageScriptGap(url: string, value: NavigateReply): string {
+	if (value.pageError !== null) return failureReason({ code: null, number: value.pageError, message: "", extra: null });
+	if (!pageNavigable(url)) return "not an http or https URL";
+	if (value.page?.origin === "null") return "the page has no origin of its own";
+	return "the page did not navigate";
+}
+
+/**
+ * The page navigates itself for an http or https URL, which leaves the browser in the
+ * background. Otherwise the focus watch is armed and Apple Events set the URL: the browser
+ * then takes the keyboard until the watch gives it back.
+ */
 async function dispatchNavigate(
 	params: ActParams,
 	resolved: Resolved,
 	subject: Subject,
 	deps: BrowserDeps,
+	arm: (ms: number) => void,
 	signal?: AbortSignal,
 ): Promise<Dispatched | BrowserResult> {
 	const { spec, target, expectOrigin } = resolved;
-	let startDoc: unknown;
-	try {
-		startDoc = await currentDoc(deps, resolved, signal);
-	} catch (error) {
-		if (!(error instanceof TransportError)) throw error;
-		return navigationReadFailure(params, subject, error);
-	}
+	const url = params.url as string;
+	const request = { bundleId: spec.bundleId, pid: target.pid, tab: target.tab, url, expectOrigin };
 	const mark = deps.now() - 2;
-	const reply = await call(
-		deps,
-		{ op: "navigate", bundleId: spec.bundleId, pid: target.pid, tab: target.tab, url: params.url, expectOrigin },
-		signal,
+	arm(PAGE_NAVIGATE_ARM_MS);
+	const value = expectValue<NavigateReply>(
+		await call(
+			deps,
+			{
+				op: "navigate",
+				...request,
+				script: navigationScript(
+					expectOrigin,
+					pageNavigable(url) ? url : null,
+					deps.now() + PROBE_SECONDS * 1000 + POLL_TIMEOUT_MS,
+				),
+				seconds: Math.ceil(POLL_TIMEOUT_MS / 1000),
+				probeSeconds: PROBE_SECONDS,
+			},
+			signal,
+			CALL_TIMEOUT_MS + PROBE_SECONDS * 1000,
+		),
 	);
-	const value = expectValue<{ window: string; before: string }>(reply);
 	subject.update(target, { url: value.before }, value.window);
+	const startDoc = record(value.page)?.doc ?? null;
+	if (value.navigated) {
+		return {
+			actionId: null,
+			dispatch: { status: "dispatched", method: "page script", from: value.before },
+			element: null,
+			mark,
+			startDoc,
+		};
+	}
+	arm(NAVIGATE_ARM_MS);
+	const set = expectValue<{ window: string; before: string }>(await call(deps, { op: "setURL", ...request }, signal));
+	subject.update(target, { url: set.before }, set.window);
 	return {
 		actionId: null,
-		dispatch: { status: "dispatched", method: "Apple Events set URL", from: value.before },
+		dispatch: {
+			status: "dispatched",
+			method: "Apple Events set URL",
+			from: set.before,
+			pageScript: pageScriptGap(url, value),
+		},
 		element: null,
 		mark,
 		startDoc,
@@ -674,10 +905,11 @@ async function dispatchElementAction(
 ): Promise<Dispatched | BrowserResult> {
 	const { spec, target, expectOrigin } = resolved;
 	const actionId = randomUUID();
-	const script = actionScript(expectOrigin as string, actionSpec(params, actionId));
+	const action = { ...actionSpec(params, actionId), deadline: deps.now() + PROBE_SECONDS * 1000 + CALL_TIMEOUT_MS };
+	const script = actionScript(expectOrigin as string, action);
 	let reply: ExecuteReply;
 	try {
-		reply = await executeInTab(deps, spec, target, script, signal);
+		reply = await executeInTab(deps, spec, target, script, signal, CALL_TIMEOUT_MS, true);
 	} catch (error) {
 		const lost = lostTransportReply(error);
 		if (lost) return lostAction(actionId, lost);
@@ -719,6 +951,8 @@ async function dispatchElementAction(
 interface Observation {
 	lastPoll: Facts | null;
 	dispatch: Facts;
+	/** The element as the page described it after the action, such as a field with its new value. */
+	element: unknown;
 	documentReplaced: boolean;
 	unanswered: number;
 	lastReadAnswered: boolean;
@@ -726,6 +960,11 @@ interface Observation {
 	cancelled: boolean;
 	/** Why the last post-dispatch read could not observe the page, when it could not. */
 	failedRead: { kind: "closed" | "exited" | "unavailable"; reason: string; message?: string } | null;
+}
+
+/** An action record that a late page run left: the deadline passed before the page ran it. */
+function expired(action: Facts | null): boolean {
+	return record(action?.error)?.name === "Expired";
 }
 
 function applyPoll(state: Observation, data: Facts, sent: Dispatched): void {
@@ -737,10 +976,13 @@ function applyPoll(state: Observation, data: Facts, sent: Dispatched): void {
 		state.dispatch = {
 			status: "not-dispatched",
 			error: action.error,
-			note: "The page withheld the action: its referenced element changed after the reply and before the dispatch task.",
+			note: expired(action)
+				? "The page ran the action only after the tool stopped waiting for it, so nothing was dispatched."
+				: "The page withheld the action: its referenced element changed after the reply and before the dispatch task.",
 		};
 	} else if (action) {
 		state.dispatch = { ...state.dispatch, status: action.state, ...(action.error ? { error: action.error } : {}) };
+		if (action.element) state.element = action.element;
 	} else if (sent.lostReply) {
 		state.dispatch = {
 			status: "unknown",
@@ -792,6 +1034,7 @@ async function observe(
 	const state: Observation = {
 		lastPoll: null,
 		dispatch: sent.dispatch,
+		element: null,
 		documentReplaced: false,
 		unanswered: 0,
 		lastReadAnswered: false,
@@ -900,12 +1143,14 @@ async function dispatchAct(
 	resolved: Resolved,
 	subject: Subject,
 	deps: BrowserDeps,
+	focus: FocusScope,
 	signal?: AbortSignal,
 ): Promise<Dispatched | BrowserResult> {
 	try {
-		return params.action === "navigate"
-			? await dispatchNavigate(params, resolved, subject, deps, signal)
-			: await dispatchElementAction(params, resolved, subject, deps, signal);
+		if (params.action === "navigate")
+			return await dispatchNavigate(params, resolved, subject, deps, (ms) => focus.arm(ms), signal);
+		focus.arm(ARM_MS);
+		return await dispatchElementAction(params, resolved, subject, deps, signal);
 	} catch (error) {
 		if (!(error instanceof TransportError)) throw error;
 		return transportResult("browser_act", error, {
@@ -919,7 +1164,7 @@ async function dispatchAct(
 }
 
 function actStatus(sent: Dispatched, state: Observation, postcondition: Facts): string {
-	if (withheld(state)) return "stale-reference";
+	if (withheld(state)) return expired(state.dispatch) ? "not-dispatched" : "stale-reference";
 	if (state.cancelled) return "cancelled";
 	if (state.failedRead) return state.failedRead.kind === "unavailable" ? "observation-failed" : "target-closed";
 	if (state.dispatch.status === "failed") return "dispatch-failed";
@@ -949,7 +1194,7 @@ function actResult(
 	const report = {
 		target: subject.facts,
 		action: describeAction(params),
-		...(sent.element ? { element: sent.element } : {}),
+		...(state.element || sent.element ? { element: state.element ?? sent.element } : {}),
 		transport: { ...(sent.lostReply?.transport ?? { status: "ok" }), ...unanswered },
 		...(sent.lostReply
 			? {
@@ -977,11 +1222,13 @@ function actResult(
 			documentReplaced: state.documentReplaced,
 			navigation: state.lastPoll?.navigation ?? null,
 			responses: state.lastPoll?.responses ?? [],
-			note: "Responses come from Resource Timing: status 0 or null means the browser did not expose it to the page.",
 		},
 		postcondition,
 	};
-	const stale = withheld(state) ? ` The referenced element changed before the action ran. ${INSPECT_AGAIN}` : "";
+	const stale =
+		withheld(state) && !expired(state.dispatch)
+			? ` The referenced element changed before the action ran. ${INSPECT_AGAIN}`
+			: "";
 	const headline = `${params.action} ${String(state.dispatch.status)}; postcondition ${String(postcondition.status)}.${stale} ${UNTRUSTED}`;
 	return result(
 		"browser_act",
@@ -1018,27 +1265,34 @@ export async function browserAct(
 	const tool = "browser_act";
 	const action = describeAction(params);
 	const subject = new Subject(params);
-	return guarded(
-		tool,
-		async () => {
-			checkActArguments(params);
-			const condition = conditionOf(params.waitFor);
-			const resolved = resolveTarget(params, "interact", deps);
-			subject.update(resolved.target, null);
-			const startedAt = deps.now();
-			const sent = await dispatchAct(params, resolved, subject, deps, signal);
-			if ("content" in sent) return sent;
-			if (sent.dispatch.status === "not-needed" && !condition) return notNeededResult(params, subject, sent);
-			const waitMs = condition
-				? (params.waitFor?.timeoutMs ?? DEFAULT_WAIT_MS)
-				: (params.observeMs ?? DEFAULT_OBSERVE_MS);
-			const state = await observe(deps, resolved, sent, condition, startedAt + waitMs, signal);
-			const postcondition = postconditionOf(condition, state, deps.now() - startedAt);
-			subject.update(resolved.target, record(state.lastPoll?.page));
-			return actResult(params, subject, sent, state, postcondition);
-		},
-		() => ({ target: subject.facts, action }),
-	);
+	const focus = new FocusScope(deps);
+	try {
+		const outcome = await guarded(
+			tool,
+			async () => {
+				checkActArguments(params);
+				const condition = conditionOf(params.waitFor);
+				const resolved = resolveTarget(params, "interact", deps);
+				subject.update(resolved.target, null);
+				const waitMs = condition
+					? (params.waitFor?.timeoutMs ?? DEFAULT_WAIT_MS)
+					: (params.observeMs ?? defaultObserveMs(params.action));
+				await focus.begin(resolved.spec, resolved.target.pid, deps.now());
+				const startedAt = deps.now();
+				const sent = await dispatchAct(params, resolved, subject, deps, focus, signal);
+				if ("content" in sent) return sent;
+				if (sent.dispatch.status === "not-needed" && !condition) return notNeededResult(params, subject, sent);
+				const state = await observe(deps, resolved, sent, condition, startedAt + waitMs, signal);
+				const postcondition = postconditionOf(condition, state, deps.now() - startedAt);
+				subject.update(resolved.target, record(state.lastPoll?.page));
+				return actResult(params, subject, sent, state, postcondition);
+			},
+			() => ({ target: subject.facts, action }),
+		);
+		return await focus.settle(outcome);
+	} finally {
+		focus.finish();
+	}
 }
 
 /* ---------------------------------------------------------------- evaluate */
@@ -1058,9 +1312,6 @@ export function syntaxError(expression: string): string | null {
 		return error instanceof SyntaxError ? error.message : String(error);
 	}
 }
-
-/** Statuses after which the page holds no record of the run to acknowledge. */
-const RECORD_GONE = new Set(["document-replaced", "target-closed", "unknown"]);
 
 interface Settlement {
 	status: string;
@@ -1230,8 +1481,16 @@ async function startEvaluation(
 	const { spec, target, expectOrigin } = resolved;
 	let reply: ExecuteReply;
 	try {
-		const script = evaluationStartScript(expectOrigin as string, runId, params.expression, params.maxBytes ?? 32_768);
-		reply = await executeInTab(deps, spec, target, script, signal, Math.max(CALL_TIMEOUT_MS, timeoutMs));
+		const limit = Math.max(CALL_TIMEOUT_MS, timeoutMs);
+		const deadline = deps.now() + PROBE_SECONDS * 1000 + limit;
+		const script = evaluationStartScript(
+			expectOrigin as string,
+			runId,
+			params.expression,
+			params.maxBytes ?? 32_768,
+			deadline,
+		);
+		reply = await executeInTab(deps, spec, target, script, signal, limit, true);
 	} catch (error) {
 		return failedStart(error, subject);
 	}
@@ -1244,7 +1503,7 @@ async function startEvaluation(
 		return { lost: { transport: { status: "ok" }, reason: "no-page-result" } };
 	}
 	subject.update(target, record(data.page), reply.window);
-	if (data.kind === "origin-mismatch") throw originMismatch(expectOrigin, record(data.page));
+	if (data.kind === "origin-mismatch" || data.kind === "expired") throw pageRefusal(data, expectOrigin);
 	if (data.kind !== "settled" && data.kind !== "pending") {
 		return {
 			early: unreadableEvaluation(subject, "The page did not report a started or settled evaluation."),
@@ -1275,8 +1534,6 @@ function evaluationResult(
 				}
 			: {}),
 		execution,
-		world:
-			"isolated: shares the DOM, storage, cookies, and network identity with the page, not its JavaScript variables",
 	};
 	const headline = lost
 		? `expression ${status}, read from the page record after the start reply was lost. ${UNTRUSTED}`
@@ -1319,8 +1576,23 @@ export async function browserEvaluate(
 	signal: AbortSignal | undefined,
 	deps: BrowserDeps,
 ): Promise<BrowserResult> {
-	const tool = "browser_evaluate";
 	const subject = new Subject(params);
+	const focus = new FocusScope(deps);
+	try {
+		return await focus.settle(await evaluateWatched(params, signal, deps, subject, focus));
+	} finally {
+		focus.finish();
+	}
+}
+
+async function evaluateWatched(
+	params: EvaluateParams,
+	signal: AbortSignal | undefined,
+	deps: BrowserDeps,
+	subject: Subject,
+	focus: FocusScope,
+): Promise<BrowserResult> {
+	const tool = "browser_evaluate";
 	return guarded(
 		tool,
 		async () => {
@@ -1333,19 +1605,218 @@ export async function browserEvaluate(
 			subject.update(resolved.target, null);
 			const runId = randomUUID();
 			const timeoutMs = params.timeoutMs ?? 10_000;
+			await focus.begin(resolved.spec, resolved.target.pid, deps.now());
+			focus.arm(ARM_MS);
 			const startedAt = deps.now();
 			const started = await startEvaluation(params, resolved, subject, runId, timeoutMs, deps, signal);
 			if ("early" in started) return started.early;
 			const lost = "lost" in started ? started.lost : null;
 			const data = "data" in started ? started.data : null;
 			const settlement = await settle(deps, resolved, runId, data, lost, startedAt + timeoutMs, signal);
-			// A synchronous outcome in the start reply is not acknowledged, so the common call costs
-			// one Apple Event; its record leaves through expiry or the record limit.
-			const acknowledge = data?.kind !== "settled" && !RECORD_GONE.has(settlement.status);
-			if (acknowledge) await forgetRun(deps, resolved, runId);
+			// Only a run the tool stopped waiting for is removed, so that a late settlement stores
+			// nothing. An outcome that a reply or a read returned leaves through expiry or the record
+			// limit, which saves a request per evaluation.
+			if (settlement.status === "timeout" || settlement.status === "cancelled") await forgetRun(deps, resolved, runId);
 			return evaluationResult(subject, settlement, deps.now() - startedAt, lost);
 		},
 		() => ({ target: subject.facts }),
+	);
+}
+
+/* ---------------------------------------------------------------- save */
+
+export interface SaveParams extends TargetParams {
+	fileName?: string;
+	expectedName?: string;
+	cancel?: boolean;
+	timeoutMs?: number;
+	requestPermission?: boolean;
+}
+
+interface SaveReply {
+	window: string;
+	action: "saved" | "cancelled";
+	name: string | null;
+	suggestedName: string | null;
+	folderName: string | null;
+	/** Folders that can hold the saved file, most likely first; none held the name before the save. */
+	candidates: Array<{ folder: string }>;
+	/** Epoch milliseconds just before the Save button was pressed. */
+	pressedAt: number;
+}
+
+const SAVE_WAIT_MS = 30_000;
+/** The dialog search, the button press, and the wait for the dialog to close. */
+const SAVE_CALL_MS = 25_000;
+
+function checkSaveArguments(params: SaveParams): void {
+	const name = params.fileName;
+	if (name === undefined) return;
+	if (params.cancel) throw new Blocked("invalid-arguments", "Pass fileName or cancel, not both.");
+	if (name.trim() !== name || name.length === 0)
+		throw new Blocked("invalid-arguments", "fileName must not start or end with spaces.");
+	if (/[/:\u0000-\u001f]/.test(name) || name.startsWith("."))
+		throw new Blocked(
+			"invalid-arguments",
+			"fileName is a name without a folder: no / or :, no control characters, and no leading dot. The file goes to the folder the dialog shows; move it afterwards.",
+		);
+	if (Buffer.byteLength(name, "utf8") > 255)
+		throw new Blocked("invalid-arguments", "fileName is longer than 255 bytes.");
+}
+
+interface DownloadState {
+	status: "complete" | "unfinished" | "unlocated" | "cancelled";
+	path: string | null;
+	bytes: number | null;
+	waitedMs: number;
+}
+
+/** A name with an extension: a dot that neither starts nor ends it. */
+function hasExtension(name: string): boolean {
+	return /^.+\.[^.]+$/.test(name);
+}
+
+/**
+ * The names the saved file can have in a folder. A name without an extension is a stem: a
+ * download panel hides the extension unless the Mac shows all extensions, and the browser
+ * saves the file with the download's extension.
+ */
+async function namesFor(folder: string, name: string, deps: BrowserDeps): Promise<string[]> {
+	if (hasExtension(name)) return [name];
+	const prefix = `${name}.`;
+	const names = (await deps.listFolder(folder))
+		.filter((entry) => entry.startsWith(prefix))
+		.map((entry) => entry.replace(/\.crdownload$/, ""))
+		.filter((entry) => hasExtension(entry) && !entry.slice(prefix.length).includes("."));
+	return [name, ...new Set(names)];
+}
+
+/**
+ * The first saved file or browser partial file in the candidate folders that changed since the
+ * press: the browser renames or creates the file there when the dialog closes, so an older file
+ * of the same name elsewhere does not count.
+ */
+async function locateDownload(
+	folders: readonly string[],
+	name: string,
+	pressedAt: number,
+	deps: BrowserDeps,
+): Promise<string | null> {
+	const fresh = async (path: string) => ((await deps.fileStat(path))?.changedMs ?? -1) >= pressedAt - 50;
+	for (const folder of folders) {
+		const base = folder.replace(/\/+$/, "");
+		for (const candidate of await namesFor(base, name, deps)) {
+			const path: string = `${base}/${candidate}`;
+			if ((await fresh(path)) || (await fresh(`${path}.crdownload`))) return path;
+		}
+	}
+	return null;
+}
+
+/**
+ * Finds the saved file among the candidate folders, then waits until it exists and the
+ * browser no longer writes its partial file (`<name>.crdownload`).
+ */
+async function awaitDownload(
+	folders: readonly string[],
+	name: string,
+	pressedAt: number,
+	timeoutMs: number,
+	deps: BrowserDeps,
+	signal?: AbortSignal,
+): Promise<DownloadState> {
+	const startedAt = deps.now();
+	let path: string | null = null;
+	let bytes: number | null = null;
+	for (let attempt = 0; ; attempt++) {
+		path ??= await locateDownload(folders, name, pressedAt, deps);
+		bytes = path ? ((await deps.fileStat(path))?.size ?? null) : null;
+		const complete = path !== null && bytes !== null && (await deps.fileStat(`${path}.crdownload`)) === null;
+		const waitedMs = deps.now() - startedAt;
+		if (complete) return { status: "complete", path, bytes, waitedMs };
+		if (waitedMs >= timeoutMs) return { status: path ? "unfinished" : "unlocated", path, bytes, waitedMs };
+		const stopped = await delay(pollInterval(attempt), signal).then(
+			() => false,
+			() => true,
+		);
+		if (stopped) return { status: "cancelled", path, bytes, waitedMs: deps.now() - startedAt };
+	}
+}
+
+const DOWNLOAD_HEADLINE: Record<Exclude<DownloadState["status"], "complete">, string> = {
+	unfinished:
+		"but the download did not finish in time; the browser can still be writing it, or it waits for a person to keep the file.",
+	unlocated: "but the file did not appear in the folders the dialog can show; tell the operator where to look.",
+	cancelled: "and the wait for the download was cancelled.",
+};
+
+export async function browserSave(
+	params: SaveParams,
+	signal: AbortSignal | undefined,
+	deps: BrowserDeps,
+): Promise<BrowserResult> {
+	const tool = "browser_save";
+	const subject = new Subject(params);
+	return guarded(
+		tool,
+		async () => {
+			checkSaveArguments(params);
+			const resolved = resolveTarget(params, "interact", deps);
+			subject.update(resolved.target, null);
+			const { spec, target } = resolved;
+			const reply = await call(
+				deps,
+				{
+					op: "saveDialog",
+					bundleId: spec.bundleId,
+					pid: target.pid,
+					tab: target.tab,
+					name: params.fileName ?? null,
+					expect: params.expectedName ?? null,
+					cancel: params.cancel === true,
+					requestPermission: params.requestPermission === true,
+				},
+				signal,
+				params.requestPermission ? 120_000 : SAVE_CALL_MS,
+			);
+			const value = expectValue<SaveReply>(reply);
+			subject.update(target, null, value.window);
+			const dialog = { suggestedName: value.suggestedName, folderName: value.folderName };
+			if (value.action === "cancelled")
+				return result(tool, "dialog-cancelled", "cancelled the Save dialog.", { target: subject.facts, dialog });
+			const download = await awaitDownload(
+				value.candidates.map((item) => item.folder),
+				value.name as string,
+				value.pressedAt,
+				params.timeoutMs ?? SAVE_WAIT_MS,
+				deps,
+				signal,
+			);
+			return savedResult(subject, dialog, value.name as string, download);
+		},
+		() => ({ target: subject.facts }),
+	);
+}
+
+/** The result of a save: the file found, or why its download is not known to be complete. */
+function savedResult(subject: Subject, dialog: Facts, entered: string, download: DownloadState): BrowserResult {
+	const tool = "browser_save";
+	const name = download.path ? (download.path.split("/").pop() as string) : entered;
+	const report = {
+		target: subject.facts,
+		dialog,
+		saved: { name, path: download.path, bytes: download.bytes },
+		download,
+	};
+	if (download.status === "complete")
+		return result(tool, "saved", `saved ${download.path} (${download.bytes} bytes).`, report);
+	const status = download.status === "unlocated" ? "saved-unlocated" : `download-${download.status}`;
+	return result(
+		tool,
+		download.status === "cancelled" ? "cancelled" : status,
+		`saved "${name}" ${download.path ? `as ${download.path} ` : ""}${DOWNLOAD_HEADLINE[download.status]}`,
+		report,
+		download.status === "cancelled",
 	);
 }
 

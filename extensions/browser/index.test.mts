@@ -169,15 +169,22 @@ describe("browser extension entrypoint", () => {
 		for (const tool of tools.values()) assert.equal(tool.exposure, "deferred");
 	});
 
-	it("registers the five tools for interact access, with sequential mode on the mutating tools only", () => {
+	it("registers the six tools for interact access, with sequential mode on the mutating tools only", () => {
 		process.env.PI_BROWSER_ACCESS = JSON.stringify({ chrome: "inspect", brave: "interact" });
 		const { api, order, tools } = fixture();
 		registerBrowser(api as unknown as ExtensionAPI);
 
-		assert.deepEqual(order, ["browser_tabs", "browser_inspect", "browser_act", "browser_evaluate", "browser_capture"]);
+		assert.deepEqual(order, [
+			"browser_tabs",
+			"browser_inspect",
+			"browser_act",
+			"browser_evaluate",
+			"browser_save",
+			"browser_capture",
+		]);
 		for (const tool of tools.values()) assert.equal(tool.exposure, "deferred");
-		assert.equal(tools.get("browser_act")?.executionMode, "sequential");
-		assert.equal(tools.get("browser_evaluate")?.executionMode, "sequential");
+		for (const name of ["browser_act", "browser_evaluate", "browser_save"])
+			assert.equal(tools.get(name)?.executionMode, "sequential", name);
 		for (const name of ["browser_tabs", "browser_inspect", "browser_capture"]) {
 			assert.equal(tools.get(name)?.executionMode, undefined, name);
 		}
@@ -190,7 +197,14 @@ describe("browser extension entrypoint", () => {
 
 		const shared = tools.get("browser_tabs")?.promptGuidelines ?? [];
 		assert.ok(shared.length > 0);
-		for (const name of ["browser_tabs", "browser_inspect", "browser_act", "browser_evaluate", "browser_capture"]) {
+		for (const name of [
+			"browser_tabs",
+			"browser_inspect",
+			"browser_act",
+			"browser_evaluate",
+			"browser_save",
+			"browser_capture",
+		]) {
 			assert.deepEqual(tools.get(name)?.promptGuidelines, shared, name);
 			const guidance = renderedGuidance(tools, [name]).join("\n");
 			assert.match(guidance, /browser_tabs before other browser tools/, name);

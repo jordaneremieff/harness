@@ -65,6 +65,16 @@ const FAILURE_GUIDANCE: Record<string, string> = {
 	"not-running": "The selected browser process is no longer running. The tool never starts a browser.",
 	"pid-mismatch": "The pid now belongs to another application.",
 	"origin-mismatch": "The tab does not show the expected origin, so the operation was not sent.",
+	"accessibility-not-granted":
+		"macOS Accessibility permission for the host application is missing, so the tool cannot answer the Save dialog. Stop and ask the operator to save or cancel the file in the browser, or to allow the host application in System Settings > Privacy & Security > Accessibility; browser_save with requestPermission true asks macOS while the operator is present.",
+	"browser-in-use":
+		"The browser is the active application, so the operator can be working in it or typing in this Save dialog; the tool does not answer it then. Ask the operator to save or cancel the file, or call browser_save again once the operator works in another application.",
+	"no-save-dialog":
+		"The window of this tab shows no Save dialog. A download that the browser saves without asking goes to its download folder; a download behind the browser's prompt to download multiple files waits for the operator to allow it.",
+	"dialog-mismatch":
+		"The Save dialog suggests another name than expectedName, so it can belong to the operator; the tool left it open. Ask the operator about it.",
+	"page-blocked":
+		"The page did not answer, so nothing was sent to it. A JavaScript dialog or print preview blocks the page until a person answers it, and a long-running page script delays it. If the browser shows a dialog, tell the operator; it closes only when a person answers it.",
 	"apple-event-timeout":
 		"The browser did not answer in time. An open JavaScript dialog or a busy page blocks Apple Events JavaScript until the operator dismisses it; the request can still run when the page resumes.",
 };
@@ -160,6 +170,8 @@ export interface WindowRow {
 	minimized: boolean;
 	visible: boolean;
 	activeTabIndex: number;
+	/** Window bounds as Apple Events report them: a QuickDraw rectangle; see {@link decodeRect}. */
+	bounds?: unknown;
 	tabs: { id: string; url: string | null; title: string | null; loading: boolean }[];
 }
 
@@ -225,7 +237,17 @@ export interface ExecuteReply {
 	metadataError?: { number: number | null; message: string } | null;
 }
 
-/** Runs one page script in the tab, identified by id inside the selected process. */
+/**
+ * Seconds a trivial page script may take before the first script of an operation: a page
+ * that a JavaScript dialog or print preview blocks refuses at once instead of after the
+ * operation's whole limit, and nothing of the operation reaches it.
+ */
+export const PROBE_SECONDS = 2;
+
+/**
+ * Runs one page script in the tab, identified by id inside the selected process. `probe`
+ * first checks that the page answers at all; reads during a wait leave it off.
+ */
 export async function executeInTab(
 	deps: SessionDeps,
 	spec: BrowserSpec,
@@ -233,13 +255,22 @@ export async function executeInTab(
 	script: string,
 	signal?: AbortSignal,
 	timeoutMs = CALL_TIMEOUT_MS,
+	probe = false,
 ): Promise<ExecuteReply> {
 	const seconds = Math.ceil(timeoutMs / 1000);
 	const reply = await call(
 		deps,
-		{ op: "execute", bundleId: spec.bundleId, pid: target.pid, tab: target.tab, script, seconds },
+		{
+			op: "execute",
+			bundleId: spec.bundleId,
+			pid: target.pid,
+			tab: target.tab,
+			script,
+			seconds,
+			...(probe ? { probeSeconds: PROBE_SECONDS } : {}),
+		},
 		signal,
-		timeoutMs + 1000,
+		timeoutMs + 1000 + (probe ? PROBE_SECONDS * 1000 : 0),
 	);
 	return expectValue<ExecuteReply>(reply);
 }

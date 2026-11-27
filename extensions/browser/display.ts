@@ -20,7 +20,14 @@ type CardContext = Parameters<NonNullable<ToolDefinition["renderResult"]>>[3] & 
 	state: { resultPresent?: boolean };
 	args: unknown;
 };
-const NAMES = ["browser_tabs", "browser_inspect", "browser_act", "browser_evaluate", "browser_capture"] as const;
+const NAMES = [
+	"browser_tabs",
+	"browser_inspect",
+	"browser_act",
+	"browser_evaluate",
+	"browser_save",
+	"browser_capture",
+] as const;
 type Name = (typeof NAMES)[number];
 type Display = Pick<ToolDefinition, "name" | "renderCall" | "renderResult"> & { name: Name };
 const EXPAND = "app.tools.expand";
@@ -104,12 +111,14 @@ function callSubject(name: Name, args: Fields): string {
 		return [line(args.action), line(args.url) || line(args.ref) || line(args.selector)].filter(Boolean).join(" ");
 	}
 	if (name === "browser_inspect") return join(line(args.view), line(args.selector), identify(args));
+	if (name === "browser_save")
+		return args.cancel === true ? "cancel Save dialog" : line(args.fileName) || "Save dialog";
 	return identify(args);
 }
 
 function callFacts(name: Name, args: Fields): string {
 	return join(
-		name === "browser_act" ? identify(args) : undefined,
+		name === "browser_act" || name === "browser_save" ? identify(args) : undefined,
 		name === "browser_tabs" && args.match ? line(args.browser) : undefined,
 		name === "browser_tabs" && num(args.pid) !== undefined ? `pid ${args.pid}` : undefined,
 		name === "browser_inspect" ? undefined : line(args.view),
@@ -137,6 +146,7 @@ function hasHiddenArgs(name: Name, args: Fields): boolean {
 		"expression",
 		...(name === "browser_act" ? ["action", args.url ? "url" : args.ref ? "ref" : "selector"] : []),
 		...(name === "browser_inspect" ? ["selector"] : []),
+		...(name === "browser_save" ? ["fileName", "cancel"] : []),
 	]);
 	return Object.entries(args).some(([key, item]) => item != null && !visible.has(key));
 }
@@ -403,6 +413,33 @@ function dispatchReceipt(action: Fields, dispatch: Fields, application: Fields, 
 	return `Cancelled. ${outcome}`;
 }
 
+/** What the focus watch saw: the keyboard the browser took and gave back, and windows that wait for a person. */
+function focusLine(report: Fields): string {
+	const focus = object(report.focus);
+	const parts: string[] = [];
+	const describe = (facts: Fields, when: string) => {
+		const taken = records(facts.taken);
+		const failed = taken.find((item) => item.returned === false);
+		const last = taken[taken.length - 1];
+		if (failed)
+			parts.push(
+				`The browser took the keyboard ${when}; returning it to ${line(failed.returnedTo) || "the previous app"} failed.`,
+			);
+		else if (last)
+			parts.push(
+				`The browser took the keyboard ${when}; returned to ${line(last.returnedTo) || "the previous app"} after ${num(last.heldMs) ?? "?"} ms.`,
+			);
+		const windows = records(facts.windows);
+		if (windows.length)
+			parts.push(`Browser window ${when}: ${windows.map((item) => line(item.title) || "untitled").join(", ")}.`);
+		if (facts.yielded) parts.push(`A click gave the browser the keyboard ${when}.`);
+	};
+	describe(focus, "during the call");
+	describe(object(focus.earlier), "after the previous call");
+	if (focus.unavailable) parts.push(`Keyboard focus not watched: ${line(focus.unavailable)}`);
+	return parts.join(" ");
+}
+
 function act(report: Fields, status: string): Receipt {
 	const dispatch = object(report.dispatch);
 	const application = object(report.application);
@@ -413,7 +450,12 @@ function act(report: Fields, status: string): Receipt {
 	const page = pageFacts(object(application.page));
 	const delivery = line(object(report.dispatchReply).note);
 	return {
-		outcome: `${dispatchCopy}${condition ? `; ${condition}` : ""}.${diagnostic ? ` ${diagnostic}` : ""}`,
+		outcome: [
+			`${dispatchCopy}${condition ? `; ${condition}` : ""}.${diagnostic ? ` ${diagnostic}` : ""}`,
+			focusLine(report),
+		]
+			.filter(Boolean)
+			.join(" "),
 		body: [page, responseRows(records(application.responses))].filter(Boolean).join("\n"),
 		evidence: [
 			line(dispatch.note),
@@ -467,7 +509,7 @@ function evaluate(report: Fields, status: string): Receipt {
 			outcome = "The expression result was not observed.";
 	}
 	return {
-		outcome: `${outcome}${diagnostic ? ` ${diagnostic}` : ""}`,
+		outcome: [`${outcome}${diagnostic ? ` ${diagnostic}` : ""}`, focusLine(report)].filter(Boolean).join(" "),
 		body: value || json(error.thrown),
 		evidence: [
 			bytes === undefined ? "" : qty(bytes, "byte"),
@@ -485,6 +527,30 @@ function dimensions(report: Fields): { widthPx: number; heightPx: number } | und
 	const widthPx = num(image.width);
 	const heightPx = num(image.height);
 	return widthPx && heightPx ? { widthPx, heightPx } : undefined;
+}
+
+function saveDialog(report: Fields, status: string): Receipt {
+	const dialog = object(report.dialog);
+	const file = object(report.saved);
+	const download = object(report.download);
+	const bytes = num(file.bytes);
+	const outcomes: Record<string, string> = {
+		"dialog-cancelled": "Save dialog cancelled.",
+		saved: `Saved ${path(file.path)}${bytes === undefined ? "" : ` (${qty(bytes, "byte")})`}.`,
+		"download-unfinished": `Saved as ${path(file.path)}; the download had not finished.`,
+		"saved-unlocated": `Saved “${line(file.name)}”; the file did not appear where the dialog saves.`,
+		cancelled: "Saved; the wait for the download was cancelled.",
+	};
+	return {
+		outcome: outcomes[status] ?? "Save dialog answered.",
+		evidence: [
+			line(dialog.suggestedName) && `Suggested name: ${line(dialog.suggestedName)}`,
+			line(dialog.folderName) && `Folder shown: ${line(dialog.folderName)}`,
+			num(download.waitedMs) === undefined ? "" : `Waited ${num(download.waitedMs)} ms for the download`,
+		]
+			.filter(Boolean)
+			.join("\n"),
+	};
 }
 
 function capture(report: Fields): Receipt {
@@ -571,6 +637,7 @@ function receipt(name: Name, status: string, report: Fields, args: Fields, text:
 	if (name === "browser_act" && report.dispatch) return act(report, status);
 	if (name === "browser_evaluate" && report.execution) return evaluate(report, status);
 	if (name === "browser_capture" && status === "ok") return capture(report);
+	if (name === "browser_save" && report.dialog) return saveDialog(report, status);
 	return fallback(name, status, text, isError);
 }
 

@@ -258,6 +258,8 @@ function fakeDeps(
 		}),
 		save: async () => {},
 		now: () => Date.now(),
+		fileStat: async () => null,
+		listFolder: async () => [],
 	};
 	return { deps, counts: state.counts, state };
 }
@@ -336,21 +338,21 @@ function toolText(message: ToolResultMessage | undefined): string {
 }
 
 describe("browser durable contribution", () => {
-	it("declares the five tools, replay classes, and guidance", async () => {
+	it("declares the six tools, replay classes, and guidance", async () => {
 		const extension = await nativeExtension(fakeDeps().deps);
 		assert.equal(extension.name, "browser");
 		const tools = [...(extension.tools ?? [])];
 		assert.deepEqual(
 			tools.map((tool) => tool.name),
-			["browser_tabs", "browser_inspect", "browser_act", "browser_evaluate", "browser_capture"],
+			["browser_tabs", "browser_inspect", "browser_act", "browser_evaluate", "browser_save", "browser_capture"],
 		);
 		assert.deepEqual(
 			tools.map((tool) => tool.replay),
-			["safe", "safe", "unsafe", "unsafe", "safe"],
+			["safe", "safe", "unsafe", "unsafe", "unsafe", "safe"],
 		);
 		assert.deepEqual(
 			tools.map((tool) => tool.executionMode),
-			[undefined, undefined, "sequential", "sequential", undefined],
+			[undefined, undefined, "sequential", "sequential", "sequential", undefined],
 		);
 		assert.ok(tools.every((tool) => tool.structuredOutputSchema === undefined));
 		assert.ok(

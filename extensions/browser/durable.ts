@@ -18,6 +18,7 @@ import {
 	INSPECT_PARAMETERS,
 	offeredTools,
 	productionDeps,
+	SAVE_PARAMETERS,
 	TABS_PARAMETERS,
 	TOOL_TEXT,
 	type ToolName,
@@ -30,10 +31,12 @@ import {
 	browserCapture,
 	browserEvaluate,
 	browserInspect,
+	browserSave,
 	browserTabs,
 	type CaptureParams,
 	type EvaluateParams,
 	type InspectParams,
+	type SaveParams,
 	type TabsParams,
 } from "./operations.ts";
 import { publishSettings, type SettingsBus } from "./settings.ts";
@@ -176,6 +179,17 @@ export function browserDurableContribution(
 					replay: "unsafe",
 					execute: async (args, _api, context: Context) =>
 						native(await browserEvaluate(args as EvaluateParams, context.abortSignal, deps)),
+				}),
+				defineTool({
+					name: "browser_save",
+					description: TOOL_TEXT.browser_save.description,
+					parameters: SAVE_PARAMETERS,
+					deferred: true,
+					executionMode: "sequential",
+					// An interrupted call may already have saved or cancelled the download.
+					replay: "unsafe",
+					execute: async (args, _api, context: Context) =>
+						native(await browserSave(args as SaveParams, context.abortSignal, deps)),
 				}),
 				defineTool({
 					name: "browser_capture",

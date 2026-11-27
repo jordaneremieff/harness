@@ -457,6 +457,11 @@ export function fakePage(url: string, options: { beforeTasks?: () => void } = {}
 				get origin() {
 					return new URL(document.url).origin;
 				},
+				// As in a browser, the new document arrives after the script that asked for it returns.
+				assign: (next: string) => {
+					const url = new URL(next, document.url).href;
+					tasks.push(() => load(url));
+				},
 			},
 			document,
 			performance: { timeOrigin: 1000, now: () => ++clock, getEntriesByType: () => [] },
@@ -475,6 +480,12 @@ export function fakePage(url: string, options: { beforeTasks?: () => void } = {}
 			MessageChannel: FakeMessageChannel,
 		});
 	let context = world();
+	const load = (next: string): FakeDocument => {
+		tasks.length = 0;
+		document = new FakeDocument(next);
+		context = world();
+		return document;
+	};
 	const runTasks = (): void => {
 		if (tasks.length === 0) return;
 		options.beforeTasks?.();
@@ -489,12 +500,7 @@ export function fakePage(url: string, options: { beforeTasks?: () => void } = {}
 			return runInContext(script, context) as string;
 		},
 		runTasks,
-		navigate: (next) => {
-			tasks.length = 0;
-			document = new FakeDocument(next);
-			context = world();
-			return document;
-		},
+		navigate: load,
 		world: (expression) => runInContext(expression, context),
 	};
 }

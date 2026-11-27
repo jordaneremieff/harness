@@ -281,6 +281,18 @@ export interface ActionSpec {
 	index: number | null;
 	value: string | null;
 	key: string | null;
+	/**
+	 * Epoch milliseconds after which the script dispatches nothing. A page that a dialog held
+	 * runs the script when a person closes the dialog, after the tool stopped waiting for it.
+	 */
+	deadline?: number | null;
+}
+
+/** The first statement of a script that must not act after `deadline`. */
+function expiry(deadline: number | null | undefined, onExpired = ""): string {
+	return deadline == null
+		? ""
+		: `if (Date.now() > ${literal(deadline)}) { ${onExpired}return JSON.stringify({ kind: "expired", page: page() }); }`;
 }
 
 /**
@@ -297,6 +309,7 @@ export function actionScript(expectOrigin: string, spec: ActionSpec): string {
 	return script(
 		expectOrigin,
 		`const A = ${literal(spec)};
+${expiry(spec.deadline, `S.actions.set(A.id, { state: "not-dispatched", error: { name: "Expired", message: "The page ran the action after the tool stopped waiting for it, so nothing was dispatched." }, at: performance.timeOrigin + performance.now() }); `)}
 let el;
 let held = null;
 if (A.ref !== null) {
@@ -399,12 +412,38 @@ channel.port1.onmessage = () => {
   const change = changed();
   if (change) { entry.state = "not-dispatched"; entry.error = { name: "StaleReference", ...change }; entry.at = performance.timeOrigin + performance.now(); return; }
   entry.state = "running";
-  try { perform(); entry.state = "dispatched"; }
+  try { perform(); entry.state = "dispatched"; entry.element = describe(el); }
   catch (e) { entry.state = "failed"; entry.error = { name: e && e.name ? String(e.name) : null, message: clip(e && e.message ? e.message : e, 500) }; }
   entry.at = performance.timeOrigin + performance.now();
 };
 channel.port2.postMessage(0);
 return JSON.stringify({ kind: "scheduled", element: describe(el), mark, page: page() });`,
+	);
+}
+
+/**
+ * Navigates the tab from inside the page and reports the page that the navigation leaves.
+ * Chromium makes itself the active application when Apple Events set a tab URL, but not when
+ * the page navigates itself, so page navigation keeps the keyboard with the person at the Mac.
+ *
+ * The script reports `ready` and leaves the URL to Apple Events when `url` is null and when
+ * the document has no origin of its own (a browser error page or a sandboxed document), where
+ * the tab URL that the caller checked is the only identity. A document of another origin
+ * refuses.
+ */
+export function navigationScript(expectOrigin: string | null, url: string | null, deadline?: number | null): string {
+	return script(
+		null,
+		`${expiry(deadline)}
+const expected = ${literal(expectOrigin)};
+if (location.origin === "null") return JSON.stringify({ kind: "ready", page: page(), opaque: true });
+if (expected !== null && location.origin !== expected) return JSON.stringify({ kind: "origin-mismatch", page: page() });
+${
+	url === null
+		? `return JSON.stringify({ kind: "ready", page: page() });`
+		: `const before = page();\nlocation.assign(${literal(url)});\nreturn JSON.stringify({ kind: "navigating", page: before });`
+}`,
+		false,
 	);
 }
 
@@ -441,7 +480,7 @@ if (P.since !== null) {
   const nav = performance.getEntriesByType("navigation")[0];
   if (nav && performance.timeOrigin >= P.since - 2) navigation = { url: clip(nav.name, 300), type: nav.type, status: typeof nav.responseStatus === "number" ? nav.responseStatus : null };
 }
-return JSON.stringify({ kind: "ok", page: page(), action: entry ? { state: entry.state, error: entry.error } : null, condition, responses, navigation });`,
+return JSON.stringify({ kind: "ok", page: page(), action: entry ? { state: entry.state, error: entry.error, element: entry.element || null } : null, condition, responses, navigation });`,
 	);
 }
 
@@ -539,9 +578,11 @@ export function evaluationStartScript(
 	runId: string,
 	expression: string,
 	maxBytes: number,
+	deadline?: number | null,
 ): string {
 	return `(() => {
 ${prelude(expectOrigin)}
+${expiry(deadline)}
 ${ENCODER}
 const __pbRun = ${literal(runId)};
 const __pbMax = ${literal(maxBytes)};

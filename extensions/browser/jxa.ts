@@ -198,9 +198,38 @@ function locate(pid, tabId) {
   }
   fail('tab-not-found', 'No open tab has this id in the selected browser process.');
 }
+// A JavaScript dialog or print preview blocks every page script until a person answers it.
+// A trivial script with a short limit finds that before the request sends its own script.
+function responsive(pid, tab, seconds) {
+  if (!seconds) return;
+  try {
+    send(pid, 'CrSu', 'ExJa', tab, { JvSc: D.descriptorWithString('1') }, seconds);
+  } catch (error) {
+    if (error.errorNumber === -1712)
+      fail('page-blocked', 'The page did not answer a trivial script within ' + seconds + ' s.');
+    throw error;
+  }
+}
 function originOf(url) {
   const match = /^([a-z][a-z0-9+.-]*:\/\/[^\/?#]*)/i.exec(url || '');
   return match ? match[1].toLowerCase() : null;
+}
+// The page script's JSON envelope, or null when the result is not a JSON object.
+function envelopeOf(result) {
+  if (result === null) return null;
+  try {
+    const parsed = JSON.parse(String(result));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+}
+// Reads the tab URL through Apple Events and refuses another origin.
+function tabURL(request, found) {
+  const url = get(request.pid, 'URL ', found.tab);
+  if (request.expectOrigin !== null && originOf(url) !== request.expectOrigin)
+    fail('origin-mismatch', 'The tab does not show the expected origin.', { url: url });
+  return url;
 }
 function cgWindows(pid) {
   const list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID))) || [];
@@ -218,6 +247,173 @@ function readWindows(pid) {
     if (!error || error.pbCode !== 'changed') throw error;
     return windowList(pid);
   }
+}
+// A QuickDraw rectangle as Apple Events report window bounds: top, left, bottom, right as
+// native (little-endian) 16-bit integers.
+function rectOf(qd) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const bytes = [];
+  let buffer = 0;
+  let bits = 0;
+  for (const ch of String(qd || '').replace(/=+$/, '')) {
+    buffer = ((buffer << 6) | alphabet.indexOf(ch)) & 0xffffff;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((buffer >> bits) & 255);
+    }
+  }
+  if (bytes.length !== 8) return null;
+  const int16 = function (i) { const v = bytes[i] | (bytes[i + 1] << 8); return v >= 32768 ? v - 65536 : v; };
+  return { x: int16(2), y: int16(0), width: int16(6) - int16(2), height: int16(4) - int16(0) };
+}
+// Accessibility reads. Element references are cast to objects before use.
+function axValue(element, name) {
+  const ref = Ref();
+  return $.AXUIElementCopyAttributeValue(element, $(name), ref) === 0 && ref[0] ? ObjC.castRefToObject(ref[0]) : null;
+}
+function axString(element, name) {
+  const v = axValue(element, name);
+  if (!v) return null;
+  try {
+    const text = v.js;
+    return typeof text === 'string' ? text : null;
+  } catch (error) {
+    return null;
+  }
+}
+function axList(element, name) {
+  const list = axValue(element, name);
+  const out = [];
+  if (!list) return out;
+  const count = Number(list.count);
+  for (let i = 0; i < count; i++) out.push(list.objectAtIndex(i));
+  return out;
+}
+function axChildren(element) {
+  return axList(element, 'AXChildren');
+}
+// Position and size are AXValue structures; their description carries the numbers.
+function axFrame(element) {
+  const position = axValue(element, 'AXPosition');
+  const size = axValue(element, 'AXSize');
+  if (!position || !size) return null;
+  const p = /x:\s*(-?[\d.]+)\s+y:\s*(-?[\d.]+)/.exec(String(position.description.js));
+  const s = /w:\s*(-?[\d.]+)\s+h:\s*(-?[\d.]+)/.exec(String(size.description.js));
+  if (!p || !s) return null;
+  return { x: Math.round(Number(p[1])), y: Math.round(Number(p[2])), width: Math.round(Number(s[1])), height: Math.round(Number(s[2])) };
+}
+function pause(seconds) {
+  $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(seconds));
+}
+// The Save sheet (AppKit's save panel) attached to the Accessibility window with the given frame.
+function saveSheet(pid, frame) {
+  const app = $.AXUIElementCreateApplication(pid);
+  // A browser that does not answer Accessibility within two seconds fails the read instead of hanging it.
+  $.AXUIElementSetMessagingTimeout(app, 2);
+  const windows = axList(app, 'AXWindows');
+  const matching = windows.filter(function (w) {
+    const f = axFrame(w);
+    return f && f.x === frame.x && f.y === frame.y && f.width === frame.width && f.height === frame.height;
+  });
+  if (matching.length !== 1) fail('window-not-matched', 'Accessibility shows no single window at the bounds of this tab\'s window.');
+  const sheets = axChildren(matching[0]).filter(function (c) { return axString(c, 'AXRole') === 'AXSheet' && axString(c, 'AXIdentifier') === 'save-panel'; });
+  return { window: matching[0], sheet: sheets.length ? sheets[0] : null };
+}
+// The parts of a save panel, searched breadth first: the name field, the folder popup, the
+// folders of the listed files, and the Save and Cancel buttons. The search reads only the
+// attributes that an element's role can carry and ends once it knows the parts and a listed
+// folder with the popup's name, or after a bounded number of elements, since the file list can
+// hold many rows. The panel reports no default or cancel button attribute; the Save button
+// carries the identifier OKButton, and Cancel is the one other plain button beside it apart
+// from New Folder.
+function panelParts(sheet) {
+  const manager = $.NSFileManager.defaultManager;
+  const parts = { name: null, where: null, folders: [], save: null, cancel: null };
+  let listed = false;
+  let saveParent = null;
+  let level = [{ element: sheet, parent: null }];
+  let visits = 0;
+  const done = function () { return parts.name && parts.save && parts.where !== null && listed; };
+  while (level.length && visits < 800 && !done()) {
+    const next = [];
+    for (const item of level) {
+      if (++visits > 800 || done()) break;
+      const element = item.element;
+      const role = axString(element, 'AXRole');
+      const id = role === 'AXTextField' || role === 'AXPopUpButton' || role === 'AXButton' ? axString(element, 'AXIdentifier') : null;
+      if (id === 'saveAsNameTextField') parts.name = element;
+      else if (id === 'where popup') parts.where = axString(element, 'AXValue');
+      else if (id === 'OKButton' && role === 'AXButton') {
+        parts.save = element;
+        saveParent = item.parent;
+      } else if (role === 'AXTextField' && parts.folders.length < 20) {
+        const url = axValue(element, 'AXURL');
+        try {
+          const path = url ? url.filePathURL.path.js : null;
+          const folder = path ? path.replace(/\/+$/, '').replace(/\/[^\/]*$/, '') || '/' : null;
+          if (folder && parts.folders.indexOf(folder) < 0) {
+            parts.folders.push(folder);
+            if (parts.where !== null && manager.displayNameAtPath(folder).js === parts.where) listed = true;
+          }
+        } catch (error) {
+          // A row whose URL does not resolve to a file path names no folder; the other rows still can.
+        }
+      }
+      for (const child of axChildren(element)) next.push({ element: child, parent: element });
+    }
+    level = next;
+  }
+  if (saveParent) {
+    const others = axChildren(saveParent).filter(function (element) {
+      const id = axString(element, 'AXIdentifier');
+      return axString(element, 'AXRole') === 'AXButton' && !axString(element, 'AXSubrole') && id !== 'OKButton' && id !== 'NewFolderButton';
+    });
+    if (others.length === 1) parts.cancel = others[0];
+  }
+  return parts;
+}
+// The folder in which the save panel last saved, which macOS keeps as a bookmark in the
+// browser's preferences domain; read after a save, it names the folder of that save.
+function lastSaveFolder(bundleId) {
+  $.CFPreferencesAppSynchronize($(bundleId));
+  const data = $.NSUserDefaults.alloc.initWithSuiteName(bundleId).objectForKey('NSOSPLastRootDirectory');
+  if (data.isNil()) return null;
+  const url = $.NSURL.URLByResolvingBookmarkDataOptionsRelativeToURLBookmarkDataIsStaleError(data, (1 << 8) | (1 << 9), $(), Ref(), Ref());
+  return url.isNil() ? null : url.path.js;
+}
+// Folders that can be the one the panel shows: the folders of its listed files and the standard
+// folders whose display name the folder popup shows, then the Downloads folder.
+function panelFolders(parts) {
+  const manager = $.NSFileManager.defaultManager;
+  const home = $.NSHomeDirectory().js;
+  const named = function (folder) { return parts.where !== null && manager.displayNameAtPath(folder).js === parts.where; };
+  const standard = [home + '/Downloads', home + '/Desktop', home + '/Documents', home].filter(named);
+  const folders = [];
+  for (const folder of parts.folders.filter(named).concat(standard, [home + '/Downloads']))
+    if (folders.indexOf(folder) < 0 && manager.fileExistsAtPath(folder)) folders.push(folder);
+  return folders;
+}
+// Whether the file or the browser's partial file is already in the folder.
+function present(folder, name) {
+  const manager = $.NSFileManager.defaultManager;
+  return manager.fileExistsAtPath(folder + '/' + name) || manager.fileExistsAtPath(folder + '/' + name + '.crdownload');
+}
+// Text of an alert that a save panel shows over itself, such as a question about replacing a file.
+function panelAlert(sheet) {
+  for (const child of axChildren(sheet)) {
+    if (axString(child, 'AXRole') !== 'AXSheet') continue;
+    const texts = [];
+    for (const part of axChildren(child)) {
+      const text = axString(part, 'AXRole') === 'AXStaticText' ? axString(part, 'AXValue') : null;
+      if (text) texts.push(text);
+    }
+    return { sheet: child, text: texts.join(' ').slice(0, 500) };
+  }
+  return null;
+}
+function stillOpen(window) {
+  return axChildren(window).some(function (c) { return axString(c, 'AXIdentifier') === 'save-panel'; });
 }
 function inventoryOf(bundleId) {
   return { installed: installed(bundleId), instances: instances(bundleId) };
@@ -277,22 +473,116 @@ const operations = {
   execute: function (request) {
     ready(request);
     const found = locate(request.pid, request.tab);
+    responsive(request.pid, found.tab, request.probeSeconds);
     const result = value(send(request.pid, 'CrSu', 'ExJa', found.tab, { JvSc: D.descriptorWithString(request.script) }, request.seconds));
+    const text = result === null ? null : String(result);
+    // The envelope carries the page identity; the tab URL and title are read only without one.
+    if (envelopeOf(text)) return { window: found.windowId, url: null, title: null, result: text, metadataError: null };
     const url = optionalGet(request.pid, 'URL ', found.tab);
     const title = optionalGet(request.pid, 'pnam', found.tab);
-    return {
-      window: found.windowId, url: url.value, title: title.value, result: result === null ? null : String(result),
-      metadataError: url.error || title.error,
-    };
+    return { window: found.windowId, url: url.value, title: title.value, result: text, metadataError: url.error || title.error };
   },
+  // The page navigates itself when its script can: Chromium makes itself the active
+  // application when Apple Events set a tab URL, and not when the page navigates. This
+  // operation never sets the URL; when the page did not navigate, the caller arms its focus
+  // watch and sends setURL.
   navigate: function (request) {
     ready(request);
     const found = locate(request.pid, request.tab);
-    const before = get(request.pid, 'URL ', found.tab);
-    if (request.expectOrigin !== null && originOf(before) !== request.expectOrigin)
-      fail('origin-mismatch', 'The tab does not show the expected origin.', { url: before });
+    const before = tabURL(request, found);
+    let reply = null;
+    let pageError = null;
+    try {
+      responsive(request.pid, found.tab, request.probeSeconds);
+      reply = envelopeOf(value(send(request.pid, 'CrSu', 'ExJa', found.tab, { JvSc: D.descriptorWithString(request.script) }, request.seconds)));
+    } catch (error) {
+      // A blocked page or a closed tab refuses; any other page-script failure leaves the URL to Apple Events.
+      if (error.pbCode || typeof error.errorNumber !== 'number' || error.errorNumber === -1712 || error.errorNumber === -1728) throw error;
+      pageError = error.errorNumber;
+    }
+    if (reply && reply.kind === 'origin-mismatch')
+      fail('origin-mismatch', 'The page does not show the expected origin.', { url: before, page: reply.page || null });
+    if (reply && reply.kind === 'expired')
+      fail('page-blocked', 'The page ran the navigation only after the tool stopped waiting for it, so nothing ran.');
+    return { window: found.windowId, before: before, navigated: Boolean(reply && reply.kind === 'navigating'), page: reply ? reply.page || null : null, pageError: pageError };
+  },
+  setURL: function (request) {
+    ready(request);
+    const found = locate(request.pid, request.tab);
+    const before = tabURL(request, found);
     send(request.pid, 'core', 'setd', property('URL ', found.tab), { data: D.descriptorWithString(request.url) });
     return { window: found.windowId, before: before };
+  },
+  // Answers the Save sheet of the tab's window through Accessibility: no keystroke reaches
+  // the browser, and the browser does not become the active application. The panel itself
+  // decides whether the name exists: its replace question is answered Cancel and reported.
+  saveDialog: function (request) {
+    ready(request);
+    const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+    if (!front.isNil() && Number(front.processIdentifier) === request.pid)
+      fail('browser-in-use', 'The browser is the active application.');
+    ObjC.import('ApplicationServices');
+    ObjC.bindFunction('CFPreferencesAppSynchronize', ['bool', ['id']]);
+    if (!$.AXIsProcessTrusted()) {
+      if (request.requestPermission) $.AXIsProcessTrustedWithOptions($({ AXTrustedCheckOptionPrompt: true }));
+      fail('accessibility-not-granted', 'macOS Accessibility permission for this host application is missing.');
+    }
+    const found = locate(request.pid, request.tab);
+    const bounds = get(request.pid, 'pbnd', found.window);
+    const frame = bounds && bounds.qdrect ? rectOf(bounds.qdrect) : null;
+    if (!frame) fail('window-not-matched', 'The bounds of this tab\'s window are unreadable.');
+    const target = saveSheet(request.pid, frame);
+    if (!target.sheet) fail('no-save-dialog', 'The window of this tab shows no Save dialog.', { window: found.windowId });
+    const parts = panelParts(target.sheet);
+    const suggested = parts.name ? axString(parts.name, 'AXValue') : null;
+    const facts = { window: found.windowId, suggestedName: suggested, folderName: parts.where };
+    // A dialog that suggests another name than the download the agent started can be the operator's.
+    const stem = function (value) { return String(value || '').replace(/\.[^.]+$/, ''); };
+    if (request.expect && suggested !== request.expect && stem(suggested) !== stem(request.expect))
+      fail('dialog-mismatch', 'The Save dialog suggests another name than expectedName, so it can belong to the operator.', facts);
+    const button = request.cancel ? parts.cancel || axValue(target.sheet, 'AXCancelButton') : parts.save || axValue(target.sheet, 'AXDefaultButton');
+    if (!button) fail('dialog-unreadable', 'The Save dialog shows no ' + (request.cancel ? 'Cancel' : 'Save') + ' button to Accessibility. A dialog of a hidden or minimized window shows none.', facts);
+    let name = suggested;
+    if (!request.cancel) {
+      if (!parts.name) fail('dialog-unreadable', 'The Save dialog shows no file name field to Accessibility.', facts);
+      if (request.name !== null && request.name !== undefined) {
+        $.AXUIElementSetAttributeValue(parts.name, $('AXValue'), $(request.name));
+        name = axString(parts.name, 'AXValue');
+        if (name !== request.name) fail('name-not-set', 'The Save dialog did not take the file name.', Object.assign({ shown: name }, facts));
+      }
+      if (!name) fail('name-not-set', 'The Save dialog has no file name.', facts);
+    }
+    const before = request.cancel ? [] : panelFolders(parts).map(function (folder) { return { folder: folder, existed: present(folder, name) }; });
+    // The folder that the popup names, when a listed or standard folder carries that name: a file
+    // of this name there would make the panel ask about replacing it, which it shows to
+    // Accessibility only in part, so the tool refuses before the press.
+    // A name without an extension gets the download's extension, which the panel can hide, so
+    // only a name with one is checked.
+    const shown = before.filter(function (item) { return parts.where !== null && $.NSFileManager.defaultManager.displayNameAtPath(item.folder).js === parts.where; });
+    if (!request.cancel && /^.+\.[^.]+$/.test(name) && shown.length && shown[0].existed)
+      fail('file-exists', 'A file with this name already exists in the folder the dialog shows; choose another name.', Object.assign({ name: name, folder: shown[0].folder }, facts));
+    const pressedAt = Date.now();
+    if ($.AXUIElementPerformAction(button, $('AXPress')) !== 0)
+      fail('dialog-unreadable', 'The Save dialog did not accept the button press.', facts);
+    for (let waited = 0; waited < 3000 && stillOpen(target.window); waited += 50) pause(0.05);
+    if (stillOpen(target.window)) {
+      const question = panelAlert(target.sheet);
+      const cancel = question ? axValue(question.sheet, 'AXCancelButton') : null;
+      if (cancel) $.AXUIElementPerformAction(cancel, $('AXPress'));
+      fail(
+        'save-question',
+        question
+          ? 'The Save dialog asked: ' + question.text + (cancel ? ' The tool answered Cancel; the dialog is still open.' : '')
+          : 'The Save dialog did not close within three seconds; it can be asking whether to replace a file of this name. Cancel it with cancel true, or ask the operator.',
+        Object.assign({ name: name, answeredCancel: Boolean(cancel) }, facts),
+      );
+    }
+    if (request.cancel) return Object.assign({ action: 'cancelled', name: null, candidates: [], pressedAt: pressedAt }, facts);
+    // The folder of this save first; a folder where the name existed before the save is not it.
+    const saved = lastSaveFolder(request.bundleId);
+    const candidates = saved ? [{ folder: saved, existed: false }] : [];
+    for (const item of before) if (item.folder !== saved) candidates.push(item);
+    return Object.assign({ action: 'saved', name: name, candidates: candidates.filter(function (item) { return !item.existed; }), pressedAt: pressedAt }, facts);
   },
   window: function (request) {
     const app = ready(request);
