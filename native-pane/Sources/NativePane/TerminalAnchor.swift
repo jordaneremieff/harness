@@ -359,8 +359,11 @@ final class AnchorWorker: @unchecked Sendable {
     /// Time a found element has to show the new marker.
     static let confirmTime: TimeInterval = 0.6
     /// Consecutive reads without the marker after which the followed element counts as gone,
-    /// for example because the application now uses it for another terminal.
+    /// for example because the application now uses it for another terminal, once they also
+    /// span `missTime`. Fast polling after a layout change reads several times within a frame of
+    /// the terminal's redraw, so a count alone would drop a pane that is still on screen.
     static let missLimit = 3
+    static let missTime: TimeInterval = 0.5
     /// Time between two scans for covering content while the element's frame stays the same.
     static let coverInterval: TimeInterval = 0.25
     /// Time after which a scan for covering content starts no new request; an unfinished scan
@@ -378,6 +381,7 @@ final class AnchorWorker: @unchecked Sendable {
     private var host: pid_t?
     private var candidate: (found: AnchorSearch<LiveTree>.Found, marker: String, until: Date)?
     private var misses = 0
+    private var firstMiss: Date?
     /// The window that last showed the element and its title then. A changed title, such as a
     /// switch to another tab of that window, starts the next round at once.
     private var lostWindow: (element: AXUIElement, title: String?)?
@@ -477,11 +481,15 @@ final class AnchorWorker: @unchecked Sendable {
         }
         guard frame.width >= 1, frame.height >= 1, let host = Self.pid(element) else { return nil }
         switch tree.visibleText(element, limit: AnchorSearch<LiveTree>.textLimit) {
-        case .value(let text) where AnchorSearch<LiveTree>.shows(marker, text): misses = 0
+        case .value(let text) where AnchorSearch<LiveTree>.shows(marker, text):
+            misses = 0
+            firstMiss = nil
         case .busy: break
         default:
             misses += 1
-            if misses >= Self.missLimit { return nil }
+            let since = firstMiss ?? Date()
+            firstMiss = since
+            if misses >= Self.missLimit, Date().timeIntervalSince(since) >= Self.missTime { return nil }
         }
         let window = windowElement ?? tree.read(element, kAXWindowAttribute).value.flatMap(LiveTree.element)
         windowElement = window
@@ -524,6 +532,7 @@ final class AnchorWorker: @unchecked Sendable {
         coversFrame = nil
         coversGeneration = nil
         misses = 0
+        firstMiss = nil
         rounds = 0
         nextRound = .distantPast
         search = AnchorSearch()
@@ -574,6 +583,7 @@ final class AnchorWorker: @unchecked Sendable {
             host = candidate.found.application
             lostWindow = nil
             misses = 0
+            firstMiss = nil
             rounds = 0
             return follow(candidate.found.element, marker: marker) ?? .searching
         }
