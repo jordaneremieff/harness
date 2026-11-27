@@ -8,23 +8,26 @@ it arrives.
 ```text
 /troll
 /troll this is overbuilt; press on why a new store is needed
-/troll 0190f3a2-7c1e-7d5a-9a51-2f4b8c6d1e30 the benchmark does not measure the claim
+/troll provider/model high the benchmark does not measure the claim
 /troll the editor sidebar session, draft only
 ```
 
 - Without words, the troll challenges the latest answer of the session where you typed `/troll`.
-- Words after `/troll` are your instruction to the troll, in any form: what to push on, how hard,
-  which session to target and how to deliver. A session ID anywhere in the words names the target.
-  Otherwise the troll infers the target from your words, or takes the session where you typed
-  `/troll`. If it cannot find the target, it says so in its pane and stops.
+- The first word is a model override only if it names a model in Pi's registry as `provider/model`.
+  A level immediately after that model is a thinking override: `off`, `minimal`, `low`, `medium`,
+  `high`, `xhigh`, or `max`. The overrides apply only to this launch. Anything not read as an
+  override is part of the instruction.
+- Give the instruction in any form: what to push on, how hard, which session to target and how to
+  deliver. A session ID anywhere in the instruction names the target. Otherwise the troll infers
+  the target from your words, or takes the session where you typed `/troll`. If it cannot find
+  the target, it says so in its pane and stops.
 - By default the troll submits each message in the target session as your own message, with no
-  clipboard step. Ask for another process in the instruction, for example a draft only, a
-  clipboard copy, a message in the troll's own voice, or an answer in the troll pane.
-- After a submission, the troll waits. When the target's run ends, its answer comes back to the
-  troll, which decides whether a gap that matters remains. It submits at most three rounds after
-  each message of yours in the troll pane, and stops early on agreement, a decline, a real
-  boundary, an interrupted run or input of yours in the target during the run. Then it reports
-  what the target said, what it did, what the evidence establishes and what remains unknown.
+  clipboard step. Ask for a draft, a clipboard copy, or an answer in the troll pane instead.
+- After a submission, the troll waits for the target's answer. It presses the unresolved point
+  from a new angle if restatement or agreement leaves the objection standing. Evidence, action,
+  a real boundary, a delivery interruption, or your intervention ends automatic submissions.
+  The troll reports what the target said and did, what the evidence establishes and what remains
+  unknown.
 
 Talk to the troll in its pane at any time; your message there also permits further rounds. Quit
 the troll session to close the pane. Press Escape in the target to interrupt its run; the troll
@@ -44,7 +47,8 @@ then stops submitting until you write in its pane.
 <!-- harness:settings:end -->
 
 The defaults draw a square about a third of the tab's width, just inside its top-left corner. Rex
-computes the square from the invoking terminal's size on screen. The pane uses the Rex app's
+computes the square from the invoking terminal's size on screen. The pane has the ordinary Rex
+label `shell`. It uses the Rex app's
 terminal font size: Rex changes font size only through app actions, which another program can
 perform only while the app's Remote Control setting is on, so the troll leaves the font as it is.
 
@@ -57,14 +61,17 @@ through your login shell with its interactive startup files, so the troll sessio
 and environment of your own terminals. Its arguments are:
 
 ```text
-pi --troll <origin session ID> [--model <model>] [--thinking <level>] --name Troll -- <opening message>
+pi --unregistered --troll <origin session ID>@<process ID> [--model <model>] [--thinking <level>] --name Troll -- <opening message>
 ```
 
 The opening message names the origin session and quotes your instruction; it holds at most 8 KB. One
 creation attempt is the maximum. A result whose effect is uncertain is reported and never retried.
 
 The `--troll` flag marks the session as a troll. Only a troll session adds the troll's instructions
-to its system prompt and registers the `troll_submit` tool.
+to its system prompt and registers the `troll_submit` tool. The
+[`--unregistered` flag](../../docs/conventions/session-host-roles.md#ordinary-session-without-agent-registration)
+keeps the session out of Agent presence without changing Pi's normal name, transcript, or audit
+records.
 
 ## Submission and answers
 
@@ -95,8 +102,8 @@ troll.
 
 A troll finds the target's socket among those of running processes. When more than one process runs
 the target session, the troll uses the pane where you typed `/troll` if that pane runs the target,
-and otherwise refuses, because it cannot tell which pane you mean. `troll_submit` refuses a fourth
-round since your last message in the troll pane, and any round after a reply that did not end with
-a clean answer or that reports your input in the target. A session that started before this
+and otherwise refuses, because it cannot tell which pane you mean. `troll_submit` refuses further
+rounds after a reply that did not end with a clean answer or that reports your input in the target.
+Write in the troll pane to permit another round. A session that started before this
 extension became active has no socket, and the troll reports that it cannot reach it. Each session
 start removes the sockets of processes that no longer run.

@@ -26,7 +26,17 @@ import {
 	waitingRounds,
 } from "./exchange.ts";
 import trollExtension, { registerTroll } from "./index.ts";
-import { findPi, type Helper, openingMessage, openPane, paneBounds, parseOriginFlag, trollArgv } from "./launch.ts";
+import {
+	findPi,
+	type Helper,
+	openingMessage,
+	openPane,
+	paneBounds,
+	parseOriginFlag,
+	parseTrollArgs,
+	trollArgv,
+} from "./launch.ts";
+import { readSettings } from "./settings.ts";
 
 const settings = { width: 0.34, left: 0.01, top: 0.016 };
 const scratch = () => mkdtempSync(join(tmpdir(), "tr-"));
@@ -79,6 +89,7 @@ test("the troll starts the operator's pi from PATH with the configured model and
 	);
 	assert.deepEqual(trollArgv("/bin/pi", origin, "-hello", settings), [
 		"/bin/pi",
+		"--unregistered",
 		"--troll",
 		"01a2-origin@4242",
 		"--name",
@@ -87,11 +98,8 @@ test("the troll starts the operator's pi from PATH with the configured model and
 		"-hello",
 	]);
 	assert.deepEqual(
-		trollArgv("/bin/pi", origin, "x", { ...settings, model: "anthropic/claude-opus-5-5", thinkingLevel: "high" }).slice(
-			3,
-			7,
-		),
-		["--model", "anthropic/claude-opus-5-5", "--thinking", "high"],
+		trollArgv("/bin/pi", origin, "x", { ...settings, model: "provider/model", thinkingLevel: "high" }).slice(4, 8),
+		["--model", "provider/model", "--thinking", "high"],
 	);
 	assert.deepEqual(parseOriginFlag("01a2-origin@4242"), { id: "01a2-origin", pid: 4242 });
 	assert.deepEqual(parseOriginFlag("01a2-origin"), { id: "01a2-origin" });
@@ -100,6 +108,57 @@ test("the troll starts the operator's pi from PATH with the configured model and
 	assert.equal(parseOriginFlag(undefined), undefined);
 	assert.deepEqual(paneBounds(settings), { bounds: [0.01, 0.016, 0.34, 0.34], square: true });
 	assert.deepEqual(paneBounds({ ...settings, height: 0.5 }), { bounds: [0.01, 0.016, 0.34, 0.5], square: false });
+});
+
+test("/troll consumes only a known model and its optional thinking level before the free-form instruction", () => {
+	const hasModel = (provider: string, id: string) => provider === "provider" && id === "model";
+	for (const [args, expected] of [
+		["", { instruction: "" }],
+		["provider/model", { model: "provider/model", instruction: "" }],
+		["provider/model max", { model: "provider/model", thinkingLevel: "max", instruction: "" }],
+		[
+			" provider/model\thigh\nCheck the premise.\nThen check the result. ",
+			{
+				model: "provider/model",
+				thinkingLevel: "high",
+				instruction: "Check the premise.\nThen check the result.",
+			},
+		],
+		["provider/model verify this", { model: "provider/model", instruction: "verify this" }],
+		["src/cache check the times", { instruction: "src/cache check the times" }],
+		["high uncertainty warrants another check", { instruction: "high uncertainty warrants another check" }],
+	] as const)
+		assert.deepEqual(parseTrollArgs(args, hasModel), expected);
+});
+
+test("troll model and level settings supply the launch unless the command overrides them", () => {
+	const dir = scratch();
+	try {
+		writeFileSync(
+			join(dir, "harness.json"),
+			JSON.stringify({
+				version: 1,
+				troll: { model: "provider/default", thinkingLevel: "medium" },
+			}),
+		);
+		const defaults = readSettings({ agentDir: dir, env: {} }).values;
+		const argv = (args: string) => {
+			const { instruction, ...overrides } = parseTrollArgs(
+				args,
+				(provider, id) => provider === "provider" && id === "override",
+			);
+			const origin = { id: "origin", pid: 1 };
+			return trollArgv("/bin/pi", origin, openingMessage(origin, instruction), { ...defaults, ...overrides });
+		};
+		assert.deepEqual(argv("").slice(4, 8), ["--model", "provider/default", "--thinking", "medium"]);
+		assert.deepEqual(argv("provider/override").slice(4, 8), ["--model", "provider/override", "--thinking", "medium"]);
+		const override = argv("provider/override off Check the trace.");
+		assert.deepEqual(override.slice(4, 8), ["--model", "provider/override", "--thinking", "off"]);
+		assert.match(override.at(-1) ?? "", /\nInstruction: Check the trace\.$/u);
+		assert.deepEqual(argv("").slice(4, 8), ["--model", "provider/default", "--thinking", "medium"]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("the pane opens only over a captured Rex origin and reports Rex's outcome", async () => {
@@ -131,7 +190,7 @@ test("the pane opens only over a captured Rex origin and reports Rex's outcome",
 		cwd: request.cwd,
 		bounds: request.bounds,
 		square: true,
-		label: "Troll",
+		label: "shell",
 	});
 	await openPane({ ...request, square: false }, helper(origin, { outcome: "created", detail: "Created." }));
 	assert.equal(Object.hasOwn(calls.at(-1)?.input ?? {}, "square"), false);
@@ -303,7 +362,7 @@ test("the reply is the last public answer after the first copy of the submitted 
 	assert.deepEqual(clip("aé".repeat(3), 4), { text: "aéa", truncated: true });
 });
 
-test("automatic rounds stop at the limit or after an unclean answer until the operator writes", () => {
+test("round state counts submissions and retains halts until the operator writes", () => {
 	const sent = (id: string, outcome = "submitted", round = 1) =>
 		message(id, "toolResult", [], { toolName: "troll_submit", details: { outcome, session: "target-1", round } });
 	const replyEntry = (id: string, details: object): BranchEntry => ({
@@ -449,7 +508,7 @@ const startsRun =
 const outcomeOf = (sent: { message: Record<string, unknown> } | undefined) =>
 	(sent?.message.details as Record<string, unknown> | undefined)?.outcome;
 
-test("a troll submits to an idle target as the operator and hears its answer when the run settles", async () => {
+test("a troll submits as the operator through a fourth round, receives replies, and halts after interruption", async () => {
 	await withAgentDir(async (agentDir) => {
 		const targetBranch = [message("a1", "assistant", [{ type: "text", text: "Use a cache." }])];
 		const targetState = { idle: true };
@@ -525,6 +584,29 @@ test("a troll submits to an idle target as the operator and hears its answer whe
 				truncated: false,
 			});
 			assert.deepEqual(options, { triggerTurn: true, deliverAs: "followUp" });
+
+			const retainRound = (result: ToolResult, notice: Record<string, unknown>, round: number) => {
+				trollBranch.push(
+					message(`submit-${round}`, "toolResult", [], { toolName: "troll_submit", details: result.details }),
+					{ type: "custom_message", id: `reply-${round}`, customType: "troll-reply", details: notice.details },
+				);
+			};
+			retainRound(sent, reply, 1);
+			for (const round of [2, 3, 4]) {
+				const question = `Check the cache measurement for case ${round}.`;
+				const next = await call("target-1", question);
+				assert.deepEqual(next.details, { outcome: "submitted", session: "target-1", round });
+				targetBranch.push(
+					message(`question-${round}`, "user", question),
+					message(`answer-${round}`, "assistant", "Measured."),
+				);
+				await target.fire("agent_settled", { aborted: round === 4 }, targetContext);
+				await until(() => troll.sent.length === round);
+				retainRound(next, troll.sent[round - 1].message, round);
+			}
+			const halted = await call("target-1", "Try another measurement.");
+			assert.equal(halted.details.outcome, "refused", "an interrupted run still halts submission");
+			assert.equal(target.userMessages.length, 4);
 		} finally {
 			await target.fire("session_shutdown", {}, targetContext);
 			await troll.fire("session_shutdown", {}, trollContext);

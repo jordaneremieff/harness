@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { TrollSettings } from "./settings.ts";
+import { isThinkingLevel, type TrollSettings } from "./settings.ts";
 
 const captureProgram = fileURLToPath(new URL("../rex/terminal-origin.ts", import.meta.url));
 const paneProgram = fileURLToPath(new URL("../rex/terminal-pane.ts", import.meta.url));
@@ -44,6 +44,22 @@ export function findPi(env: Readonly<Record<string, string | undefined>>): strin
 	return undefined;
 }
 
+/** A registered model, then an optional level, can precede the free-form instruction. */
+export function parseTrollArgs(
+	args: string,
+	hasModel: (provider: string, modelId: string) => boolean,
+): Pick<TrollSettings, "model" | "thinkingLevel"> & { instruction: string } {
+	const text = args.trim();
+	const match = /^([^/\s]+)[/](\S+)(?:\s+|$)/u.exec(text);
+	if (!match || !hasModel(match[1], match[2])) return { instruction: text };
+	const model = `${match[1]}/${match[2]}`;
+	const rest = text.slice(match[0].length);
+	const level = /^\S+/u.exec(rest)?.[0];
+	return isThinkingLevel(level)
+		? { model, thinkingLevel: level, instruction: rest.slice(level.length).trimStart() }
+		: { model, instruction: rest };
+}
+
 /** The troll session's first message: where the operator ran /troll and the operator's own words. */
 export function openingMessage(origin: Origin, instruction: string): string {
 	const where = origin.name ? `session ${origin.id} ("${origin.name}")` : `session ${origin.id}`;
@@ -55,6 +71,7 @@ export function openingMessage(origin: Origin, instruction: string): string {
 export function trollArgv(program: string, origin: Origin, opening: string, settings: TrollSettings): string[] {
 	return [
 		program,
+		"--unregistered",
 		`--${TROLL_FLAG}`,
 		`${origin.id}@${origin.pid}`,
 		...(settings.model ? ["--model", settings.model] : []),
@@ -110,7 +127,7 @@ export async function openPane(
 		origin,
 		...rest,
 		...(square ? { square: true } : {}),
-		label: "Troll",
+		label: "shell",
 	}).catch(() => undefined);
 	if (
 		!object(result) ||

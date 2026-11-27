@@ -240,7 +240,7 @@ function settingRecord(
 }
 
 const thinkingLevels: readonly string[] = settings.fields.thinkingLevel.choices;
-const isThinkingLevel = (value: unknown): value is ThinkingLevel =>
+export const isThinkingLevel = (value: unknown): value is ThinkingLevel =>
 	typeof value === "string" && thinkingLevels.includes(value);
 
 function trollValues(records: readonly SettingRecord[]): TrollSettings {

@@ -1,7 +1,5 @@
 import { type ReplyFields, TEXT_LIMIT } from "./endpoint.ts";
 
-/** Automatic rounds that one operator message permits. */
-export const ROUND_LIMIT = 3;
 export const REPLY_TYPE = "troll-reply";
 export const SUBMIT_TOOL = "troll_submit";
 /** Custom entry that marks a session as a troll, with its origin; it keeps the role when the session resumes. */

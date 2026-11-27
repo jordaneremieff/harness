@@ -22,7 +22,6 @@ import {
 	type NoticeOutcome,
 	REPLY_TYPE,
 	ROLE_TYPE,
-	ROUND_LIMIT,
 	replyContent,
 	replyFromBranch,
 	roundState,
@@ -38,6 +37,7 @@ import {
 	openPane,
 	paneBounds,
 	parseOriginFlag,
+	parseTrollArgs,
 	TROLL_FLAG,
 	trollArgv,
 } from "./launch.ts";
@@ -96,33 +96,34 @@ export function registerTroll(pi: ExtensionAPI, timing: Timing): void {
 	});
 
 	/** The troll's start command, or the reason that /troll cannot open it from this session. */
-	function trollCommand(args: string, ctx: ExtensionContext): { argv: string[] } | string {
+	function trollCommand(args: string, ctx: ExtensionContext): Parameters<typeof openPane>[0] | string {
 		if (ctx.mode !== "tui") return "/troll needs Pi's interactive terminal.";
 		if (!endpoint) return `/troll cannot start: the troll could not reach this session. ${endpointProblem}`;
 		const program = findPi(process.env);
 		if (!program) return "/troll found no pi program on PATH to start the troll session.";
 		const name = ctx.sessionManager.getSessionName();
 		const from = { id: ctx.sessionManager.getSessionId(), pid: process.pid, ...(name ? { name } : {}) };
-		const opening = openingMessage(from, args.trim());
+		const { instruction, ...overrides } = parseTrollArgs(
+			args,
+			(provider, id) => ctx.modelRegistry.find(provider, id) !== undefined,
+		);
+		const opening = openingMessage(from, instruction);
 		if (Buffer.byteLength(opening) > OPENING_LIMIT)
 			return "The instruction is longer than 8 KB. Shorten it, or run /troll and give the material in the troll pane.";
-		return { argv: trollArgv(program, from, opening, readSettings({ agentDir }).values) };
+		const settings = { ...readSettings({ agentDir }).values, ...overrides };
+		return { argv: trollArgv(program, from, opening, settings), cwd: ctx.cwd, ...paneBounds(settings) };
 	}
 
 	pi.registerCommand("troll", {
 		description:
-			"Open a troll in a floating pane that challenges this session's latest answer, or the target and approach your words give",
+			"Challenge a session's answer in a floating pane: /troll [provider/model [thinking level]] [instruction]",
 		handler: async (args, ctx) => {
 			const command = trollCommand(args, ctx);
 			if (typeof command === "string") {
 				ctx.ui.notify(command, "error");
 				return;
 			}
-			const result = await openPane({
-				argv: command.argv,
-				cwd: ctx.cwd,
-				...paneBounds(readSettings({ agentDir }).values),
-			});
+			const result = await openPane(command);
 			if (result.outcome === "created") ctx.ui.notify("The troll opened in a floating pane of this tab.", "info");
 			else ctx.ui.notify(result.detail, result.outcome === "uncertain" ? "warning" : "error");
 		},
@@ -207,11 +208,6 @@ export function registerTroll(pi: ExtensionAPI, timing: Timing): void {
 		const state = roundState(branch);
 		if (state.halt)
 			return { outcome: "refused", detail: `${state.halt} Another round needs the operator's word here.` };
-		if (state.rounds >= ROUND_LIMIT)
-			return {
-				outcome: "refused",
-				detail: `${ROUND_LIMIT} rounds followed the operator's last message. Report to the operator; another round needs their word here.`,
-			};
 		return { round: state.rounds + 1 };
 	}
 
