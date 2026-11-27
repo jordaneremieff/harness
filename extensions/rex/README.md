@@ -144,7 +144,10 @@ Placement defaults to the right side with an even share. `left` and `right` plac
 beside the anchor. The share is the new pane's fraction of the
 split, from 0.15 to 0.85 inclusive. The optional label
 holds 1 to 32 printable Unicode characters and defaults to `Reader`. Neither option changes
-focus. The receipt names the anchor and the new block.
+focus. When the tab's focused block is zoomed after the split, the helper ends that zoom by
+window, so the split shows and focus stays; the result detail says so, and says when a zoom
+of the tiled layout behind a focused floating pane still hides the split. The receipt names
+the anchor and the new block.
 
 The fixed `terminal-pane.ts float` operation opens the program in a new floating layer of the
 tab that holds the anchor, at `bounds` given as `[x, y, width, height]` fractions of that tab,
@@ -203,7 +206,13 @@ such as a document; without it, a float that covers the conversation moves besid
 it, as [Keep the conversation visible](#keep-the-conversation-visible) describes.
 A new window, split or floating pane does
 not take focus unless the request sets `focus: true`; use that when the operator
-asked to see the work, such as a diff tab, a test run or a document. A new
+asked to see the work, such as a diff tab, a test run or a document. Rex
+0.1.0-preview.24 and later keep a zoom across a split that does not take focus,
+which hides the split behind the zoomed block. A split without focus therefore
+ends the zoom of its tab's focused block by window, which keeps focus and the
+active tab, as earlier servers did with the split. A zoom of the tiled layout
+stays on behind a focused floating pane until focus moves; the result's note then
+says that a zoomed pane still hides the split. A new
 session cannot be shown this way; `focus` is refused there, and a client action
 such as `session.select` displays it. Save the returned target and effect record
 ID. Cleanup of a floating pane closes its block, and Rex removes the emptied

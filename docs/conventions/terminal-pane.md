@@ -56,8 +56,12 @@ names a session from an earlier one. The adapter disables autostart and checks h
 identity on the same connection as its single `session.new_split` call. It finds the verified
 terminal block in that session's window layout, then uses that full block ID as the explicit
 split anchor. The public Rex API owns splitting,
-startup and exit behaviour. The split uses the requested side and share. Its label defaults to `Reader`. The split does not take focus. Rex ends zoom in
-that tab as part of its defined split behaviour. When the server
+startup and exit behaviour. The split uses the requested side and share. Its label defaults to `Reader`. The split does not take focus. Rex
+0.1.0-preview.24 and later keep a zoom across a split without focus, so when the tab's focused
+block is still zoomed after the split, the adapter ends that zoom by window, which keeps focus
+and the active tab; earlier servers end every zoom in the tab with the split. A zoom of the
+tiled layout behind a focused floating layer ends only when focus moves, so it stays, and the
+result detail says that it hides the split. When the server
 is a local Unix socket and the stacking helper is available, the adapter starts the program with
 the [pane stacking](pane-stacking.md) offer in its environment, so a program that places its own
 window over the pane learns from Rex's layout which content lies above it.

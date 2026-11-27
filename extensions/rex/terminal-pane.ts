@@ -205,7 +205,24 @@ local after = rex.call("session.view", {session_id=session})
 local anchorWindow = placement(after, a.blockId)
 local paneWindow = placement(after, receipt.blockId)
 if not anchorWindow or anchorWindow ~= paneWindow then return {outcome="uncertain", receipt=receipt, detail="Rex created a block but same-tab placement is unconfirmed. Do not retry automatically."} end
-return {outcome="created", receipt=receipt, detail="Rex created a split beside the invoking terminal. Visibility and program acceptance are not verified."}
+-- A zoom can outlast a split made without focus and hide the split behind the zoomed block. Ending the zoom of the
+-- focused block by window keeps focus and the active tab. A zoom of the tiled layer stays on behind a focused
+-- floating layer, and only a change of focus ends it.
+local function zooms(v)
+  for _, w in ipairs(v and v.windows or {}) do
+    if w.window_id == paneWindow then return w.zoomed_block_id, w.tiled_zoomed_block_id end
+  end
+end
+local detail = "Rex created a split beside the invoking terminal."
+if zooms(after) then
+  if rex.call("session.zoom_block", {session_id=session, window_id=paneWindow, zoom=false}) then
+    detail = detail .. " The tab's zoom ended so the split shows; focus is unchanged."
+  end
+  after = rex.call("session.view", {session_id=session})
+end
+local zoomed, tiledZoomed = zooms(after)
+if zoomed or tiledZoomed then detail = detail .. " A zoomed pane still hides the split." end
+return {outcome="created", receipt=receipt, detail=detail .. " Visibility and program acceptance are not verified."}
 `;
 // The floating layer joins the window that holds the anchor now. Its program runs through the account's login
 // shell with the interactive startup files, so it finds the commands and environment of the operator's terminals.

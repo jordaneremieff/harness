@@ -1237,6 +1237,71 @@ test("creation focus is explicit for windows and splits and refused for sessions
 	);
 });
 
+test("a split without focus ends the zoom of its tab's focused block and says when a zoom still hides it", async () => {
+	const created = "block:77777777-7777-4777-8777-777777777777";
+	const float = "block:88888888-8888-4888-8888-888888888888";
+	const cases = [
+		{ zoom: { zoomed_block_id: block, tiled_zoomed_block_id: block }, focus: block, ends: true, hides: false },
+		{ zoom: { zoomed_block_id: null, tiled_zoomed_block_id: block }, focus: float, ends: false, hides: true },
+		{ zoom: { zoomed_block_id: float, tiled_zoomed_block_id: block }, focus: float, ends: true, hides: true },
+		{ zoom: { zoomed_block_id: null }, focus: block, ends: false, hides: false },
+	];
+	for (const { zoom, focus, ends, hides } of cases) {
+		const f = fixture();
+		let current: Record<string, unknown> = { ...zoom };
+		f.transport.handler = (method) => {
+			if (method === "session.new_split") return reply({ anchor_id: block, block_ids: [created], revision: 2 });
+			if (method === "session.zoom_block") {
+				// Rex ends the zoom of the focused block; a zoom of the tiled layer behind a focused float stays.
+				current = focus === float ? { zoomed_block_id: null, tiled_zoomed_block_id: block } : {};
+				return reply({ revision: 3 });
+			}
+			if (method !== "session.view") return undefined;
+			const tiled = {
+				kind: "tiled",
+				layout: {
+					split: {
+						before: { block_id: block, rect: [0, 0, 0.5, 1] },
+						after: { block_id: created, rect: [0.5, 0, 0.5, 1] },
+					},
+				},
+			};
+			const floating = {
+				kind: "floating",
+				bounds: [0.6, 0.6, 0.3, 0.3],
+				layout: { block_id: float, rect: [0.6, 0.6, 0.3, 0.3] },
+			};
+			return reply({
+				windows: [{ window_id: window, focused_block_id: focus, ...current, layers: [tiled, floating] }],
+			});
+		};
+		const response = await f.core.execute(
+			{ op: "create", kind: "split", label: "Reader", target: { session, block } },
+			context,
+		);
+		assert.equal(response.ok, true);
+		assert.deepEqual(
+			f.transport.calls.filter((call) => call.method === "session.zoom_block").map((call) => call.data),
+			ends ? [{ session_id: session, window_id: window, zoom: false }] : [],
+		);
+		assert.equal(/zoom ended so the split shows; focus is unchanged/.test(response.effects.note ?? ""), ends);
+		assert.equal(/zoomed pane still hides the split/.test(response.effects.note ?? ""), hides);
+	}
+	const f = fixture();
+	f.transport.handler = (method) =>
+		method === "session.new_split" ? reply({ anchor_id: block, block_ids: [created], revision: 2 }) : undefined;
+	const shown = await f.core.execute(
+		{ op: "create", kind: "split", label: "Shown", focus: true, target: { session, block } },
+		context,
+	);
+	assert.equal(shown.ok, true);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "session.view" || call.method === "session.zoom_block"),
+		false,
+		"a split that takes focus ends the zoom through Rex",
+	);
+});
+
 test("float creation opens an owned floating pane in the anchor block's window", async () => {
 	const f = fixture();
 	const floating = "block:44444444-4444-4444-8444-444444444444";

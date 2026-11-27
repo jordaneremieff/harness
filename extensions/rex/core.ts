@@ -10,7 +10,7 @@ import {
 } from "./ownership.ts";
 import type { OwnershipRecord, OwnershipState, OwnershipStore, ResourceRef, ServerRef } from "./ownership.ts";
 import { createRexBudget, deadlineCoverage, RexStopped, type RexBudget, type BudgetPhase } from "./deadline.ts";
-import { paneStackingCommand, withPaneStacking } from "./pane-stacking.ts";
+import { paneStackingCommand, windowZooms, withPaneStacking } from "./pane-stacking.ts";
 import { CliTransport } from "./transport.ts";
 import type { CliResult, RexTransport } from "./transport.ts";
 
@@ -698,8 +698,44 @@ export class RexCore {
 			response.outcome = "created";
 			response.effects.note =
 				"The terminal persists independently of this call. Creation does not establish readiness. Only returned blocks are owned; cleanup preserves other session resources.";
+			const zoom =
+				request.kind === "split" && request.focus !== true && ref
+					? await this.revealSplit(ref, target.server, context)
+					: undefined;
+			if (zoom) response.effects.note += ` ${zoom}`;
 		}
 		return response;
+	}
+
+	/**
+	 * A split made without focus shows beside its anchor. A zoom can outlast such a split and hide it behind the
+	 * zoomed block, so the zoom of the window's focused block ends by window, which keeps focus and the active tab. A
+	 * zoom of the tiled layer stays on behind a focused floating layer, and only a change of focus ends it.
+	 */
+	private async revealSplit(ref: ResourceRef, server: ServerRef, context: RexCallContext): Promise<string | undefined> {
+		const windowOf = async () => {
+			const list = object(await this.api("session.view", { session_id: ref.sessionId }, server, context)).windows;
+			return (Array.isArray(list) ? list.map(object) : []).find((window) => window.window_id === ref.windowId);
+		};
+		try {
+			let window = await windowOf();
+			const notes: string[] = [];
+			if (typeof window?.zoomed_block_id === "string") {
+				await this.api(
+					"session.zoom_block",
+					{ session_id: ref.sessionId, window_id: ref.windowId, zoom: false },
+					server,
+					context,
+				);
+				notes.push("The tab's zoom ended so the split shows; focus is unchanged.");
+				window = await windowOf();
+			}
+			const zooms = window ? windowZooms(window) : {};
+			if (zooms.tiled !== undefined || zooms.floating !== undefined) notes.push("A zoomed pane still hides the split.");
+			return notes.join(" ") || undefined;
+		} catch (error) {
+			return `The tab's zoom is unchecked: ${errorText(error)}`;
+		}
 	}
 
 	private async inspect(
