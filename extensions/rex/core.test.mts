@@ -3412,13 +3412,12 @@ test("native child wait leaves response room and a stopped tail preserves exit e
 	const time = operationTime();
 	let processes = 0;
 	let waitAllowance = 0;
-	let waitMs = 0;
 	const run = f.transport.run.bind(f.transport);
 	f.transport.run = async (args, call) => {
 		if (args.includes("whoami")) time.advance(200);
 		if (args.includes("wait")) {
+			assert.ok(!args.includes("--for"), "only the transport owns the observer deadline");
 			waitAllowance = call.timeoutMs;
-			waitMs = Number(args[args.indexOf("--for") + 1]?.replace("ms", ""));
 			return reply({});
 		}
 		return run(args, call);
@@ -3436,13 +3435,39 @@ test("native child wait leaves response room and a stopped tail preserves exit e
 			{ op: "wait", condition: "child_exit", timeoutMs: 1000, target },
 			{ ...context, budget: time.budget },
 		);
-		assert.equal(waitAllowance, 700);
-		assert.ok(waitMs < waitAllowance - Math.floor(waitAllowance / 10));
+		assert.ok(waitAllowance > 0 && waitAllowance < 700, "leave time for the process read after the observer");
 		assert.equal(result.outcome, "child_completed");
 		assert.match(JSON.stringify(result.data), /captureError.*timeout/);
 	} finally {
 		time.budget.dispose();
 		f.core.dispose();
+	}
+});
+
+test("native child exit reports survive the block closing before reconciliation", async () => {
+	for (const code of [0, 7]) {
+		const f = fixture();
+		let processes = 0;
+		const run = f.transport.run.bind(f.transport);
+		f.transport.run = (args, call) =>
+			args.includes("wait") ? Promise.resolve({ ...reply({ exit_code: code }), exitCode: code }) : run(args, call);
+		f.transport.handler = (method) => {
+			if (method.endsWith(".process") && ++processes === 1) return reply({ last_exit: null });
+			if (method.endsWith(".process") || method.endsWith(".format")) {
+				return { ...reply({}), exitCode: 1, stderr: "block not found" };
+			}
+			return undefined;
+		};
+		try {
+			const result = await f.core.execute({ op: "wait", condition: "child_exit", target }, context);
+			assert.equal(result.outcome, code === 0 ? "child_completed" : "child_failed");
+			const data = result.data as { process: { last_exit: { exit_code: number } }; captureError?: string };
+			assert.equal(data.process.last_exit.exit_code, code);
+			assert.match(data.captureError ?? "", /block not found/);
+			assert.equal(resultChannels(result).isError, code !== 0);
+		} finally {
+			f.core.dispose();
+		}
 	}
 });
 

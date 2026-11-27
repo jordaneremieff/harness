@@ -879,7 +879,6 @@ export class RexCore {
 		timeoutMs: number,
 	): Promise<RexResult> {
 		let window = context.budget?.remaining("work") ?? timeoutMs;
-		let deadline = Number.POSITIVE_INFINITY;
 		let observer: CliResult;
 		try {
 			const before = object(await this.block("process", {}, target, context));
@@ -887,34 +886,44 @@ export class RexCore {
 				return childResult(target, before, "current process snapshot", await this.captureOutput(target, context));
 			const allowance = Math.floor(context.budget?.remaining("work") ?? timeoutMs);
 			window = allowance;
-			const execution = allowance - Math.min(1000, Math.max(1, Math.floor(allowance / 10)));
-			const waitMs = execution - Math.min(1000, Math.max(1, Math.floor(execution / 10)));
-			if (waitMs < 1) throw new RexStopped(context.budget?.stopReason() ?? "timeout", "observe");
-			deadline = Date.now() + waitMs;
+			// Leave room to check the process after the observer ends. The transport distinguishes its own deadline
+			// from a CLI failure; `rex wait --for` reports both through the CLI exit code.
+			const waitAllowance = allowance - Math.min(1000, Math.max(1, Math.floor(allowance / 10)));
+			if (waitAllowance < 1) throw new RexStopped(context.budget?.stopReason() ?? "timeout", "observe");
 			observer = await this.cli(
-				["wait", "-s", target.sessionId, target.blockId, "--for", `${waitMs}ms`, "--json"],
+				["wait", "-s", target.sessionId, target.blockId, "--json"],
 				target.server.endpoint,
 				context,
-				allowance,
+				waitAllowance,
 			);
 		} catch (error) {
 			if (!endedByBudget(error, context, window)) throw error;
-			return childEnding(target, context, undefined, undefined, deadline);
+			return childEnding(target, context, undefined, undefined);
 		}
+		const observed = childExitFromWait(observer);
 		let after: unknown;
 		try {
 			after = await this.block("process", {}, target, context);
 		} catch {
-			/* Return the observer result when the resource disappeared. */
+			/* The block may close after the observer receives its child exit. */
 		}
-		if (object(after).last_exit)
+		const process = object(after);
+		const currentExit = object(process.last_exit).exit_code;
+		if (observed && currentExit !== observed.exit_code)
 			return childResult(
 				target,
-				object(after),
+				{ last_exit: observed },
+				"native wait exit report",
+				await this.captureOutput(target, context),
+			);
+		if (process.last_exit)
+			return childResult(
+				target,
+				process,
 				"current process snapshot after native event-informed wait",
 				await this.captureOutput(target, context),
 			);
-		return childEnding(target, context, observer, after, deadline);
+		return childEnding(target, context, observer, after);
 	}
 
 	private async waitCondition(
@@ -2685,10 +2694,21 @@ function cliResult(response: CliResult): RexResult {
 		coverage: { bounded: true, truncated: response.truncated },
 	};
 }
-/** An observer that the wait's budget interrupted, or that reached its own deadline, did not observe an exit. */
-function childObservationOutcome(observer: CliResult | undefined, deadline: number, context: RexCallContext): string {
-	if (context.budget?.stopReason() === "cancelled" || observer?.outcome === "cancelled") return "cancelled";
-	if (!observer || observer.outcome === "timeout" || Date.now() >= deadline) return "not_observed";
+/** `rex wait --json` prints the exit payload for its exact terminal target, even on nonzero child exit. */
+function childExitFromWait(observer: CliResult): { exit_code: number } | undefined {
+	if (observer.outcome !== "exited" || observer.truncated) return undefined;
+	try {
+		const code = object(JSON.parse(observer.stdout)).exit_code;
+		if (typeof code === "number" && Number.isSafeInteger(code)) return { exit_code: code };
+	} catch {
+		// An absent or incomplete report does not establish child exit.
+	}
+	return undefined;
+}
+function childObservationOutcome(observer: CliResult | undefined, context: RexCallContext): string {
+	if (!observer) return context.budget?.stopReason() === "cancelled" ? "cancelled" : "not_observed";
+	if (observer.outcome === "cancelled") return "cancelled";
+	if (observer.outcome === "timeout") return "not_observed";
 	if (observer.outcome !== "exited" || observer.exitCode !== 0) return "observation_failed";
 	return "completion_unknown";
 }
@@ -2698,9 +2718,8 @@ function childEnding(
 	context: RexCallContext,
 	observer: CliResult | undefined,
 	after: unknown,
-	deadline: number,
 ): RexResult {
-	const outcome = childObservationOutcome(observer, deadline, context);
+	const outcome = childObservationOutcome(observer, context);
 	const notObserved = outcome === "not_observed";
 	const response = observer ? cliResult(observer) : undefined;
 	return {

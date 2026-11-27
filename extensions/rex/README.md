@@ -578,8 +578,9 @@ A failed or interrupted capture, or an unverified end, does not match text. A va
 tail remains matchable when only its older prefix is omitted. Live events have no replay
 guarantee. A `not_observed` ending does not establish that the condition never occurred.
 
-An already observed child exit remains visible if its optional tail fails or times out.
-The tail then carries its own error. After a mutation dispatch, incomplete acknowledgement
+A native child exit report remains evidence if the block closes before the next
+process snapshot. An observed child exit remains visible if its optional tail fails
+or times out. The tail then carries its own error. After a mutation dispatch, incomplete acknowledgement
 or state settlement retains unknown effects and an exact claim ID. Inspect and reconcile
 that claim; do not replay the effect. A queued state update checks the deadline before
 admission. An atomic append or commit already admitted finishes before the tool returns;
