@@ -63,6 +63,7 @@ it("keeps profile dialog and native contribution modules deferred until command 
 			on: () => () => {},
 			registerTool() {},
 			registerCommand() {},
+			registerFlag() {},
 			registerShortcut() {},
 			registerMessageRenderer() {},
 			registerToolRenderer() {},
