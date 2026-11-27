@@ -582,18 +582,38 @@ struct WorkspaceScreenTests {
         let window = window(screen, width: 800)
         defer { screen.stop(); window.orderOut(nil) }
         var pending: Bool?
-        screen.onDisconnect = { [weak screen] unsent in
-            pending = unsent
-            screen?.showDisconnected(close: {})
-        }
+        screen.onDisconnect = { pending = $0 }
         try await screen.start(file: "sample.swift")
         let editor = try #require(screen.currentEditor)
         api.closed = true
         editor.textView.insertText("unsent", replacementRange: NSRange(location: 0, length: 0))
-        try await eventually { pending == true }
+        screen.showDisconnected(close: {})
+        #expect(pending == true)
         #expect(editor.textView.string.hasPrefix("unsent"))
         #expect(!editor.textView.isEditable)
         #expect(await screen.prepareToClose())
+    }
+
+    @Test func workspaceEventsRefreshAnUnselectedDraftAndOpenAnAttachedFile() async throws {
+        _ = NSApplication.shared
+        let api = WorkspaceFixture()
+        api.emitsEvents = true
+        let screen = WorkspaceScreen(api: api, root: "/project")
+        let window = window(screen, width: 980)
+        defer { screen.stop(); window.orderOut(nil) }
+        var received: [String] = []
+        screen.onWorkspaceEvent = { if let kind = $0["type"] as? String { received.append(kind) } }
+        try await screen.start(file: "sample.swift")
+        let first = try #require(screen.currentEditor)
+        try await screen.open("another.swift", focus: false)
+        try await eventually { api.waitingForEvents }
+        api.agentUpdate()
+        api.event(.workspace)
+        try await eventually { first.revision == 2 && received == ["workspace"] }
+        #expect(first.textView.string == api.text)
+        #expect(screen.currentEditor?.doc == "another.swift")
+        api.event(.attach("attached.swift", 1))
+        try await eventually { screen.currentEditor?.doc == "attached.swift" && received.last == "attach" }
     }
 
     @Test func workspaceChromeDoesNotPaintOverSourceGlyphs() async throws {
@@ -666,7 +686,13 @@ private final class WorkspaceFixture: EditorAPI {
     var savedPath: String?
     var savedText: String?
     var savedReplacement: String?
+    enum FixtureEvent: Sendable { case workspace, attach(String, Int) }
+    var emitsEvents = false
+    var waitingForEvents = false
+    private var cursor = 1
+    private let feed = AsyncStream<FixtureEvent>.makeStream()
 
+    func event(_ value: FixtureEvent) { feed.continuation.yield(value) }
     func publishTab() { composed = true; seq += 1 }
     func agentUpdate() {
         text = "let wave = 1\nreturn wave"; rev += 1; seq += 1; composed = true
@@ -675,6 +701,19 @@ private final class WorkspaceFixture: EditorAPI {
     func call(_ op: String, _ fields: Fields) async throws -> Fields {
         if closed { throw URLError(.cannotConnectToHost) }
         switch op {
+        case "events":
+            guard emitsEvents else { return [:] }
+            if fields["since"] as? Int == 0 { return ["cursor":cursor,"events":[Fields]()] }
+            var iterator = feed.stream.makeAsyncIterator()
+            waitingForEvents = true
+            guard let event = await iterator.next() else { throw CancellationError() }
+            cursor += 1
+            let row: Fields = switch event {
+            case .workspace: ["type":"workspace", "seq":seq]
+            case let .attach(doc, line): ["type":"attach", "doc":doc, "line":line]
+            }
+            return ["cursor":cursor,"events":[row]]
+        case "watch": return ["watched":(fields["docs"] as? [String])?.count ?? 0]
         case "state":
             if fields["since"] as? Int == seq { return ["seq":seq,"unchanged":true] }
             var thread = anchor; thread["id"] = "thread"; thread["messageCount"] = messages.count

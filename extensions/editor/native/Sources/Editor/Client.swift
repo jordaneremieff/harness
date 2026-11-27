@@ -19,10 +19,27 @@ extension EditorAPI {
 }
 
 struct EditorTicket: Decodable {
+    struct Participant: Codable {
+        enum Kind: String, Codable { case ordinary, durable }
+        let id: String
+        let label: String
+        let kind: Kind
+
+        var isValid: Bool {
+            [id, label].allSatisfy { value in
+                (1...256).contains(value.utf16.count) &&
+                    !value.utf16.contains { $0 < 32 || $0 == 127 }
+            }
+        }
+    }
+
     let version: Int
-    let port: Int
-    let token: String
+    let node: String
+    let program: String
+    let paneId: String
     let root: String
+    let agentDir: String
+    let participant: Participant
     let file: String?
     /// The machine's Editor settings file, which this app owns.
     let settings: String?
@@ -40,16 +57,20 @@ struct EditorTicket: Decodable {
               info.st_uid == getuid(), info.st_mode & 0o077 == 0, info.st_nlink == 1,
               (1...32768).contains(info.st_size) else { throw invalid }
         guard let data = try handle.read(upToCount: 32769), data.count == info.st_size,
-              let ticket = try? JSONDecoder().decode(Self.self, from: data), ticket.version == 1,
-              (1...65535).contains(ticket.port), ticket.token.utf8.count == 64,
-              ticket.token.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
-              ticket.root.hasPrefix("/"), !ticket.root.contains("\0"),
-              [ticket.settings, ticket.layout].allSatisfy({ $0.map { $0.hasPrefix("/") && !$0.contains("\0") } ?? true })
+              let ticket = try? JSONDecoder().decode(Self.self, from: data), ticket.version == 2,
+              UUID(uuidString: ticket.paneId) != nil, ticket.participant.isValid,
+              [ticket.node, ticket.program, ticket.root, ticket.agentDir]
+                  .allSatisfy({ isAbsolutePath($0) && $0.utf16.count <= 4096 }),
+              [ticket.settings, ticket.layout].compactMap({ $0 }).allSatisfy(isAbsolutePath)
         else { throw invalid }
         var current = stat()
         guard lstat(path, &current) == 0, current.st_ino == info.st_ino, current.st_dev == info.st_dev,
               unlink(path) == 0 else { throw invalid }
         return ticket
+    }
+
+    private static func isAbsolutePath(_ value: String) -> Bool {
+        value.hasPrefix("/") && !value.contains("\0")
     }
 }
 
@@ -67,20 +88,20 @@ final class NativeEditorClient: EditorAPI {
     private let token: String
     private let session: URLSession
 
-    init(ticket: EditorTicket) {
-        endpoint = URL(string: "http://127.0.0.1:\(ticket.port)/api")!
-        token = ticket.token
+    init(port: Int, token: String) {
+        endpoint = URL(string: "http://127.0.0.1:\(port)/api")!
+        self.token = token
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
         config.urlCredentialStorage = nil
         config.httpCookieStorage = nil
         config.connectionProxyDictionary = ["HTTPEnable": 0, "HTTPSEnable": 0, "SOCKSEnable": 0]
-        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForRequest = 25
         session = URLSession(configuration: config, delegate: LocalRequests(), delegateQueue: nil)
     }
 
     func call(_ op: String, _ fields: Fields) async throws -> Fields {
-        var request = URLRequest(url: endpoint)
+        var request = URLRequest(url: endpoint, timeoutInterval: op == "events" ? 25 : 15)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -90,12 +111,14 @@ final class NativeEditorClient: EditorAPI {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, data.count <= 16 * 1024 * 1024,
               let result = try? JSONSerialization.jsonObject(with: data) as? Fields else {
-            throw EditorIssue(code: "response", message: "Pi did not return an Editor response.")
+            throw EditorIssue(code: "response", message: "The workspace service did not return an Editor response.")
         }
         guard http.statusCode == 200 else {
             throw EditorIssue(code: result["code"] as? String ?? "refused",
-                              message: result["error"] as? String ?? "Pi declined the Editor request.")
+                              message: result["error"] as? String ?? "The workspace service declined the request.")
         }
         return result
     }
+
+    func stop() { session.invalidateAndCancel() }
 }

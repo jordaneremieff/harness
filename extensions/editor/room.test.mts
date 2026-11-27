@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import type { Invitation, Participant } from "./participants.ts";
+import { paneConfig, startPaneService } from "./pane-service.ts";
 import { EditorRoom } from "./room.ts";
 import { signature } from "./store-files.ts";
 
@@ -17,6 +18,7 @@ test("a native pane hands a folder thread to one participant, which edits its sh
 	const messages: Invitation[] = [];
 	let api: URL | undefined;
 	let token: string;
+	let service: Awaited<ReturnType<typeof startPaneService>> | undefined;
 	async function pane(body: Record<string, unknown>) {
 		assert.ok(api);
 		return fetch(api, {
@@ -44,10 +46,17 @@ test("a native pane hands a folder thread to one participant, which edits its sh
 			assert.equal(ticket.layout, join(dirname(path), "layout.json"));
 			await assert.rejects(stat(ticket.settings), { code: "ENOENT" });
 			await assert.rejects(stat(ticket.layout), { code: "ENOENT" });
+			assert.equal(ticket.version, 2);
+			assert.equal(ticket.node, process.execPath);
+			assert.match(ticket.program, /pane-program\.ts$/u);
+			assert.equal("token" in ticket, false);
+			assert.deepEqual(ticket.participant, a);
 			await rm(path);
-			api = new URL(`http://127.0.0.1:${ticket.port}/api`);
-			token = ticket.token;
-			assert.equal((await pane({ op: "ready" })).status, 200);
+			service = await startPaneService(paneConfig({ ...ticket, appPid: process.pid }));
+			api = new URL(`http://127.0.0.1:${service.port}/api`);
+			token = service.token;
+			assert.equal((await pane({ op: "loaded" })).status, 200);
+			assert.equal((await pane({ op: "visibility", visible: true })).status, 200);
 			return { blockId: "native-test" };
 		},
 	);
@@ -56,6 +65,7 @@ test("a native pane hands a folder thread to one participant, which edits its sh
 	});
 	t.after(async () => {
 		await Promise.all([author.close(), reader.close()]);
+		await service?.close();
 		await rm(base, { recursive: true, force: true });
 	});
 	assert.equal(await author.command("sample.ts"), `Opened Editor for ${root}.`);
@@ -117,6 +127,7 @@ test("pane file receipts report the save encoding and discard draft-only documen
 	await writeFile(file, "\uFEFFline\r\n");
 	let endpoint: string;
 	let token: string;
+	let service: Awaited<ReturnType<typeof startPaneService>> | undefined;
 	const request = (op: string, fields: Record<string, unknown> = {}) =>
 		fetch(endpoint, {
 			method: "POST",
@@ -136,19 +147,31 @@ test("pane file receipts report the save encoding and discard draft-only documen
 		async () => {},
 		async () => async (_root, path) => {
 			const ticket = JSON.parse(await readFile(path, "utf8"));
-			endpoint = `http://127.0.0.1:${ticket.port}/api`;
-			token = ticket.token;
-			await pane("ready");
+			service = await startPaneService(paneConfig({ ...ticket, appPid: process.pid }));
+			endpoint = `http://127.0.0.1:${service.port}/api`;
+			token = service.token;
+			await pane("loaded");
+			await pane("visibility", { visible: true });
 			return { blockId: "format-test" };
 		},
 	);
 	t.after(async () => {
 		await room.close();
+		await service?.close();
 		await rm(base, { recursive: true, force: true });
 	});
 	await room.command("");
 	const read = await pane("read", { doc });
-	assert.deepEqual(read, { doc, rev: 1, dirty: false, title: doc, text: "line\n", eol: "\r\n", bom: true });
+	assert.deepEqual(read, {
+		doc,
+		rev: 1,
+		author: "Disk",
+		dirty: false,
+		title: doc,
+		text: "line\n",
+		eol: "\r\n",
+		bom: true,
+	});
 	const patched = await pane("patch", { doc, rev: read.rev, start: 0, end: 1, text: "L" });
 	const saved = await pane("save", { doc, rev: patched.rev });
 	assert.equal(saved.eol, "\r\n");
@@ -159,6 +182,7 @@ test("pane file receipts report the save encoding and discard draft-only documen
 		doc,
 		rev: saved.rev,
 		dirty: false,
+		author: "You",
 		unchanged: true,
 		eol: "\r",
 		bom: false,
@@ -209,6 +233,7 @@ test("pane file receipts report the save encoding and discard draft-only documen
 		doc: scratch.doc,
 		rev: scratchEdit.rev,
 		dirty: true,
+		author: "You",
 		unchanged: true,
 	});
 	const note = await pane("note", { doc: scratch.doc, rev: scratchEdit.rev, start: 0, end: 4, text: "Posted note" });
@@ -224,48 +249,46 @@ test("pane file receipts report the save encoding and discard draft-only documen
 	assert.equal(posted.quote, "idea");
 });
 
-test("a loaded app keeps its exact split while the tab is hidden and reports a real startup failure", async (t) => {
+test("a loaded but hidden pane does not prevent another session from opening its own split", async (t) => {
 	const base = await realpath(await mkdtemp(join(tmpdir(), "editor-hidden-")));
 	const root = join(base, "project"),
 		state = join(base, "state");
 	await Promise.all([mkdir(root), mkdir(state, { mode: 0o700 })]);
-	let next = "loaded";
-	let call: ((body: Record<string, string>) => Promise<Response>) | undefined;
+	const services: Awaited<ReturnType<typeof startPaneService>>[] = [];
 	const room = new EditorRoom(
 		state,
 		root,
 		{ id: "ordinary:a", kind: "ordinary", label: "Pi" },
 		async () => {},
 		async () => async (_folder, path) => {
-			const t = JSON.parse(await readFile(path, "utf8"));
-			call = (body) =>
-				fetch(`http://127.0.0.1:${t.port}/api`, {
-					method: "POST",
-					headers: { Authorization: `Bearer ${t.token}`, "Content-Type": "application/json" },
-					body: JSON.stringify(body),
-				});
-			await call(next === "loaded" ? { op: next } : { op: "closed", error: "Editor needs Accessibility permission." });
-			return { blockId: "exact" };
+			const ticket = JSON.parse(await readFile(path, "utf8"));
+			const service = await startPaneService(paneConfig({ ...ticket, appPid: process.pid }));
+			services.push(service);
+			const response = await fetch(`http://127.0.0.1:${service.port}/api`, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${service.token}`, "Content-Type": "application/json" },
+				body: JSON.stringify({ op: "loaded" }),
+			});
+			assert.equal(response.status, 200);
+			return { blockId: `pane-${services.length}` };
 		},
 	);
 	t.after(async () => {
 		await room.close();
+		await Promise.all(services.map((service) => service.close()));
 		await rm(base, { recursive: true, force: true });
 	});
 	assert.match(await room.command(""), /loaded.*Show that Rex tab/);
-	assert.ok(call);
-	assert.equal((await call({ op: "ready" })).status, 200);
-	assert.equal((await call({ op: "state" })).status, 200);
-	next = "closed";
-	await assert.rejects(room.command(""), /needs Accessibility permission/);
+	assert.match(await room.command(""), /loaded.*Show that Rex tab/);
+	assert.equal(services.length, 2);
 });
 
-test("a split that never starts its app loses its grant and its listening port", async (t) => {
+test("a split that never starts its app loses its launch ticket", async (t) => {
 	const base = await realpath(await mkdtemp(join(tmpdir(), "editor-unopened-")));
 	const root = join(base, "root"),
 		state = join(base, "state");
 	await Promise.all([mkdir(root), mkdir(state, { mode: 0o700 })]);
-	let request: string | undefined, port: number | undefined;
+	let request: string | undefined;
 	const room = new EditorRoom(
 		state,
 		root,
@@ -273,7 +296,6 @@ test("a split that never starts its app loses its grant and its listening port",
 		async () => {},
 		async () => async (_root, path) => {
 			request = path;
-			port = JSON.parse(await readFile(path, "utf8")).port;
 			throw Error("Unconfirmed split");
 		},
 	);
@@ -282,9 +304,34 @@ test("a split that never starts its app loses its grant and its listening port",
 		await rm(base, { recursive: true, force: true });
 	});
 	await assert.rejects(room.command(""), /Unconfirmed split/);
-	assert.ok(request && port);
+	assert.ok(request);
 	await assert.rejects(stat(request), { code: "ENOENT" });
-	await assert.rejects(fetch(`http://127.0.0.1:${port}/api`));
+});
+
+test("the command reports and removes a private startup failure from the app", async (t) => {
+	const base = await realpath(await mkdtemp(join(tmpdir(), "editor-startup-")));
+	const root = join(base, "project"),
+		state = join(base, "agent");
+	await Promise.all([mkdir(root), mkdir(state, { mode: 0o700 })]);
+	let failure: string | undefined;
+	const room = new EditorRoom(
+		state,
+		root,
+		{ id: "ordinary:a", label: "Pi", kind: "ordinary" },
+		async () => {},
+		async () => async (_root, path) => {
+			failure = `${path}.failure`;
+			await writeFile(failure, "The Editor service exited with status 2.\n", { flag: "wx", mode: 0o600 });
+			return { blockId: "failed-app" };
+		},
+	);
+	t.after(async () => {
+		await room.close();
+		await rm(base, { recursive: true, force: true });
+	});
+	await assert.rejects(room.command(""), /Editor service exited with status 2/);
+	assert.ok(failure);
+	await assert.rejects(stat(failure), { code: "ENOENT" });
 });
 
 test("an agent builds an untitled draft and pages it without splitting a character", async (t) => {

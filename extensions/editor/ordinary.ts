@@ -1,3 +1,6 @@
+import { lstat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import {
 	type AgentBeforeSettleEvent,
 	type ExtensionAPI,
@@ -6,20 +9,46 @@ import {
 	type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { Static } from "@earendil-works/pi-schema";
-import { addEditorApplicationContext, editorApplicationMessage, editorInvitationId } from "./ordinary-invitations.ts";
+import {
+	addEditorApplicationContext,
+	editorApplicationMessage,
+	editorInvitationId,
+	expectsEditorRunAnswer,
+} from "./ordinary-invitations.ts";
 import { editorOutputSchema, editorResult } from "./ordinary-result.ts";
 import type { Invitation } from "./participants.ts";
+import { answerText } from "./request-answer.ts";
 import type { EditorRoom } from "./room.ts";
 import { editorParameters, editorToolDescription } from "./schema.ts";
 
 type InviteDraft = ReturnType<typeof editorApplicationMessage>;
-type Pending = { draft: InviteDraft; placement: "idle" | "starting" | "queued" | "restored" };
+type Pending = {
+	invite: Invitation;
+	draft: InviteDraft;
+	placement: "idle" | "starting" | "queued" | "restored" | "working";
+};
 type Binding = {
 	id: string;
 	cwd: string;
 	room: Promise<EditorRoom>;
 	pending: Map<string, Pending>;
+	writes: Map<string, { path: string; existed: boolean }>;
+	answerInputs: number;
 };
+
+function toolPath(path: unknown, cwd: string): string | undefined {
+	if (typeof path !== "string" || !path || path.includes("\0")) return;
+	const value = path.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ").replace(/^@/, "");
+	return resolve(cwd, value === "~" ? homedir() : value.startsWith("~/") ? join(homedir(), value.slice(2)) : value);
+}
+
+function activeInvite(binding: Binding, doc?: unknown): Invitation | undefined {
+	const working = [...binding.pending.values()].filter((item) => item.placement === "working");
+	return (
+		working.find(({ invite }) => doc === invite.doc || (invite.doc && doc === resolve(invite.root, invite.doc)))
+			?.invite ?? working.at(-1)?.invite
+	);
+}
 
 export function registerOrdinary(pi: ExtensionAPI): void {
 	let current: Binding | undefined;
@@ -29,11 +58,12 @@ export function registerOrdinary(pi: ExtensionAPI): void {
 		const old = current;
 		current = undefined;
 		if (!old) return;
-		for (const { draft, placement } of old.pending.values()) {
-			if (placement !== "restored") reportNoRun(ctx, draft);
+		const room = await old.room.catch(() => undefined);
+		for (const { invite, draft, placement } of old.pending.values()) {
+			await room?.requestState(invite, "failed").catch(() => {});
+			if (placement !== "restored" && placement !== "working") reportNoRun(ctx, draft);
 		}
 		old.pending.clear();
-		const room = await old.room.catch(() => undefined);
 		await room?.close();
 	}
 
@@ -51,7 +81,7 @@ export function registerOrdinary(pi: ExtensionAPI): void {
 		if (pending.has(invite.id)) return;
 		if (pending.size >= 32) throw new Error("The selected Pi session has too many pending editor invitations");
 		const draft = editorApplicationMessage(invite);
-		pending.set(invite.id, { draft, placement: ctx.isIdle() ? "idle" : "queued" });
+		pending.set(invite.id, { invite, draft, placement: ctx.isIdle() ? "idle" : "queued" });
 		try {
 			const { type: _type, ...message } = draft;
 			pi.sendMessage(message, { deliverAs: "followUp", triggerTurn: true });
@@ -78,7 +108,7 @@ export function registerOrdinary(pi: ExtensionAPI): void {
 				acceptInvite(invite, ctx, id, room, pending),
 			);
 		});
-		current = { id, cwd: ctx.cwd, room, pending };
+		current = { id, cwd: ctx.cwd, room, pending, writes: new Map(), answerInputs: 0 };
 		void room.catch(() => {
 			if (current?.room === room) current = undefined;
 		});
@@ -89,12 +119,19 @@ export function registerOrdinary(pi: ExtensionAPI): void {
 		ctx.ui.notify(`Editor invitation #${draft.details.id.slice(0, 8).toLowerCase()} did not start a turn.`, "warning");
 	}
 
-	function sessionPending(ctx: ExtensionContext): Map<string, Pending> | undefined {
-		return current?.id === ctx.sessionManager.getSessionId() ? current.pending : undefined;
+	function sessionBinding(ctx: ExtensionContext): Binding | undefined {
+		return current?.id === ctx.sessionManager.getSessionId() ? current : undefined;
+	}
+
+	async function markWorking(binding: Binding, item: Pending) {
+		if (item.placement === "working") return;
+		item.placement = "working";
+		const room = await binding.room;
+		await room.requestState(item.invite, "working");
 	}
 
 	function recover(event: TurnEndEvent | AgentBeforeSettleEvent, ctx: ExtensionContext) {
-		const pending = sessionPending(ctx);
+		const pending = sessionBinding(ctx)?.pending;
 		if (!pending?.size || event.context.pendingMessages.length !== 0) return;
 		const entries: InviteDraft[] = [];
 		for (const item of pending.values()) {
@@ -106,10 +143,10 @@ export function registerOrdinary(pi: ExtensionAPI): void {
 	}
 
 	pi.registerCommand("editor", {
-		description: "Open a folder or file in Editor and connect this session",
+		description: "Connect this session to Editor or open it for a folder or file",
 		async handler(args, ctx) {
 			if (ctx.mode !== "tui") throw new Error("Open the editor from interactive Pi. Agents use the editor tool.");
-			ctx.ui.setStatus("editor", "Opening Editor…");
+			ctx.ui.setStatus("editor", "Connecting to Editor…");
 			try {
 				const room = await getBinding(ctx).room;
 				ctx.ui.notify(await room.command(args), "info");
@@ -127,8 +164,9 @@ export function registerOrdinary(pi: ExtensionAPI): void {
 		executionMode: "sequential",
 		async execute(_id, input: Static<typeof editorParameters>, signal, _update, ctx) {
 			signal?.throwIfAborted();
-			const room = await getBinding(ctx).room;
-			const { content, value } = editorResult(await room.tool(input, signal));
+			const binding = getBinding(ctx);
+			const room = await binding.room;
+			const { content, value } = editorResult(await room.tool(input, signal, activeInvite(binding, input.doc)));
 			return { content, structuredContent: value, details: undefined };
 		},
 	});
@@ -140,30 +178,91 @@ export function registerOrdinary(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", (event, ctx) => {
 		if (event.messageType !== "custom") return;
 		const id = editorInvitationId(event.message);
-		const item = id && sessionPending(ctx)?.get(id);
+		const item = id && sessionBinding(ctx)?.pending.get(id);
 		if (item) item.placement = "starting";
 	});
-	pi.on("message_start", (event, ctx) => {
-		const pending = sessionPending(ctx);
-		if (!pending?.size) return;
+	pi.on("message_start", async (event, ctx) => {
+		const binding = sessionBinding(ctx);
+		if (!binding || ctx.signal?.aborted) return;
+		if (expectsEditorRunAnswer(event.message)) binding.answerInputs++;
 		const id = editorInvitationId(event.message);
-		if (id) pending.delete(id);
+		const item = id ? binding.pending.get(id) : undefined;
+		if (item) await markWorking(binding, item);
 	});
-	pi.on("turn_start", (_event, ctx) => {
-		if (ctx.signal?.aborted) return;
-		const pending = sessionPending(ctx);
-		if (!pending?.size) return;
-		for (const [id, invite] of pending) if (invite.placement === "restored") pending.delete(id);
+	pi.on("turn_start", async (_event, ctx) => {
+		const binding = sessionBinding(ctx);
+		if (!binding || ctx.signal?.aborted) return;
+		for (const item of binding.pending.values()) {
+			if (item.placement !== "restored") continue;
+			binding.answerInputs++;
+			await markWorking(binding, item);
+		}
 	});
-	pi.on("turn_end", recover);
+	pi.on("tool_call", async (event, ctx) => {
+		if (shuttingDown || (event.toolName !== "write" && event.toolName !== "edit")) return;
+		if (
+			!pi
+				.getAllTools()
+				.some((tool) => tool.name === event.toolName && tool.sourceInfo.path === `builtin:${event.toolName}`)
+		)
+			return;
+		const path = toolPath(event.input.path, ctx.cwd);
+		if (!path) return;
+		const binding = getBinding(ctx);
+		if (binding.writes.size >= 128) binding.writes.delete(binding.writes.keys().next().value as string);
+		binding.writes.set(event.toolCallId, {
+			path,
+			existed: await lstat(path).then(
+				() => true,
+				() => false,
+			),
+		});
+	});
+	pi.on("tool_result", async (event, ctx) => {
+		const binding = sessionBinding(ctx);
+		const before = binding?.writes.get(event.toolCallId);
+		if (!binding || !before) return;
+		binding.writes.delete(event.toolCallId);
+		if (event.isError) return;
+		const path = toolPath(event.input.path, ctx.cwd);
+		if (!path) return;
+		const room = await binding.room.catch(() => undefined);
+		await room
+			?.reportFile(path, path !== before.path || before.existed ? "modified" : "created", activeInvite(binding, path))
+			.catch(() => {});
+	});
+	pi.on("turn_end", async (event, ctx) => {
+		const binding = sessionBinding(ctx);
+		if (
+			binding &&
+			event.outcome === "completed" &&
+			event.message.role === "assistant" &&
+			!ctx.signal?.aborted &&
+			["stop", "length"].includes(event.message.stopReason)
+		) {
+			const body = answerText(event.message, Math.max(0, binding.answerInputs - 1));
+			binding.answerInputs = 0;
+			const room = await binding.room;
+			for (const [id, item] of binding.pending) {
+				if (item.placement !== "working") continue;
+				binding.pending.delete(id);
+				await room.requestState(item.invite, body ? "answered" : "failed", body);
+			}
+		}
+		return recover(event, ctx);
+	});
 	pi.on("agent_before_settle", recover);
-	pi.on("agent_settled", (_event, ctx) => {
-		const pending = sessionPending(ctx);
-		if (!pending?.size) return;
-		for (const [id, { draft, placement }] of pending) {
-			if (placement !== "starting") continue;
-			pending.delete(id);
-			reportNoRun(ctx, draft);
+	pi.on("agent_settled", async (_event, ctx) => {
+		const binding = sessionBinding(ctx);
+		if (!binding) return;
+		binding.answerInputs = 0;
+		binding.writes.clear();
+		const room = await binding.room;
+		for (const [id, { invite, draft, placement }] of binding.pending) {
+			if (placement !== "starting" && placement !== "working") continue;
+			binding.pending.delete(id);
+			await room.requestState(invite, "failed");
+			if (placement === "starting") reportNoRun(ctx, draft);
 		}
 	});
 	pi.on("session_tree", async (_event, ctx) => await closeRoom(ctx));

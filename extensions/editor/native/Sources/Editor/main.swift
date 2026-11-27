@@ -1,5 +1,39 @@
 import AppKit
+import Darwin
 import NativePane
+
+struct EditorStartupReport {
+    let ticketPath: String
+
+    // Only pass app-authored messages. The ticket and child output do not belong in the report.
+    func write(_ problem: String) {
+        var line = Data()
+        for scalar in problem.unicodeScalars {
+            let clean = CharacterSet.controlCharacters.contains(scalar) || CharacterSet.newlines.contains(scalar)
+                ? " " : String(scalar)
+            guard line.count + clean.utf8.count < 1024 else { break }
+            line.append(contentsOf: clean.utf8)
+        }
+        guard !line.isEmpty else { return }
+        line.append(10)
+
+        let path = ticketPath + ".failure"
+        let fd = open(path, O_WRONLY | O_CREAT | O_NOFOLLOW | O_EXCL | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        guard fchmod(fd, 0o600) == 0 else { return }
+        line.withUnsafeBytes { bytes in
+            guard let start = bytes.baseAddress else { return }
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(fd, start.advanced(by: offset), bytes.count - offset)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { return }
+                offset += count
+            }
+        }
+    }
+}
 
 @MainActor
 private final class EditorApplication: NSObject, NSApplicationDelegate {
@@ -15,18 +49,21 @@ private final class EditorApplication: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let terminal = PaneTerminal() else {
-            Self.fail("Start Editor in its terminal pane with /editor.")
-        }
         let ticket: EditorTicket
         do { ticket = try EditorTicket.consume(ticketPath) }
         catch { Self.fail("The launch ticket is invalid or expired. Run /editor again.") }
-        let client = NativeEditorClient(ticket: ticket)
+        let report = EditorStartupReport(ticketPath: ticketPath)
+        guard let terminal = PaneTerminal() else {
+            let problem = "Editor did not start in a terminal pane. Run /editor again."
+            report.write(problem)
+            Self.fail(problem)
+        }
+        let service = EditorService(ticket: ticket)
         let files = WorkspaceFiles(settings: ticket.settings.map { URL(fileURLWithPath: $0) },
                                    layout: ticket.layout.map { URL(fileURLWithPath: $0) },
                                    appearance: Self.paneAppearanceFile())
-        let screen = WorkspaceScreen(api: client, root: ticket.root, files: files)
-        let host = PaneHost(terminal: terminal, api: client, screen: screen)
+        let screen = WorkspaceScreen(api: service, root: ticket.root, files: files)
+        let host = PaneHost(terminal: terminal, service: service, screen: screen, startupReport: report)
         self.host = host
         host.start(file: ticket.file)
     }

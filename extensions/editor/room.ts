@@ -1,21 +1,25 @@
 import { randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import { open, realpath, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join as joinPath, relative, resolve, sep } from "node:path";
+import { setTimeout as wait } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { browse } from "./browse.ts";
-import { invite, join, members, type Invitation, type Participant } from "./participants.ts";
-import { servePane } from "./pane-service.ts";
+import type { FileEvent, RequestState, ShowEvent } from "./pane-events.ts";
+import { attachVisiblePane, notifyPanes, readPane, type PaneControl } from "./pane-registry.ts";
+import { join, members, type Invitation, type Participant } from "./participants.ts";
 import { preparePane, type PreparePane } from "./pane-launch.ts";
 import { projectReplace } from "./project-search.ts";
 import { statePage, browsePage } from "./results.ts";
 import { Workspace } from "./store.ts";
+import { fileName, locate, signature } from "./store-files.ts";
 export { editorParameters, editorToolDescription } from "./schema.ts";
 
 type Data = Record<string, unknown>;
-type Pane = Awaited<ReturnType<typeof servePane>> & { receipt?: Data };
+type RequestRef = Pick<Invitation, "id" | "thread" | "root">;
 interface Connection {
 	store: Workspace;
 	leave: () => Promise<void>;
-	panes: Set<Pane>;
 }
 const storageOps = new Set([
 	"state",
@@ -32,7 +36,6 @@ const storageOps = new Set([
 	"view",
 ]);
 const browseOps = new Set(["tree", "files", "search", "git"]);
-const paneFileOps = new Set(["rename", "remove", "mkdir", "copy"]);
 const field = (input: Data, name: string, limit: number) => {
 	const v = input[name];
 	if (typeof v !== "string" || !v.trim() || v.length > limit) throw Error(`Invalid ${name}.`);
@@ -77,8 +80,63 @@ function readPage(result: Data, input: Data): Data {
 		total: content.length,
 	};
 }
-function shortened(s: string, limit: number) {
-	return s.length <= limit ? s : `${s.slice(0, limit - 1).replace(/[\uD800-\uDBFF]$/, "")}…`;
+function notify(store: Workspace, input: PaneControl): Promise<number> {
+	return notifyPanes(store.dir, input).catch(() => 0);
+}
+
+const program = fileURLToPath(new URL("./pane-program.ts", import.meta.url));
+const draftWrites = new Set(["new", "edit", "patch", "revert", "save"]);
+const roomOps = new Set(["replace", "join", "members", "show"]);
+
+async function startupProblem(path: string): Promise<string | undefined> {
+	const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(
+		() => undefined,
+	);
+	if (!file) return;
+	try {
+		const info = await file.stat();
+		if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) return;
+		const buffer = Buffer.alloc(1025);
+		const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+		if (bytesRead < 2 || bytesRead > 1024 || buffer[bytesRead - 1] !== 10) return;
+		return (
+			buffer
+				.subarray(0, bytesRead - 1)
+				.toString("utf8")
+				.replace(/[\p{Cc}\p{Cf}]/gu, " ")
+				.trim() || undefined
+		);
+	} finally {
+		await file.close();
+	}
+}
+
+function formatToolResult(op: string, result: Data, input: Data): Data {
+	if (op === "read") return readPage(result, input);
+	if (op === "revert") return readPage(result, { limit: input.limit });
+	if ((op === "new" || op === "save") && typeof result.text === "string") {
+		const { text, ...receipt } = result;
+		return { ...receipt, total: text.length };
+	}
+	return result;
+}
+
+function recordChangedDrafts(store: Workspace, op: string, result: Data, active: RequestRef): void {
+	if (op === "replace" && Array.isArray(result.changed)) {
+		for (const { doc } of result.changed) store.recordRequestFile(active.thread, active.id, doc);
+	} else if (draftWrites.has(op) && typeof result.doc === "string" && !result.doc.startsWith("scratch:")) {
+		store.recordRequestFile(active.thread, active.id, result.doc);
+	}
+}
+
+function diskSignature(root: string, doc: unknown): string | undefined {
+	if (typeof doc !== "string" || doc.startsWith("scratch:")) return;
+	try {
+		const file = locate(root, doc).stat;
+		return file && signature(file);
+	} catch {
+		return;
+	}
 }
 
 export class EditorRoom {
@@ -125,7 +183,8 @@ export class EditorRoom {
 				if (this.closed || request.root !== root) throw Error("This conversation is not connected to that folder.");
 				await this.onInvite(request);
 			});
-			return { store, leave, panes: new Set() };
+			await notify(store, { op: "members" });
+			return { store, leave };
 		} catch (e) {
 			store.close();
 			throw e;
@@ -137,115 +196,174 @@ export class EditorRoom {
 	}
 	async command(args: string): Promise<string> {
 		const { root, file } = await commandTarget(this.cwd, args);
-		const launch = await this.prepare(this.agentDir, this.lifetime.signal);
-		const c = await this.attach(root);
-		const pane: Pane = await servePane((input, signal) => this.paneInput(c, input, signal));
-		const path = joinPath(c.store.dir, `open-${randomUUID()}.json`);
-		let wrote = false;
+		const { store } = await this.attach(root);
+		const signal = this.lifetime.signal;
+		if (await attachVisiblePane(store.dir, this.actor, file, signal)) return `Connected to Editor for ${root}.`;
+		const launch = await this.prepare(this.agentDir, signal);
+		// Installation can take long enough for another session to open this workspace.
+		if (await attachVisiblePane(store.dir, this.actor, file, signal)) return `Connected to Editor for ${root}.`;
+		const paneId = randomUUID();
+		const path = joinPath(store.dir, `open-${paneId}.json`);
+		const failure = `${path}.failure`;
+		const handle = await open(path, "wx", 0o600);
 		try {
-			this.lifetime.signal.throwIfAborted();
-			if (c.panes.size >= 16) throw Error("Close an Editor pane for this folder before you open another.");
-			c.panes.add(pane);
-			void pane.ended.then(() => c.panes.delete(pane));
-			const handle = await open(path, "wx", 0o600);
-			wrote = true;
 			try {
 				await handle.writeFile(
 					JSON.stringify({
-						version: 1,
-						port: pane.port,
-						token: pane.token,
+						version: 2,
+						node: process.execPath,
+						program,
+						paneId,
 						root,
 						file,
-						settings: joinPath(dirname(c.store.dir), "settings.json"),
-						layout: joinPath(c.store.dir, "layout.json"),
+						agentDir: this.agentDir,
+						participant: this.actor,
+						settings: joinPath(dirname(store.dir), "settings.json"),
+						layout: joinPath(store.dir, "layout.json"),
 					}),
 				);
 			} finally {
 				await handle.close();
 			}
-			this.lifetime.signal.throwIfAborted();
-			pane.receipt = await launch(root, path);
-			if (!(await pane.waitForLoad(18000))) {
-				throw Error(
-					pane.problem || "The Editor app did not load this workspace. Open /editor from a connected local Rex pane.",
-				);
+			signal.throwIfAborted();
+			await launch(root, path);
+			const deadline = performance.now() + 55000;
+			let loadedAt: number | undefined;
+			while (performance.now() < deadline) {
+				signal.throwIfAborted();
+				const problem = await startupProblem(failure);
+				if (problem) throw Error(problem);
+				const record = await readPane(store.dir, paneId);
+				if (record?.visible) return `Opened Editor for ${root}.`;
+				if (record?.loaded) {
+					loadedAt ??= performance.now();
+					if (performance.now() - loadedAt >= 800) {
+						return `Editor loaded ${root} in its split. Show that Rex tab to see it.`;
+					}
+				}
+				await wait(100, undefined, { signal });
 			}
-			const visible = await pane.waitForView(800);
-			this.lifetime.signal.throwIfAborted();
-			if (pane.closed) throw Error(pane.problem || "The Editor pane closed.");
-			return visible
-				? `Opened Editor for ${root}.`
-				: `Editor loaded ${root} in its split. Show that Rex tab to see it.`;
-		} catch (error) {
-			await pane.close();
-			throw error;
+			throw Error("Editor did not load this workspace. Check its split for the startup error.");
 		} finally {
-			if (wrote) await rm(path, { force: true });
+			await Promise.all([rm(path, { force: true }), rm(failure, { force: true })]);
 		}
 	}
-	private async handoff(c: Connection, input: Data): Promise<Data> {
-		const id = field(input, "id", 128),
-			to = field(input, "to", 256),
-			message = field(input, "message", 8192);
-		const thread = c.store.run({ op: "thread", id }, this.actor.label);
-		const item: Invitation = {
-			id: randomUUID(),
-			root: c.store.root,
-			thread: id,
-			doc: String(thread.doc ?? ""),
-			quote: shortened(String(thread.quote ?? ""), 8192),
-			message,
-		};
-		if (thread.target) item.target = thread.target as Invitation["target"];
-		const recipient = await invite(c.store.dir, to, item);
-		const last = Array.isArray(thread.messages) ? thread.messages.at(-1) : undefined;
-		const receipt =
-			last?.author === "You" && last.text === message
-				? `Sent to ${recipient.label}.`
-				: `To ${recipient.label}: ${message}`;
-		try {
-			c.store.run({ op: "reply", id, text: receipt }, "You");
-		} catch {
-			return {
-				accepted: true,
-				warning: "The conversation accepted the request. Editor could not add the delivery note to the thread.",
-			};
+
+	private async show(store: Workspace, input: Data): Promise<Data> {
+		const doc = field(input, "doc", 4096);
+		const event: ShowEvent = { type: "show", by: this.actor, doc };
+		if (input.line !== undefined) event.line = point(input.line, 1, 1, Number.MAX_SAFE_INTEGER);
+		if (input.message !== undefined) event.message = field(input, "message", 4096);
+		const draft = store.run({ op: "read", doc }, this.actor.label);
+		if (input.start !== undefined || input.end !== undefined) {
+			if (input.start === undefined || input.end === undefined) throw Error("Give both UTF-16 range offsets.");
+			const text = draft.text as string;
+			event.start = point(input.start, 0, 0, text.length);
+			event.end = point(input.end, event.start, event.start, text.length);
+			if ([event.start, event.end].some((offset) => /[\udc00-\udfff]/u.test(text.charAt(offset)))) {
+				throw Error("The show range splits a Unicode character.");
+			}
 		}
-		return { accepted: true };
+		const panes = await notify(store, { op: "show", event });
+		if (!panes) throw Error("No Editor pane is open for this folder. Open it with /editor.");
+		return { panes };
 	}
-	private async paneInput(c: Connection, input: Data, signal: AbortSignal): Promise<Data> {
-		if (this.closed) throw Error("This Editor session closed.");
-		const op = String(input.op);
-		if (op === "members") return { members: await members(c.store.dir) };
-		if (op === "send") return this.handoff(c, input);
-		if (browseOps.has(op)) return browse(c.store.root, input, signal, c.store);
-		if (op === "replace") return projectReplace(c.store, input, signal);
-		if (!storageOps.has(op) && !paneFileOps.has(op)) throw Error("Unknown editor action.");
-		return c.store.run(input, "You", true);
+
+	async requestState(request: RequestRef, state: Exclude<RequestState, "queued">, answer?: string): Promise<void> {
+		const connection = this.connections.get(request.root);
+		if (!connection) return;
+		const { store } = await connection;
+		const changed =
+			state === "working"
+				? store.setRequest(request.thread, request.id, state, this.actor)
+				: store.finishRequest(request.thread, request.id, this.actor, answer, state === "failed");
+		const status = changed && store.requestStatus(request.thread, request.id);
+		if (status) await notify(store, { op: "request", thread: request.thread, ...status });
 	}
-	async tool(request: Data, signal?: AbortSignal): Promise<Data> {
+
+	async reportFile(path: string, change: FileEvent["change"], request?: RequestRef): Promise<void> {
+		const pathOnDisk = resolve(this.cwd, path);
+		const absolute = await realpath(pathOnDisk).catch(() => pathOnDisk);
+		const agentDir = await realpath(this.agentDir);
+		const reports: Promise<unknown>[] = [];
+		for (let root = dirname(absolute), depth = 0; depth < 64; depth++, root = dirname(root)) {
+			const currentRoot = root;
+			reports.push(
+				(async () => {
+					let doc: string;
+					let workspace: string;
+					try {
+						doc = fileName(relative(currentRoot, absolute));
+						workspace = Workspace.directory(currentRoot, agentDir);
+					} catch {
+						return;
+					}
+					const active = request?.root === currentRoot ? request : undefined;
+					const connection = this.connections.get(currentRoot);
+					if (connection && active) {
+						const { store } = await connection;
+						store.recordRequestFile(active.thread, active.id, doc);
+					}
+					await notifyPanes(workspace, {
+						op: "file",
+						event: { type: "file", path: doc, change, by: this.actor, thread: active?.thread },
+					}).catch(() => 0);
+				})(),
+			);
+			if (root === dirname(root)) break;
+		}
+		await Promise.all(reports);
+	}
+
+	async tool(request: Data, signal?: AbortSignal, invitation?: RequestRef): Promise<Data> {
 		signal?.throwIfAborted();
 		const { root, ...input } = request;
 		const op = String(input.op);
-		if (!storageOps.has(op) && !browseOps.has(op) && op !== "replace" && op !== "join" && op !== "members")
-			throw Error("Unknown editor action.");
+		if (!storageOps.has(op) && !browseOps.has(op) && !roomOps.has(op)) throw Error("Unknown editor action.");
 		const { store } = await this.forInput({ root });
 		signal?.throwIfAborted();
 		if (this.closed) throw Error("This Editor session closed.");
 		if (op === "join") return { root: store.root, folder: basename(store.root), participant: this.actor };
 		if (op === "members") return { members: await members(store.dir) };
+		if (op === "show") return this.show(store, input);
 		if (browseOps.has(op)) return browsePage(await browse(store.root, input, signal, store), input);
-		if (op === "replace") return projectReplace(store, input, signal, 32_000);
 		if (op === "state") return statePage(store.run({ op }, this.actor.label), input);
-		const result = store.run(input, this.actor.label);
-		if (op === "read") return readPage(result, input);
-		if (op === "revert") return readPage(result, { limit: input.limit });
-		if ((op === "new" || op === "save") && typeof result.text === "string") {
-			const { text, ...receipt } = result;
-			return { ...receipt, total: text.length };
+		return this.runStoreOp(store, op, input, signal, invitation);
+	}
+
+	private async runStoreOp(store: Workspace, op: string, input: Data, signal?: AbortSignal, invitation?: RequestRef) {
+		const before = store.sequence();
+		const active = invitation?.root === store.root ? invitation : undefined;
+		const beforeSave = op === "save" ? diskSignature(store.root, input.path ?? input.doc) : undefined;
+		const result: Data =
+			op === "replace"
+				? await projectReplace(store, input, signal, 32_000, this.actor.label)
+				: store.run(input, this.actor.label, false, { participant: this.actor, request: active });
+		if (store.sequence() !== before) {
+			if (active) recordChangedDrafts(store, op, result, active);
+			await this.reportStoreOp(store, op, result.doc, beforeSave, active?.thread);
 		}
-		return result;
+		return formatToolResult(op, result, input);
+	}
+
+	private async reportStoreOp(store: Workspace, op: string, doc: unknown, before: string | undefined, thread?: string) {
+		if (op === "save" && typeof doc === "string") {
+			const saved = diskSignature(store.root, doc);
+			if (saved !== undefined && saved !== before) {
+				await notify(store, {
+					op: "file",
+					event: {
+						type: "file",
+						path: doc,
+						change: before === undefined ? "created" : "modified",
+						by: this.actor,
+						thread,
+					},
+				});
+				return;
+			}
+		}
+		await notify(store, { op: "workspace" });
 	}
 	async close(): Promise<void> {
 		this.closed = true;
@@ -254,7 +372,8 @@ export class EditorRoom {
 			Array.from(this.connections.values(), async (p) => {
 				const c = await p;
 				try {
-					await Promise.allSettled([c.leave(), ...Array.from(c.panes, (pane) => pane.close())]);
+					await c.leave();
+					await notify(c.store, { op: "members" });
 				} finally {
 					c.store.close();
 				}

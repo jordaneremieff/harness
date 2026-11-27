@@ -33,7 +33,10 @@ export function authorised(request: IncomingMessage, key: string): boolean {
 	return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-export async function listen(handler: (req: IncomingMessage, res: ServerResponse, origin: string) => Promise<void>) {
+export async function listen(
+	handler: (req: IncomingMessage, res: ServerResponse, origin: string) => Promise<void>,
+	idleTimeout = 20000,
+) {
 	let origin = "";
 	const server = createServer({ maxHeaderSize: 8192, headersTimeout: 5000, requestTimeout: 15000 }, (req, res) => {
 		if (!origin || `http://${req.headers.host}` !== origin || (req.headers.origin && req.headers.origin !== origin)) {
@@ -51,7 +54,7 @@ export async function listen(handler: (req: IncomingMessage, res: ServerResponse
 	});
 	server.keepAliveTimeout = 1500;
 	server.maxConnections = 64;
-	server.setTimeout(20000, (socket) => socket.destroy());
+	server.setTimeout(idleTimeout, (socket) => socket.destroy());
 	await new Promise<void>((resolve, reject) => {
 		server.once("error", reject);
 		server.listen(0, "127.0.0.1", () => {

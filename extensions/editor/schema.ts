@@ -27,6 +27,7 @@ export const editorParameters = obj({
 		"reply",
 		"compose",
 		"view",
+		"show",
 	] as const),
 	root: opt(text("Folder shared with the other participants. Defaults to your working directory.", 4096)),
 	doc: opt(text("Relative file path or an existing scratch ID.", 4096)),
@@ -56,6 +57,8 @@ export const editorParameters = obj({
 	id: opt(text("Thread or composed view ID.", 128)),
 	start: opt(int({ minimum: 0, description: "First UTF-16 unit, inclusive, at rev." })),
 	end: opt(int({ minimum: 0, description: "Last UTF-16 boundary, exclusive, at rev." })),
+	line: opt(int({ minimum: 1, description: "Show: one-based line in the current draft." })),
+	message: opt(text("Show: optional notice next to the revealed draft.", 4096)),
 	text: opt(text("Note, reply, or replacement text for a guarded range patch (start=end inserts).", 65536)),
 	target: opt(
 		obj({
@@ -108,4 +111,4 @@ export const editorParameters = obj({
 });
 
 export const editorToolDescription =
-	"Work with people and other agents in one Editor folder. Join makes this conversation available in the editor without opening a pane. State lists shared drafts, threads and composed tabs; members lists connected conversations. Read the current draft (not just disk), then edit a unique passage or patch an exact UTF-16 range at that revision. New creates a draft; save writes it to disk; revert resets it to the disk file. Note anchors a thread to a UTF-16 range or a named target; thread reads it and reply posts back. Compose creates an interactive tab of text, code and file locations, or updates its exact id and rev. View reads a tab. Tree lists folder children; files lists project file paths. Search checks paths or text, including unsaved drafts. Replace edits matching drafts without writing disk files. Git shows status, a diff or HEAD text. Always use the root supplied with an invitation. No tool opens a pane or wakes another agent.";
+	"Work with people and other agents in one Editor folder. Join makes this conversation available in the editor without opening a pane. State lists shared drafts, threads and composed tabs; members lists connected conversations. Read the current draft (not just disk), then edit a unique passage or patch an exact UTF-16 range at that revision. New creates a draft; save writes it to disk; revert resets it to the disk file. Note anchors a thread to a UTF-16 range or a named target; thread reads it and reply posts back. Compose creates an interactive tab of text, code and file locations, or updates its exact id and rev. View reads a tab. Show reveals a document and an optional range or line in open Editor panes. Tree lists folder children; files lists project file paths. Search checks paths or text, including unsaved drafts. Replace edits matching drafts without writing disk files. Git shows status, a diff or HEAD text. Always use the root supplied with an invitation. No tool opens a pane or wakes another agent.";

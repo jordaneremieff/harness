@@ -9,6 +9,7 @@ import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "
 import * as durable from "@earendil-works/pi-durable";
 import { obj } from "@earendil-works/pi-schema";
 import { contribution } from "./durable.ts";
+import { startPaneService } from "./pane-service.ts";
 import { invite, members } from "./participants.ts";
 import { Workspace } from "./store.ts";
 
@@ -103,7 +104,9 @@ test("native editor hand-offs run in the selected conversation and share draft c
 	const selectedId = `durable:${storageId}:${selected.id}`;
 	const connected = await members(workspace.dir);
 	assert.deepEqual(connected.map(({ id }) => id).sort(), [mainId, selectedId].sort());
-	const author = connected.find((peer) => peer.id === selectedId)?.label;
+	const recipient = connected.find((peer) => peer.id === selectedId);
+	assert.ok(recipient);
+	const author = recipient.label;
 	const receipt = {
 		id: randomUUID(),
 		root,
@@ -136,6 +139,7 @@ test("native editor hand-offs run in the selected conversation and share draft c
 		},
 		fauxAssistantMessage("This answer stays in Pi."),
 	]);
+	workspace.setRequest(thread, receipt.id, "queued", recipient);
 	await Promise.all([invite(workspace.dir, selectedId, receipt), invite(workspace.dir, selectedId, receipt)]);
 	await selected.waitForIdle(context);
 	assert.match(prompt, /Editor invitation/);
@@ -156,6 +160,40 @@ test("native editor hand-offs run in the selected conversation and share draft c
 		{ author: "Person", text: "Change this." },
 		{ author, text: "Changed the shared draft." },
 	]);
+
+	const service = await startPaneService({
+		root,
+		agentDir,
+		paneId: randomUUID(),
+		participant: recipient,
+		appPid: process.pid,
+	});
+	cleanups.push(() => service.close());
+	const pane = async (op: string, fields: Record<string, unknown>) => {
+		const response = await fetch(`http://127.0.0.1:${service.port}/api`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: `Bearer ${service.token}` },
+			body: JSON.stringify({ op, ...fields }),
+			signal: AbortSignal.timeout(3000),
+		});
+		const result = await response.json();
+		assert.equal(response.status, 200, JSON.stringify(result));
+		return result;
+	};
+	let { cursor } = await pane("events", { since: 0 });
+	faux.setResponses([fauxAssistantMessage("Automatic Durable answer.")]);
+	assert.equal((await pane("send", { id: thread, to: selectedId, message: "Reply with the result." })).accepted, true);
+	const states: string[] = [];
+	while (!states.includes("answered")) {
+		const batch = await pane("events", { since: cursor });
+		cursor = batch.cursor;
+		for (const event of batch.events) if (event.type === "request") states.push(event.state);
+	}
+	assert.deepEqual(states, ["queued", "working", "answered"]);
+	assert.deepEqual((await pane("thread", { id: thread })).messages.at(-1), {
+		author,
+		text: "Automatic Durable answer.",
+	});
 	await closeHost();
 	assert.deepEqual(await members(workspace.dir), []);
 
@@ -196,5 +234,5 @@ test("native editor hand-offs run in the selected conversation and share draft c
 	await selected.waitForIdle(context);
 	assert.equal(faux.state.callCount, calls);
 	const entriesAfterReconnect = (await selected.entries({}, 40, undefined, context)).items;
-	assert.equal(entriesAfterReconnect.filter(({ kind }) => kind === "editor.invitation").length, 1);
+	assert.equal(entriesAfterReconnect.filter(({ kind }) => kind === "editor.invitation").length, 2);
 });

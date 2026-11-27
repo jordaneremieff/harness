@@ -51,6 +51,13 @@ final class WorkspaceScreen {
     private var activeMutation = false
     private var expandedNavigator = false
     private var monitor: Task<Void, Never>?
+    private var watchTask: Task<Void, Never>?
+    private var watchedPaths: [String] = []
+    private var watchVersion = 0
+    private var pendingDiskEvents: Set<String> = []
+    private var pendingWorkspaceEvent = false
+    var onWorkspaceEvent: ((Fields) -> Void)?
+    var onWorkspaceState: ((Fields) -> Void)?
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var fixedLayout = false
     private var previewKeys: Set<String> = []
@@ -201,16 +208,98 @@ final class WorkspaceScreen {
         restoreVisiblePositions()
         layoutReady = true
         scheduleLayoutWrite()
-        monitor = Task { [weak self] in
+        restartWorkspaceEvents()
+    }
+
+    func restartWorkspaceEvents() {
+        guard layoutReady, !stopped, !disconnected else { return }
+        monitor?.cancel()
+        updateWatchedFiles(force: true)
+        monitor = Task { [weak self, api] in
+            var cursor = 0
+            var reconnectDelay = 200
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .milliseconds(1200)) } catch { return }
-                guard let self, !self.stopped, !self.disconnected else { return }
-                guard !self.activeMutation else { continue }
-                do { try await self.synchronise() }
-                catch {
-                    if !Task.isCancelled { self.showProblem(error, editor: self.currentEditor) }
+                do {
+                    let batch = try await api.call("events", ["since": cursor])
+                    guard !Task.isCancelled, let next = batch["cursor"] as? Int, next > 0,
+                          let events = batch["events"] as? [Fields] else { return }
+                    if cursor == 0, let self {
+                        try await loadState()
+                        pendingWorkspaceEvent = true
+                        pendingDiskEvents.formUnion(watchedPaths)
+                        await refreshChangedDrafts()
+                    }
+                    try await self?.receiveWorkspaceEvents(events)
+                    cursor = next
+                    reconnectDelay = 200
+                } catch {
+                    if Task.isCancelled { return }
+                    do { try await Task.sleep(for: .milliseconds(reconnectDelay)) } catch { return }
+                    reconnectDelay = min(reconnectDelay * 2, 2000)
                 }
             }
+        }
+    }
+
+    private func updateWatchedFiles(force: Bool = false) {
+        guard layoutReady, !stopped, !disconnected else { return }
+        let docs = Array(buffers.keys.filter { !$0.hasPrefix("scratch:") }.sorted().prefix(2048))
+        guard force || docs != watchedPaths else { return }
+        watchedPaths = docs
+        watchTask?.cancel()
+        watchVersion += 1
+        watchTask = Task { [api, version = watchVersion] in
+            _ = try? await api.call("watch", ["docs": docs, "version": version])
+        }
+    }
+
+    private func receiveWorkspaceEvents(_ events: [Fields]) async throws {
+        guard !events.isEmpty, !stopped, !disconnected else { return }
+        var reloadState = false
+        for event in events {
+            switch event["type"] as? String {
+            case "workspace": pendingWorkspaceEvent = true; reloadState = true
+            case "members", "request", "attach": reloadState = true
+            case "file": if let path = event["path"] as? String { pendingDiskEvents.insert(path) }
+            default: break
+            }
+        }
+        if reloadState { try await loadState() }
+        await refreshChangedDrafts()
+        for event in events where !Task.isCancelled {
+            if event["type"] as? String == "attach", let doc = event["doc"] as? String {
+                do { try await open(doc, line: event["line"] as? Int, focus: false) }
+                catch { showProblem(error, editor: currentEditor) }
+            }
+            onWorkspaceEvent?(event)
+        }
+    }
+
+    private func refreshChangedDrafts() async {
+        guard !activeMutation, !Task.isCancelled else { return }
+        let disk = pendingDiskEvents
+        let workspace = pendingWorkspaceEvent
+        pendingDiskEvents.removeAll()
+        pendingWorkspaceEvent = false
+        guard workspace || !disk.isEmpty else { return }
+        let headers = Dictionary(documents.compactMap { row in
+            (row["doc"] as? String).map { ($0, row) }
+        }, uniquingKeysWith: { newest, _ in newest })
+        for (doc, editor) in Array(buffers) where !Task.isCancelled && buffers[doc] === editor {
+            let header = headers[doc]
+            let changed = header.map { $0["rev"] as? Int != editor.revision ||
+                (!editor.hasPending && $0["dirty"] as? Bool != editor.dirty) } ?? workspace
+            guard disk.contains(doc) || workspace && changed else { continue }
+            do { try await refreshDraft(editor) }
+            catch { if editor === currentEditor { showProblem(error, editor: editor) } }
+        }
+        if !disk.isEmpty {
+            navigator.refreshFiles()
+            navigator.refreshGitStatus()
+        }
+        if workspace {
+            do { try await refreshCompositions() }
+            catch { showProblem(error, editor: currentEditor) }
         }
     }
 
@@ -257,6 +346,7 @@ final class WorkspaceScreen {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         monitor?.cancel(); monitor = nil
+        watchTask?.cancel(); watchTask = nil
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
         collaboration.stop(); navigator.stop()
@@ -321,6 +411,7 @@ final class WorkspaceScreen {
         if let existing = buffers[doc] { return existing }
         let editor = CodeEditor(api: api, record: record)
         buffers[doc] = editor
+        updateWatchedFiles()
         recordFormat(record, for: doc)
         observePosition(of: editor)
         refreshGitBase(editor)
@@ -512,8 +603,9 @@ final class WorkspaceScreen {
 
     private func loadState(paint: Bool = true) async throws {
         let state = try await api.call("state", sequence.map { ["since":$0] } ?? [:])
-        guard !stopped, state["unchanged"] as? Bool != true else { return }
-        guard let next = state["seq"] as? Int, sequence.map({ next >= $0 }) ?? true else { return }
+        guard !stopped, let next = state["seq"] as? Int, sequence.map({ next >= $0 }) ?? true else { return }
+        defer { onWorkspaceState?(state) }
+        guard state["unchanged"] as? Bool != true else { return }
         sequence = next
         documents = state["docs"] as? [Fields] ?? []
         viewHeaders = state["views"] as? [Fields] ?? []
@@ -536,16 +628,21 @@ final class WorkspaceScreen {
 
     func synchronise() async throws {
         try await loadState()
+        if !activeMutation { for editor in Array(buffers.values) { try await refreshDraft(editor) } }
+        try await refreshCompositions()
+    }
+
+    private func refreshDraft(_ editor: CodeEditor) async throws {
+        let rev = editor.revision, conflict = editor.diskConflict
+        try await editor.refresh()
+        if editor.diskConflict != conflict || (editor.revision != rev && !editor.dirty) {
+            refreshGitBase(editor)
+            refreshFormat(of: editor)
+        }
+    }
+
+    private func refreshCompositions() async throws {
         for key in groups.compactMap(\.selected) {
-            if let editor = editor(for: key), !activeMutation {
-                let rev = editor.revision, conflict = editor.diskConflict
-                try await editor.refresh()
-                if editor.diskConflict != conflict || (editor.revision != rev && !editor.dirty) {
-                    refreshGitBase(editor)
-                    refreshFormat(of: editor)
-                    navigator.refreshFiles()
-                }
-            }
             if let id = viewID(for: key), let rev = viewHeaders.first(where: { $0["id"] as? String == id })?["rev"] as? Int {
                 try await compositions[id]?.update(revision: rev)
             }
@@ -797,7 +894,7 @@ final class WorkspaceScreen {
 
     private func refreshStatus() {
         if let editor = currentEditor {
-            let status = disconnected ? "Pi closed" : editor.conflicted ? "Local conflict" : editor.diskConflict ? "Disk changed" : editor.hasPending ? "Local edits" : editor.dirty ? "Draft" : "Saved"
+            let status = disconnected ? "Service stopped" : editor.conflicted ? "Local conflict" : editor.diskConflict ? "Disk changed" : editor.hasPending ? "Local edits" : editor.dirty ? "Draft" : "Saved"
             let caret = editor.caretPosition
             var at = "Line \(caret.line), Column \(caret.column)"
             let selections = editor.selectionCount
@@ -819,7 +916,7 @@ final class WorkspaceScreen {
             chrome.setStatus("", "Composed", canSave: false)
         } else {
             chrome.setEditorStatus(branch: branch, position: "", indentation: nil, language: nil, format: "")
-            chrome.setStatus("", disconnected ? "Pi closed" : "", canSave: false)
+            chrome.setStatus("", disconnected ? "Service stopped" : "", canSave: false)
         }
     }
 
@@ -936,7 +1033,12 @@ final class WorkspaceScreen {
         guard !activeMutation, !stopped, !disconnected else { return }
         activeMutation = true
         act { screen in
-            defer { screen.activeMutation = false }
+            defer {
+                screen.activeMutation = false
+                if screen.pendingWorkspaceEvent || !screen.pendingDiskEvents.isEmpty {
+                    screen.act { await $0.refreshChangedDrafts() }
+                }
+            }
             try await body(screen)
         }
     }
@@ -1140,6 +1242,7 @@ final class WorkspaceScreen {
         disconnected = true
         monitor?.cancel(); monitor = nil
         savePanel?.cancel()
+        watchTask?.cancel(); watchTask = nil
         confirmation?.resolve(nil)
         let unsent = collaboration.hasUnpostedText || buffers.values.contains(where: \.hasPending)
         writeLayout()
@@ -1147,10 +1250,12 @@ final class WorkspaceScreen {
     }
 
     func showDisconnected(close: @escaping () -> Void) {
+        connectionClosed()
         for editor in buffers.values { editor.stop(); editor.textView.isEditable = false }
         collaboration.goOffline()
         refreshStatus()
-        chrome.setMessage("Pi closed. Copy any unsent text before you close Editor.", action: "Close Editor", run: close)
+        chrome.setMessage("Editor could not reconnect to its workspace service. Copy any unsent text before you close this pane.",
+                          action: "Close Editor", run: close)
     }
 
     private func ask(_ title: String, detail: String, choices: [WorkspaceConfirmation.Choice]) async -> Int? {
@@ -1256,6 +1361,7 @@ final class WorkspaceScreen {
         }
         if let editor = editor(for: key) {
             buffers.removeValue(forKey: editor.doc)
+            updateWatchedFiles()
             unobservePosition(of: editor.doc)
             expectedGitBases.removeValue(forKey: editor.doc)
             formats.removeValue(forKey: editor.doc)
@@ -1365,6 +1471,7 @@ final class WorkspaceScreen {
     private func remapDocument(_ source: String, to destination: String, editor: CodeEditor) {
         buffers.removeValue(forKey: source)
         buffers[destination] = editor
+        updateWatchedFiles()
         formats[destination] = formats.removeValue(forKey: source)
         expectedGitBases.removeValue(forKey: source)
         unobservePosition(of: source)

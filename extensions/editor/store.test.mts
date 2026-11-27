@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -16,7 +17,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { type TestContext, test } from "node:test";
+import type { Participant } from "./participants.ts";
 import { Workspace } from "./store.ts";
 import { signature } from "./store-files.ts";
 
@@ -72,7 +75,13 @@ test("human splices and guarded agent edits share a revision without implicit fi
 	const next = call(pane, "patch", { doc, rev: edit.rev, start: 6, end: 8, text: "🏡" });
 	assert.equal(next.rev, 3);
 	assert.equal(readFileSync(file, "utf8"), "start 👋 aaa\n");
-	assert.deepEqual(call(agent, "read", { doc, ifRev: next.rev }), { doc, rev: next.rev, dirty: true, unchanged: true });
+	assert.deepEqual(call(agent, "read", { doc, ifRev: next.rev }), {
+		doc,
+		rev: next.rev,
+		dirty: true,
+		author: "You",
+		unchanged: true,
+	});
 	assert.equal(call(agent, "read", { doc }).text, "start 🏡 other\n");
 	call(agent, "reply", { id, text: "Replaced; the original anchor remains" }, "Agent");
 	pane.close();
@@ -118,6 +127,7 @@ test("clean disk changes become revisions and dirty disk conflicts preserve both
 		doc,
 		rev: unsaved.rev,
 		dirty: true,
+		author: "You",
 		diskChanged: true,
 		unchanged: true,
 	});
@@ -229,13 +239,18 @@ test("a pane replacement updates the destination revision and keeps the original
 	const destination = call(store, "read", { doc: path });
 	const note = call(store, "note", { doc: path, rev: destination.rev, start: 0, end: 11, text: "Old destination" });
 	const source = call(store, "read", { doc: "original.txt" });
-	const edited = call(store, "patch", { doc: source.doc, rev: source.rev, start: 0, end: 6, text: "replacement" });
+	const edited = store.run(
+		{ op: "patch", doc: source.doc, rev: source.rev, start: 0, end: 6, text: "replacement" },
+		"Agent",
+	);
 	const replace = signature(statSync(file, { bigint: true }));
 	const input = { op: "save", doc: source.doc, rev: edited.rev, path, replace };
 	assert.throws(() => store.run(input, "Agent"), /requires approval/);
 	const saved = store.run(input, "You", true);
 	assert.equal(saved.rev, Number(destination.rev) + 1);
-	assert.equal(call(open(), "read", { doc: path, ifRev: destination.rev }).text, "replacement\n");
+	const replaced = call(open(), "read", { doc: path, ifRev: destination.rev });
+	assert.equal(replaced.text, "replacement\n");
+	assert.equal(replaced.author, "Agent");
 	assert.equal(call(store, "thread", note).rev, destination.rev);
 	assert.equal(readFileSync(file, "utf8"), "\uFEFFreplacement\r\n");
 	assert.equal(statSync(file).mode & 0o777, 0o640);
@@ -349,6 +364,185 @@ test("view writes and their workspace sequence change commit together", (t) => {
 		/revision changed/,
 	);
 	assert.deepEqual(call(consumer, "state", { since: updated.seq }), { seq: updated.seq, unchanged: true });
+});
+
+test("producer refresh reconciles only known clean drafts and preserves the author of each revision", (t) => {
+	const { root, open } = fixture(t);
+	const writer = open();
+	const peer = open();
+	const doc = "file.txt";
+	const path = join(root, doc);
+	writeFileSync(path, "one");
+	const initial = writer.sequence();
+	writer.refreshDisk(doc);
+	assert.equal(peer.sequence(), initial);
+	assert.deepEqual(call(peer, "state").docs, []);
+	const disk = call(peer, "read", { doc });
+	assert.equal(disk.author, "Disk");
+	const replaced = writer.replaceProjectText(writer.projectText(doc), "two", "Agent");
+	assert.equal(outputs(call(peer, "state").docs)[0].author, "Agent");
+	call(peer, "save", { doc, rev: replaced.rev });
+	writer.refreshDisk(doc);
+	assert.equal(call(peer, "read", { doc, ifRev: replaced.rev }).author, "Agent");
+	writeFileSync(path, "three");
+	const before = peer.sequence();
+	writer.refreshDisk(doc);
+	assert.equal(peer.sequence(), before + 1);
+	assert.equal(outputs(call(peer, "state").docs)[0].author, "Disk");
+	const refreshed = call(peer, "read", { doc });
+	assert.equal(refreshed.text, "three");
+	const unsaved = call(peer, "edit", { doc, rev: refreshed.rev, find: "three", replace: "draft" }, "Agent");
+	writeFileSync(path, "other");
+	const beforeConflict = peer.sequence();
+	writer.refreshDisk(doc);
+	assert.equal(peer.sequence(), beforeConflict);
+	const conflict = call(writer, "read", { doc, ifRev: unsaved.rev });
+	assert.equal(conflict.diskChanged, true);
+	assert.equal(conflict.author, "Agent");
+	call(peer, "revert", { doc, rev: unsaved.rev });
+	assert.equal(call(writer, "read", { doc }).author, "Disk");
+});
+
+const recipient: Participant = { id: "recipient", label: "Agent", kind: "ordinary" };
+const sameLabel: Participant = { id: "other", label: "Agent", kind: "durable" };
+
+function ask(store: Workspace): string {
+	return call(store, "note", { target: { kind: "folder", key: "" }, text: "Question" }).id as string;
+}
+
+function messages(store: Workspace, id: string) {
+	return outputs(call(store, "thread", { id }).messages).map((row) => row.text);
+}
+
+function requestHeader(store: Workspace, id: string) {
+	return outputs(call(store, "state").threads).find((row) => row.id === id);
+}
+
+test("only a reply from the selected participant for the active request suppresses its automatic answer", (t) => {
+	const { open } = fixture(t);
+	const store = open();
+	const peer = open();
+	const id = ask(store);
+	const reply = (text: string, participant: Participant, requestId?: string) =>
+		peer.run({ op: "reply", id, text }, participant.label, false, {
+			participant,
+			request: requestId ? { thread: id, id: requestId } : undefined,
+		});
+	assert.equal(store.setRequest(id, "first", "queued", recipient), true);
+	assert.equal(requestHeader(peer, id).requestState, "queued");
+	assert.deepEqual(requestHeader(peer, id).requestBy, recipient);
+	assert.equal(peer.setRequest(id, "first", "working", sameLabel), false);
+	assert.equal(peer.setRequest(id, "first", "working", recipient), true);
+	assert.equal(peer.setRequest(id, "first", "working", recipient), false);
+	assert.equal(store.recordRequestFile(id, "first", "first-file"), true);
+	assert.equal(store.setRequest(id, "next", "queued", recipient), true);
+	assert.equal(requestHeader(peer, id).changedFiles, undefined);
+	assert.equal(store.finishRequest(id, "first", recipient, "Old answer"), false);
+	assert.equal(store.recordRequestFile(id, "first", "late-file"), false);
+	reply("Old explicit reply", recipient, "first");
+	reply("Someone else with the same label", sameLabel, "next");
+	assert.equal(peer.finishRequest(id, "next", sameLabel, "Not the recipient"), false);
+	assert.equal(peer.finishRequest(id, "next", recipient, "Automatic answer"), true);
+	assert.equal(peer.finishRequest(id, "next", recipient, "Duplicate answer"), false);
+	assert.deepEqual(messages(store, id), [
+		"Question",
+		"Old explicit reply",
+		"Someone else with the same label",
+		"Automatic answer",
+	]);
+	assert.equal(store.setRequest(id, "explicit", "queued", recipient), true);
+	reply("Explicit answer", recipient, "explicit");
+	assert.equal(peer.recordRequestFile(id, "explicit", "latest-file"), true);
+	assert.equal(peer.finishRequest(id, "explicit", recipient, undefined, true), true);
+	assert.equal(store.requestStatus(id, "explicit")?.state, "answered");
+	assert.equal(store.recordRequestFile(id, "explicit", "too-late"), false);
+	const reopened = open();
+	assert.equal(requestHeader(reopened, id).requestState, "answered");
+	assert.deepEqual(requestHeader(reopened, id).changedFiles, ["latest-file"]);
+	assert.equal(typeof requestHeader(reopened, id).requestAt, "number");
+	assert.equal(messages(reopened, id).at(-1), "Explicit answer");
+});
+
+test("automatic answers and changed file lists stay bounded without losing the newest files", (t) => {
+	const { open } = fixture(t);
+	const store = open();
+	const id = ask(store);
+	assert.equal(store.setRequest(id, "request", "queued", recipient), true);
+	for (let i = 0; i < 52; i++) store.recordRequestFile(id, "request", `folder/file-${i}.txt`);
+	assert.equal(store.recordRequestFile(id, "request", "folder/file-6.txt"), true);
+	const before = store.sequence();
+	assert.equal(store.recordRequestFile(id, "request", "folder/file-6.txt"), false);
+	assert.equal(store.sequence(), before);
+	assert.throws(() => store.recordRequestFile(id, "request", "../outside"), { code: "invalid" });
+	const paths = requestHeader(store, id).changedFiles;
+	assert.equal(paths.length, 50);
+	assert.equal(paths[0], "folder/file-6.txt");
+	assert.equal(paths[1], "folder/file-51.txt");
+	assert.equal(paths.at(-1), "folder/file-2.txt");
+	const veryLong = Array(16).fill("🌲".repeat(50)).join("/");
+	for (let i = 0; i < 3; i++) store.recordRequestFile(id, "request", `${i}/${veryLong}`);
+	const largePaths = requestHeader(store, id).changedFiles;
+	assert.ok(Buffer.byteLength(JSON.stringify(largePaths)) <= 8192);
+	assert.deepEqual(largePaths.slice(0, 2), [`2/${veryLong}`, `1/${veryLong}`]);
+	assert.equal(store.finishRequest(id, "request", recipient, "🌲".repeat(2048)), true);
+	const answer = messages(store, id).at(-1) as string;
+	assert.doesNotMatch(answer, /[\ud800-\udfff]/u);
+	assert.ok(Buffer.byteLength(answer) <= 4096);
+	assert.match(answer, /\[Answer truncated in Editor\.\]$/);
+});
+
+test("text anchors retain their original line range and bounded context across revisions", (t) => {
+	const { open } = fixture(t);
+	const store = open();
+	const { doc, rev } = call(store, "new");
+	const long = "🌲".repeat(7000);
+	const text = `before\n${long}\nstart\nend\n${long}\nafter`;
+	const draft = call(store, "patch", { doc, rev, start: 0, end: 0, text });
+	const start = text.indexOf("start");
+	const end = text.indexOf("end\n") + 4;
+	const { id } = call(store, "note", { doc, rev: draft.rev, start, end, text: "Question" });
+	call(store, "patch", { doc, rev: draft.rev, start, end, text: "moved" });
+	const anchor = call(open(), "thread", { id });
+	assert.equal(anchor.lineStart, 3);
+	assert.equal(anchor.lineEnd, 4);
+	assert.equal(anchor.quote, "start\nend\n");
+	const context = anchor.context as string;
+	assert.doesNotMatch(context, /[\ud800-\udfff]/u);
+	assert.ok(context.length <= 12288);
+	assert.match(context, /🌲\nstart\nend\n🌲/u);
+});
+
+test("collaboration tables extend an existing workspace without rewriting its drafts or threads", (t) => {
+	const { root, agentDir, open } = fixture(t);
+	const dir = Workspace.directory(realpathSync.native(root), realpathSync.native(agentDir));
+	assert.equal(existsSync(join(agentDir, "editor")), false);
+	const store = open();
+	assert.equal(store.dir, dir);
+	const clean = "disk.txt";
+	writeFileSync(join(root, clean), "disk text");
+	call(store, "read", { doc: clean });
+	const { doc, rev } = call(store, "new", {}, "Agent");
+	const draft = call(store, "patch", { doc, rev, start: 0, end: 0, text: "draft text" }, "Agent");
+	const note = call(store, "note", { doc, rev: draft.rev, start: 0, end: 5, text: "Original note" });
+	const seq = store.sequence();
+	store.close();
+	const db = new DatabaseSync(join(dir, "workspace.db"));
+	try {
+		db.exec("DROP TABLE draft_authors; DROP TABLE thread_requests; DROP TABLE thread_anchors;");
+		assert.equal(db.prepare("PRAGMA user_version").get()?.user_version, 1);
+	} finally {
+		db.close();
+	}
+	const reopened = open();
+	assert.equal(reopened.sequence(), seq);
+	assert.equal(call(reopened, "read", { doc: clean }).author, "Disk");
+	const unsaved = call(reopened, "read", { doc });
+	assert.equal(unsaved.author, "You");
+	assert.equal(unsaved.text, "draft text");
+	const thread = call(reopened, "thread", note);
+	assert.equal(thread.quote, "draft");
+	assert.equal(thread.lineStart, undefined);
+	assert.deepEqual(messages(reopened, note.id as string), ["Original note"]);
 });
 
 test("simultaneous database opens and writes have one winner", { timeout: 15000 }, async (t) => {

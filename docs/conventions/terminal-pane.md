@@ -146,10 +146,11 @@ The Markdown command's Read action requests a half-width split on the left for i
 reader and a pinned open-request path. Request consumption separately establishes acceptance.
 Browse-only selection and publication do not invoke the adapter.
 
-The interactive `/editor` command opens Editor.app to the right of the invoking Pi pane. Its
-private request identifies the local folder and optional file. The app reports workspace load
-and visible panel placement separately. A loaded workspace stays attached when its tab is hidden. Joining an Editor
-workspace through the agent tool neither starts an app nor creates a split.
+The interactive `/editor` command first tries to connect to a visible Editor pane for the
+folder. If there is none, it opens Editor.app to the right of the invoking Pi pane. The one-use
+launch ticket identifies the local folder, optional file and pane-owned service program. The app
+reports workspace load and panel visibility separately and stays open when its opening Pi closes.
+Joining an Editor workspace through the agent tool neither starts an app nor creates a split.
 
 The troll extension's `/troll` command opens a Pi session in a floating pane over the invoking
 Pi pane's tab. Pi's own startup establishes acceptance.

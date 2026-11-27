@@ -16,7 +16,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { obj } from "@earendil-works/pi-schema";
 import { addEditorApplicationContext, editorApplicationMessage } from "./ordinary-invitations.ts";
+import { startPaneService } from "./pane-service.ts";
 import { invite, members } from "./participants.ts";
+import { answerText } from "./request-answer.ts";
 import { Workspace } from "./store.ts";
 
 function call(input: Parameters<typeof fauxToolCall>[1]) {
@@ -54,11 +56,11 @@ test("ordinary invitation enriches the request context without modifying stored 
 		id: fixture.id,
 		subject: "Shared editor thread",
 		place: fixture.root,
-		reply: "none",
+		reply: "final",
 	});
 	assert.equal(
 		draft.content.split("\n\n", 1)[0],
-		"[Editor] #89abcdef · Shared editor thread · /project with space · no reply needed",
+		"[Editor] #89abcdef · Shared editor thread · /project with space · reply in your final message",
 	);
 	assert.ok(draft.content.endsWith(fixture.message));
 	assert.match(draft.content, /Target: {"kind":"folder","key":""}/);
@@ -86,6 +88,27 @@ test("ordinary invitation enriches the request context without modifying stored 
 	assert.ok(later);
 	assert.match(content(later[0]), /\n\nFirst application already added this\.\n\nEditor guidance:/);
 	assert.throws(() => editorApplicationMessage({ ...fixture, root: "/folder\nname" }), /folder path/);
+	const selection = editorApplicationMessage({
+		...fixture,
+		doc: "example.ts",
+		target: undefined,
+		lines: { start: 2, end: 3 },
+		quote: "selected",
+		context: "before\nselected\nafter",
+		dirty: true,
+	});
+	assert.match(selection.content, /Lines \(one-based\): 2–3/);
+	assert.match(selection.content, /Quoted surrounding lines: "before\\nselected\\nafter"/);
+	assert.match(selection.content, /unsaved changes: use editor read/);
+});
+
+test("automatic answers fit the thread byte limit without exposing non-text blocks", () => {
+	const answer = answerText(fauxAssistantMessage("🌊".repeat(1500)), 2);
+	assert.ok(answer && Buffer.byteLength(answer) <= 4096);
+	assert.match(answer, /Answer truncated in Editor/);
+	assert.match(answer, /addressed 2 other inputs/);
+	assert.doesNotMatch(answer, /\uFFFD/u);
+	assert.equal(answerText(call({ op: "read", doc: "ignore" })), undefined);
 });
 
 test("ordinary Pi places editor invites, restores dropped follow-ups and withdraws switched sessions", {
@@ -162,7 +185,7 @@ test("ordinary Pi places editor invites, restores dropped follow-ups and withdra
 				sessionManager,
 				sessionStartEvent,
 				model: faux.getModel(),
-				tools: ["editor", "inspect_editor"],
+				tools: ["editor", "inspect_editor", "write", "edit"],
 			});
 			return { ...result, services, diagnostics: services.diagnostics };
 		},
@@ -185,7 +208,8 @@ test("ordinary Pi places editor invites, restores dropped follow-ups and withdra
 		connected.map(({ id }) => id),
 		[actor],
 	);
-	const author = connected[0].label;
+	const recipient = connected[0];
+	const author = recipient.label;
 
 	const request = {
 		id: randomUUID(),
@@ -205,6 +229,7 @@ test("ordinary Pi places editor invites, restores dropped follow-ups and withdra
 		call({ op: "reply", root, id: thread, text: "Changed the shared draft." }),
 		fauxAssistantMessage("This answer stays in Pi."),
 	]);
+	workspace.setRequest(thread, request.id, "queued", recipient);
 	await invite(workspace.dir, actor, request);
 	await session.waitForIdle();
 	assert.match(prompt, /Editor guidance:/);
@@ -217,6 +242,61 @@ test("ordinary Pi places editor invites, restores dropped follow-ups and withdra
 		{ author: "Person", text: "Change this." },
 		{ author, text: "Changed the shared draft." },
 	]);
+	assert.equal(workspace.requestStatus(thread, request.id)?.state, "answered");
+
+	const service = await startPaneService({
+		root,
+		agentDir,
+		paneId: randomUUID(),
+		participant: recipient,
+		appPid: process.pid,
+	});
+	disposers.push(() => service.close());
+	const pane = async (op: string, fields: Record<string, unknown>) => {
+		const response = await fetch(`http://127.0.0.1:${service.port}/api`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: `Bearer ${service.token}` },
+			body: JSON.stringify({ op, ...fields }),
+			signal: AbortSignal.timeout(3000),
+		});
+		const result = await response.json();
+		assert.equal(response.status, 200, JSON.stringify(result));
+		return result;
+	};
+	const { cursor } = await pane("events", { since: 0 });
+	faux.setResponses([
+		fauxAssistantMessage(fauxToolCall("write", { path: "produced.txt", content: "first\n" }), {
+			stopReason: "toolUse",
+		}),
+		fauxAssistantMessage(
+			fauxToolCall("edit", { path: "produced.txt", edits: [{ oldText: "first", newText: "second" }] }),
+			{ stopReason: "toolUse" },
+		),
+		fauxAssistantMessage("Automatic ordinary answer."),
+	]);
+	assert.equal(
+		(await pane("send", { id: thread, to: actor, message: "Write, edit and report the new file." })).accepted,
+		true,
+	);
+	await session.waitForIdle();
+	const { events } = await pane("events", { since: cursor });
+	assert.deepEqual(
+		events.filter((event: { type: string }) => event.type === "request").map((event: { state: string }) => event.state),
+		["queued", "working", "answered"],
+	);
+	assert.deepEqual(
+		events.filter((event: { type: string }) => event.type === "file"),
+		[
+			{ type: "file", path: "produced.txt", change: "created", by: recipient, thread },
+			{ type: "file", path: "produced.txt", change: "modified", by: recipient, thread },
+		],
+	);
+	assert.equal(await readFile(join(root, "produced.txt"), "utf8"), "second\n");
+	assert.deepEqual((await pane("state", {})).threads[0].changedFiles, ["produced.txt"]);
+	assert.deepEqual((await pane("thread", { id: thread })).messages.at(-1), {
+		author,
+		text: "Automatic ordinary answer.",
+	});
 
 	const entered = latch();
 	const release = latch();

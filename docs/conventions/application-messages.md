@@ -10,9 +10,10 @@ another, and no application depends on another extension to send or to
 receive a reply.
 
 The Markdown reader sends Ask requests that expect a final reply. Editor sends a
-selected ordinary session a request about a workspace thread. The session posts
-its reply to that thread, so Editor marks the application message `reply: "none"`.
-The agent extension displays both kinds of message.
+request about a workspace thread to a selected ordinary session and marks it
+`reply: "final"`. Editor follows its own replies and posts the final answer to
+that thread unless the session already posted it through `editor reply`. The
+agent extension displays both applications' messages.
 
 ## Message
 

@@ -372,7 +372,13 @@ async function planReplacement(matcher: Matcher, item: ProjectText, replacement:
 	if (result.count && result.text !== item.text) return { text: result.text, count: result.count };
 }
 
-export async function projectReplace(store: Workspace, input: Input, signal?: AbortSignal, reportBytes = Infinity) {
+export async function projectReplace(
+	store: Workspace,
+	input: Input,
+	signal?: AbortSignal,
+	reportBytes = Infinity,
+	author = "You",
+) {
 	const opts = options(input);
 	const paths = requestedPaths(input);
 	if (!opts.query || typeof input.replacement !== "string" || Buffer.byteLength(input.replacement) > 65536) {
@@ -404,7 +410,7 @@ export async function projectReplace(store: Workspace, input: Input, signal?: Ab
 			signal?.throwIfAborted();
 			const size = Buffer.byteLength(JSON.stringify(item.doc)) + 80;
 			if (!reserve(size)) return false;
-			changed.push({ ...store.replaceProjectText(item, next.text), count: next.count });
+			changed.push({ ...store.replaceProjectText(item, next.text, author), count: next.count });
 			return true;
 		} catch (error) {
 			signal?.throwIfAborted();

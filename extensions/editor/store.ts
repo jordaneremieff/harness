@@ -10,8 +10,9 @@ import {
 	realpathSync,
 	rmSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
+import type { Participant } from "./participants.ts";
 import {
 	assertFileSize,
 	decode,
@@ -50,17 +51,38 @@ import {
 const DOCS_LIMIT = 512;
 const THREADS_LIMIT = 128;
 const QUOTE_LIMIT = 8192;
+const CONTEXT_LIMIT = 12288;
 const HEADER_TEXT_LIMIT = 240;
 const MESSAGE_BYTES = 4096;
 const THREAD_BYTES = 32 * 1024;
 const THREAD_MESSAGES = 64;
 const SCRATCH = /^scratch:[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/u;
+const DISK = "Disk";
+const YOU = "You";
+const AUTHOR_BYTES = 256;
+const REQUEST_FILES = 50;
+const REQUEST_FILE_BYTES = 8192;
+const TRUNCATED_ANSWER = "\n\n[Answer truncated in Editor.]";
+
+type RequestState = "queued" | "working" | "answered" | "failed";
+type RequestStatus = { state: RequestState; by: Participant; at: number };
+type RequestRow = {
+	request_id: string;
+	state: RequestState;
+	participant: string;
+	at: number;
+	explicit_reply: number;
+	files: string;
+};
+type ThreadSize = { message_count: number; bytes: number };
+export type WorkspaceContext = { participant: Participant; request?: { thread: string; id: string } };
 
 type Document = {
 	doc: string;
 	rev: number;
 	dirty: 0 | 1;
 	seq?: number;
+	author: string;
 	base: string | null;
 	stamp: string | null;
 	eol: Eol;
@@ -223,6 +245,22 @@ const SCHEMA = `
 	PRAGMA user_version = 1;
 `;
 
+const COLLABORATION = `
+	CREATE TABLE IF NOT EXISTS draft_authors (
+		doc TEXT PRIMARY KEY REFERENCES documents(doc) ON UPDATE CASCADE ON DELETE CASCADE,
+		rev INTEGER NOT NULL, author TEXT NOT NULL
+	) STRICT;
+	CREATE TABLE IF NOT EXISTS thread_anchors (
+		thread TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+		line_start INTEGER NOT NULL, line_end INTEGER NOT NULL, context TEXT NOT NULL
+	) STRICT;
+	CREATE TABLE IF NOT EXISTS thread_requests (
+		thread TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+		request_id TEXT NOT NULL, state TEXT NOT NULL, participant TEXT NOT NULL,
+		at INTEGER NOT NULL, explicit_reply INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]'
+	) STRICT;
+`;
+
 function createDatabase(dir: string, path: string): void {
 	// Set WAL mode before exposing the database: SQLite cannot wait for a peer
 	// that tries to change the journal mode of the same new file.
@@ -234,6 +272,7 @@ function createDatabase(dir: string, path: string): void {
 		try {
 			db.exec("PRAGMA journal_mode = WAL; BEGIN IMMEDIATE;");
 			db.exec(SCHEMA);
+			db.exec(COLLABORATION);
 			initViews(db);
 			db.exec("COMMIT");
 		} finally {
@@ -264,6 +303,7 @@ function openDatabase(dir: string): DatabaseSync {
 		if (db.prepare("PRAGMA user_version").get()?.user_version !== 1) {
 			throw new EditorError("Unsupported editor workspace database format.", "invalid");
 		}
+		db.exec(COLLABORATION);
 		return db;
 	} catch (error) {
 		db.close();
@@ -277,6 +317,59 @@ function shorten(text: string): string {
 	return text.slice(0, unit >= 0xdc00 && unit <= 0xdfff ? HEADER_TEXT_LIMIT - 1 : HEADER_TEXT_LIMIT);
 }
 
+function anchorContext(text: string, start: number, end: number) {
+	const last = Math.max(start, end - 1);
+	let lineStart = 1;
+	let lineEnd = 1;
+	for (let offset = text.indexOf("\n"); offset >= 0 && offset < last; offset = text.indexOf("\n", offset + 1)) {
+		if (offset < start) lineStart++;
+		lineEnd++;
+	}
+	const startOfLine = (offset: number) => (offset > 0 ? text.lastIndexOf("\n", offset - 1) + 1 : 0);
+	let before = startOfLine(start);
+	let after = last;
+	for (let i = 0; i < 2 && before > 0; i++) before = startOfLine(before - 1);
+	for (let i = 0; i < 3 && after < text.length; i++) {
+		const newline = text.indexOf("\n", after);
+		after = newline < 0 ? text.length : newline + 1;
+	}
+	const extra = CONTEXT_LIMIT - (end - start);
+	const left = Math.min(start - before, Math.max(Math.floor(extra / 2), extra - (after - end)));
+	before = start - left;
+	after = Math.min(after, end + extra - (start - before));
+	if (/[\udc00-\udfff]/u.test(text.charAt(before))) before++;
+	if (/[\udc00-\udfff]/u.test(text.charAt(after))) after--;
+	return { lineStart, lineEnd, context: text.slice(before, after) };
+}
+
+function status(row: Pick<RequestRow, "state" | "participant" | "at">): RequestStatus {
+	return { state: row.state, by: JSON.parse(row.participant) as Participant, at: row.at };
+}
+
+function activeRequest(row: RequestRow): boolean {
+	return row.state === "queued" || row.state === "working";
+}
+
+function boundedAnswer(text: string, limit: number): string | undefined {
+	try {
+		plainText(text);
+	} catch (error) {
+		if (error instanceof EditorError) return;
+		throw error;
+	}
+	if (!text.trim()) return;
+	if (Buffer.byteLength(text) <= limit) return text;
+	let remaining = limit - Buffer.byteLength(TRUNCATED_ANSWER);
+	let end = 0;
+	for (const character of text) {
+		remaining -= Buffer.byteLength(character);
+		if (remaining < 0) break;
+		end += character.length;
+	}
+	const prefix = text.slice(0, end).trimEnd();
+	if (prefix) return prefix + TRUNCATED_ANSWER;
+}
+
 export class Workspace {
 	readonly root: string;
 	readonly dir: string;
@@ -286,15 +379,20 @@ export class Workspace {
 	#lastDiskCheck: { doc: string; stamp: string; hash: string } | undefined;
 	#closed = false;
 
+	static directory(root: string, agentDir: string): string {
+		const privateRoot = join(agentDir, "editor");
+		const dir = join(privateRoot, digest(Buffer.from(root)));
+		if (isWithin(root, dir) || isWithin(privateRoot, root)) {
+			throw new EditorError("Choose a project folder separate from the editor’s private store.", "invalid");
+		}
+		return dir;
+	}
+
 	constructor(root: string, agentDir: string, trash: Trash = systemTrash) {
 		this.#trash = trash;
 		this.root = folderRoot(root);
-		const privateRoot = join(realpathSync.native(agentDir), "editor");
-		this.dir = join(privateRoot, digest(Buffer.from(this.root)));
-		if (isWithin(this.root, this.dir) || isWithin(privateRoot, this.root)) {
-			throw new EditorError("Choose a project folder separate from the editor’s private store.", "invalid");
-		}
-		privateDirectory(privateRoot);
+		this.dir = Workspace.directory(this.root, realpathSync.native(agentDir));
+		privateDirectory(dirname(this.dir));
 		privateDirectory(this.dir);
 		this.#db = openDatabase(this.dir);
 	}
@@ -330,27 +428,36 @@ export class Workspace {
 		return this.#sql("UPDATE workspace SET seq = seq + 1 WHERE id = 1 RETURNING seq").get()?.seq as number;
 	}
 
+	sequence(): number {
+		return this.#sql("SELECT seq FROM workspace WHERE id = 1").get()?.seq as number;
+	}
+
 	#state(since: number | undefined): Record<string, unknown> {
 		return this.#transaction(false, () => {
-			const seq = this.#sql("SELECT seq FROM workspace WHERE id = 1").get()?.seq as number;
+			const seq = this.sequence();
 			if (seq === since) return { seq, unchanged: true };
-			const docs = this.#sql("SELECT doc, rev, dirty FROM documents ORDER BY dirty DESC, seq DESC LIMIT ?").all(
-				DOCS_LIMIT + 1,
-			) as Pick<Document, "doc" | "rev" | "dirty">[];
-			const threads =
-				this.#sql(`SELECT id, doc, start, end, rev, header_quote AS quote, quote_short, target_kind, target_key,
-				message_count, preview, preview_short FROM threads ORDER BY seq DESC LIMIT ?`).all(
-					THREADS_LIMIT + 1,
-				) as (Header & {
-					quote_short: number;
-					message_count: number;
-					preview: string;
-					preview_short: number;
-				})[];
+			const docs = this.#sql(`SELECT d.doc, d.rev, d.dirty, a.author FROM documents d
+				LEFT JOIN draft_authors a ON a.doc = d.doc AND a.rev = d.rev
+				ORDER BY d.dirty DESC, d.seq DESC LIMIT ?`).all(DOCS_LIMIT + 1) as (Pick<Document, "doc" | "rev" | "dirty"> & {
+				author: string | null;
+			})[];
+			const threads = this.#sql(`SELECT t.id, t.doc, t.start, t.end, t.rev, t.header_quote AS quote, t.quote_short,
+				t.target_kind, t.target_key, t.message_count, t.preview, t.preview_short, r.state, r.participant, r.at, r.files
+				FROM threads t LEFT JOIN thread_requests r ON r.thread = t.id ORDER BY t.seq DESC LIMIT ?`).all(
+				THREADS_LIMIT + 1,
+			) as (Header & {
+				quote_short: number;
+				message_count: number;
+				preview: string;
+				preview_short: number;
+			} & (Pick<RequestRow, "state" | "participant" | "at" | "files"> | { state: null }))[];
 			return {
 				root: this.root,
 				seq,
-				docs: docs.slice(0, DOCS_LIMIT).map(describe),
+				docs: docs.slice(0, DOCS_LIMIT).map((row) => ({
+					...describe(row),
+					author: row.author ?? (row.dirty ? YOU : DISK),
+				})),
 				...(docs.length > DOCS_LIMIT ? { docsLimited: true } : {}),
 				threads: threads.slice(0, THREADS_LIMIT).map((row) => ({
 					...anchorFields(row),
@@ -358,6 +465,12 @@ export class Workspace {
 					preview: row.preview,
 					...(row.quote_short ? { quoteShortened: true } : {}),
 					...(row.preview_short ? { previewShortened: true } : {}),
+					...(row.state && {
+						requestState: row.state,
+						requestBy: status(row).by,
+						requestAt: row.at,
+						...(row.files !== "[]" ? { changedFiles: JSON.parse(row.files) as string[] } : {}),
+					}),
 				})),
 				...(threads.length > THREADS_LIMIT ? { threadsLimited: true } : {}),
 				views: viewHeaders(this.#db),
@@ -366,9 +479,16 @@ export class Workspace {
 	}
 
 	#get(doc: string): Document | undefined {
-		return this.#sql("SELECT doc, rev, dirty, base, stamp, eol, bom, seq FROM documents WHERE doc = ?").get(doc) as
-			| Document
+		const row = this.#sql(`SELECT d.*, a.author FROM documents d
+			LEFT JOIN draft_authors a ON a.doc = d.doc AND a.rev = d.rev WHERE d.doc = ?`).get(doc) as
+			| (Omit<Document, "author"> & { author: string | null })
 			| undefined;
+		return row && { ...row, author: row.author ?? (row.dirty ? YOU : DISK) };
+	}
+
+	#setAuthor(doc: string, rev: number, author: string): void {
+		this.#sql(`INSERT INTO draft_authors (doc, rev, author) VALUES (?, ?, ?)
+			ON CONFLICT (doc) DO UPDATE SET rev = excluded.rev, author = excluded.author`).run(doc, rev, author);
 	}
 
 	#need(doc: string): Document {
@@ -386,6 +506,7 @@ export class Workspace {
 			"INSERT INTO documents (doc, rev, dirty, base, stamp, eol, bom, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		).run(row.doc, row.rev, row.dirty, row.base, row.stamp, row.eol, row.bom, seq);
 		this.#sql("INSERT INTO bodies VALUES (?, ?)").run(row.doc, text);
+		this.#setAuthor(row.doc, row.rev, row.author);
 	}
 
 	#dirtyDisk(row: Document, target: Location | undefined): boolean {
@@ -415,10 +536,11 @@ export class Workspace {
 	}
 
 	#readResult(row: Document, ifRev: number | undefined, diskChanged = false): Record<string, unknown> {
-		const { doc, rev, dirty } = describe(row);
+		const { doc, title, rev, dirty } = describe(row);
+		const author = row.author;
 		const disk = { ...diskFormat(row), ...(diskChanged ? { diskChanged: true } : {}) };
-		if (row.rev === ifRev) return { doc, rev, dirty, unchanged: true, ...disk };
-		return { doc, title: title(doc), rev, dirty, text: this.#body(doc), ...disk };
+		if (row.rev === ifRev) return { doc, rev, dirty, author, unchanged: true, ...disk };
+		return { doc, title, rev, dirty, author, text: this.#body(doc), ...disk };
 	}
 
 	#named(doc: string): { row: Document | undefined; target: Location | undefined } {
@@ -446,6 +568,17 @@ export class Workspace {
 		});
 	}
 
+	refreshDisk(doc: string): void {
+		const known = this.#get(fileName(doc));
+		if (!known || known.dirty) return;
+		this.#transaction(true, () => {
+			const row = this.#get(doc);
+			if (!row || row.dirty) return;
+			const target = locate(this.root, doc);
+			if (target.stat && row.stamp !== signature(target.stat)) this.#refreshDisk(doc, target, row, row.rev);
+		});
+	}
+
 	#refreshDisk(doc: string, target: Location | undefined, row: Document | undefined, ifRev: number | undefined) {
 		if (!target?.stat) throw new EditorError(`File not found: ${doc}`, "not_found");
 		const stamp = signature(target.stat);
@@ -457,14 +590,16 @@ export class Workspace {
 		}
 		const { text, eol, bom } = decode(bytes);
 		if (!row) {
-			const added: Document = { doc: target.doc, rev: 1, dirty: 0, base, stamp, eol, bom: bom ? 1 : 0 };
+			const added: Document = { doc: target.doc, rev: 1, dirty: 0, author: DISK, base, stamp, eol, bom: bom ? 1 : 0 };
 			this.#add(added, text);
-			return { ...describe(added), ...diskFormat(added), text };
+			return { ...describe(added), author: added.author, ...diskFormat(added), text };
 		}
 		// An encoding-only change must not move exact text anchors.
 		if (this.#body(row.doc) !== text) {
 			row.rev++;
+			row.author = DISK;
 			this.#sql("UPDATE bodies SET text = ? WHERE doc = ?").run(text, row.doc);
+			this.#setAuthor(row.doc, row.rev, row.author);
 		}
 		this.#sql("UPDATE documents SET rev = ?, base = ?, stamp = ?, eol = ?, bom = ?, seq = ? WHERE doc = ?").run(
 			row.rev,
@@ -476,8 +611,9 @@ export class Workspace {
 			row.doc,
 		);
 		const format = { eol, bom };
-		if (row.rev === ifRev) return { doc: row.doc, rev: row.rev, dirty: false, unchanged: true, ...format };
-		return { ...describe(row), ...format, text };
+		if (row.rev === ifRev)
+			return { doc: row.doc, rev: row.rev, dirty: false, author: row.author, unchanged: true, ...format };
+		return { ...describe(row), author: row.author, ...format, text };
 	}
 
 	projectDrafts(limit: number): string[] {
@@ -498,7 +634,7 @@ export class Workspace {
 		});
 	}
 
-	replaceProjectText(previous: ProjectText, text: string): { doc: string; rev: number } {
+	replaceProjectText(previous: ProjectText, text: string, author = YOU): { doc: string; rev: number } {
 		const { doc, eol, bom } = previous;
 		plainText(text);
 		assertFileSize(text, eol, bom);
@@ -513,7 +649,7 @@ export class Workspace {
 			const rev = (row?.rev ?? 0) + 1;
 			if (!row)
 				this.#add(
-					{ doc, rev, dirty: 1, base: previous.base, stamp: previous.stamp, eol, bom: Number(bom) as 0 | 1 },
+					{ doc, rev, dirty: 1, author, base: previous.base, stamp: previous.stamp, eol, bom: Number(bom) as 0 | 1 },
 					text,
 				);
 			else {
@@ -521,6 +657,7 @@ export class Workspace {
 				this.#sql(
 					"UPDATE documents SET rev = ?, dirty = 1, base = ?, stamp = ?, eol = ?, bom = ?, seq = ? WHERE doc = ?",
 				).run(rev, previous.base, previous.stamp, eol, Number(bom), this.#bump(), doc);
+				this.#setAuthor(doc, rev, author);
 			}
 			return { doc, rev };
 		});
@@ -556,7 +693,9 @@ export class Workspace {
 			const changed = this.#body(doc) !== disk.text;
 			if (changed) {
 				row.rev++;
+				row.author = DISK;
 				this.#sql("UPDATE bodies SET text = ? WHERE doc = ?").run(disk.text, doc);
+				this.#setAuthor(doc, row.rev, row.author);
 			}
 			if (changed || row.dirty || row.base !== disk.base) {
 				this.#sql(
@@ -567,20 +706,29 @@ export class Workspace {
 		});
 	}
 
-	#new(path: string | undefined): Record<string, unknown> {
+	#new(path: string | undefined, author: string): Record<string, unknown> {
 		return this.#transaction(true, () => {
 			const target = path === undefined ? undefined : locate(this.root, path);
 			const doc = target?.doc ?? `scratch:${randomUUID()}`;
 			if (target?.stat || this.#get(doc)) throw new EditorError(`File or draft already exists: ${doc}`, "conflict");
 			const seq = this.#bump();
 			// Reopening a discarded name must not accept a revision from the old draft.
-			const row: Document = { doc, rev: target ? seq : 1, dirty: 1, base: null, stamp: null, eol: "\n", bom: 0 };
+			const row: Document = {
+				doc,
+				rev: target ? seq : 1,
+				dirty: 1,
+				author,
+				base: null,
+				stamp: null,
+				eol: "\n",
+				bom: 0,
+			};
 			this.#add(row, "", seq);
 			return { ...describe(row), ...diskFormat(row), text: "" };
 		});
 	}
 
-	#edit(input: Record<string, unknown>, splice: boolean): Record<string, unknown> {
+	#edit(input: Record<string, unknown>, splice: boolean, author: string): Record<string, unknown> {
 		const doc = docField(input);
 		const expected = number(input, "rev");
 		const insertion = field(input, splice ? "text" : "replace");
@@ -613,6 +761,7 @@ export class Workspace {
 			const rev = row.rev + 1;
 			this.#sql("UPDATE bodies SET text = ? WHERE doc = ?").run(next, doc);
 			this.#sql("UPDATE documents SET rev = ?, dirty = 1, seq = ? WHERE doc = ?").run(rev, this.#bump(), doc);
+			this.#setAuthor(doc, rev, author);
 			return { doc, rev, dirty: true };
 		});
 	}
@@ -637,6 +786,7 @@ export class Workspace {
 		this.#sql(
 			"UPDATE documents SET rev = ?, dirty = 0, base = ?, stamp = NULL, eol = ?, bom = ?, seq = ? WHERE doc = ?",
 		).run(saved.rev, saved.base, saved.eol, saved.bom, this.#bump(), saved.doc);
+		this.#setAuthor(saved.doc, saved.rev, saved.author);
 		if (SCRATCH.test(source.doc)) {
 			this.#sql("UPDATE threads SET doc = ?, rev = CASE WHEN rev = ? THEN ? ELSE rev END WHERE doc = ?").run(
 				saved.doc,
@@ -687,7 +837,7 @@ export class Workspace {
 		const inPlace = path === undefined || (approval !== undefined && target.doc === doc);
 		const destination = target.doc === doc ? undefined : this.#get(target.doc);
 		this.#validateSave(row, target, destination, inPlace, approval);
-		if (inPlace && !row.dirty) return this.#readResult(row, undefined);
+		if (inPlace && !row.dirty) return { ...describe(row), ...diskFormat(row), text: this.#body(doc) };
 		const text = this.#body(doc);
 		const bytes = encode(text, row.eol, row.bom === 1);
 		const copy = !inPlace && !scratch;
@@ -831,12 +981,18 @@ export class Workspace {
 
 	#thread(id: string): Record<string, unknown> {
 		return this.#transaction(false, () => {
-			const anchor = this.#sql(
-				"SELECT id, doc, start, end, quote, rev, target_kind, target_key FROM threads WHERE id = ?",
-			).get(id) as Header | undefined;
+			const anchor =
+				this.#sql(`SELECT id, doc, start, end, quote, rev, target_kind, target_key, line_start, line_end, context
+				FROM threads LEFT JOIN thread_anchors ON thread = id WHERE id = ?`).get(id) as
+					| (Header & { line_start: number; line_end: number; context: string })
+					| undefined;
 			if (!anchor) throw new EditorError("Thread not found.", "not_found");
 			const messages = this.#sql("SELECT author, text FROM messages WHERE thread = ? ORDER BY position").all(id);
-			return { ...anchorFields(anchor), messages };
+			return {
+				...anchorFields(anchor),
+				...(anchor.line_start && { lineStart: anchor.line_start, lineEnd: anchor.line_end, context: anchor.context }),
+				messages,
+			};
 		});
 	}
 
@@ -852,11 +1008,13 @@ export class Workspace {
 		if (end - start > QUOTE_LIMIT) throw new EditorError("Select at most 8192 UTF-16 units for a note.", "limit");
 		return this.#transaction(true, () => {
 			let quote = "";
+			let context: ReturnType<typeof anchorContext> | undefined;
 			if (doc !== null) {
 				revision(this.#need(doc), rev);
 				const text = this.#body(doc);
 				withinText(text, start, end);
 				quote = text.slice(start, end);
+				context = anchorContext(text, start, end);
 			}
 			const shortQuote = shorten(quote);
 			const preview = shorten(message);
@@ -879,47 +1037,161 @@ export class Workspace {
 				this.#bump(),
 			);
 			this.#sql("INSERT INTO messages VALUES (?, 1, ?, ?)").run(id, author, message);
-			return { id };
-		});
-	}
-
-	#reply(id: string, author: string, message: string, bytes: number): Record<string, unknown> {
-		return this.#transaction(true, () => {
-			const thread = this.#sql("SELECT message_count, bytes FROM threads WHERE id = ?").get(id) as
-				| { message_count: number; bytes: number }
-				| undefined;
-			if (!thread) throw new EditorError("Thread not found.", "not_found");
-			if (thread.message_count >= THREAD_MESSAGES || thread.bytes + bytes > THREAD_BYTES) {
-				throw new EditorError("Thread limit: 64 messages and 32 KiB of message data. Start another thread.", "limit");
+			if (context) {
+				this.#sql("INSERT INTO thread_anchors (thread, line_start, line_end, context) VALUES (?, ?, ?, ?)").run(
+					id,
+					context.lineStart,
+					context.lineEnd,
+					context.context,
+				);
 			}
-			const count = thread.message_count + 1;
-			const preview = shorten(message);
-			this.#sql("INSERT INTO messages VALUES (?, ?, ?, ?)").run(id, count, author, message);
-			this.#sql(
-				"UPDATE threads SET message_count = ?, bytes = ?, preview = ?, preview_short = ?, seq = ? WHERE id = ?",
-			).run(count, thread.bytes + bytes, preview, Number(preview !== message), this.#bump(), id);
 			return { id };
 		});
 	}
 
-	run(input: Record<string, unknown>, author: string, pane = false): Record<string, unknown> {
-		const result = this.#run(input, author, pane);
+	#threadSize(id: string): ThreadSize | undefined {
+		return this.#sql("SELECT message_count, bytes FROM threads WHERE id = ?").get(id) as ThreadSize | undefined;
+	}
+
+	#appendReply(id: string, thread: ThreadSize, author: string, message: string, bytes: number): void {
+		if (thread.message_count >= THREAD_MESSAGES || thread.bytes + bytes > THREAD_BYTES) {
+			throw new EditorError("Thread limit: 64 messages and 32 KiB of message data. Start another thread.", "limit");
+		}
+		const count = thread.message_count + 1;
+		const preview = shorten(message);
+		this.#sql("INSERT INTO messages VALUES (?, ?, ?, ?)").run(id, count, author, message);
+		this.#sql(
+			"UPDATE threads SET message_count = ?, bytes = ?, preview = ?, preview_short = ?, seq = ? WHERE id = ?",
+		).run(count, thread.bytes + bytes, preview, Number(preview !== message), this.#bump(), id);
+	}
+
+	#request(thread: string): RequestRow | undefined {
+		return this.#sql("SELECT * FROM thread_requests WHERE thread = ?").get(thread) as RequestRow | undefined;
+	}
+
+	requestStatus(thread: string, requestId: string): RequestStatus | undefined {
+		const row = this.#request(thread);
+		if (row?.request_id === requestId) return status(row);
+	}
+
+	#touchThread(thread: string): void {
+		this.#sql("UPDATE threads SET seq = ? WHERE id = ?").run(this.#bump(), thread);
+	}
+
+	setRequest(thread: string, requestId: string, state: "queued" | "working", by: Participant): boolean {
+		return this.#transaction(true, () => {
+			const row = this.#request(thread);
+			if (state === "queued") {
+				if (row?.request_id === requestId || !this.#threadSize(thread)) return false;
+				const { id, label, kind } = by;
+				this.#sql(`INSERT INTO thread_requests (thread, request_id, state, participant, at) VALUES (?, ?, 'queued', ?, ?)
+					ON CONFLICT (thread) DO UPDATE SET request_id = excluded.request_id, state = excluded.state,
+					participant = excluded.participant, at = excluded.at, explicit_reply = 0, files = '[]'`).run(
+					thread,
+					requestId,
+					JSON.stringify({ id, label, kind }),
+					Date.now(),
+				);
+			} else {
+				if (row?.request_id !== requestId || row.state !== "queued" || status(row).by.id !== by.id) return false;
+				this.#sql("UPDATE thread_requests SET state = 'working', at = ? WHERE thread = ?").run(Date.now(), thread);
+			}
+			this.#touchThread(thread);
+			return true;
+		});
+	}
+
+	#appendAutomaticAnswer(thread: string, author: string, answer: string): boolean {
+		const size = this.#threadSize(thread);
+		const authorBytes = Buffer.byteLength(author);
+		if (!size || size.message_count >= THREAD_MESSAGES || authorBytes > AUTHOR_BYTES) return false;
+		const message = boundedAnswer(answer, Math.min(MESSAGE_BYTES, THREAD_BYTES - size.bytes - authorBytes));
+		if (!message) return false;
+		this.#appendReply(thread, size, author, message, Buffer.byteLength(message) + authorBytes);
+		return true;
+	}
+
+	finishRequest(thread: string, requestId: string, by: Participant, answer?: string, failed = false): boolean {
+		return this.#transaction(true, () => {
+			const row = this.#request(thread);
+			if (row?.request_id !== requestId || !activeRequest(row) || status(row).by.id !== by.id) return false;
+			const needsAnswer = !row.explicit_reply && !failed && answer !== undefined;
+			const appended = needsAnswer && this.#appendAutomaticAnswer(thread, by.label, answer);
+			const state = !row.explicit_reply && (failed || (needsAnswer && !appended)) ? "failed" : "answered";
+			this.#sql("UPDATE thread_requests SET state = ?, at = ? WHERE thread = ?").run(state, Date.now(), thread);
+			if (!appended) this.#touchThread(thread);
+			return true;
+		});
+	}
+
+	recordRequestFile(thread: string, requestId: string, doc: string): boolean {
+		fileName(doc);
+		return this.#transaction(true, () => {
+			const row = this.#request(thread);
+			if (row?.request_id !== requestId || !activeRequest(row)) return false;
+			const previous = JSON.parse(row.files) as string[];
+			if (previous[0] === doc) return false;
+			const paths: string[] = [];
+			let bytes = 2;
+			for (const path of [doc, ...previous.filter((item) => item !== doc)]) {
+				bytes += Buffer.byteLength(JSON.stringify(path)) + (paths.length ? 1 : 0);
+				if (bytes > REQUEST_FILE_BYTES || paths.length === REQUEST_FILES) break;
+				paths.push(path);
+			}
+			this.#sql("UPDATE thread_requests SET files = ? WHERE thread = ?").run(JSON.stringify(paths), thread);
+			this.#touchThread(thread);
+			return true;
+		});
+	}
+
+	#reply(id: string, author: string, message: string, bytes: number, context?: WorkspaceContext) {
+		return this.#transaction(true, () => {
+			const thread = this.#threadSize(id);
+			if (!thread) throw new EditorError("Thread not found.", "not_found");
+			this.#appendReply(id, thread, author, message, bytes);
+			if (context && (!context.request || context.request.thread === id)) {
+				const row = this.#request(id);
+				if (
+					row &&
+					activeRequest(row) &&
+					(!context.request || context.request.id === row.request_id) &&
+					status(row).by.id === context.participant.id
+				) {
+					this.#sql("UPDATE thread_requests SET explicit_reply = 1 WHERE thread = ?").run(id);
+				}
+			}
+			return { id };
+		});
+	}
+
+	run(
+		input: Record<string, unknown>,
+		author: string,
+		pane = false,
+		context?: WorkspaceContext,
+	): Record<string, unknown> {
+		const result = this.#run(input, author, pane, context);
 		if (pane || result.eol === undefined) return result;
 		const { eol: _eol, bom: _bom, ...rest } = result;
 		return rest;
 	}
 
-	#run(input: Record<string, unknown>, author: string, pane: boolean): Record<string, unknown> {
+	#run(
+		input: Record<string, unknown>,
+		author: string,
+		pane: boolean,
+		context?: WorkspaceContext,
+	): Record<string, unknown> {
 		switch (input.op) {
 			case "state":
 				return this.#state(optionalNumber(input, "since"));
 			case "read":
 				return this.#read(docField(input), optionalNumber(input, "ifRev"));
 			case "new":
-				return this.#new(input.path === undefined ? undefined : field(input, "path"));
+				return this.#new(input.path === undefined ? undefined : field(input, "path"), author);
 			case "edit":
 			case "patch":
-				return this.#edit(input, input.op === "patch");
+				return this.#edit(input, input.op === "patch", author);
 			case "revert":
 				return this.#revert(docField(input), number(input, "rev"), pane);
 			case "rename":
@@ -947,7 +1219,7 @@ export class Workspace {
 				const message = field(input, "text");
 				const size = Buffer.byteLength(message);
 				const authorSize = Buffer.byteLength(author);
-				if (size > MESSAGE_BYTES || authorSize > 256) {
+				if (size > MESSAGE_BYTES || authorSize > AUTHOR_BYTES) {
 					throw new EditorError("Messages are limited to 4096 bytes and author names to 256 bytes.", "limit");
 				}
 				if (!message.trim() || !author.trim())
@@ -956,7 +1228,7 @@ export class Workspace {
 				plainText(author);
 				return input.op === "note"
 					? this.#note(input, author, message, size + authorSize)
-					: this.#reply(field(input, "id"), author, message, size + authorSize);
+					: this.#reply(field(input, "id"), author, message, size + authorSize, context);
 			}
 			default:
 				throw new EditorError("Unknown editor workspace operation.", "invalid");

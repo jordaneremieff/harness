@@ -17,6 +17,9 @@ export interface Invitation {
 	quote: string;
 	message: string;
 	target?: { kind: string; key: string };
+	lines?: { start: number; end: number };
+	context?: string;
+	dirty?: boolean;
 }
 interface Endpoint extends Participant {
 	port: number;
@@ -27,10 +30,14 @@ interface Endpoint extends Participant {
 const uuid = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i;
 const clean = (s: unknown, limit: number): s is string =>
 	typeof s === "string" && s.length > 0 && s.length <= limit && !/[\x00-\x1f\x7f]/u.test(s);
-function identity(p: Participant): boolean {
+export function isParticipant(value: unknown): value is Participant {
+	if (!value || typeof value !== "object") return false;
+	const p = value as Partial<Participant>;
 	return clean(p.id, 256) && clean(p.label, 256) && (p.kind === "ordinary" || p.kind === "durable");
 }
-function invitation(p: Record<string, unknown>): Invitation {
+function checkAddress(
+	p: Record<string, unknown>,
+): asserts p is Record<string, unknown> & Pick<Invitation, "id" | "root" | "thread" | "doc"> {
 	if (
 		typeof p.id !== "string" ||
 		!uuid.test(p.id) ||
@@ -39,6 +46,10 @@ function invitation(p: Record<string, unknown>): Invitation {
 		(p.doc !== "" && !clean(p.doc, 4096))
 	)
 		throw Error("Invalid thread address.");
+}
+function checkMessage(
+	p: Record<string, unknown>,
+): asserts p is Record<string, unknown> & Pick<Invitation, "quote" | "message"> {
 	if (
 		typeof p.quote !== "string" ||
 		p.quote.length > 8192 ||
@@ -47,6 +58,28 @@ function invitation(p: Record<string, unknown>): Invitation {
 		p.message.length > 8192
 	)
 		throw Error("A message or selection exceeds the invitation limit.");
+}
+function invitationTarget(value: unknown): NonNullable<Invitation["target"]> {
+	const t = value as Record<string, unknown> | null;
+	if (!t || !clean(t.kind, 32) || typeof t.key !== "string" || t.key.length > 4096)
+		throw Error("Invalid editor target.");
+	return { kind: t.kind, key: t.key };
+}
+function invitationLines(value: unknown): NonNullable<Invitation["lines"]> {
+	const lines = value as Invitation["lines"];
+	if (
+		!lines ||
+		!Number.isSafeInteger(lines.start) ||
+		!Number.isSafeInteger(lines.end) ||
+		lines.start < 1 ||
+		lines.end < lines.start
+	)
+		throw Error("Invalid invitation line range.");
+	return { start: lines.start, end: lines.end };
+}
+function invitation(p: Record<string, unknown>): Invitation {
+	checkAddress(p);
+	checkMessage(p);
 	const result: Invitation = {
 		id: p.id,
 		root: p.root,
@@ -55,11 +88,15 @@ function invitation(p: Record<string, unknown>): Invitation {
 		quote: p.quote,
 		message: p.message,
 	};
-	if (p.target !== undefined) {
-		const t = p.target as Record<string, unknown> | null;
-		if (!t || !clean(t.kind, 32) || typeof t.key !== "string" || t.key.length > 4096)
-			throw Error("Invalid editor target.");
-		result.target = { kind: t.kind, key: t.key };
+	if (p.target !== undefined) result.target = invitationTarget(p.target);
+	if (p.lines !== undefined) result.lines = invitationLines(p.lines);
+	if (p.context !== undefined) {
+		if (typeof p.context !== "string" || p.context.length > 12288) throw Error("Invalid invitation context.");
+		result.context = p.context;
+	}
+	if (p.dirty !== undefined) {
+		if (typeof p.dirty !== "boolean") throw Error("Invalid draft state.");
+		result.dirty = p.dirty;
 	}
 	if (!result.doc && !result.target) throw Error("Invitation has no target.");
 	return result;
@@ -93,7 +130,7 @@ export async function join(
 	actor: Participant,
 	onInvite: (request: Invitation) => Promise<void>,
 ): Promise<() => Promise<void>> {
-	if (!identity(actor)) throw Error("Invalid session identity.");
+	if (!isParticipant(actor)) throw Error("Invalid session identity.");
 	const peers = await directory(dir);
 	const key = randomBytes(32).toString("hex");
 	const accept = accepts(onInvite);
@@ -123,7 +160,7 @@ export async function join(
 
 function isEndpoint(e: Endpoint): boolean {
 	return (
-		identity(e) &&
+		isParticipant(e) &&
 		Number.isSafeInteger(e.port) &&
 		e.port > 0 &&
 		e.port < 65536 &&
