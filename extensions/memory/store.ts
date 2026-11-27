@@ -54,12 +54,16 @@ The body contains # Title, ## Summary, ## Details, and ## Sources.
 Supersession preserves the replaced note with status: superseded and a reciprocal pointer.
 Writer overwrites retain safe prior bytes under .memory-history/<slug>/ before replacement.
 Historical captures are evidence, not current authority or proof of successful mutation.
-Optional review_policy (on-change or before-use), review_after, review_flag, last_review, and retirement record review scope and evidence.
+Creation and whole-note rewrites require review_policy: on-change for standing or explicitly scoped facts, before-use for changeable facts.
+Notes without review_policy remain readable. Optional review_after, review_flag, last_review, and retirement record review timing and evidence.
 A before-use source check does not require a write. Dates and active status never prove current truth.
 Retirement withdraws a note without a replacement; explicit confirmed review can reactivate a retired note.
 Superseded notes do not reactivate. Explicit supersession of a retired target needs no confirmation of its old claim.
 Explicit forget requests must account for retained subject history and external archives as well as current notes.
 `;
+
+export const WRITE_REVIEW_POLICY_HELP =
+	"Choose on-change for standing preferences, decisions or explicitly scoped facts. Choose before-use for facts about a changeable environment or external behaviour.";
 
 export interface MemoryWrite {
 	slug: string;
@@ -69,7 +73,7 @@ export interface MemoryWrite {
 	details: string;
 	sources: string;
 	verified: boolean;
-	reviewPolicy?: ReviewPolicy;
+	reviewPolicy: ReviewPolicy;
 	reviewAfter?: string | null;
 	expectedDigest?: string;
 	supersedes?: Array<{ slug: string; digest: string }>;
@@ -166,14 +170,8 @@ function text(value: unknown, name: string, max: number, multiline = true): asse
 			`Invalid ${name}: use nonblank ${multiline ? "text" : "single-line text"} within ${max} characters, without disallowed controls or unpaired surrogates`,
 		);
 }
-function validateReviewSelection(input: { reviewPolicy?: unknown; reviewAfter?: unknown }, clear: boolean): void {
-	if (
-		input.reviewPolicy !== undefined &&
-		!(clear && input.reviewPolicy === null) &&
-		!isReviewPolicy(input.reviewPolicy)
-	)
-		throw new Error("reviewPolicy must be on-change or before-use; only review permits null to clear it");
-	if (input.reviewAfter !== undefined && input.reviewAfter !== null && !isDate(input.reviewAfter))
+function validateReviewAfter(value: unknown): void {
+	if (value !== undefined && value !== null && !isDate(value))
 		throw new Error("reviewAfter must be a real YYYY-MM-DD date or null");
 }
 function validate(input: MemoryWrite): void {
@@ -187,7 +185,7 @@ function validate(input: MemoryWrite): void {
 	if (new Set(input.tags).size !== input.tags.length) throw new Error("Tags must be unique");
 	if (typeof input.verified !== "boolean") throw new Error("verified must be explicit");
 	if (input.expectedDigest !== undefined) digest(input.expectedDigest);
-	validateReviewSelection(input, false);
+	validateReviewAfter(input.reviewAfter);
 	if (input.supersedes !== undefined && !Array.isArray(input.supersedes))
 		throw new Error("Use at most 16 supersession targets");
 	const seen = new Set<string>();
@@ -273,7 +271,13 @@ export function preflightMutationArguments(
 	const subject = input !== null && typeof input === "object" && "slug" in input ? input.slug : undefined;
 	preflight(subject, () => {
 		assertKnownArgumentKeys(input, MUTATION_ARGUMENT_KEYS[tool]);
-		if (tool === "write") checkEntryKeys(input.supersedes, "supersedes", 16, ["slug", "digest"]);
+		if (tool === "write") {
+			checkEntryKeys(input.supersedes, "supersedes", 16, ["slug", "digest"]);
+			if (!isReviewPolicy(input.reviewPolicy))
+				throw new Error(
+					`reviewPolicy ${input.reviewPolicy === undefined ? "is required" : "is invalid"}. ${WRITE_REVIEW_POLICY_HELP}`,
+				);
+		}
 		if (tool === "edit") checkEntryKeys(input.edits, "edits", 32, ["oldText", "newText"]);
 		validate?.();
 	});
@@ -410,7 +414,7 @@ function serialize(input: MemoryWrite, created: string, today: string, supersede
 		verified_date: input.verified ? today : null,
 		supersedes,
 		superseded_by: null,
-		...(input.reviewPolicy !== undefined ? { review_policy: input.reviewPolicy } : {}),
+		review_policy: input.reviewPolicy,
 		...(input.reviewAfter !== undefined ? { review_after: input.reviewAfter } : {}),
 		...(!input.verified && prior?.meta.review_flag ? { review_flag: prior.meta.review_flag } : {}),
 	};
@@ -851,7 +855,9 @@ export function reviewMemory(
 	preflightMutationArguments("review", input, () => {
 		memoryRoot(rootValue);
 		validateReviewIdentity(input);
-		validateReviewSelection(input, true);
+		if (input.reviewPolicy !== undefined && input.reviewPolicy !== null && !isReviewPolicy(input.reviewPolicy))
+			throw new Error("reviewPolicy must be on-change, before-use or null to clear it");
+		validateReviewAfter(input.reviewAfter);
 		if (input.outcome !== "confirmed" && input.outcome !== "unresolved") throw new Error("Invalid review outcome");
 		if (input.outcome === "unresolved") text(input.reason, "reason", 600);
 		else if (input.reason !== undefined) throw new Error("reason applies only to an unresolved review");

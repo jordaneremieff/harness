@@ -1,7 +1,7 @@
 import { arr, bool, int, num, obj, opt, str, type Schema, type Static } from "@earendil-works/pi-schema";
 import { REVISION_PATTERN } from "./history.ts";
 import { preflightRetrievalArguments } from "./retrieval.ts";
-import { DIGEST, preflightMutationArguments, SLUG, type WriteReceipt } from "./store.ts";
+import { DIGEST, preflightMutationArguments, SLUG, WRITE_REVIEW_POLICY_HELP, type WriteReceipt } from "./store.ts";
 
 /**
  * Tool schemas, model-facing text, and result framing shared by the ordinary
@@ -17,7 +17,6 @@ const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[numb
 const booleanLiteral = (value: true): Schema<true> => ({ type: "boolean", const: value });
 const slug = () => str({ pattern: SLUG.source, minLength: 1, maxLength: 120 });
 const digest = () => str({ pattern: DIGEST.source });
-const reviewPolicy = () => StringEnum(["on-change", "before-use"]);
 const reviewAfter = (): Schema<string | null> => ({ type: ["string", "null"], pattern: "^\\d{4}-\\d{2}-\\d{2}$" });
 const reviewSources = () => str({ minLength: 1, maxLength: 1500 });
 const reviewReason = () => str({ minLength: 1, maxLength: 600 });
@@ -113,7 +112,7 @@ export const memoryWriteParameters = obj(
 			description: "Sources, dates and scope of evidence.",
 		}),
 		verified: bool(),
-		reviewPolicy: opt(reviewPolicy()),
+		reviewPolicy: { ...StringEnum(["on-change", "before-use"]), description: WRITE_REVIEW_POLICY_HELP },
 		reviewAfter: opt(reviewAfter()),
 		expectedDigest: opt(digest()),
 		supersedes: opt(arr(obj({ slug: slug(), digest: digest() }, { open: true }), { maxItems: 16 })),
@@ -210,7 +209,7 @@ export const MEMORY_SEARCH_GUIDELINES: readonly string[] = [
 
 export const MEMORY_WRITE_GUIDELINES: readonly string[] = [
 	"Store durable operator preferences, confirmed decisions and reasons, authoritative environment facts or verified recurring lessons. High confidence: store automatically when explicit or verified, future-useful, concise, sourced and not already stored. Medium confidence: ask only if the future value matters. Low confidence or silence: do not infer or store.",
-	"Never store task state, handovers, TODOs, logs, repository-defined facts, secrets, sensitive personal data or speculation. Search before creation or if the target is unknown. Read the corpus README before the first write if it exists. Use memory_edit for targeted changes, not ordinary file edits. Set verified:true only after a whole-result check against an operator statement about their own facts or preferences, or an authoritative source inspected now. Use on-change for standing or scoped facts, before-use for current external facts; justify reviewAfter in sources. Report Memory updated: <file>. Delete only on explicit request. Check dependants; forgetting includes retained history and external archives within scope.",
+	"Never store task state, handovers, TODOs, logs, repository-defined facts, secrets, sensitive personal data or speculation. Search before creation or if the target is unknown. Read the corpus README before the first write if it exists. Use memory_edit for targeted changes, not ordinary file edits. Set verified:true only after a whole-result check against an operator statement about their own facts or preferences, or an authoritative source inspected now. Choose reviewPolicy on creation or full rewrite. Justify any reviewAfter date in sources. Report Memory updated: <file>. Delete only on explicit request. Check dependants; forgetting includes retained history and external archives within scope.",
 ];
 
 export const MEMORY_REVIEW_GUIDELINES: readonly string[] = [

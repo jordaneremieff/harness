@@ -28,6 +28,7 @@ function fixture(t: { after(fn: () => void): void }) {
 		details: "Keep the local files.",
 		sources: "Operator statement.",
 		verified: true,
+		reviewPolicy: "on-change",
 	});
 	const path = join(root, "editor-choice.md");
 	const source = readFileSync(path, "utf8");
@@ -218,6 +219,7 @@ test("writer titles with trailing hashes permit body edits and retain their exac
 			details: "Keep the local files.",
 			sources: "Operator statement.",
 			verified: true,
+			reviewPolicy: "on-change",
 		});
 		const before = readFileSync(f.path, "utf8");
 		const input = { ...f.input, expectedDigest: sourceDigest(before) };
@@ -720,6 +722,7 @@ test("write and edit accept format characters and C1 controls under the same tex
 		details: "Soft\u00adhyphen detail\u0085",
 		sources: "Probe",
 		verified: true,
+		reviewPolicy: "on-change",
 	});
 	assert.ok(receipt.digest);
 	const source = readFileSync(join(f.root, "emoji.md"), "utf8");
@@ -748,6 +751,7 @@ test("write and edit accept format characters and C1 controls under the same tex
 				details: "Detail",
 				sources: "Source",
 				verified: false,
+				reviewPolicy: "on-change",
 			}),
 		);
 	}

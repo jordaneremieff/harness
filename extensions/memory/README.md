@@ -328,6 +328,12 @@ Deadline states are `due`, `not-due`, `unscheduled`, and `unknown`; no state lab
 a note simply fresh. Malformed fields remain readable with a problem instead of
 normalization. Historical pages interpret those old declarations, not the current note.
 
+On the first page of a current active note, `reviewGuidance` appears for `before-use`,
+a due review date, or an unresolved concern. It directs you to check the defining
+source and identifies when a durable correction or review is appropriate. The read
+never changes the note. Routine source checks need no write, and unavailable sources
+do not confirm a claim. Other reads omit the guidance.
+
 - `on-change` applies to standing preferences, decisions, and explicitly version-scoped
   facts. Contrary evidence or changed scope requires review.
 - `before-use` requires a current defining-source check when a decision depends on current
@@ -362,7 +368,8 @@ For a correction:
 1. Read the chosen revision and all relevant qualifications.
 2. Read the current subject, its current digest, and replacement links.
 3. Use `memory_edit` for a targeted correction, or `memory_write` for an intentional
-   complete rewrite, with the **current** digest and explicit whole-result `verified`.
+   complete rewrite. Supply the **current** digest and explicit whole-result `verified`
+   in either case. A rewrite also requires a `reviewPolicy` choice.
 4. Reassess all resulting content. Old verification never renews automatically;
    `verified: false` clears its date. A superseded current subject still refuses.
 
@@ -404,9 +411,9 @@ request separately accounts for live notes, retained captures, and external arch
 
 ### `memory_write`
 
-Required fields are `slug`, `title`, `tags`, `summary`, `details`, `sources`, and
-`verified`. Separate sections prevent malformed model-authored frontmatter. The
-writer generates the title heading, section headings, dates and lifecycle fields.
+Required fields are `slug`, `title`, `tags`, `summary`, `details`, `sources`,
+`verified`, and `reviewPolicy`. Supply the note in separate fields. The writer
+formats the frontmatter, title heading, section headings, dates and lifecycle fields.
 A lowercase kebab-case subject slug is stable across updates; `readme` is reserved.
 Tags are bounded descriptive subject cues, not query filters. All content sections
 must be nonblank. Titles and tags must be single-line, including no Unicode line
@@ -425,9 +432,13 @@ operator statement or authoritative source; the extension does not verify facts.
 true forward from prior metadata without a whole-result check now. A wording-only
 change without a new authoritative check uses false.
 
-Optional `reviewPolicy` selects `on-change` or `before-use`; `reviewAfter` selects a
-subject-specific UTC date or null. Explain any deadline in the source evidence.
-A whole-note rewrite reselects both fields: omission removes the old policy/deadline.
+Choose `on-change` for standing preferences, decisions, or explicitly scoped facts.
+Choose `before-use` for facts about a changeable environment or external behaviour.
+Choose the policy whenever you create or rewrite a note. Existing notes without
+a policy remain readable as `unclassified`.
+
+Optional `reviewAfter` sets a subject-specific UTC date or null. Explain any deadline
+in the source evidence. A whole-note rewrite with no `reviewAfter` removes the old deadline.
 It omits the old digest-bound `last_review`, which remains in prior history. A rewrite
 with false preserves an unresolved concern; true clears it. Neither content edits
 nor confirmation automatically move a deadline.
@@ -699,7 +710,11 @@ and the first 800 summary characters. It drops short words and a fixed stop list
 Cue words from titles and slugs carry more weight than summary-only words; rare
 words carry more weight than common ones. The ordinary lexical rule sums the six
 largest term weights, normalises for cue and summary length, and requires at least
-two cue matches and a score of 18. With few eligible notes, even a full title can
+two cue matches and a score of 18. Recall checks the leading match against the
+actual passages: at least two eligible words from its slug must appear in one
+paragraph, or one sentence must meet the whole lexical rule. A blank line
+separates paragraphs; a wrapped line does not. If neither condition holds,
+recall sends no notice instead of guessing another subject. With few eligible notes, even a full title can
 score below that floor. With at most 25 eligible notes, a single-line input can match
 a unique complete title with at least two substantive words. A short unquoted
 question can contain the complete title if it has at least three substantive
@@ -722,11 +737,10 @@ that appears only after the first 32,768 units takes no part. Extraction and
 scoring work stay fixed for any input size. The adapters still compare and digest
 complete input for admission and occurrence identity.
 
-A notice contains a title, a discovery excerpt, the exact source digest, lifecycle
-and review state, and a requirement to read the full note before use. The excerpt
-is not an answer: later qualifications and current instructions still control.
-The title and excerpt fit at most 160 and 300 UTF-8 bytes respectively, which also
-bounds their character counts. The complete notice fits 2,048 UTF-8 bytes.
+A notice points to the subject slug and exact source digest. It reports lifecycle
+and review state, but does not inject the note's title, summary or concern text.
+If the subject matters to the request, read the note and its qualifications
+before use. Otherwise ignore it. The complete notice fits 2,048 UTF-8 bytes.
 
 A separate phrase detector recognises preference and future-use language outside
 Markdown fences and blockquotes in input of at most 2,000 UTF-16 units. Longer

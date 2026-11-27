@@ -47,6 +47,7 @@ function note(slug = "editor-choice"): MemoryWrite {
 		details: "The operator prefers a small local editor.",
 		sources: "- Operator statement.",
 		verified: true,
+		reviewPolicy: "on-change",
 	};
 }
 function metadata(root: string, slug: string) {
@@ -528,6 +529,15 @@ test("configuration refuses missing, empty and relative roots", () => {
 	for (const root of ["", "relative", "/bad\nroot"]) assert.throws(() => memoryRoot(root), /Memory unavailable/);
 	assert.equal(memoryRoot("/notes"), "/notes");
 });
+test("creation requires a review policy before corpus initialization", (t) => {
+	const root = join(corpus(t), "notes");
+	const { reviewPolicy: _policy, ...input } = note();
+	const result = failure(() => writeMemory(root, input as MemoryWrite));
+	assert.match(result.receipt.error ?? "", /reviewPolicy is required.*on-change.*before-use/);
+	assert.deepEqual(result.receipt.written, []);
+	assert.equal(fs.existsSync(root), false);
+});
+
 test("create initializes a missing root and complete dated contract", (t) => {
 	const root = join(corpus(t), "notes");
 	const result = writeMemory(root, note());
@@ -546,6 +556,7 @@ test("create initializes a missing root and complete dated contract", (t) => {
 		verified_date: today,
 		supersedes: [],
 		superseded_by: null,
+		review_policy: "on-change",
 	});
 	assert.equal(result.digest, sourceDigest(readFileSync(join(root, "editor-choice.md"))));
 	assert.deepEqual(readdirSync(root).sort(), [".memory-write.lock", "README.md", "editor-choice.md"]);

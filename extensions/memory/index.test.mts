@@ -61,6 +61,7 @@ const input = {
 	details: "A confirmed durable preference.",
 	sources: "- Operator statement today.",
 	verified: true,
+	reviewPolicy: "on-change",
 };
 
 test("factory registers only the memory jobs, with native cards and trigger guidance", () => {
@@ -191,7 +192,7 @@ test("registered jobs round-trip source evidence and serialize concurrent update
 		const note = (page.details.notes as JsonObject[])[0];
 		if (note && args.detail === true) {
 			assert.ok(Array.isArray(note.formulations));
-			assert.equal((note.freshness as JsonObject).policy, "unclassified");
+			assert.equal((note.freshness as JsonObject).policy, "on-change");
 		} else if (note) {
 			assert.equal(note.formulations, undefined);
 			assert.equal(note.freshness, undefined);
@@ -300,8 +301,11 @@ test("lifecycle schemas reject unsupported policies, incomplete plans and unboun
 	for (const plan of planCases)
 		assert.throws(() => argumentsFor(all.get("memory_history") as Registered, { slug: "one", plan }));
 	assert.throws(() => argumentsFor(all.get("memory_search") as Registered, { includeRetired: "yes" }));
-	const normalized = argumentsFor(all.get("memory_write") as Registered, { ...input, reviewPolicy: null });
-	assert.equal(Object.hasOwn(normalized, "reviewPolicy"), false);
+	const writer = all.get("memory_write") as Registered;
+	const { reviewPolicy, ...unclassified } = input;
+	for (const args of [unclassified, { ...input, reviewPolicy: null }, { ...input, reviewPolicy: "monthly" }])
+		assert.throws(() => argumentsFor(writer, args), /reviewPolicy/);
+	assert.equal(argumentsFor(writer, input).reviewPolicy, reviewPolicy);
 	const nullable = argumentsFor(reviewer, { ...review, reviewPolicy: null, reviewAfter: null });
 	assert.equal(nullable.reviewPolicy, null);
 	assert.equal(nullable.reviewAfter, null);

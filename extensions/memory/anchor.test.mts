@@ -91,6 +91,7 @@ test("memory_edit refuses a mismatched anchor with the exact text, and the retry
 		details: "Keep the local files.\nThey stay on this machine.",
 		sources: "Operator statement.",
 		verified: true,
+		reviewPolicy: "on-change",
 	});
 	const path = join(root, "editor-choice.md");
 	const source = readFileSync(path, "utf8");

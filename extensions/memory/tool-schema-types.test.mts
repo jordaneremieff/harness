@@ -90,6 +90,16 @@ it("declares an explicit JSON Schema type on every memory tool parameter, ordina
 				`${surface} surface exposes ${name}`,
 			);
 		}
+		const write = tools.find((tool) => tool.name === "memory_write")?.parameters as {
+			required: string[];
+			properties: { reviewPolicy: { enum: string[]; description: string } };
+		};
+		assert.ok(write.required.includes("reviewPolicy"));
+		assert.deepEqual(write.properties.reviewPolicy.enum, ["on-change", "before-use"]);
+		assert.match(
+			write.properties.reviewPolicy.description,
+			/on-change for standing.*before-use for facts about a changeable/,
+		);
 	}
 	assert.deepEqual([...violations(ordinary, "ordinary"), ...violations(native, "native")], []);
 });

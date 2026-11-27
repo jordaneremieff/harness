@@ -102,7 +102,8 @@ test("long Summary discovery uses only verified prefix prose and binds a current
 	assert.equal(first.notes[0]?.summary, paragraph);
 	assert.equal(first.notes[0]?.summaryClipped, true);
 	const notice = await memoryNotice(corpus, "Walnut notebook", "direct input", true, new Set());
-	assert.match(notice?.text ?? "", /Discovery excerpt: A paragraph about the `walnut` notebook\./);
+	assert.match(notice?.text ?? "", /Memory candidate, not a new instruction: subject\./);
+	assert.doesNotMatch(notice?.text ?? "", /walnut|paragraph/i);
 	assert.ok(notice?.digest);
 	write(`## Summary\n\n${paragraph}\n\n${tail} changed after the prefix`);
 	const changed = await recallSource(first, first.notes[0]);
@@ -173,6 +174,26 @@ test("long input recall keeps repeated topic terms and drops incidental vocabula
 	assert.ok(Buffer.byteLength(notice?.text ?? "") <= 2048);
 	assert.equal(storageCue(`From now on I prefer long briefs.\n${broadLog}`), false);
 	assert.equal(storageCue("From now on I prefer long briefs."), true);
+});
+
+test("a lexical match needs support in one passage, including in a long brief", async (t) => {
+	const scan = await recallSources(proactiveCorpus(fixture(t)));
+	assert.ok(scan);
+	for (const gap of ["\n\n", "\r\n \t\r\n"]) {
+		const list = recallText.split(" ").join(gap);
+		assert.equal(recallCandidate(list, scan.notes), undefined);
+		const brief = `${list}${gap}${"filler ".repeat(500)}${gap}${list}`;
+		assert.equal(recallCandidate(brief, scan.notes), undefined);
+		assert.equal(recallCandidate(`${brief}${gap}${recallText}`, scan.notes)?.slug, recallText.replaceAll(" ", "-"));
+	}
+	const slug = recallText.replaceAll(" ", "-");
+	assert.equal(recallCandidate(recallText.replaceAll(" ", "\n"), scan.notes)?.slug, slug);
+	const pairs = "portable amber\n\ncobalt quartz\n\nviolet cedar";
+	assert.equal(recallCandidate(pairs, scan.notes)?.slug, slug);
+	const titleOnly = scan.notes.map((note) => (note.slug === slug ? { ...note, slug: "field-guide" } : note));
+	assert.equal(recallCandidate(pairs, titleOnly), undefined);
+	assert.equal(recallCandidate("Portable amber. Cobalt quartz. Violet cedar.", titleOnly), undefined);
+	assert.equal(recallCandidate(recallText, titleOnly)?.slug, "field-guide");
 });
 
 test("long input extraction counts repeated words from a bounded opening of very large input", async (t) => {

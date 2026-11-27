@@ -36,6 +36,7 @@ function note(slug: string, details = "The durable scope is documented here."): 
 		details,
 		sources: "A test source.",
 		verified: false,
+		reviewPolicy: "on-change",
 	};
 }
 

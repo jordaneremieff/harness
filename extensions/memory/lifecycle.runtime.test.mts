@@ -247,6 +247,11 @@ test("loaded tools preserve a note through correction, review, retirement, react
 			reviewPolicy: "before-use",
 			reviewAfter: "2000-01-01",
 		};
+		const { reviewPolicy: _policy, ...unclassified } = input;
+		const missingPolicy = await invoke("memory_write", unclassified);
+		assert.equal(missingPolicy.isError, true);
+		assert.match(text(missingPolicy), /reviewPolicy is required.*on-change.*before-use/);
+		assert.equal(existsSync(corpus), false);
 		const created = details(await invoke("memory_write", input));
 		assert.equal(created.initialized, true);
 		assert.equal(sections.at(-1), sections[0]);
@@ -297,6 +302,8 @@ return {
 			declared: true,
 			refused: true,
 		});
+		const first = details(await invoke("memory_read", { slug: input.slug, digest: firstDigest }));
+		assert.match(String(first.reviewGuidance), /defining source before use.*Review is due/);
 		const collected = await readPages(invoke, input.slug, firstDigest);
 		const path = join(corpus, `${input.slug}.md`);
 		assert.equal(collected, readFileSync(path, "utf8"));

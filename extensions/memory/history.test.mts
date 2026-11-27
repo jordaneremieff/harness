@@ -34,6 +34,7 @@ function note(slug = "subject"): MemoryWrite {
 		details: "Qualified original detail.",
 		sources: "Synthetic evidence.",
 		verified: true,
+		reviewPolicy: "on-change",
 	};
 }
 function failure(fn: () => unknown): MemoryWriteError {

@@ -252,6 +252,7 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 			details: "Original detail.",
 			sources: "- Durable test.",
 			verified: false,
+			reviewPolicy: "on-change",
 		});
 		const notePath = join(corpus, "durable-note.md");
 		await drive("memory_edit", {
@@ -379,6 +380,7 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 			details: "Details.",
 			sources: "Test.",
 			verified: false,
+			reviewPolicy: "on-change",
 			expectedDigest: "0".repeat(64),
 		});
 		const refusal = (await toolResults(conversation)).at(-1)?.message;
@@ -613,7 +615,7 @@ test("native codemode receives memory pages and errors through nested tool tasks
 			'try { await tools.memory_read({ slug: "missing-note" }); throw new Error("Read unexpectedly succeeded"); } catch (error) { text(String(error)); }',
 		);
 		await drive(
-			'try { await tools.memory_write({ slug: "blocked-note", title: "Blocked note", tags: [], summary: "Summary", details: "Details", sources: "Test", verified: false }); throw new Error("Write unexpectedly succeeded"); } catch (error) { text(String(error)); }',
+			'try { await tools.memory_write({ slug: "blocked-note", title: "Blocked note", tags: [], summary: "Summary", details: "Details", sources: "Test", verified: false, reviewPolicy: "on-change" }); throw new Error("Write unexpectedly succeeded"); } catch (error) { text(String(error)); }',
 		);
 		const results = await toolResults(conversation);
 		assert.deepEqual(

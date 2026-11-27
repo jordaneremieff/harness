@@ -1498,6 +1498,28 @@ function noteReferenceFields(
 	);
 }
 
+function noteReviewFields(args: NoteRequest, lifecycle: Lifecycle | null, freshness: Freshness | null) {
+	if (args.revision !== undefined || args.offset !== 0 || lifecycle?.status !== "active" || freshness === null)
+		return {};
+	const beforeUse = freshness.policy === "before-use";
+	const due = freshness.deadline === "due";
+	const disputed = freshness.concern !== null;
+	if (!beforeUse && !due && !disputed) return {};
+	const guidance = [
+		beforeUse
+			? "Check the current defining source before use, even if verified today."
+			: disputed
+				? "Check the disputed claim against its current defining source."
+				: "Check the current defining source before relying on the claim.",
+	];
+	if (due) guidance.push("Review is due; the note does not expire.");
+	if (disputed) guidance.push("The concern qualifies only the disputed claim.");
+	guidance.push(
+		"A routine check needs no write. Use memory_edit for a durable correction. Use memory_review for whole-note confirmation or a durable unresolved concern. An unavailable source is not confirmation.",
+	);
+	return { reviewGuidance: guidance.join(" ") };
+}
+
 function runNote(root: string, args: NoteRequest, signal?: AbortSignal): Record<string, unknown> {
 	const { identity, directory, file, source, digest, text } = selectedSource(root, args, signal);
 	const totalCodePoints = codePointCount(text);
@@ -1505,6 +1527,8 @@ function runNote(root: string, args: NoteRequest, signal?: AbortSignal): Record<
 	const slice = sliceByCodePoints(text, args.offset, PAGE_CODEPOINTS);
 	const header = memorySourceCache.read(directory, file, { text, truncated: false });
 	const contract = file.toLowerCase() === "readme.md";
+	const lifecycle = contract ? null : sourceLifecycle(header, args.slug);
+	const freshness = contract ? null : sourceFreshness(header.parsed, header.header);
 	const result: Record<string, unknown> = {
 		ok: true,
 		kind: "note",
@@ -1520,8 +1544,9 @@ function runNote(root: string, args: NoteRequest, signal?: AbortSignal): Record<
 						"Historical evidence only, not current authority. Lifecycle describes this prior source, not the current note. Read the current note and replacement links before any correction; use its current digest and explicit whole-note verification.",
 				}
 			: {}),
-		lifecycle: contract ? null : sourceLifecycle(header, args.slug),
-		freshness: contract ? null : sourceFreshness(header.parsed, header.header),
+		lifecycle,
+		freshness,
+		...noteReviewFields(args, lifecycle, freshness),
 		...noteReferenceFields(root, args, file, text, header, signal),
 		sourceBytes: source.buffer.length,
 		maxSourceBytes: SOURCE_READ_BYTES,

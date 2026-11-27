@@ -35,6 +35,7 @@ function note(slug = "subject"): MemoryWrite {
 		details: "Qualified detail.",
 		sources: "Operator statement.",
 		verified: true,
+		reviewPolicy: "on-change",
 	};
 }
 function fixture(t: { after(fn: () => void): void }) {
@@ -102,6 +103,7 @@ test("metadata confirmation inserts optional keys and preserves every other byte
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T23:59:59.000Z") });
 	const f = fixture(t);
 	const before = `\uFEFF${f.source()}`
+		.replace('review_policy: "on-change"\n', "")
 		.replace("tags: []", "# Keep this comment\ntags: []\nunknown: {owner: operator}")
 		.replaceAll("\n", "\r\n")
 		.concat("\n## Other\nExact tail.\n");
@@ -140,8 +142,8 @@ test("optional insertion uses the closing delimiter newline and preserves an end
 	const f = fixture(t);
 	const base = f.source();
 	for (const [source, newline] of [
-		[base.replace("superseded_by: null\n---\n", "superseded_by: null\r\n---\n"), "\n"],
-		[base.replace("superseded_by: null\n---\n", "superseded_by: null\n---\r\n"), "\r\n"],
+		[base.replace("\n---\n", "\r\n---\n"), "\n"],
+		[base.replace("\n---\n", "\n---\r\n"), "\r\n"],
 		[parsed(base).header.replace("\n---\n", "\r\n---"), "\r\n"],
 	]) {
 		writeFileSync(f.path, source);
@@ -243,15 +245,22 @@ test("whole rewrites require new policy selection and do not silently settle a p
 	writeMemory(f.root, { ...note(), expectedDigest: f.digest(), reviewPolicy: "on-change", reviewAfter: "2026-12-01" });
 	confirm(f);
 	flag(f);
-	const concern = parsed(f.source()).meta.review_flag;
-	writeMemory(f.root, { ...note(), expectedDigest: f.digest(), verified: false });
+	const before = f.source();
+	const concern = parsed(before).meta.review_flag;
+	const { reviewPolicy: _policy, ...rewrite } = { ...note(), expectedDigest: f.digest(), verified: false };
+	const result = failure(() => writeMemory(f.root, rewrite as MemoryWrite));
+	assert.match(result.receipt.error ?? "", /reviewPolicy is required.*on-change.*before-use/);
+	assert.deepEqual(result.receipt.captured, []);
+	assert.equal(f.source(), before);
+	writeMemory(f.root, { ...rewrite, reviewPolicy: "before-use" });
 	let meta = parsed(f.source()).meta;
-	for (const key of ["review_policy", "review_after", "last_review"]) assert.ok(!Object.hasOwn(meta, key));
+	for (const key of ["review_after", "last_review"]) assert.ok(!Object.hasOwn(meta, key));
+	assert.equal(meta.review_policy, "before-use");
 	assert.deepEqual(meta.review_flag, concern);
 	writeMemory(f.root, { ...note(), expectedDigest: f.digest(), verified: true, reviewAfter: "2026-12-02" });
 	meta = parsed(f.source()).meta;
 	assert.ok(!Object.hasOwn(meta, "review_flag"));
-	assert.ok(!Object.hasOwn(meta, "review_policy"));
+	assert.equal(meta.review_policy, "on-change");
 	assert.equal(meta.review_after, "2026-12-02");
 });
 
@@ -379,9 +388,9 @@ test("retired targets accept explicit supersession and partial publication retri
 	);
 });
 
-test("owned optional fields refuse aliases, duplicates, quoted keys, multiline values and invalid structures", (t) => {
+test("owned review fields refuse aliases, duplicates, quoted keys, multiline values and invalid structures", (t) => {
 	const f = fixture(t);
-	const base = f.source();
+	const base = f.source().replace('review_policy: "on-change"\n', "");
 	for (const field of [
 		"review_policy: on-change\nreview_policy: before-use",
 		'"review_policy": on-change',
@@ -549,7 +558,7 @@ test("new mutation validation refuses malformed dates, outcomes and credential c
 
 test("freshness exposes policy, deadline and declared verification without inferred renewal", (t) => {
 	const f = fixture(t);
-	const source = parsed(f.source());
+	const source = parsed(f.source().replace('review_policy: "on-change"\n', ""));
 	let view = sourceFreshness(source.meta, source.header, "2026-01-02");
 	assert.equal(view.policy, "unclassified");
 	assert.equal(view.deadline, "unscheduled");

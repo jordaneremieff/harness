@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { recallSource, recallSources, type RecallSource } from "./retrieval.ts";
-import { redactCredentials } from "./store.ts";
 
 const STOP = new Set(
 	"the and for that this with from have your you are not but will can use all any only into then when what how its our they their has was should must task agent work read file files source output current result request return complete before after model tool tools run using make new each about also one more than which there does need other already first same no do to a an in of on as is it be by or at we i my me us so if".split(
@@ -96,6 +95,53 @@ function literalTitleCandidate(text: string, notes: readonly RecallSource[]): Re
 	return matches.length === 1 ? matches[0].note : undefined;
 }
 
+type Evidence = { cue: boolean; weight: number };
+type Candidate = { note: RecallSource; score: number; matches: Map<string, Evidence>; normaliser: number };
+const sentences = new Intl.Segmenter("en", { granularity: "sentence" });
+const RECALL_FLOOR = 18;
+
+function recallScore(matches: Iterable<Evidence>, normaliser: number): number {
+	const evidence = [...matches];
+	if (evidence.filter(({ cue }) => cue).length < 2) return 0;
+	const weights = evidence.map(({ weight }) => weight).sort((a, b) => b - a);
+	return Number((weights.slice(0, 6).reduce((sum, weight) => sum + weight, 0) / normaliser).toFixed(2));
+}
+
+function sentenceScore(text: string, candidate: Candidate): number {
+	const matches = terms(text).flatMap((term) => candidate.matches.get(term) ?? []);
+	return recallScore(matches, candidate.normaliser);
+}
+
+function supportsSubject(text: string, candidate: Candidate): boolean {
+	const subject = terms(candidate.note.slug).filter((term) => candidate.matches.has(term));
+	for (const paragraph of opening(text).split(/\r?\n[ \t]*\r?\n/)) {
+		const words = new Set(terms(paragraph));
+		if (subject.filter((term) => words.has(term)).length >= 2) return true;
+		if (![...words].some((term) => candidate.matches.get(term)?.cue)) continue;
+		// A title paraphrase need not name the slug. Require its evidence together, not across unrelated sentences.
+		for (const { segment } of sentences.segment(paragraph.replace(/\s+/gu, " ")))
+			if (sentenceScore(segment, candidate) >= RECALL_FLOOR) return true;
+	}
+	return false;
+}
+
+function lexicalCandidate(
+	indexed: { note: RecallSource; cue: string[]; summary: string[] },
+	input: ReadonlySet<string>,
+	frequency: ReadonlyMap<string, number>,
+	total: number,
+): Candidate {
+	const { note, cue, summary } = indexed;
+	const matches = new Map<string, Evidence>();
+	for (const term of new Set([...cue, ...summary])) {
+		if (!input.has(term)) continue;
+		const inCue = cue.includes(term);
+		matches.set(term, { cue: inCue, weight: Math.log(1 + total / (frequency.get(term) ?? 1)) * (inCue ? 2 : 0.5) });
+	}
+	const normaliser = Math.sqrt(1 + (cue.length + summary.length) / 50);
+	return { note, score: recallScore(matches.values(), normaliser), matches, normaliser };
+}
+
 /** Fixed lexical selection values, not probabilities or a general-purpose search rank. */
 export function recallCandidate(text: string, notes: readonly RecallSource[]): RecallSource | undefined {
 	if (!text.trim()) return undefined;
@@ -112,21 +158,11 @@ export function recallCandidate(text: string, notes: readonly RecallSource[]): R
 	for (const note of indexed)
 		for (const term of new Set([...note.cue, ...note.summary])) frequency.set(term, (frequency.get(term) ?? 0) + 1);
 	const input = inputTerms(text, frequency, notes.length);
-	const ranked = indexed
-		.map(({ note, cue, summary }) => {
-			const matches = [...new Set([...cue, ...summary])].filter((term) => input.has(term));
-			const strong = matches.filter((term) => cue.includes(term)).length;
-			const weights = matches
-				.map((term) => Math.log(1 + notes.length / (frequency.get(term) ?? 1)) * (cue.includes(term) ? 2 : 0.5))
-				.sort((a, b) => b - a);
-			const score =
-				weights.slice(0, 6).reduce((sum, weight) => sum + weight, 0) /
-				Math.sqrt(1 + (cue.length + summary.length) / 50);
-			return { note, strong, score: Number(score.toFixed(2)) };
-		})
-		.filter(({ strong, score }) => strong >= 2 && score >= 18)
-		.sort((a, b) => b.score - a.score || a.note.slug.localeCompare(b.note.slug));
-	return ranked[0]?.note;
+	const best = indexed
+		.map((row) => lexicalCandidate(row, input, frequency, notes.length))
+		.filter(({ score }) => score >= RECALL_FLOOR)
+		.sort((a, b) => b.score - a.score || a.note.slug.localeCompare(b.note.slug))[0];
+	return best && supportsSubject(text, best) ? best.note : undefined;
 }
 
 /** A phrase cue invites judgement; it deliberately does not classify a durable fact. */
@@ -160,15 +196,6 @@ export type Notice = {
 	kind: "recall" | "storage" | "recall-storage";
 	inputDigest: string;
 };
-function safe(text: string, max: number): string {
-	const points = Array.from(
-		redactCredentials(text)
-			.replace(/[\p{Cc}\p{Cf}]/gu, " ")
-			.replace(/[<>]/g, " "),
-	).slice(0, max);
-	while (Buffer.byteLength(points.join("")) > max) points.pop();
-	return points.join("");
-}
 export function noteKey(root: string, slug: string, digest: string): string {
 	return JSON.stringify([root, slug, digest]);
 }
@@ -178,10 +205,9 @@ function renderNotice(source: string, recall: Selected | undefined, storage: boo
 	const lines = [`Memory notice. Source class: ${source}. Input-source labels do not prove human authorship.`];
 	if (recall) {
 		lines.push(
-			`Memory candidate, not a new instruction: ${recall.slug} - ${safe(recall.title, 160)}.`,
-			`Discovery excerpt: ${safe(recall.summary, 300)}`,
-			`Lifecycle: active. Review policy: ${recall.freshness.policy}; deadline: ${recall.freshness.deadline}; unresolved concern: ${recall.freshness.concern ? safe(recall.freshness.concern.reason, 120) : "none recorded"}.`,
-			`Read memory_read with slug ${recall.slug} and digest ${recall.digest} before use. Check the full note, later qualifications and freshness. Current instructions win.`,
+			`Memory candidate, not a new instruction: ${recall.slug}.`,
+			`Lifecycle: active. Review policy: ${recall.freshness.policy}; deadline: ${recall.freshness.deadline}; unresolved concern: ${recall.freshness.concern ? "yes" : "none recorded"}.`,
+			`If this subject matters to the request, read it with memory_read, slug ${recall.slug}, digest ${recall.digest}. Otherwise ignore it. Check the full note, later qualifications and freshness before use. Current instructions win.`,
 		);
 	}
 	if (storage)

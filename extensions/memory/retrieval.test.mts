@@ -1012,6 +1012,57 @@ test("reads original note and README source, preserving BOM and code-point pages
 	);
 });
 
+test("current active first pages offer review guidance only for the applicable triggers", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-02T00:00:00.000Z") });
+	const note = (fields: string) => ACTIVE.replace("\n---\n", `\n${fields}\n---\n`);
+	const checkFirst = `${note("review_policy: before-use").replace("verified_date: 2025-01-03", "verified_date: 2026-01-02")}${"x".repeat(13000)}`;
+	const sourceDigest = createHash("sha256").update(checkFirst).digest("hex");
+	const revision = newRevision(sourceDigest);
+	const concern = JSON.stringify({ date: "2026-01-01", reason: "Conflicting evidence", sources: "Current source" });
+	const root = corpus({
+		"README.md": note("review_policy: before-use"),
+		"changeable.md": checkFirst,
+		"due.md": note("review_policy: on-change\nreview_after: 2026-01-02"),
+		"disputed.md": note(`review_policy: on-change\nreview_flag: ${concern}`),
+		"future.md": note("review_policy: on-change\nreview_after: 2026-01-03"),
+		"standing.md": note("review_policy: on-change"),
+		"unclassified.md": ACTIVE,
+		"retired.md": note("review_policy: before-use").replace("status: active", "status: retired"),
+		"superseded.md": note("review_policy: before-use")
+			.replace("status: active", "status: superseded")
+			.replace("superseded_by: null", "superseded_by: standing"),
+		"unknown.md": note("review_policy: before-use").replace("status: active", "status: unknown"),
+		[`.memory-history/changeable/${revision}.md`]: checkFirst,
+	});
+	for (const [slug, check] of [
+		["changeable", /before use, even if verified today/],
+		["due", /Review is due; the note does not expire/],
+		["disputed", /Check the disputed claim.*only the disputed claim/],
+	] as const) {
+		const guidance = string((await read(root, { slug })).reviewGuidance);
+		assert.match(guidance, /defining source/);
+		assert.match(guidance, check);
+		assert.match(guidance, /routine check needs no write/);
+		assert.match(
+			guidance,
+			/memory_edit.*durable correction.*memory_review.*whole-note confirmation.*durable unresolved concern/,
+		);
+		assert.match(guidance, /unavailable source is not confirmation/);
+	}
+	for (const slug of ["README", "standing", "unclassified", "future", "retired", "superseded", "unknown"]) {
+		assert.equal(Object.hasOwn(await read(root, { slug }), "reviewGuidance"), false, slug);
+	}
+	const { text, pages } = await collect(root, "changeable");
+	assert.equal(text, checkFirst);
+	assert.equal(pages[0].digest, sourceDigest);
+	assert.equal(object(pages[0].freshness).verifiedDate, "2026-01-02");
+	assert.ok(pages.length > 1);
+	for (const page of pages.slice(1)) assert.equal(Object.hasOwn(page, "reviewGuidance"), false);
+	const historical = await read(root, { slug: "changeable", revision });
+	assert.equal(Object.hasOwn(historical, "reviewGuidance"), false);
+	assert.deepEqual(historical.freshness, pages[0].freshness);
+});
+
 test("a nonzero-offset read loop terminates on a null nextOffset", async () => {
 	const source = `${ACTIVE}${"x".repeat(25000)}`;
 	const root = corpus({ "README.md": README, "long-note.md": source });
