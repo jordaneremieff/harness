@@ -118,23 +118,21 @@ extension CodeTextView {
         let changes = changed.contains(true)
         if changes {
             breakUndoCoalescing()
+            finishInputUndo()
             let manager = undoManager
-            let automatic = manager?.groupsByEvent ?? false
-            // AppKit otherwise nests the batch inside the run loop's implicit undo group.
-            if automatic, manager?.groupingLevel == 1 { manager?.endUndoGrouping() }
-            manager?.groupsByEvent = false
             manager?.beginUndoGrouping()
-            defer {
-                manager?.endUndoGrouping()
-                manager?.groupsByEvent = automatic
-                breakUndoCoalescing()
-            }
+            defer { manager?.endUndoGrouping(); breakUndoCoalescing() }
             guard shouldChangeText(inRanges: edits.map { NSValue(range: $0.range) }, replacementStrings: replacements) else { return false }
+            batchingCoordinates = true
             storage.beginEditing()
             for index in edits.indices.reversed() where changed[index] {
                 storage.replaceCharacters(in: edits[index].range, with: replacements[index])
             }
             storage.endEditing()
+            batchingCoordinates = false
+            for index in edits.indices.reversed() where changed[index] {
+                onCoordinateEdit?(DraftCoordinateEdit(range: edits[index].range, length: replacements[index].utf16.count))
+            }
             didChangeText()
         }
         if explicitSelection {

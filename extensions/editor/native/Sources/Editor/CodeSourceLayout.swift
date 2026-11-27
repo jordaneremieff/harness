@@ -23,7 +23,19 @@ extension CodeTextView {
         let oldEnd = NSMaxRange(range) - delta
         if let columnCheckpoint, range.location < columnCheckpoint.offset { self.columnCheckpoint = nil }
         lineIndex?.applyEdit(in: source, range: range, delta: delta)
-        if !folds.isEmpty {
+        if preserveEditedFolds {
+            let edit = DraftCoordinateEdit(range: NSRange(location: range.location, length: range.length - delta), length: range.length)
+            folds = folds.compactMap { fold in
+                let mapped = edit.map(fold.hidden)
+                let header = line(at: edit.map(NSRange(location: fold.header, length: 0)).location)
+                let start = NSMaxRange(lineRange(header))
+                let end = NSMaxRange(mapped)
+                guard mapped.length > 0, start < end, end <= source.length else { return nil }
+                let tail = end == source.length ? end : lineRange(line(at: end)).location
+                guard start < tail else { return nil }
+                return TextFold(hidden: NSRange(location: start, length: tail - start), header: lineRange(header).location)
+            }
+        } else if !folds.isEmpty {
             var expanded: NSRange?
             folds = folds.compactMap { fold in
                 if oldEnd <= fold.header && range.location < fold.header {
@@ -376,6 +388,10 @@ extension CodeTextView {
                      range editedRange: NSRange, changeInLength delta: Int) {
         if editedMask.contains(.editedCharacters), editedRange.location != NSNotFound {
             storageDidEdit(range: editedRange, delta: delta)
+            if !batchingCoordinates {
+                let old = NSRange(location: editedRange.location, length: editedRange.length - delta)
+                onCoordinateEdit?(DraftCoordinateEdit(range: old, length: editedRange.length))
+            }
         }
     }
 

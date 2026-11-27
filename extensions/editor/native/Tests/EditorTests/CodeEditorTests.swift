@@ -111,7 +111,7 @@ struct CodeEditorTests {
         #expect(fixture.api.records[fixture.editor.doc]?["text"] as? String == "Ax\ny\nz\n")
     }
 
-    @Test func nativeUndoIsPerTabAndRemoteRefreshClearsObsoleteHistory() async throws {
+    @Test func nativeUndoIsPerTabAndExternalAdoptionKeepsHistory() async throws {
         let first = try Fixture(text: "one\n")
         let second = try Fixture(text: "two\n")
         first.insert("a", at: 0)
@@ -127,7 +127,75 @@ struct CodeEditorTests {
         second.api.remote(second.editor.doc, text: "agent\n")
         try await second.editor.refresh()
         #expect(second.textView.string == "agent\n")
-        #expect(second.textView.undoManager?.canUndo == false)
+        second.textView.undoManager?.undo()
+        #expect(second.textView.string == "btwo\n")
+        second.textView.undoManager?.undo()
+        #expect(second.textView.string == "two\n")
+    }
+
+    @Test func externalEditsKeepSelectionsAndFoldsAndReviewUndoKeepsDisjointEdits() async throws {
+        let fixture = try Fixture(text: "func example() {\n    let folded = 1\n}\nlet watched = 2\nlet tail = 3\n")
+        let editor = fixture.editor, view = fixture.textView
+        view.toggleFold(line: 0)
+        let watched = view.source.range(of: "watched"), tail = view.source.range(of: "tail")
+        view.setSelections([TextSelection(watched), TextSelection(anchor: NSMaxRange(tail), head: tail.location)])
+        let oldFolds = view.folds
+        #expect(oldFolds.count == 1)
+        fixture.api.remote(editor.doc, text: view.string.replacingOccurrences(of: "folded = 1", with: "folded = 0").replacingOccurrences(of: "watched = 2", with: "watched = 20"))
+        fixture.api.records[editor.doc]?["author"] = "Source Agent"
+        try await editor.refresh()
+        let review = try #require(editor.reviews.first)
+        #expect(review.author == "Source Agent")
+        #expect(review.hunks.count == 2)
+        #expect(view.folds == oldFolds)
+        #expect(view.selections.map { view.source.substring(with: $0.range) } == ["watched", "tail"])
+        #expect(view.selections.last?.anchor ?? 0 > view.selections.last?.head ?? 0)
+        fixture.insert("// my note\n", at: 0)
+        editor.undoReview(review)
+        #expect(view.string.hasPrefix("// my note\n"))
+        #expect(view.string.contains("folded = 1"))
+        #expect(view.string.contains("watched = 2\n"))
+        #expect(editor.reviews.isEmpty)
+    }
+
+    @Test func changeNoticeShowsTheEditAndItsUndoButtonRestoresSource() async throws {
+        let before = (0..<90).map { "let value\($0) = 0\n" }.joined()
+        let fixture = try Fixture(text: before)
+        let editor = fixture.editor, view = fixture.textView
+        editor.onReviewChange = { [weak editor] in
+            guard let editor else { return }
+            editor.scroll.updateChangeNotice(editor)
+        }
+        let selection = NSRange(location: 0, length: 3)
+        view.setSelectedRange(selection)
+        fixture.api.remote(editor.doc, text: before.replacingOccurrences(of: "value89 = 0", with: "value89 = 9"))
+        try await editor.refresh()
+        editor.scroll.layoutSubtreeIfNeeded()
+        let start = view.visibleRect.minY
+        #expect(start < 10)
+        func button(_ name: String, in parent: NSView) -> NSButton? {
+            if let match = parent as? NSButton, match.title == name { return match }
+            return parent.subviews.lazy.compactMap { button(name, in: $0) }.first
+        }
+        try #require(button("Show", in: editor.scroll)).performClick(nil)
+        #expect(view.visibleRect.minY > start)
+        #expect(view.selectedRange() == selection)
+        try #require(button("Undo", in: editor.scroll)).performClick(nil)
+        #expect(view.string == before)
+        #expect(editor.reviews.isEmpty)
+    }
+
+    @Test func reviewRefusesToOverwriteLaterTextInItsHunk() async throws {
+        let fixture = try Fixture(text: "let count = zero\n")
+        fixture.api.remote(fixture.editor.doc, text: "let count = four\n")
+        try await fixture.editor.refresh()
+        let review = try #require(fixture.editor.reviews.first)
+        let hunk = try #require(review.hunks.first)
+        fixture.textView.insertText("x", replacementRange: hunk.span.range)
+        let expected = fixture.textView.string
+        fixture.editor.undoReview(review)
+        #expect(fixture.textView.string == expected)
+        #expect(fixture.editor.reviews.first === review)
     }
 
     @Test func nativeContextMenuAnchorsGraphemeAndRefusesHistoricalSelection() async throws {

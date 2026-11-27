@@ -30,6 +30,8 @@ final class WorkspaceScreen {
     private var keyMonitor: Any?
     private let navigator: ProjectNavigator
     private let collaboration: Collaboration
+    let requests: WorkspaceRequests
+    private var pendingShow: Fields?
     private let welcome: WorkspaceLanding
     private var panel: Panel? = .files
     private var lastPanel: Panel = .files
@@ -94,6 +96,7 @@ final class WorkspaceScreen {
         chrome = WorkspaceChrome(root: root, defaults: defaults)
         navigator = ProjectNavigator(api: api)
         collaboration = Collaboration(api: api)
+        requests = WorkspaceRequests(api: api)
         welcome = WorkspaceLanding(folder: URL(fileURLWithPath: root).lastPathComponent)
         welcome.files.run = { [weak self] in self?.showNavigator(.files) }
         welcome.new.run = { [weak self] in self?.command("scratch") }
@@ -146,6 +149,7 @@ final class WorkspaceScreen {
             chrome.notify(text)
             act { try await $0.loadState() }
         }
+        configureRequests()
         chrome.setWrap(preferences.base.wordWrap)
         appearance.onChange = { [weak self] in self?.applyLook() }
         preferences.onChange = { [weak self] in self?.applyLook() }
@@ -163,6 +167,7 @@ final class WorkspaceScreen {
                 return event
             }
             let responder = window.firstResponder
+            if responder === requests.view.input { return event }
             let composing = (responder as? NSTextView)?.hasMarkedText() ?? false
             let field = (responder as? NSTextView)?.isFieldEditor ?? false
             return registry.handle(event, textInput: field, composing: composing) ? nil : event
@@ -185,6 +190,7 @@ final class WorkspaceScreen {
         Self.setApplicationAppearance(appearance.applicationAppearance)
         WorkspaceStyle.apply(theme: theme, settings: preferences.base)
         for editor in buffers.values { editor.apply(settings: preferences.settings(language: editor.languageID), theme: theme) }
+        requests.applyLook()
         chrome.setWrap(preferences.base.wordWrap)
         refresh()
     }
@@ -308,6 +314,11 @@ final class WorkspaceScreen {
         guard !activeMutation, confirmation == nil else {
             chrome.setMessage("Finish the current file operation before closing Editor."); return false
         }
+        if requests.hasUnpostedText {
+            requests.resumeDraft()
+            chrome.notify("Send or clear the unsent request before closing Editor.")
+            return false
+        }
         if collaboration.hasUnpostedText {
             panel = .notes; present(); collaboration.showInbox()
             chrome.setMessage("Post or clear your unsent message before closing Editor."); return false
@@ -349,7 +360,7 @@ final class WorkspaceScreen {
         watchTask?.cancel(); watchTask = nil
         for task in tasks.values { task.cancel() }
         tasks.removeAll()
-        collaboration.stop(); navigator.stop()
+        requests.stop(); collaboration.stop(); navigator.stop()
         for editor in buffers.values { editor.stop() }
     }
 
@@ -427,12 +438,22 @@ final class WorkspaceScreen {
             refresh()
             if !editor.diskConflict { diskConflictAcknowledged.remove(editor.doc) }
             if currentEditor === editor && (editor.conflicted || editor.diskConflict) { conflictMessage(editor) }
+            if !editor.hasPending, let event = pendingShow {
+                pendingShow = nil
+                showAgentLocation(event)
+            }
         }
         editor.onSelectionChange = { [weak self, weak editor] in
-            guard let self, currentEditor === editor else { return }
+            guard let self, let editor, currentEditor === editor else { return }
             scheduleSelectionStatus()
+            editor.scroll.repositionCollaboration()
         }
         editor.onNote = { [weak self] anchor in self?.compose(anchor) }
+        requests.bind(editor)
+        editor.onReviewChange = { [weak editor] in
+            guard let editor else { return }
+            editor.scroll.updateChangeNotice(editor)
+        }
         editor.textView.onFind = { [weak self] in self?.registry.run("find.find") }
         return editor
     }
@@ -1252,6 +1273,7 @@ final class WorkspaceScreen {
     func showDisconnected(problem: String, close: @escaping () -> Void) {
         connectionClosed()
         for editor in buffers.values { editor.stop(); editor.textView.isEditable = false }
+        requests.goOffline()
         collaboration.goOffline()
         refreshStatus()
         chrome.setMessage("Copy any unsent text before you close this pane. \(problem)",
@@ -1323,6 +1345,11 @@ final class WorkspaceScreen {
     @discardableResult
     func closeTab(_ key: String) async throws -> Bool {
         guard !activeMutation, confirmation == nil, !disconnected else { return false }
+        if let editor = editor(for: key), requests.hasDraft(in: editor) {
+            requests.resumeDraft(in: editor)
+            chrome.notify("Send or clear the unsent request before closing this tab.")
+            return false
+        }
         if let editor = editor(for: key), editor.dirty {
             let answer = await ask("Close \(editor.title)?", detail: "This tab has unsaved changes.",
                                    choices: [.init("Discard changes", role: .destructive), .init("Keep as draft"), .init("Save", role: .primary)])
@@ -1360,6 +1387,7 @@ final class WorkspaceScreen {
             if closedTabs.count > 30 { closedTabs.removeFirst() }
         }
         if let editor = editor(for: key) {
+            requests.close(editor)
             buffers.removeValue(forKey: editor.doc)
             updateWatchedFiles()
             unobservePosition(of: editor.doc)
@@ -1519,6 +1547,70 @@ final class WorkspaceScreen {
     // MARK: Commands
 
     /// Registers the commands of files, tabs, panels, the view and the theme.
+    private func configureRequests() {
+        onWorkspaceState = { [weak self] fields in
+            guard let self else { return }
+            requests.state(fields, editors: Array(buffers.values))
+        }
+        onWorkspaceEvent = { [weak self] fields in self?.requests.event(fields) }
+        requests.onOpen = { [weak self] doc in self?.act { try await $0.open(doc) } }
+        requests.onResumeFile = { [weak self] doc, resume in
+            self?.act { screen in try await screen.open(doc); resume() }
+        }
+        requests.onCompose = { [weak self] editor in
+            guard let self else { return }
+            keepPreview(fileKey(editor.doc))
+        }
+        requests.onSession = { [weak self] in
+            guard let self else { return }
+            chrome.setSessionStatus(requests.session?.label)
+        }
+        requests.onError = { [weak self] in self?.chrome.notify($0) }
+        requests.onReveal = { [weak self] in self?.showAgentLocation($0) }
+        chrome.setSessionStatus(nil)
+    }
+
+    private func showAgentLocation(_ event: Fields) {
+        guard let doc = event["doc"] as? String, !doc.isEmpty else { return }
+        if currentEditor?.hasFocus == true, currentEditor?.hasPending == true {
+            pendingShow = event
+            return
+        }
+        act { screen in
+            let editor: CodeEditor
+            if let cached = screen.buffers[doc] { editor = cached }
+            else { editor = try screen.makeBuffer(await screen.api.call("read", ["doc": doc])) }
+            guard !screen.stopped else { return }
+            if screen.currentEditor?.hasFocus == true, screen.currentEditor?.hasPending == true {
+                screen.pendingShow = event
+                return
+            }
+            let key = screen.fileKey(editor.doc)
+            screen.previewKeys.remove(key)
+            if !screen.groups.contains(where: { $0.selected == key }) {
+                let responder = screen.chrome.window?.firstResponder
+                let protectsSource = responder is CodeTextView || responder === screen.requests.view.input
+                let source = protectsSource ? screen.selected : nil
+                if source != nil, screen.groups.count == 1 {
+                    let fixed = screen.fixedLayout
+                    screen.chooseArrangement(screen.chrome.fitsSecondGroup ? .columns2 : .rows2)
+                    screen.fixedLayout = fixed
+                }
+                let index = screen.place(key, awayFrom: source)
+                screen.groups[index].selected = key
+                if !protectsSource { screen.active = screen.groups[index].id }
+                if !screen.chrome.showsSideBySide { screen.panel = nil }
+                screen.present(reveal: key)
+            }
+            screen.chrome.layoutSubtreeIfNeeded()
+            editor.revealAgentRange(start: event["start"] as? Int, end: event["end"] as? Int, line: event["line"] as? Int)
+            if let message = event["message"] as? String, !message.isEmpty {
+                let author = (event["by"] as? Fields).flatMap(RequestParticipant.init)?.label
+                screen.chrome.notify(author.map { "\($0): \(message)" } ?? message)
+            }
+        }
+    }
+
     private func registerWorkspaceCommands() {
         func add(_ id: String, _ title: String, _ category: String, keys: String? = nil,
                  enabled: @escaping @MainActor () -> Bool = { true }, on: (@MainActor () -> Bool)? = nil,
@@ -1528,6 +1620,8 @@ final class WorkspaceScreen {
             })
         }
         let editing: @MainActor () -> Bool = { [weak self] in self?.currentEditor != nil }
+        add("collaboration.ask", "Ask About Selection…", "Conversations", keys: "cmd+shift+A", enabled: editing) { $0.currentEditor?.askSelection() }
+        add("collaboration.resume", "Resume Unsent Request", "Conversations", enabled: { [weak self] in self?.requests.hasUnpostedText == true }) { $0.requests.resumeDraft() }
         add("file.newScratch", "New Scratch", "File", keys: "cmd+N") { $0.command("scratch") }
         add("file.newFile", "New File…", "File", keys: "cmd+shift+N") { $0.command("newFile") }
         add("file.save", "Save", "File", keys: "cmd+S", enabled: editing) { $0.command("save") }

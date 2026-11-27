@@ -36,6 +36,12 @@ extension CodeTextView {
             }
         }
         guard let visible = paintSpan(rows), source.length > 0 else { return }
+        for mark in reviewMarks where mark.range.length > 0 {
+            paint(NSIntersectionRange(mark.range, visible), color: sourceTheme.added.withAlphaComponent(0.20), in: dirty)
+        }
+        if let mark = revealMark {
+            paint(NSIntersectionRange(mark.range, visible), color: sourceTheme.accent.withAlphaComponent(0.23), in: dirty)
+        }
         if let occurrence = paintState.occurrence, let span = occurrenceSpan(in: dirty) {
             for part in visibleParts(of: span) {
                 forEachOccurrence(occurrence, in: part) { paint($0, color: sourceTheme.selectionMatch, in: dirty) }
@@ -62,9 +68,11 @@ extension CodeTextView {
     func drawSourceForeground(_ dirty: NSRect) {
         let settings = sourceSettings
         let paintState = selectionPaint()
-        guard settings.whitespace == "all" || !paintState.whitespace.isEmpty || paintState.bracket != nil || !folds.isEmpty else { return }
+        guard settings.whitespace == "all" || !paintState.whitespace.isEmpty || paintState.bracket != nil ||
+                !folds.isEmpty || !threadMarks.isEmpty || !reviewMarks.isEmpty else { return }
         let rows = visibleRows(in: dirty)
         let span = paintSpan(rows)
+        drawCollaborationMarks(dirty, rows: rows)
         if settings.whitespace != "none", let span, span.length > 0 {
             let ranges = settings.whitespace == "all" ? [span] : paintState.whitespace.map { NSIntersectionRange($0, span) }
             drawWhitespace(in: ranges.filter { $0.length > 0 }.flatMap(visibleParts), dirty: dirty)

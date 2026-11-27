@@ -89,6 +89,11 @@ final class CodeGutterView: NSView {
                 number.draw(at: NSPoint(x: bounds.maxX - size.width - (appearance.foldButtons ? 19 : 7),
                                         y: floor(rect.midY - size.height / 2)), withAttributes: style)
             }
+            if editor.threadMarker(on: row) != nil {
+                theme.accent.setFill()
+                let x: CGFloat = appearance.gitGutter ? 12 : 6
+                NSBezierPath(ovalIn: NSRect(x: x - 3, y: rect.midY - 3, width: 6, height: 6)).fill()
+            }
             if appearance.gitGutter, let kind = changes[row] {
                 theme.change(kind).setFill()
                 let h = kind == .deleted ? 3 : max(4, rect.height - 4)
@@ -124,7 +129,9 @@ final class CodeGutterView: NSView {
             let rect = convert($0.rect, from: editor)
             return point.y >= rect.minY && point.y < rect.maxY
         })?.line else { return }
-        if editor.sourceSettings.foldButtons, point.x >= bounds.maxX - 17,
+        if point.x <= (editor.sourceSettings.gitGutter ? 18 : 12), let id = editor.threadMarker(on: row) {
+            editor.openThread?(id)
+        } else if editor.sourceSettings.foldButtons, point.x >= bounds.maxX - 17,
            editor.isFolded(line: row) || editor.canFold(line: row) { editor.toggleFold(line: row) }
         else if editor.sourceSettings.lineNumbers {
             editor.window?.makeFirstResponder(editor)

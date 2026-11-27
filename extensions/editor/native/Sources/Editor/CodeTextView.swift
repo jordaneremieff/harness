@@ -6,6 +6,13 @@ final class CodeScrollView: NSScrollView {
     let minimap = CodeMinimapView()
     let caretOverlay = CodeCaretOverlay()
     private var marginViewport: NSRect?
+    private let popups = SourcePopupLayer()
+    private let changeNotice = ChangeNoticeView()
+    private var request: RequestCardView?
+    private weak var requestAnchor: TrackedDraftRange?
+    private var docked = false
+    private var dockHeight: CGFloat = 0
+    var requestHeight: CGFloat = 240
 
     func bindSourceMargins(to text: CodeTextView) {
         gutter.editor = text
@@ -20,6 +27,9 @@ final class CodeScrollView: NSScrollView {
         text.activeLineChanged = { [weak self] old, next in
             self?.gutter.invalidateActiveLine(from: old, to: next)
         }
+        addSubview(popups, positioned: .above, relativeTo: minimap)
+        popups.addSubview(changeNotice)
+        changeNotice.isHidden = true
         minimap.onScroll = { [weak self, weak text] line in
             guard let self, let text else { return }
             let location = text.visibleOffset(text.lineRange(line).location)
@@ -39,11 +49,17 @@ final class CodeScrollView: NSScrollView {
     override func tile() {
         super.tile()
         guard let text = gutter.editor else { return }
-        let frame = contentView.frame
+        var frame = contentView.frame
+        if docked {
+            let height = min(dockHeight, max(0, frame.height - 50))
+            if !isFlipped { frame.origin.y += height }
+            frame.size.height -= height
+        }
         let settings = text.sourceSettings
         let digits = String(text.lineCount).count
-        let gutterWidth: CGFloat = settings.lineNumbers || settings.foldButtons || settings.gitGutter
+        let baseGutter: CGFloat = settings.lineNumbers || settings.foldButtons || settings.gitGutter
             ? (settings.gitGutter ? 13 : 4) + (settings.lineNumbers ? CGFloat(max(2, digits)) * 8 + 5 : 0) + (settings.foldButtons ? 14 : 3) : 0
+        let gutterWidth = max(14, baseGutter)
         let mapWidth: CGFloat = settings.minimap && frame.width - gutterWidth >= 680 ? min(120, max(85, floor(frame.width * 0.10))) : 0
         var viewport = frame
         viewport.origin.x += gutterWidth
@@ -74,6 +90,7 @@ final class CodeScrollView: NSScrollView {
         gutter.needsDisplay = true
         minimap.needsDisplay = true
         caretOverlay.synchronize(restart: false)
+        if request != nil || !changeNotice.isHidden { needsLayout = true }
     }
 
     override func layout() {
@@ -85,6 +102,71 @@ final class CodeScrollView: NSScrollView {
         let size = NSSize(width: max(frame.width, viewport.width), height: max(frame.height, viewport.height))
         if size != frame { text.setFrameSize(size) }
         text.updateWrapWidth(viewport.width)
+        layoutCollaborationOverlays(text)
+    }
+
+    func showRequest(_ view: RequestCardView?, anchor: TrackedDraftRange?) {
+        request?.removeFromSuperview()
+        request = view
+        requestAnchor = anchor
+        docked = false
+        if let view { popups.addSubview(view) }
+        tile()
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+    }
+
+    func updateChangeNotice(_ editor: CodeEditor) {
+        changeNotice.update(editor)
+        needsLayout = true
+    }
+
+    func repositionCollaboration() {
+        if request != nil || !changeNotice.isHidden { needsLayout = true }
+    }
+
+    private func layoutCollaborationOverlays(_ text: CodeTextView) {
+        guard request != nil || !changeNotice.isHidden else { return }
+        popups.frame = bounds
+        var viewport = popups.convert(contentView.frame, from: self).intersection(popups.bounds)
+        if let request, let requestAnchor {
+            let preferred = NSSize(width: 335, height: requestHeight)
+            let selected = text.collaborationBounds(for: requestAnchor.range, in: text.visibleRect)
+                .map { popups.convert($0, from: text) } ?? .null
+            if !docked, let frame = requestCardFrame(in: viewport, avoiding: selected, preferred: preferred) {
+                request.frame = frame
+            } else {
+                if !docked {
+                    docked = true
+                    dockHeight = min(requestHeight + 12, max(120, popups.bounds.height * 0.51))
+                    tile()
+                    viewport = popups.convert(contentView.frame, from: self).intersection(popups.bounds)
+                }
+                let width = max(1, min(preferred.width, viewport.width - 12))
+                request.frame = NSRect(x: viewport.maxX - width - 6, y: viewport.maxY + 5, width: width,
+                                       height: max(1, min(preferred.height, popups.bounds.maxY - viewport.maxY - 10)))
+            }
+        }
+        if !changeNotice.isHidden {
+            let size = NSSize(width: min(330, viewport.width - 12), height: 30)
+            let selected = text.collaborationBounds(for: text.selectedRange(), in: text.visibleRect)
+                .map { popups.convert($0, from: text) } ?? .null
+            let corners = [viewport.minY + 7, viewport.maxY - size.height - 7].flatMap { y in
+                [viewport.maxX - size.width - 6, viewport.minX + 6].map { x in NSRect(origin: NSPoint(x: x, y: y), size: size) }
+            }
+            if size.width >= 135, let frame = corners.first(where: { !$0.intersects(selected) && !(request?.frame.intersects($0) ?? false) }) {
+                changeNotice.frame = frame
+            } else { changeNotice.frame = .zero }
+        }
+    }
+}
+
+@MainActor
+private final class SourcePopupLayer: NSView {
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
     }
 }
 
@@ -102,7 +184,16 @@ final class CodeClipView: NSClipView {
 @MainActor
 final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @preconcurrency NSTextStorageDelegate {
     var noteTarget: ((NSRange) -> NSMenuItem?)?
+    var askTarget: ((NSRange) -> NSMenuItem?)?
     var onFind: (() -> Void)?
+    var onCoordinateEdit: ((DraftCoordinateEdit) -> Void)?
+    var onCompositionEnd: (() -> Void)?
+    var batchingCoordinates = false
+    var preserveEditedFolds = false
+    var threadMarks: [(id: String, span: TrackedDraftRange)] = []
+    var reviewMarks: [TrackedDraftRange] = []
+    var revealMark: TrackedDraftRange?
+    var openThread: ((String) -> Void)?
     let syntax = CodeSyntax()
     var sourceSettings = EditorSettings()
     var sourceTheme = WorkspaceStyle.theme
@@ -128,6 +219,7 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
     var spaceWidth: CGFloat = 8
     var columnCheckpoint: (lineStart: Int, offset: Int, column: Int)?
     private var drag: (anchor: Int, previous: [TextSelection], column: Bool)?
+    private var inputUndo: UndoManager?
 
     func attachSource() {
         lineIndex = TextLineIndex(source)
@@ -223,6 +315,46 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
         syntax.highlight(rect: rect, in: container, layout: manager, source: storage.mutableString, visibleParts: visibleParts)
     }
 
+    // Each primitive input edit owns its group; editor commands and external batches own theirs.
+    // A run-loop group would combine local input and a service update delivered in the same turn.
+    private func beginInputUndo() -> Bool {
+        guard allowsUndo, let manager = undoManager, !manager.groupsByEvent, manager.groupingLevel == 0,
+              !manager.isUndoing, !manager.isRedoing else { return false }
+        manager.beginUndoGrouping()
+        inputUndo = manager
+        return true
+    }
+
+    func finishInputUndo() {
+        guard let manager = inputUndo else { return }
+        inputUndo = nil
+        manager.endUndoGrouping()
+    }
+
+    override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        let opened = beginInputUndo()
+        let allowed = super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
+        if opened && !allowed { finishInputUndo() }
+        return allowed
+    }
+
+    override func shouldChangeText(inRanges affectedRanges: [NSValue], replacementStrings: [String]?) -> Bool {
+        let opened = beginInputUndo()
+        let allowed = super.shouldChangeText(inRanges: affectedRanges, replacementStrings: replacementStrings)
+        if opened && !allowed { finishInputUndo() }
+        return allowed
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        finishInputUndo()
+    }
+
+    override func unmarkText() {
+        super.unmarkText()
+        onCompositionEnd?()
+    }
+
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         guard let value = (insertString as? String) ?? (insertString as? NSAttributedString)?.string else {
             super.insertText(insertString, replacementRange: replacementRange)
@@ -303,6 +435,11 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
     }
 
     override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty,
+           let thread = threadMarker(at: convert(event.locationInWindow, from: nil)) {
+            openThread?(thread)
+            return
+        }
         let flags = event.modifierFlags.intersection([.command, .option, .shift, .control])
         if flags == .command || flags == .option {
             window?.makeFirstResponder(self)
@@ -355,11 +492,11 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
         find.target = self
         result.insertItem(find, at: 0)
         result.insertItem(.separator(), at: 1)
-        guard let range, let note = noteTarget?(range) else { return result }
-        // The default menu can select a word at the click. The note is always tied to the
-        // selection that existed before the context click, or to the clicked grapheme.
-        result.insertItem(note, at: 0)
-        result.insertItem(.separator(), at: 1)
+        guard let range else { return result }
+        // The default menu can select a word at the click; use the prior selection or clicked grapheme.
+        let actions = [askTarget?(range), noteTarget?(range)].compactMap { $0 }
+        for (index, item) in actions.enumerated() { result.insertItem(item, at: index) }
+        if !actions.isEmpty { result.insertItem(.separator(), at: actions.count) }
         return result
     }
 

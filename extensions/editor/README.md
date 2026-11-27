@@ -53,6 +53,12 @@ You arrange a pane with the pointer. The arrangement belongs to that pane: it ch
 
 The same canonical folder and Pi agent directory identify a workspace. Sessions and tabs share draft revisions, discussion threads and composed views. Other folders get separate workspaces. Text anchors retain the quote and revision they refer to; old text never becomes a note about whatever now occupies its offsets. Non-text notes identify the selected object directly.
 
+Select source and press `cmd+shift+A`, or choose **Ask…** from the selection menu. The request card stays beside the selected source. Its session menu shows the current recipient, also named in the status line. If no session is connected, run `/editor` from the session you want to attach. Use `cmd+return` to send, Return for a new line, or Escape to hide the card without losing your text.
+
+The card shows the request state, discussion, and files changed for the thread. Open a file from its list, or send a follow-up from the same card. Click a thread's underline or gutter dot to return to the discussion. Agent notes with a current source location have the same marks. When Editor no longer knows the location of an old anchor, the discussion remains in **Conversations**.
+
+Changes that arrive in an open file appear in the source without clearing your selection, folds or undo history. **Show** compares the earlier and current text with changed words marked. **Undo** reverses that change where later edits do not overlap it. When an agent uses `show`, Editor reveals the location and shows the message without moving keyboard focus.
+
 Typing updates the native text view immediately. After a pause, or before a dependent action, Editor sends a guarded edit to the shared draft. If another participant changed that revision first, **Keep both** puts your local text in a scratch and shows the shared revision in the original tab. If a writer outside Editor changed the file on disk, use **Save as…** to preserve the draft at a separate path.
 
 Editor stores drafts and threads in a private SQLite workspace beneath `<agentDir>/editor/`, outside the project, with the arrangement of the folder beside them. The pane keeps working when its opening Pi session ends, until you close the Editor pane or its terminal tab. Use `/editor` in another session to connect it. The pane shows the session last selected or attached, if it is still connected. Reopen the same folder to recover shared revisions, request state and files changed during each thread's latest request.

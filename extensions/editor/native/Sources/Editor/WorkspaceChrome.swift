@@ -62,6 +62,7 @@ final class WorkspaceChrome: NSView {
     private let language = WorkspaceButton("", help: "Language options")
     private let format = NSTextField(labelWithString: "")
     private let details = NSTextField(labelWithString: "")
+    private let session = NSTextField(labelWithString: "")
     private let sidebarButton = WorkspaceButton("", symbol: "sidebar.left", help: "Toggle sidebar")
     private let wrap = WorkspaceButton("", symbol: "text.word.spacing", help: "Wrap lines")
     private let message = NSTextField(wrappingLabelWithString: "")
@@ -139,7 +140,7 @@ final class WorkspaceChrome: NSView {
         folder.lineBreakMode = .byTruncatingMiddle
         folder.toolTip = root
         folder.setAccessibilityLabel("Project folder")
-        for label in [status, branch, position, format, details] { label.lineBreakMode = .byTruncatingTail }
+        for label in [status, branch, position, format, details, session] { label.lineBreakMode = .byTruncatingTail }
         message.maximumNumberOfLines = 3
         message.lineBreakMode = .byTruncatingTail
         dropMark.isHidden = true
@@ -150,7 +151,7 @@ final class WorkspaceChrome: NSView {
         side.addSubview(sidebarHeader)
         for view in panels.map(\.button) + [folder] { sidebarHeader.addSubview(view) }
         for view in [message, hideMessage, messageAction] { banner.addSubview(view) }
-        for view in [sidebarButton, branch, status, details, position, indentation, language, format, wrap, more] { foot.addSubview(view) }
+        for view in [sidebarButton, branch, status, details, position, indentation, language, format, session, wrap, more] { foot.addSubview(view) }
 
         for (name, button) in panels { button.run = { [weak self] in self?.onSidebar?(name) } }
         panels[0].button.context = { [weak self] in
@@ -199,7 +200,7 @@ final class WorkspaceChrome: NSView {
         folder.textColor = theme.text
         message.font = WorkspaceStyle.interfaceFont()
         message.textColor = theme.text
-        for label in [status, branch, position, format, details] {
+        for label in [status, branch, position, format, details, session] {
             label.font = WorkspaceStyle.interfaceFont(-1)
             label.textColor = label === status ? theme.text : theme.secondaryText
         }
@@ -262,6 +263,15 @@ final class WorkspaceChrome: NSView {
         statusText = text
         if notice == nil { showStatus() }
         if details.stringValue != detail { details.stringValue = detail; layoutStatus() }
+    }
+
+    func setSessionStatus(_ label: String?) {
+        let value = label ?? "No session"
+        guard session.stringValue != value else { return }
+        session.stringValue = value
+        session.toolTip = label.map { "Current session: \($0)" } ?? "Connect a session with /editor"
+        session.setAccessibilityLabel(session.toolTip)
+        layoutStatus()
     }
 
     func setEditorStatus(branch: String?, position: String, indentation: String?, language: String?, format: String) {
@@ -874,10 +884,10 @@ final class WorkspaceChrome: NSView {
             guard let font = label.font else { return 0 }
             return ceil((label.stringValue as NSString).size(withAttributes: [.font: font]).width) + 4
         }
-        for label in [details, format] {
-            label.isHidden = label.stringValue.isEmpty || (label === format && w < 520)
+        for label in [session, details, format] {
+            label.isHidden = label.stringValue.isEmpty || (label === format && w < 520) || (label === details && w < 390)
             guard !label.isHidden else { continue }
-            let width = min(measure(label), w * 0.19)
+            let width = min(measure(label), w * (label === session ? 0.28 : 0.19))
             right -= width + 8
             label.frame = centredLabel(label, x: right, width: width, height: h)
         }

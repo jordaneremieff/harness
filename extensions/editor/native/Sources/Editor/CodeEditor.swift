@@ -10,6 +10,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
     private var sharedDirty: Bool
     private var editGeneration = 0
     private var pending = false
+    private var refreshAfterComposition = false
     private var debounce: Task<Void, Never>?
     private var stopped = false
     private var busy = false
@@ -32,6 +33,11 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
     var onStatus: ((String) -> Void)?
     var onChange: (() -> Void)?
     var onNote: ((Fields) -> Void)?
+    var onAsk: ((TrackedDraftRange) -> Void)?
+    var onReviewChange: (() -> Void)?
+    let revisionMap = DraftRevisionMap()
+    private var visibleThreadAnchors: [CodeThreadAnchor] = []
+    private(set) var reviews: [DraftChangeReview] = []
     /// Runs after the selection or the insertion point moves.
     var onSelectionChange: (() -> Void)?
     /// The indentation that typing uses in this file: spaces or tabs, and the width of one level.
@@ -48,6 +54,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         sharedDirty = record["dirty"] as? Bool ?? false
         diskConflict = record["diskChanged"] as? Bool ?? false
         super.init()
+        undoHistory.groupsByEvent = false
 
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
@@ -82,7 +89,14 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         textView.delegate = self
         textView.selectionChanged = { [weak self] in self?.onSelectionChange?() }
         textView.selectionCharacters.onReady = { [weak self] in self?.onSelectionChange?() }
-        textView.noteTarget = { [weak self] range in self?.noteItem(range) }
+        textView.noteTarget = { [weak self] range in self?.noteItem(range, asking: false) }
+        textView.askTarget = { [weak self] range in self?.noteItem(range, asking: true) }
+        textView.onCompositionEnd = { [weak self] in self?.resumeDeferredRefresh() }
+        textView.onCoordinateEdit = { [weak self] edit in
+            guard let self else { return }
+            revisionMap.edit(edit)
+            if !textView.threadMarks.isEmpty { scroll.gutter.needsDisplay = true }
+        }
         scroll.bindSourceMargins(to: textView)
         scheduleDecorations(immediate: true)
     }
@@ -294,6 +308,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         textView.caretOverlay?.synchronize(restart: true)
         scheduleDecorations()
         if firstPendingEdit { onChange?() }
+        resumeDeferredRefresh()
         scheduleFlush()
     }
 
@@ -308,6 +323,8 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         onStatus = nil
         onChange = nil
         onNote = nil
+        onAsk = nil
+        onReviewChange = nil
         onChangeMarks = nil
         onSelectionChange = nil
         textView.selectionCharacters.invalidate()
@@ -344,7 +361,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
                     if latest["unchanged"] as? Bool == true {
                         setDiskConflict(latest["diskChanged"] as? Bool ?? true)
                     } else {
-                        try adoptRead(latest)
+                        try await adoptRead(latest)
                     }
                 } catch let readError as EditorIssue where readError.code == "not_found" {
                     setDiskConflict(true)
@@ -377,7 +394,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
                 if pending && !conflicted && !textView.hasMarkedText() { try await flushDraft() }
                 return
             }
-            try adoptRead(latest)
+            try await adoptRead(latest)
         }
     }
 
@@ -388,7 +405,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
             let generation = editGeneration
             let latest = try CodeDraftRecord(await request("read", ["doc": doc]))
             guard generation == editGeneration && !textView.hasMarkedText() else { throw Self.changedDiscardIssue }
-            install(latest)
+            try await install(latest, discardGeneration: generation)
         }
     }
 
@@ -465,6 +482,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         while pending {
             if conflicted { throw Self.draftChangedIssue }
             let generation = editGeneration
+            let count = revisionMap.pending.count
             let text = textView.string
             let patch = await CodePatch.between(sharedText, text)
             if let patch {
@@ -475,6 +493,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
                     guard result["doc"] as? String == doc, let rev = result["rev"] as? Int, rev > revision else {
                         throw Self.invalidResponse
                     }
+                    revisionMap.commit(from: revision, to: rev, count: count)
                     revision = rev
                     sharedText = text
                     sharedDirty = result["dirty"] as? Bool ?? true
@@ -483,6 +502,8 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
                     onChange?()
                     throw Self.draftChangedIssue
                 }
+            } else {
+                revisionMap.commit(from: revision, to: revision, count: count)
             }
             pending = generation != editGeneration
             onChange?()
@@ -491,6 +512,8 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
     }
 
     private func adoptMetadata(_ record: CodeDraftRecord) {
+        if doc != record.doc { revisionMap.abandon() }
+        else { revisionMap.commit(from: revision, to: record.rev) }
         doc = record.doc
         revision = record.rev
         title = record.title
@@ -507,11 +530,11 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         return true
     }
 
-    private func adoptRead(_ fields: Fields) throws {
+    private func adoptRead(_ fields: Fields) async throws {
         let record = try CodeDraftRecord(fields)
         if hasPending {
             if textView.hasMarkedText() {
-                // Query again once AppKit commits or cancels the marked segment.
+                refreshAfterComposition = true
                 return
             }
             let local = textView.string
@@ -530,41 +553,185 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
                 return
             }
         }
-        install(record)
+        try await install(record)
     }
 
-    private func install(_ record: CodeDraftRecord) {
-        let text = textView.string
-        let replaced = !text.utf8.elementsEqual(record.text.utf8)
+    private func resumeDeferredRefresh() {
+        guard refreshAfterComposition, !textView.hasMarkedText(), !stopped else { return }
+        refreshAfterComposition = false
+        Task { [weak self] in
+            guard let self else { return }
+            do { try await refresh() }
+            catch { onStatus?(error.localizedDescription) }
+        }
+    }
+
+    private func install(_ record: CodeDraftRecord, discardGeneration: Int? = nil) async throws {
+        let before = textView.string
+        let generation = editGeneration
+        let changes: [DraftTextChange]
+        if max(before.utf8.count, record.text.utf8.count) < 32_768 {
+            changes = DraftTextChange.between(before, record.text)
+        } else {
+            let after = record.text
+            changes = await Task.detached(priority: .userInitiated) { DraftTextChange.between(before, after) }.value
+        }
+        try checkOpen()
+        if let discardGeneration, discardGeneration != editGeneration || textView.hasMarkedText() { throw Self.changedDiscardIssue }
+        if discardGeneration == nil, generation != editGeneration || textView.hasMarkedText() {
+            if textView.hasMarkedText() { refreshAfterComposition = true; return }
+            if textView.string.utf8.elementsEqual(record.text.utf8) {
+                adoptMetadata(record)
+                pending = false
+                conflicted = false
+            } else {
+                conflicted = true
+                diskConflict = record.diskChanged
+            }
+            onChange?()
+            return
+        }
         let changedFile = doc != record.doc
-        if replaced {
-            let selection = textView.selectedRange()
-            let origin = scroll.contentView.bounds.origin
-            textView.setFolds([])
-            textView.string = record.text
+        if !changes.isEmpty {
+            textView.breakUndoCoalescing()
+            textView.applyDraftChanges(changes)
+            let review = DraftChangeReview(author: record.author ?? "External edit", changes: changes, before: before,
+                                           after: record.text, track: revisionMap.track)
+            reviews.insert(review, at: 0)
+            while reviews.count > 12 || (reviews.count > 1 && reviews.reduce(0, { $0 + $1.byteCount }) > 4 * 1024 * 1024) {
+                reviews.removeLast()
+            }
+            registerUndo(inverse(of: changes), name: "External Change", removeReview: review.id)
+            updateReviewMarks()
             textView.invalidateSyntax()
             detectedIndentation = nil
             applyIndentation()
-            let source = record.text as NSString
-            let start = Self.scalarBoundary(min(selection.location, source.length), source)
-            let end = Self.scalarBoundary(min(NSMaxRange(selection), source.length), source)
-            textView.setSelectedRange(NSRange(location: start, length: end - start))
-            scroll.contentView.scroll(to: origin)
-            scroll.reflectScrolledClipView(scroll.contentView)
-            undoHistory.removeAllActions()
             editGeneration += 1
         }
         adoptMetadata(record)
         if changedFile { textView.setSyntax(for: doc); setBaseText(nil) }
-        if replaced || changedFile { scheduleDecorations(immediate: true) }
+        if !changes.isEmpty || changedFile { scheduleDecorations(immediate: true) }
         pending = false
         conflicted = false
         onChange?()
     }
 
-    private func noteItem(_ range: NSRange) -> NSMenuItem? {
-        guard onNote != nil, range.length > 0, range.length <= 8192, !conflicted else { return nil }
-        let item = NSMenuItem(title: "Add Note…", action: #selector(addNote(_:)), keyEquivalent: "")
+    func undoReview(_ review: DraftChangeReview) {
+        guard !textView.hasMarkedText(), !conflicted,
+              reviews.contains(where: { $0 === review }), let changes = review.inverse(in: textView.source) else {
+            onStatus?("This change overlaps later edits. Review the text before you reverse it.")
+            return
+        }
+        applyUndo(changes, name: "Reverse External Change", removeReview: review.id)
+    }
+
+    func dismissReview(_ review: DraftChangeReview) {
+        reviews.removeAll { $0 === review }
+        updateReviewMarks()
+    }
+
+    private func updateReviewMarks() {
+        textView.reviewMarks = reviews.flatMap { $0.hunks.map(\.span) }
+        textView.setNeedsDisplay(textView.visibleRect)
+        onReviewChange?()
+    }
+
+    private func inverse(of changes: [DraftTextChange]) -> [DraftTextChange] {
+        var shift = 0
+        return changes.map { change in
+            let range = NSRange(location: change.range.location + shift, length: change.newText.utf16.count)
+            shift += change.delta
+            return DraftTextChange(range: range, oldText: change.newText, newText: change.oldText)
+        }
+    }
+
+    private func registerUndo(_ changes: [DraftTextChange], name: String, removeReview: UUID? = nil) {
+        let manager = undoHistory
+        let group = !manager.isUndoing && !manager.isRedoing
+        if group {
+            textView.finishInputUndo()
+            textView.breakUndoCoalescing()
+            manager.beginUndoGrouping()
+        }
+        manager.registerUndo(withTarget: self) { target in
+            MainActor.assumeIsolated { target.applyUndo(changes, name: name, removeReview: removeReview) }
+        }
+        manager.setActionName(name)
+        if group { manager.endUndoGrouping() }
+    }
+
+    private func applyUndo(_ changes: [DraftTextChange], name: String, removeReview: UUID?) {
+        guard !textView.hasMarkedText(), !conflicted,
+              changes.allSatisfy({ NSMaxRange($0.range) <= textView.source.length &&
+                  textView.source.substring(with: $0.range).utf8.elementsEqual($0.oldText.utf8) }) else {
+            onStatus?("The text changed. This edit was not reversed.")
+            return
+        }
+        registerUndo(inverse(of: changes), name: name)
+        textView.applyDraftChanges(changes)
+        if let removeReview {
+            reviews.removeAll { $0.id == removeReview }
+            updateReviewMarks()
+        }
+        textView.didChangeText()
+    }
+
+    func updateThreadAnchors(_ anchors: [CodeThreadAnchor]) {
+        guard anchors != visibleThreadAnchors else { return }
+        visibleThreadAnchors = anchors
+        textView.threadMarks = anchors.compactMap { anchor in
+            anchor.locate(in: textView.source, revision: revision, map: revisionMap).map { (anchor.id, revisionMap.track($0)) }
+        }
+        textView.setNeedsDisplay(textView.visibleRect)
+        scroll.gutter.needsDisplay = true
+    }
+
+    func track(_ range: NSRange) -> TrackedDraftRange { revisionMap.track(range) }
+
+    func askSelection() {
+        guard let range = textView.selections.last?.range else { return }
+        ask(range)
+    }
+
+    private func ask(_ range: NSRange) {
+        guard !conflicted, !textView.hasMarkedText(), range.length > 0, range.length <= 8192 else {
+            onStatus?("Select up to 8,192 UTF-16 units of source to ask about.")
+            return
+        }
+        onAsk?(track(range))
+    }
+
+    func requestAnchor(_ span: TrackedDraftRange) async throws -> Fields {
+        try await exclusively {
+            try await flushDraft()
+            let range = span.range
+            let source = sharedText as NSString
+            guard span.intact, range.length > 0, range.length <= 8192, NSMaxRange(range) <= source.length,
+                  Self.scalarBoundary(range.location, source) == range.location,
+                  Self.scalarBoundary(NSMaxRange(range), source) == NSMaxRange(range) else { throw Self.changedAnchorIssue }
+            return ["doc": doc, "rev": revision, "start": range.location, "end": NSMaxRange(range)]
+        }
+    }
+
+    func revealAgentRange(start: Int?, end: Int?, line: Int?) {
+        let source = textView.source
+        let range: NSRange
+        if let start, start >= 0, start <= source.length {
+            let end = min(source.length, max(start, end ?? start))
+            let first = Self.scalarBoundary(start, source), last = Self.scalarBoundary(end, source)
+            range = NSRange(location: first, length: last - first)
+        } else {
+            range = textView.contents(of: min(textView.lineCount - 1, max(1, line ?? 1) - 1))
+        }
+        textView.revealMark = track(range)
+        textView.revealSourceRange(range)
+        textView.setNeedsDisplay(textView.visibleRect)
+    }
+
+    private func noteItem(_ range: NSRange, asking: Bool) -> NSMenuItem? {
+        guard (asking ? onAsk != nil : onNote != nil), range.length > 0, range.length <= 8192, !conflicted else { return nil }
+        let item = NSMenuItem(title: asking ? "Ask…" : "Add Note…", action: #selector(addNote(_:)), keyEquivalent: "")
+        item.tag = asking ? 1 : 0
         item.target = self
         item.representedObject = NoteAnchor(doc: doc, generation: editGeneration, range: range)
         return item
@@ -577,29 +744,15 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
     }
 
     @objc private func addNote(_ item: NSMenuItem) {
-        guard let anchor = item.representedObject as? NoteAnchor else { return }
+        guard let anchor = item.representedObject as? NoteAnchor, anchor.doc == doc,
+              anchor.generation == editGeneration else { onStatus?(Self.changedAnchorIssue.message); return }
+        if item.tag == 1 { ask(anchor.range); return }
+        let span = track(anchor.range)
         Task { [weak self] in
             guard let self else { return }
-            do {
-                try await self.exclusively {
-                    try self.checkAnchor(anchor)
-                    try await self.flushDraft()
-                    try self.checkAnchor(anchor)
-                    let source = self.sharedText as NSString
-                    let start = Self.scalarBoundary(anchor.range.location, source)
-                    let end = Self.scalarBoundary(NSMaxRange(anchor.range), source)
-                    guard start == anchor.range.location, end == NSMaxRange(anchor.range), end <= source.length else {
-                        throw Self.changedAnchorIssue
-                    }
-                    self.onNote?(["doc": self.doc, "rev": self.revision, "start": start, "end": end])
-                }
-            } catch { self.onStatus?(error.localizedDescription) }
+            do { onNote?(try await requestAnchor(span)) }
+            catch { onStatus?(error.localizedDescription) }
         }
-    }
-
-    private func checkAnchor(_ anchor: NoteAnchor) throws {
-        try checkOpen()
-        guard anchor.doc == doc, anchor.generation == editGeneration else { throw Self.changedAnchorIssue }
     }
 
     private static func requireUnixNewlines(_ text: String) throws {
@@ -627,6 +780,7 @@ private struct CodeDraftRecord {
     let dirty: Bool
     let text: String
     let diskChanged: Bool
+    let author: String?
 
     init(_ fields: Fields) throws {
         guard let doc = fields["doc"] as? String, let rev = fields["rev"] as? Int, let title = fields["title"] as? String,
@@ -636,6 +790,7 @@ private struct CodeDraftRecord {
         self.doc = doc
         self.rev = rev
         self.title = title
+        author = fields["author"] as? String
         self.dirty = dirty
         self.text = text
         diskChanged = fields["diskChanged"] as? Bool ?? false
