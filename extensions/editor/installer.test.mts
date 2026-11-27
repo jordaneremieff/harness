@@ -4,14 +4,15 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
-	readFileSync,
 	readdirSync,
+	readFileSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test, type TestContext } from "node:test";
+import { type TestContext, test } from "node:test";
 import { editorAppInstaller } from "./installer.ts";
 import { type EditorBuild, editorSourceDigest, executableInApp, recordInApp } from "./native/build.mts";
 
@@ -39,6 +40,19 @@ function writeBundle({ app, digest }: EditorBuild, mode = 0o755) {
 	mkdirSync(dirname(record), { recursive: true });
 	writeFileSync(executable, "built app", { mode });
 	writeFileSync(record, JSON.stringify({ sourceDigest: digest }));
+}
+
+function otherSources(n: number): string {
+	return n.toString(16).padStart(64, "0");
+}
+
+/** A build of other sources, last changed `minutesAgo` minutes ago. */
+function otherSlot(agentDir: string, n: number, minutesAgo: number): string {
+	const slot = join(agentDir, "editor-apps", otherSources(n));
+	mkdirSync(join(slot, "Editor.app"), { recursive: true });
+	const time = new Date(Date.now() - minutesAgo * 60_000);
+	utimesSync(slot, time, time);
+	return slot;
 }
 
 test("Editor caches the app for matching sources and keeps the previous executable on an update", async (t) => {
@@ -85,4 +99,59 @@ test("a failed or non-executable build leaves a log and never publishes an app",
 	assert.equal(existsSync(executable), true);
 	chmodSync(executable, 0o644);
 	await assert.rejects(fixed(agentDir), /damaged bundle/);
+});
+
+test("a new build removes the builds of other sources that nothing uses", async (t) => {
+	const { sources, agentDir } = fixture(t);
+	const oldest = otherSlot(agentDir, 1, 50);
+	const running = otherSlot(agentDir, 2, 40);
+	const building = otherSlot(agentDir, 3, 30);
+	mkdirSync(`${building}.lock`);
+	const older = otherSlot(agentDir, 4, 20);
+	const newer = otherSlot(agentDir, 5, 10);
+	const newest = otherSlot(agentDir, 6, 5);
+	const unrelated = join(agentDir, "editor-apps", "notes");
+	mkdirSync(unrelated);
+	const installer = editorAppInstaller(
+		sources,
+		async (build) => writeBundle(build),
+		() => ["/usr/bin/login -pf person", `${join(running, "Editor.app")}/Contents/MacOS/Editor --pane`],
+	);
+	const executable = await installer(agentDir);
+	assert.equal(existsSync(executable), true);
+	for (const kept of [running, building, `${building}.lock`, newer, newest, unrelated])
+		assert.equal(existsSync(kept), true, kept);
+	for (const removed of [oldest, older]) assert.equal(existsSync(removed), false, removed);
+});
+
+test("without a process list a build removes no other build", async (t) => {
+	const { sources, agentDir } = fixture(t);
+	const slots = [1, 2, 3, 4].map((n) => otherSlot(agentDir, n, n * 10));
+	const installer = editorAppInstaller(
+		sources,
+		async (build) => writeBundle(build),
+		() => {
+			throw new Error("ps failed");
+		},
+	);
+	assert.equal(existsSync(await installer(agentDir)), true);
+	for (const slot of slots) assert.equal(existsSync(slot), true, slot);
+});
+
+test("an app that already matches its sources removes no other build", async (t) => {
+	const { sources, agentDir } = fixture(t);
+	let builds = 0;
+	const installer = editorAppInstaller(
+		sources,
+		async (build) => {
+			builds++;
+			writeBundle(build);
+		},
+		() => [],
+	);
+	await installer(agentDir);
+	const slots = [1, 2, 3, 4].map((n) => otherSlot(agentDir, n, n * 10));
+	await installer(agentDir);
+	assert.equal(builds, 1);
+	for (const slot of slots) assert.equal(existsSync(slot), true, slot);
 });

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	accessSync,
 	appendFileSync,
@@ -5,6 +6,7 @@ import {
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
@@ -16,6 +18,52 @@ import lockfile from "proper-lockfile";
 import { buildEditorApp, editorSourceDigest, executableInApp, recordInApp } from "./native/build.mts";
 
 const native = fileURLToPath(new URL("./native/", import.meta.url));
+
+/** Full command lines of the running processes. */
+export type RunningCommands = () => readonly string[];
+
+function runningCommands(): readonly string[] {
+	return execFileSync("ps", ["-axww", "-o", "command="], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }).split("\n");
+}
+
+const slotName = /^[0-9a-f]{64}$/;
+/** Builds of other sources that stay for Pi processes still running earlier harness snapshots. */
+const keptOtherSlots = 2;
+
+/**
+ * Removes the app builds of other sources that nothing can use. A slot stays while a process runs
+ * its app, while another process holds its build lock, or while it is one of the newest other
+ * slots. Without the process list nothing is removed, and no failure here fails the install.
+ */
+function removeUnusedSlots(apps: string, current: string, running: RunningCommands): void {
+	let commands: readonly string[];
+	let names: string[];
+	try {
+		commands = running();
+		names = readdirSync(apps);
+	} catch {
+		return;
+	}
+	const present = new Set(names);
+	const unused: { slot: string; modified: number }[] = [];
+	for (const name of names) {
+		if (name === current || !slotName.test(name) || present.has(`${name}.lock`)) continue;
+		const slot = join(apps, name);
+		const info = lstat(slot);
+		if (!info?.isDirectory()) continue;
+		const app = `${join(slot, "Editor.app")}/`;
+		if (commands.some((command) => command.includes(app))) continue;
+		unused.push({ slot, modified: info.mtimeMs });
+	}
+	unused.sort((a, b) => b.modified - a.modified);
+	for (const { slot } of unused.slice(keptOtherSlots)) {
+		try {
+			rmSync(slot, { recursive: true, force: true });
+		} catch {
+			// A slot that cannot be removed now stays until a later build.
+		}
+	}
+}
 
 function lstat(path: string) {
 	return lstatSync(path, { throwIfNoEntry: false });
@@ -68,10 +116,15 @@ async function buildInSlot(
 	}
 }
 
-export function editorAppInstaller(sources = native, build = buildEditorApp): (agentDir: string) => Promise<string> {
+export function editorAppInstaller(
+	sources = native,
+	build = buildEditorApp,
+	running: RunningCommands = runningCommands,
+): (agentDir: string) => Promise<string> {
 	return async (agentDir) => {
 		const digest = editorSourceDigest(sources);
-		const slot = resolve(agentDir, "editor-apps", digest);
+		const apps = resolve(agentDir, "editor-apps");
+		const slot = join(apps, digest);
 		const app = join(slot, "Editor.app");
 		const executable = join(app, executableInApp);
 		if (matches(app, digest)) return executable;
@@ -94,6 +147,7 @@ export function editorAppInstaller(sources = native, build = buildEditorApp): (a
 			if (matches(app, digest)) return executable;
 			if (lstat(app)) throw new Error(`Editor found a damaged bundle at ${app}. Remove it and run /editor again.`);
 			await buildInSlot(app, sources, digest, build, () => !compromised, resolve(agentDir, "pane-appearance.json"));
+			removeUnusedSlots(apps, digest, running);
 			return executable;
 		} finally {
 			if (!compromised) await release();
