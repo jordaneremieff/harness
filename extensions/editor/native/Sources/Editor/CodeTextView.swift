@@ -190,9 +190,15 @@ final class CodeTextView: NSTextView, @preconcurrency NSLayoutManagerDelegate, @
     var onCompositionEnd: (() -> Void)?
     var batchingCoordinates = false
     var preserveEditedFolds = false
-    var threadMarks: [(id: String, span: TrackedDraftRange)] = []
-    var reviewMarks: [TrackedDraftRange] = []
-    var revealMark: TrackedDraftRange?
+    var threadMarks: [(id: String, span: TrackedDraftRange)] = [] {
+        didSet { invalidateCollaborationRows(from: oldValue.map(\.span.range), to: threadMarks.map(\.span.range)) }
+    }
+    var reviewMarks: [TrackedDraftRange] = [] {
+        didSet { invalidateCollaborationRows(from: oldValue.map(\.range), to: reviewMarks.map(\.range)) }
+    }
+    var revealMark: TrackedDraftRange? {
+        didSet { invalidateCollaborationRows(from: [oldValue?.range].compactMap { $0 }, to: [revealMark?.range].compactMap { $0 }) }
+    }
     var openThread: ((String) -> Void)?
     let syntax = CodeSyntax()
     var sourceSettings = EditorSettings()

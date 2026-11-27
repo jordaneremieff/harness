@@ -51,11 +51,25 @@ struct CodeMapRow: Sendable {
 final class CodeGutterView: NSView {
     weak var editor: CodeTextView?
     var changes: [Int: CodeChangeKind] = [:]
+    private var threadMarkerLines: Set<Int> = []
     override var isFlipped: Bool { true }
 
     func invalidateActiveLine(from old: Int, to next: Int) {
-        guard !isHidden, let editor else { return }
-        for row in editor.visibleRows(in: editor.visibleRect) where row.line == old || row.line == next {
+        invalidateLines([old, next])
+    }
+
+    override func layout() {
+        super.layout()
+        guard let editor else { return }
+        let next = editor.threadMarkerLines
+        let changed = threadMarkerLines.symmetricDifference(next)
+        threadMarkerLines = next
+        invalidateLines(changed)
+    }
+
+    private func invalidateLines(_ lines: Set<Int>) {
+        guard !lines.isEmpty, !isHidden, let editor else { return }
+        for row in editor.visibleRows(in: editor.visibleRect) where lines.contains(row.line) {
             let rect = convert(row.rect, from: editor)
             setNeedsDisplay(NSRect(x: 0, y: rect.minY, width: bounds.width, height: rect.height).intersection(bounds))
         }
@@ -89,7 +103,7 @@ final class CodeGutterView: NSView {
                 number.draw(at: NSPoint(x: bounds.maxX - size.width - (appearance.foldButtons ? 19 : 7),
                                         y: floor(rect.midY - size.height / 2)), withAttributes: style)
             }
-            if editor.threadMarker(on: row) != nil {
+            if threadMarkerLines.contains(row) {
                 theme.accent.setFill()
                 let x: CGFloat = appearance.gitGutter ? 12 : 6
                 NSBezierPath(ovalIn: NSRect(x: x - 3, y: rect.midY - 3, width: 6, height: 6)).fill()

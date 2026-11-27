@@ -95,7 +95,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         textView.onCoordinateEdit = { [weak self] edit in
             guard let self else { return }
             revisionMap.edit(edit)
-            if !textView.threadMarks.isEmpty { scroll.gutter.needsDisplay = true }
+            if !textView.threadMarks.isEmpty { scroll.gutter.needsLayout = true }
         }
         scroll.bindSourceMargins(to: textView)
         scheduleDecorations(immediate: true)
@@ -632,7 +632,6 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
 
     private func updateReviewMarks() {
         textView.reviewMarks = reviews.flatMap { $0.hunks.map(\.span) }
-        textView.setNeedsDisplay(textView.visibleRect)
         onReviewChange?()
     }
 
@@ -682,8 +681,7 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         textView.threadMarks = anchors.compactMap { anchor in
             anchor.locate(in: textView.source, revision: revision, map: revisionMap).map { (anchor.id, revisionMap.track($0)) }
         }
-        textView.setNeedsDisplay(textView.visibleRect)
-        scroll.gutter.needsDisplay = true
+        scroll.gutter.needsLayout = true
     }
 
     func track(_ range: NSRange) -> TrackedDraftRange { revisionMap.track(range) }
@@ -725,7 +723,6 @@ final class CodeEditor: NSObject, NSTextViewDelegate {
         }
         textView.revealMark = track(range)
         textView.revealSourceRange(range)
-        textView.setNeedsDisplay(textView.visibleRect)
     }
 
     private func noteItem(_ range: NSRange, asking: Bool) -> NSMenuItem? {

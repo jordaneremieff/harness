@@ -185,6 +185,22 @@ struct CodeEditorTests {
         #expect(editor.reviews.isEmpty)
     }
 
+    @Test func collaborationInvalidationTouchesOnlyChangedVisibleRows() throws {
+        let fixture = try Fixture(text: "first line\nsecond line\nthird line\nfourth line\n")
+        defer { fixture.editor.stop() }
+        let view = fixture.textView
+        let point = NSRange(location: view.source.range(of: "third").location, length: 0)
+        let affected = view.collaborationRowRects(for: [view.source.range(of: "first"), point])
+        let rows = view.visibleRows(in: view.visibleRect)
+        let first = try #require(rows.first(where: { $0.line == 0 }))
+        let second = try #require(rows.first(where: { $0.line == 1 }))
+        let third = try #require(rows.first(where: { $0.line == 2 }))
+        #expect(affected.count == 2)
+        #expect(affected.contains { $0.minY == first.rect.minY })
+        #expect(affected.contains { $0.minY == third.rect.minY })
+        #expect(!affected.contains { $0.intersects(second.rect) })
+    }
+
     @Test func reviewRefusesToOverwriteLaterTextInItsHunk() async throws {
         let fixture = try Fixture(text: "let count = zero\n")
         fixture.api.remote(fixture.editor.doc, text: "let count = four\n")

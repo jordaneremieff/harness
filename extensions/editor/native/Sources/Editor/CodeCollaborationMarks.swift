@@ -25,6 +25,30 @@ extension CodeTextView {
         return result.isNull ? nil : result
     }
 
+    func invalidateCollaborationRows(from old: [NSRange], to next: [NSRange]) {
+        for rect in collaborationRowRects(for: Set(old).symmetricDifference(next)) { setNeedsDisplay(rect) }
+    }
+
+    func collaborationRowRects(for ranges: Set<NSRange>) -> [NSRect] {
+        guard !ranges.isEmpty else { return [] }
+        let viewport = visibleRect
+        let rows = visibleRows(in: viewport)
+        guard let first = rows.first, let last = rows.last else { return [] }
+        let points = ranges.compactMap { range -> CGFloat? in
+            guard range.length == 0, range.location >= first.chars.location, range.location <= NSMaxRange(last.chars) else { return nil }
+            return caretRect(at: range.location)?.midY
+        }
+        return rows.compactMap { row in
+            guard ranges.contains(where: { NSIntersectionRange($0, row.chars).length > 0 }) ||
+                    points.contains(where: { row.rect.minY <= $0 && $0 < row.rect.maxY }) else { return nil }
+            return NSRect(x: viewport.minX, y: row.rect.minY, width: viewport.width, height: row.rect.height).intersection(viewport)
+        }
+    }
+
+    var threadMarkerLines: Set<Int> {
+        Set(threadMarks.map { line(at: visibleOffset($0.span.range.location)) })
+    }
+
     func threadMarker(on line: Int) -> String? {
         threadMarks.first { self.line(at: visibleOffset($0.span.range.location)) == line }?.id
     }
@@ -47,7 +71,7 @@ extension CodeTextView {
                 threadUnderline(mark.span.range, in: row.chars, row: row.rect)?.intersection(dirty).fill()
             }
             for mark in reviewMarks where mark.range.length == 0 && line(at: mark.range.location) == row.line {
-                if let caret = caretRect(at: mark.range.location) {
+                if let caret = caretRect(at: mark.range.location), row.rect.minY <= caret.midY, caret.midY < row.rect.maxY {
                     sourceTheme.modified.setFill()
                     NSRect(x: caret.minX, y: row.rect.minY + 2, width: 3, height: max(1, row.rect.height - 4)).intersection(dirty).fill()
                 }
@@ -58,7 +82,8 @@ extension CodeTextView {
     private func threadUnderline(_ range: NSRange, in chars: NSRange, row: NSRect) -> NSRect? {
         let part = NSIntersectionRange(range, chars)
         if range.length == 0, line(at: range.location) == line(at: chars.location),
-           range.location >= chars.location, range.location <= NSMaxRange(chars), let caret = caretRect(at: range.location) {
+           range.location >= chars.location, range.location <= NSMaxRange(chars), let caret = caretRect(at: range.location),
+           row.minY <= caret.midY, caret.midY < row.maxY {
             return NSRect(x: caret.minX, y: row.maxY - 3, width: 7, height: 2)
         }
         guard part.length > 0, let layout = layoutManager, let container = textContainer else { return nil }

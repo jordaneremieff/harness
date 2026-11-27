@@ -86,10 +86,52 @@ struct WorkspaceRequestsTests {
         #expect(api.sessionChanges.last?["id"] as? String == "agent")
     }
 
-    private func key(_ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], window: NSWindow) throws -> NSEvent {
+    @Test func requestInputKeepsNativeTextCommandsAndSourceUndoSeparate() async throws {
+        _ = NSApplication.shared
+        let api = RequestFixture()
+        let editor = CodeEditor(api: api, record: api.record)
+        let requests = WorkspaceRequests(api: api)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 480), styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = editor.scroll
+        defer { requests.stop(); editor.stop(); window.orderOut(nil) }
+        requests.bind(editor)
+        editor.textView.setSelectedRange(editor.textView.source.range(of: "choice"))
+        editor.askSelection()
+        let input = requests.view.input
+        #expect(window.firstResponder === input)
+        #expect(input.inlinePredictionType != .no)
+        input.string = "Check this"
+        input.setSelectedRange(NSRange(location: 5, length: 0))
+        input.keyDown(with: try key("\u{1}", base: "a", code: 0, modifiers: .control, window: window))
+        #expect(input.selectedRange() == NSRange(location: 0, length: 0))
+        input.keyDown(with: try key("\u{5}", base: "e", code: 14, modifiers: .control, window: window))
+        #expect(input.selectedRange() == NSRange(location: 10, length: 0))
+        #expect(NSApp.sendAction(#selector(NSText.selectAll(_:)), to: input, from: nil))
+        #expect(input.selectedRange() == NSRange(location: 0, length: 10))
+
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        #expect(input.writeSelection(to: pasteboard, types: input.writablePasteboardTypes))
+        #expect(pasteboard.string(forType: .string) == "Check this")
+        pasteboard.clearContents()
+        #expect(pasteboard.setString("Explain this", forType: .string))
+        #expect(input.readSelection(from: pasteboard, type: .string))
+        #expect(input.string == "Explain this")
+        let inputUndo = try #require(input.undoManager)
+        #expect(inputUndo !== editor.textView.undoManager)
+        #expect(inputUndo.canUndo)
+        inputUndo.undo()
+        #expect(input.string == "Check this")
+        #expect(inputUndo.canRedo)
+        inputUndo.redo()
+        #expect(input.string == "Explain this")
+        #expect(editor.textView.string == api.record["text"] as? String)
+    }
+
+    private func key(_ characters: String, base: String? = nil, code: UInt16, modifiers: NSEvent.ModifierFlags = [], window: NSWindow) throws -> NSEvent {
         try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
                                        windowNumber: window.windowNumber, context: nil, characters: characters,
-                                       charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+                                       charactersIgnoringModifiers: base ?? characters, isARepeat: false, keyCode: code))
     }
 
     private func wait(_ predicate: () -> Bool) async throws {
