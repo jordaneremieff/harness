@@ -258,11 +258,14 @@ test("bare Markdown opens one browser while the shortcut and window still go str
 		opened?.close();
 		await browsing;
 	}
-	for (const readLatest of [() => shortcut(ctx), () => handler("window", ctx)]) {
-		await readLatest();
+	const checkDirectRead = () => {
 		assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", /No retained assistant response/u);
 		assert.equal(custom.mock.callCount(), 1);
-	}
+	};
+	await shortcut(ctx);
+	checkDirectRead();
+	await handler("window", ctx);
+	checkDirectRead();
 });
 
 test("the file command reads a path under the home directory written with a leading tilde", async (t) => {
